@@ -432,8 +432,10 @@ fn tile_publication(value: &Publication) -> View {
 fn tile_collective(value: &TileCollective) -> View {
     let mut view = View::tag(14);
     view.a = value.tile;
+    view.b = value.op.operator() as usize;
+    view.c = usize::from(value.op.exclusive());
     view.first = Span::pairs(&value.results);
-    view.second = Span::slice(&value.results);
+    view.second = Span::field(&value.results, |field| &field.0);
     view.left = Node::of(value, Kind::TileCollective);
     view
 }

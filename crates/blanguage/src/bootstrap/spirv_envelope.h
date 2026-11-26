@@ -363,37 +363,7 @@ struct ControlWords { u64 words; u32 label; u32 reaches_next; };
 extern "C" ControlWords begin_shader_body(u32 result_type, u32 function, u32 signature, u32 entry, address body) on cpu;
 extern "C" ControlWords end_shader_body(address body) on cpu;
 extern "C" ControlWords open_selection(u32 merge, u32 condition, u32 yes, u32 no, address body) on cpu;
-extern "C" ControlWords open_index_selection(u32 bool_type, u32 test, u32 index, u32 bound,
-    bool less, u32 run, u32 end, address body) on cpu;
-struct TileCollectiveInput {
-    u64 results;
-    u32 width;
-    u32 first_word;
-    u32 lane;
-    u32 sum;
-    u32 exclusive;
-};
-struct TileCollectiveHost {
-    cfn<u32,address,u32> constant;
-    cfn<u32,address,u64,u64,u32> tree;
-    cfn<u32,address,u64,u64> seed;
-    cfn<void,address,u64,u32,u32,u32> pad;
-    cfn<void,address> prepare;
-    cfn<void,address,u32,u32,u32> layer;
-    cfn<void,address,u32,u32> root;
-    cfn<void,address,u64,u64,u32> read;
-    cfn<void,address,u32> barrier;
-};
-extern "C" void emit_tile_collective(address context, TileCollectiveInput input, TileCollectiveHost host) on cpu
-    requires nonzero(host.constant) requires nonzero(host.tree) requires nonzero(host.seed)
-    requires nonzero(host.pad) requires nonzero(host.prepare) requires nonzero(host.layer)
-    requires nonzero(host.root) requires nonzero(host.read) requires nonzero(host.barrier);
-
-extern "C" ControlWords open_tile_padding(u32 uint_type, u32 bool_type, u32 lane, u32 width,
-    u32 capacity, u32 index, u32 test, u32 run, u32 end, address body) on cpu;
 extern "C" ControlWords next_control_block(u32 target, u32 label, u32 reaches, address body) on cpu;
-extern "C" u64 phi_two(address body, u64 at, u32 type, u32 result,
-                        u32 first_value, u32 first_block, u32 second_value, u32 second_block) on cpu;
 // Borrowed original blocks. The host owns instruction storage and word buffers.
 enum BlockFlow:u32 { Error=0; Stop=1; Next=2; };
 struct ControlTargets { u32 end; u32 next; };
@@ -465,15 +435,15 @@ extern "C" TileInputRange emit_tile_input(TileInputLayout input, TileInputSource
 struct TileStorage {
     cfn<TileCell,address,TileKey> cell;
     cfn<TileKey,address,usize,u32> word;
+    cfn<u64,address,CollectiveOperation,usize> identity;
+    cfn<address,address,usize> components;
     u32 width;
     u32 lane;
     u32 length;
+    u32 shared;
+    u32 pointer;
+    u32 data_words;
 };
-extern "C" u32 tile_storage_read(TileStorage storage, TileKey key, u32 index, u32 offset,
-    BuiltinScalar scalar, MemoryHost memory) on cpu
-    requires nonzero(storage.cell)
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
-    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body);
 
 struct TextureSampling {
     address bindings;
@@ -507,13 +477,12 @@ struct BlockHost {
     TextureSampling textures;
     RayBindings rays;
     cfn<BlockFlow,address,BlockRejection> reject;
-    cfn<void,address,address> collective;
 };
 extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     StructuredHost host, BlockHost emit) on cpu
     requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
     requires nonzero(emit.textures.declaration) requires nonzero(emit.rays.query) requires nonzero(emit.rays.declare_type)
-    requires nonzero(emit.collective)
+    requires nonzero(emit.tile.identity) requires nonzero(emit.tile.components)
     requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
     requires nonzero(emit.paging.pointer_type) requires nonzero(emit.paging.finish_body)
     requires nonzero(emit.paging.current_label)
@@ -538,7 +507,8 @@ extern "C" void emit_tile_phases(u32 active, StructuredHost control, TilePhaseHo
     requires nonzero(control.labels) requires nonzero(control.reserve_words)
     requires nonzero(control.finish_words) requires nonzero(control.block)
     requires nonzero(host.next_phase) requires nonzero(host.next_value)
-    requires nonzero(emit.ir.inspect) requires nonzero(emit.collective) requires nonzero(emit.tile.cell)
+    requires nonzero(emit.ir.inspect) requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
+    requires nonzero(emit.tile.identity) requires nonzero(emit.tile.components) requires nonzero(emit.values.finish)
     requires nonzero(emit.paging.current_label) requires nonzero(emit.paging.finish_body) requires nonzero(emit.values.scalar)
     requires nonzero(emit.values.scalars.constant) requires nonzero(emit.values.scalars.type_id)
     requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve);
@@ -584,10 +554,6 @@ struct SharedAddress {
     u32 next;
 };
 struct SharedAddressWords { u64 words; u32 next; };
-
-// The input slots carry constant offset IDs, with zero for the first plane.
-// The same slots receive the resulting pointers. A zero scale denotes one word.
-extern "C" SharedAddressWords shared_addresses(SharedAddress input, address offsets, address body) on cpu;
 
 struct TreeComponent {
     u32 shared;
@@ -655,10 +621,6 @@ struct TreeLayer {
 };
 struct TreeWords { u64 body; u64 decorations; u32 next; u32 label; };
 
-// Selector is the scan lane mask or the tile's doubled stride.
-// The host provides 42 + 176*count body words and 3*count decoration words.
-extern "C" TreeWords tree_layer(TreeLayer input, address components, u32 count,
-    address body, address decorations) on cpu;
 
 struct CollectiveField {
     u32 source_offset;

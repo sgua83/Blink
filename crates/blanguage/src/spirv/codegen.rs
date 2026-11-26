@@ -26,8 +26,6 @@ mod selection;
 mod sort;
 #[path = "tile.rs"]
 mod tile;
-#[path = "tile_collective.rs"]
-mod tile_collective;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Pass {
     Main,
@@ -794,7 +792,6 @@ struct BlockHost {
     textures: TextureSampling,
     rays: RayBindings,
     reject: unsafe extern "C" fn(StructuredContext, BlockRejection) -> BlockFlow,
-    collective: unsafe extern "C" fn(StructuredContext, *const TileCollective),
 }
 
 fn block_host(emitter: &mut Emitter<'_>) -> BlockHost {
@@ -845,16 +842,11 @@ fn block_host(emitter: &mut Emitter<'_>) -> BlockHost {
             query: block_ray_declaration,
             declare_type: block_declare_type,
         },
-        collective: block_collective,
     }
 }
 
 unsafe extern "C" fn block_current_label(context: *mut std::ffi::c_void) -> u32 {
     unsafe { &*context.cast::<Emitter<'_>>() }.current_label
-}
-
-unsafe fn block_emitter<'a, 'program>(context: StructuredContext) -> &'a mut Emitter<'program> {
-    unsafe { &mut *context.cast::<StructuredEmission<'_, 'program>>() }.emitter
 }
 
 unsafe extern "C" fn block_reject(context: StructuredContext, rejection: BlockRejection) -> BlockFlow {
@@ -885,10 +877,6 @@ unsafe extern "C" fn block_declare_type(
     context: *mut std::ffi::c_void, shape: TypeShape, first: u32, second: u32,
 ) -> u32 {
     unsafe { &mut *context.cast::<Emitter<'_>>() }.declare_type(shape, first, second)
-}
-
-unsafe extern "C" fn block_collective(context: StructuredContext, collective: *const TileCollective) {
-    unsafe { block_emitter(context).tile_collective(&*collective) };
 }
 
 #[repr(u32)]
@@ -1043,19 +1031,8 @@ unsafe extern "C" {
     ) -> ControlWords;
     #[link_name = "bootstrap.spirv_envelope::end_shader_body"]
     fn end_shader_body(body: *mut u32) -> ControlWords;
-    #[link_name = "bootstrap.spirv_envelope::phi_two"]
-    fn phi_two(
-        body: *mut u32, at: u64, ty: u32, result: u32, first_value: u32, first_block: u32,
-        second_value: u32, second_block: u32,
-    ) -> u64;
     #[link_name = "bootstrap.spirv_envelope::open_selection"]
     fn open_selection(merge: u32, condition: u32, yes: u32, no: u32, body: *mut u32) -> ControlWords;
-    #[link_name = "bootstrap.spirv_envelope::open_index_selection"]
-    fn open_index_selection(bool_type: u32, test: u32, index: u32, bound: u32,
-        less: u32, run: u32, end: u32, body: *mut u32) -> ControlWords;
-    #[link_name = "bootstrap.spirv_envelope::open_tile_padding"]
-    fn open_tile_padding(uint_type: u32, bool_type: u32, lane: u32, width: u32,
-        capacity: u32, index: u32, test: u32, run: u32, end: u32, body: *mut u32) -> ControlWords;
     #[link_name = "bootstrap.spirv_envelope::plain_load"]
     fn plain_load(body: *mut u32, at: u64, type_id: u32, result: u32, pointer: u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::plain_store"]
@@ -1227,6 +1204,7 @@ struct Emitter<'a> {
     tile_shared: u32,
     tile_pointer: u32,
     tile_data_words: u32,
+    tile_tree_components: Vec<scan::TreeComponent>,
     tile_length: u32,
     tile_lane: u32,
     current_label: u32,
@@ -1623,23 +1601,8 @@ impl Emitter<'_> {
         self.emit_control(9, |body| unsafe { open_selection(merge, condition, run, merge, body) });
     }
 
-    fn open_index_branch(&mut self, test: u32, index: u32, bound: u32, less: bool, run: u32, end: u32) {
-        let ty = self.types[&Scalar::Bool];
-        self.emit_control(14, |body| unsafe { open_index_selection(ty, test, index, bound, u32::from(less), run, end, body) });
-    }
     fn merge_active(&mut self, merge: u32, reaches: bool) {
         self.emit_control(4, |body| unsafe { next_control_block(merge, merge, u32::from(reaches), body) });
-    }
-
-    fn join_two(&mut self, ty: u32, result: u32, first: [u32; 2], second: [u32; 2]) {
-        let at = self.body.len();
-        self.body.reserve(7);
-        unsafe {
-            let end = phi_two(
-                self.body.as_mut_ptr().add(at), 0, ty, result, first[0], first[1], second[0], second[1],
-            );
-            self.body.set_len(at + end as usize);
-        }
     }
 
     fn block(&mut self, code: &[Inst]) -> Result<bool, &'static str> {
@@ -1687,11 +1650,6 @@ impl Emitter<'_> {
     fn raw_constant(&mut self, scalar: Scalar, bits: Bits) -> u32 {
         self.constant_bits(Self::raw_scalar(scalar), bits)
     }
-    fn read_payload(&mut self, scalar: Scalar, unit: Scalar, operands: &[u32], access: PayloadAccess) -> u32 {
-        let input = PayloadShape { access, scalar: scalar.into(), unit: unit.into(), count: operands.len() as u32 };
-        unsafe { emit_payload_load(input, operands.as_ptr(), 0, self.memory_host()) }
-    }
-
     fn raw_bits(&mut self, value: Reg) -> u32 {
         let scalar = self.stage.registers[value].into();
         let value = self.value(value);
@@ -1709,15 +1667,6 @@ impl Emitter<'_> {
         words
     }
 
-    fn load_raw(&mut self, scalar: Scalar, unit: Scalar, pointers: &[u32]) -> u32 {
-        self.read_payload(scalar, unit, pointers, PayloadAccess::Local)
-    }
-
-    fn store_raw(&mut self, scalar: Scalar, unit: Scalar, pointers: &[u32], value: u32, physical: bool) {
-        let access = if physical { PayloadAccess::Physical } else { PayloadAccess::Local };
-        let input = PayloadShape { access, scalar: scalar.into(), unit: unit.into(), count: pointers.len() as u32 };
-        unsafe { emit_payload_store(input, value, pointers.as_ptr(), std::ptr::null_mut(), self.memory_host()); }
-    }
     fn physical_unit(scalar: Scalar) -> Scalar {
         Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 })
     }
@@ -2121,6 +2070,7 @@ fn emit_shader(
         tile_shared: 0,
         tile_pointer: 0,
         tile_data_words: 0,
+        tile_tree_components: Vec::new(),
         tile_length: 0,
         tile_lane: 0,
         current_label: 0,

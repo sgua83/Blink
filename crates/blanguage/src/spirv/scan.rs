@@ -1,23 +1,6 @@
 //! 64 线程 work-efficient Blelloch 独占扫描，工作组间由设备递归前缀传播。
 use super::{reduce::{CollectiveField, CollectiveInput}, *};
 #[repr(C)]
-struct SharedAddress {
-    index_type: u32,
-    pointer_type: u32,
-    variable: u32,
-    node: u32,
-    scale: u32,
-    count: u32,
-    next: u32,
-}
-
-#[repr(C)]
-struct SharedAddressWords {
-    words: u64,
-    next: u32,
-}
-
-#[repr(C)]
 pub(super) struct TreeComponent {
     shared: u32,
     pointer_type: u32,
@@ -30,22 +13,6 @@ pub(super) struct TreeComponent {
     scalar: ScalarCode,
     raw_type: u32,
     value_type: u32,
-}
-
-#[repr(C)]
-struct TreeLayer {
-    uint_type: u32,
-    bool_type: u32,
-    lane: u32,
-    stride: u32,
-    selector: u32,
-    tile_capacity: u32,
-    remaining: u32,
-    one: u32,
-    scope: u32,
-    semantics: u32,
-    down: u32,
-    next: u32,
 }
 
 #[repr(C)]
@@ -107,13 +74,8 @@ unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::add_scan_prefix"]
     fn add_scan_prefix(input: ScanPrefix, fields: *const PhysicalField, count: u32,
         body: *mut u32, decorations: *mut u32) -> TreeWords;
-    #[link_name = "bootstrap.spirv_envelope::shared_addresses"]
-    fn emit_shared_addresses(input: SharedAddress, offsets: *mut u32, body: *mut u32) -> SharedAddressWords;
     #[link_name = "bootstrap.spirv_envelope::group_remaining"]
     fn emit_group_remaining(body: *mut u32, uint_type: u32, index: u32, lane: u32, count: u32, first: u32);
-    #[link_name = "bootstrap.spirv_envelope::tree_layer"]
-    fn emit_tree_layer(input: TreeLayer, components: *const TreeComponent, count: u32,
-        body: *mut u32, decorations: *mut u32) -> TreeWords;
 }
 
 #[derive(Clone, Copy)]
@@ -124,17 +86,6 @@ pub(super) struct SharedTree {
     pub scalar: Scalar,
     pub operator: CollectiveOperator,
 }
-struct TreeParts {
-    ids: [u32; 2],
-    count: usize,
-}
-
-impl AsRef<[u32]> for TreeParts {
-    fn as_ref(&self) -> &[u32] {
-        &self.ids[..self.count]
-    }
-}
-
 impl Emitter<'_> {
     pub(super) fn scan_input_binding(&self, fields: &Reduction) -> usize {
         if fields.source == fields.target
@@ -150,31 +101,6 @@ impl Emitter<'_> {
         } else {
             fields.source
         }
-    }
-
-    fn shared_addresses(&mut self, shared: u32, pointer: u32, node: u32, stride: u32, offsets: &mut [u32]) {
-        let scale = if stride == 1 { 0 } else { self.constant(Scalar::U32, stride) };
-        for offset in offsets.iter_mut() {
-            if *offset != 0 {
-                *offset = self.constant(Scalar::U32, *offset);
-            }
-        }
-        let input = SharedAddress {
-            index_type: self.types[&Scalar::U32],
-            pointer_type: pointer,
-            variable: shared,
-            node,
-            scale,
-            count: offsets.len() as u32,
-            next: self.next,
-        };
-        let start = self.body.len();
-        self.body.reserve(5 + 10 * offsets.len());
-        self.next = unsafe {
-            let result = emit_shared_addresses(input, offsets.as_mut_ptr(), self.body.as_mut_ptr().add(start));
-            self.body.set_len(start + result.words as usize);
-            result.next
-        };
     }
 
     pub(super) fn group_remaining(&mut self, lane: u32, count: u32) -> u32 {
@@ -257,23 +183,6 @@ impl Emitter<'_> {
     }
 
 
-    fn tree_parts(&mut self, tree: SharedTree, node: u32) -> TreeParts {
-        let count = tree.scalar.size().div_ceil(4) as usize;
-        let mut ids = [tree.base_word, tree.base_word + 1];
-        self.shared_addresses(tree.shared, tree.pointer, node, count as u32, &mut ids[..count]);
-        TreeParts { ids, count }
-    }
-
-    pub(super) fn tree_load(&mut self, tree: SharedTree, node: u32) -> u32 {
-        let pointers = self.tree_parts(tree, node);
-        self.load_raw(tree.scalar, Scalar::U32, pointers.as_ref())
-    }
-
-    pub(super) fn tree_store(&mut self, tree: SharedTree, node: u32, value: u32) {
-        let pointers = self.tree_parts(tree, node);
-        self.store_raw(tree.scalar, Scalar::U32, pointers.as_ref(), value, false);
-    }
-
     pub(super) fn tree_components(&mut self, trees: &[SharedTree]) -> Vec<TreeComponent> {
         trees.iter().map(|tree| {
             let count = tree.scalar.size().div_ceil(4);
@@ -294,40 +203,6 @@ impl Emitter<'_> {
                 value_type: self.types[&tree.scalar],
             }
         }).collect()
-    }
-
-    pub(super) fn tile_tree_layer(&mut self, components: &[TreeComponent], lane: u32,
-        width: u32, padded: u32, down: bool, remaining: u32,
-    ) {
-        let selector = self.constant(Scalar::U32, width * 2);
-        let tile_capacity = self.constant(Scalar::U32, padded);
-        let input = TreeLayer {
-            uint_type: self.types[&Scalar::U32],
-            bool_type: self.types[&Scalar::Bool],
-            lane,
-            stride: self.constant(Scalar::U32, width),
-            selector,
-            tile_capacity,
-            remaining,
-            one: self.constant(Scalar::U32, 1),
-            scope: self.constant(Scalar::U32, 2),
-            semantics: self.constant(Scalar::U32, 0x108),
-            down: u32::from(down),
-            next: self.next,
-        };
-        let body = self.body.len();
-        let decorations = self.decorations.len();
-        self.body.reserve(42 + 176 * components.len());
-        self.decorations.reserve(3 * components.len());
-        let result = unsafe {
-            let result = emit_tree_layer(input, components.as_ptr(), components.len() as u32,
-                self.body.as_mut_ptr().add(body), self.decorations.as_mut_ptr().add(decorations));
-            self.body.set_len(body + result.body as usize);
-            self.decorations.set_len(decorations + result.decorations as usize);
-            result
-        };
-        self.next = result.next;
-        self.current_label = result.label;
     }
 
     pub(super) fn scan_add(&mut self, scan: &Scan, root: bool) {

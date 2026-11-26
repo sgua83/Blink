@@ -1441,70 +1441,12 @@ ControlWords index_selection(address body, u64 at, u32 bool_type, u32 test,
     return selection_entry(body, compared, end, test, run, end);
 }
 
-extern "C" ControlWords open_index_selection(u32 bool_type, u32 test, u32 index, u32 bound,
+ControlWords open_index_selection(u32 bool_type, u32 test, u32 index, u32 bound,
     bool less, u32 run, u32 end, address body) on cpu {
     return index_selection(body, 0u64, bool_type, test, index, bound, less, run, end);
 }
 
-extern "C" void emit_tile_collective(address context, TileCollectiveInput input, TileCollectiveHost host) on cpu
-    requires nonzero(host.constant) requires nonzero(host.tree) requires nonzero(host.seed)
-    requires nonzero(host.pad) requires nonzero(host.prepare) requires nonzero(host.layer)
-    requires nonzero(host.root) requires nonzero(host.read) requires nonzero(host.barrier) {
-    if (input.results == 0u64) {
-        host.barrier(context, 0x148);
-        return;
-    }
-    u32 zero = host.constant(context, 0);
-    u64 padded_width = 1u64;
-    while (padded_width < u64(input.width)) { padded_width *= 2u64; }
-    u32 padded = u32(padded_width);
-    u64 batch = input.sum != 0 ? 1u64 : input.results;
-    u64 first = 0u64;
-    while (first < input.results) {
-        u32 word = input.first_word;
-        u64 slot = 0u64;
-        while (slot < batch) {
-            u32 words_per_lane = host.tree(context, first + slot, slot, word);
-            word += padded * words_per_lane;
-            slot += 1u64;
-        }
-        slot = 0u64;
-        while (slot < batch) {
-            u32 identity = host.seed(context, first + slot, slot);
-            if (padded > input.width) { host.pad(context, slot, input.width, padded, identity); }
-            slot += 1u64;
-        }
-        host.barrier(context, 0x148);
-        host.prepare(context);
-        u32 stride = 1;
-        while (stride < padded) {
-            host.layer(context, stride, padded, 0);
-            stride *= 2;
-        }
-        u32 index = input.lane;
-        if (input.exclusive != 0) {
-            host.root(context, zero, padded - 1);
-            host.barrier(context, 0x108);
-            stride = padded / 2;
-            while (stride != 0) {
-                host.layer(context, stride, padded, 1);
-                stride /= 2;
-            }
-        } else {
-            index = host.constant(context, padded - 1);
-        }
-        slot = 0u64;
-        while (slot < batch) {
-            host.read(context, first + slot, slot, index);
-            slot += 1u64;
-        }
-        // The next batch can reuse the shared words after every lane takes its result.
-        host.barrier(context, 0x148);
-        first += batch;
-    }
-}
-
-extern "C" ControlWords open_tile_padding(u32 uint_type, u32 bool_type, u32 lane, u32 width,
+ControlWords open_tile_padding(u32 uint_type, u32 bool_type, u32 lane, u32 width,
     u32 capacity, u32 index, u32 test, u32 run, u32 end, address body) on cpu {
     u64 at = words_four(body, 0u64, 128, uint_type, index, lane, width);
     return index_selection(body, at, bool_type, test, index, capacity, true, run, end);
@@ -1565,7 +1507,8 @@ extern "C" void emit_tile_phases(u32 active, StructuredHost control, TilePhaseHo
     requires nonzero(control.labels) requires nonzero(control.reserve_words)
     requires nonzero(control.finish_words) requires nonzero(control.block)
     requires nonzero(host.next_phase) requires nonzero(host.next_value)
-    requires nonzero(emit.ir.inspect) requires nonzero(emit.collective) requires nonzero(emit.tile.cell)
+    requires nonzero(emit.ir.inspect) requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
+    requires nonzero(emit.tile.identity) requires nonzero(emit.tile.components) requires nonzero(emit.values.finish)
     requires nonzero(emit.paging.current_label) requires nonzero(emit.paging.finish_body) requires nonzero(emit.values.scalar)
     requires nonzero(emit.values.scalars.constant) requires nonzero(emit.values.scalars.type_id)
     requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve) {
@@ -1579,14 +1522,11 @@ extern "C" void emit_tile_phases(u32 active, StructuredHost control, TilePhaseHo
         u32 end = execute + 1;
         control.finish_words(context, open_selection(end, active, execute, end, control.reserve_words(context, 9u64)));
         if (control.block(context, phase.code, ControlTargets(0, 0)) == BlockFlow::Error) { return; }
-        u32 kind = 0;
-        address collective = address();
-        if (address_bits(phase.step.data) != 0u64) {
-            View step = emit.ir.inspect(phase.step);
-            kind = step.tag;
-            if (kind == OP_TILE_PUBLISH) { block_tile_publish(step, emit.values, emit.tile, memory); }
-            else if (kind == OP_TILE_COLLECTIVE) { collective = step.left.data; }
-        }
+        Span empty = Span(address(), 0u64, 0u64);
+        View step = address_bits(phase.step.data) == 0u64
+            ? View(0, 0u64, 0u64, 0u64, 0u64, empty, empty, phase.step, phase.step)
+            : emit.ir.inspect(phase.step);
+        if (step.tag == OP_TILE_PUBLISH) { block_tile_publish(step, emit.values, emit.tile, memory); }
         u32 producer = emit.paging.current_label(stream.context);
         control.finish_words(context, next_control_block(end, end, 1, control.reserve_words(context, 4u64)));
         TilePhaseValue saved = host.next_value(host.cursor, context);
@@ -1602,10 +1542,10 @@ extern "C" void emit_tile_phases(u32 active, StructuredHost control, TilePhaseHo
             }
             saved = host.next_value(host.cursor, context);
         }
-        if (kind == OP_TILE_PUBLISH || kind == OP_TILE_BARRIER) {
-            tile_workgroup_sync(memory);
-        } else if (kind == OP_TILE_COLLECTIVE) {
-            emit.collective(context, collective);
+        if (step.tag == OP_TILE_PUBLISH || step.tag == OP_TILE_BARRIER) {
+            tile_workgroup_sync(0x148, memory);
+        } else if (step.tag == OP_TILE_COLLECTIVE) {
+            block_tile_collective(step, emit, memory, control);
         }
         phase = host.next_phase(host.cursor);
     }
@@ -1970,7 +1910,7 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     StructuredHost host, BlockHost emit) on cpu
     requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
     requires nonzero(emit.textures.declaration) requires nonzero(emit.rays.query) requires nonzero(emit.rays.declare_type)
-    requires nonzero(emit.collective)
+    requires nonzero(emit.tile.identity) requires nonzero(emit.tile.components)
     requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
     requires nonzero(emit.paging.pointer_type) requires nonzero(emit.paging.finish_body)
     requires nonzero(emit.paging.current_label)
@@ -2011,11 +1951,11 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
             }
             block_atomic(value, target, emit.ir.inspect(value.right), emit, memory);
         } else if (kind == OP_TILE_BARRIER) {
-            tile_workgroup_sync(memory);
+            tile_workgroup_sync(0x148, memory);
         } else if (kind == OP_TILE_PUBLISH) {
             block_tile_publish(value, emit.values, emit.tile, memory);
         } else if (kind == OP_TILE_COLLECTIVE) {
-            emit.collective(context, value.left.data);
+            block_tile_collective(value, emit, memory, host);
         } else if (kind == OP_TILE_LENGTH || kind == OP_TILE_LANE) {
             ScalarHost stream = memory.scalars;
             u32 type_id = stream.type_id(stream.context, emit.values.scalar(stream.context, value.a));
@@ -2392,7 +2332,7 @@ void block_atomic(View instruction, View target, View op, BlockHost emit, Memory
     }
 }
 
-extern "C" u64 phi_two(address body, u64 at, u32 type, u32 result,
+u64 phi_two(address body, u64 at, u32 type, u32 result,
             u32 first_value, u32 first_block, u32 second_value, u32 second_block) on cpu {
     put(body, at, instruction(245, 7));
     put(body, at + 1u64, type);
@@ -3215,7 +3155,7 @@ SharedAddressWords write_shared_addresses(SharedAddress input, address offsets, 
     return SharedAddressWords(at, next);
 }
 
-extern "C" SharedAddressWords shared_addresses(SharedAddress input, address offsets, address body) on cpu {
+SharedAddressWords shared_addresses(SharedAddress input, address offsets, address body) on cpu {
     return write_shared_addresses(input, offsets, offsets, body);
 }
 
@@ -3354,12 +3294,6 @@ TreeWords stage_tree_layer(inout StageCursor out, TreeLayer input, u32 global_in
     stage_close(out, branch.end);
     stage_barrier(out, input.scope, input.semantics);
     return TreeWords(out.words, decorated, out.next, branch.end);
-}
-
-extern "C" TreeWords tree_layer(TreeLayer input, address components, u32 count,
-    address body, address decorations) on cpu {
-    StageCursor out = StageCursor(body, 0u64, input.next);
-    return stage_tree_layer(out, input, 0, components, count, address(), decorations);
 }
 
 PrivateAddressWords private_address(PrivateAddress input, address parts, address pointers, address body) on cpu {
@@ -3626,7 +3560,7 @@ u32 tile_storage_pointer(TileStorage storage, TileKey key, u32 index, u32 offset
     return tile_cell_address(cell, index, offset, storage.width, memory).pointer;
 }
 
-extern "C" u32 tile_storage_read(TileStorage storage, TileKey key, u32 index, u32 offset,
+u32 tile_storage_read(TileStorage storage, TileKey key, u32 index, u32 offset,
     BuiltinScalar scalar, MemoryHost memory) on cpu
     requires nonzero(storage.cell)
     requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
@@ -3796,17 +3730,17 @@ extern "C" TileInputRange emit_tile_input(TileInputLayout input, TileInputSource
 
     address merge = stream.reserve(context, 4u64, 0u64).body;
     memory.finish_body(context, next_control_block(end, end, 1, merge).words);
-    tile_workgroup_sync(memory);
+    tile_workgroup_sync(0x148, memory);
     return TileInputRange(range.lane, range.length, end);
 }
 
-void tile_workgroup_sync(MemoryHost memory) on cpu
+void tile_workgroup_sync(u32 semantics_value, MemoryHost memory) on cpu
     requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.reserve)
     requires nonzero(memory.finish_body) {
     ScalarHost stream = memory.scalars;
     address context = stream.context;
     u32 scope = stream.constant(context, BuiltinScalar::U32, 2u64);
-    u32 semantics = stream.constant(context, BuiltinScalar::U32, 328u64);
+    u32 semantics = stream.constant(context, BuiltinScalar::U32, u64(semantics_value));
     address barrier = stream.reserve(context, 4u64, 0u64).body;
     memory.finish_body(context, workgroup_barrier(barrier, 0u64, scope, semantics));
 }
@@ -3852,6 +3786,169 @@ void block_tile_publish(View publication, BlockValues values, TileStorage storag
     if (packed != 0) {
         TileKey key = TileKey(publication.a, packed_word, TileKeyKind::Published);
         emit_shared_store(storage.cell(context, key), storage.lane, storage.width, packed, memory);
+    }
+}
+
+array<u32,2> tile_tree_pointers(TreeComponent component, u32 node, u32 uint_type, MemoryHost memory) on cpu
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
+    ScalarHost stream = memory.scalars;
+    address context = stream.context;
+    array<u32,2> pointers = array<u32,2>(component.low, component.high);
+    u32 next = stream.ids(context, 0);
+    StageCursor out = StageCursor(stream.reserve(context, 25u64, 0u64).body, 0u64, next);
+    tree_node_address(out, component, uint_type, node, address_of(pointers[0]));
+    memory.finish_body(context, out.words);
+    stream.ids(context, out.next - next);
+    return pointers;
+}
+
+void tile_tree_store(TreeComponent component, u32 node, u32 value, u32 uint_type, MemoryHost memory) on cpu
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
+    array<u32,2> pointers = tile_tree_pointers(component, node, uint_type, memory);
+    emit_payload_store(PayloadShape(PayloadAccess::Local, component.scalar, BuiltinScalar::U32, component.count),
+        value, address_of(pointers[0]), address(), memory);
+}
+
+void tile_collective_layer(u32 stride, u32 padded, u32 down, address components, u32 count,
+    BlockHost emit, MemoryHost memory, StructuredHost control) on cpu
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve)
+    requires nonzero(emit.values.finish) requires nonzero(control.finish_words) {
+    ScalarHost stream = memory.scalars;
+    address context = stream.context;
+    u32 selector = stream.constant(context, BuiltinScalar::U32, u64(stride * 2));
+    u32 capacity = stream.constant(context, BuiltinScalar::U32, u64(padded));
+    u32 distance = stream.constant(context, BuiltinScalar::U32, u64(stride));
+    u32 one = stream.constant(context, BuiltinScalar::U32, 1u64);
+    u32 scope = stream.constant(context, BuiltinScalar::U32, 2u64);
+    u32 semantics = stream.constant(context, BuiltinScalar::U32, 0x108u64);
+    u32 start = stream.ids(context, 0);
+    TreeLayer input = TreeLayer(stream.type_id(context, BuiltinScalar::U32), stream.type_id(context, BuiltinScalar::Bool),
+        emit.tile.lane, distance, selector, capacity, emit.tile.length, one, scope, semantics, down, start);
+    ScalarStreams words = stream.reserve(context, 42u64 + 176u64 * u64(count), 3u64 * u64(count));
+    StageCursor out = StageCursor(words.body, 0u64, start);
+    TreeWords result = stage_tree_layer(out, input, 0, components, count, address(), words.decorations);
+    control.finish_words(control.context, ControlWords(result.body, result.label, 1));
+    emit.values.finish(context, ScalarWords(0u64, result.decorations));
+    stream.ids(context, result.next - start);
+}
+
+void block_tile_collective(View operation, BlockHost emit, MemoryHost memory, StructuredHost control) on cpu
+    requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
+    requires nonzero(emit.tile.identity) requires nonzero(emit.tile.components)
+    requires nonzero(emit.values.scalar) requires nonzero(emit.values.finish) requires nonzero(emit.paging.current_label)
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body)
+    requires nonzero(control.labels) requires nonzero(control.reserve_words) requires nonzero(control.finish_words) {
+    if (operation.first.count == 0u64) {
+        tile_workgroup_sync(0x148, memory);
+        return;
+    }
+    TileStorage storage = emit.tile;
+    ScalarHost stream = memory.scalars;
+    address context = stream.context;
+    address control_context = control.context;
+    CollectiveOperation opcode = CollectiveOperation(u32(operation.b));
+    u32 uint_type = stream.type_id(context, BuiltinScalar::U32);
+    u32 bool_type = stream.type_id(context, BuiltinScalar::Bool);
+    u32 zero = stream.constant(context, BuiltinScalar::U32, 0u64);
+    u64 padded_width = 1u64;
+    while (padded_width < u64(storage.width)) { padded_width *= 2u64; }
+    u32 padded = u32(padded_width);
+    u32 batch = opcode == CollectiveOperation::Sum ? 1 : u32(operation.first.count);
+    address components = storage.components(context, u64(batch));
+    usize first = 0u64;
+    while (first < operation.first.count) {
+        u32 word = storage.data_words;
+        for (slot in 0..batch) {
+            usize row = first + u64(slot);
+            usize register = unsafe_position<usize>(unsafe_address(address_bits(operation.first.data) + row * operation.first.stride));
+            u32 offset = unsafe_position<u32>(unsafe_address(address_bits(operation.second.data) + row * operation.second.stride));
+            BuiltinScalar scalar = emit.values.scalar(context, register);
+            BuiltinScalar raw = unsigned_scalar(scalar_definition(scalar).width);
+            u32 parts = (scalar_definition(scalar).width + 31) / 32;
+            u32 identity = stream.constant(context, raw, storage.identity(context, opcode, register));
+            u32 scale = parts == 2 ? stream.constant(context, BuiltinScalar::U32, 2u64) : 0;
+            u32 low = word != 0 ? stream.constant(context, BuiltinScalar::U32, u64(word)) : 0;
+            u32 high = parts == 2 ? stream.constant(context, BuiltinScalar::U32, u64(word + 1)) : 0;
+            u32 shift = parts == 2 ? stream.constant(context, BuiltinScalar::U32, 32u64) : 0;
+            TreeComponent component = TreeComponent(storage.shared, storage.pointer, low, high, scale, shift, parts,
+                opcode, scalar, stream.type_id(context, raw), stream.type_id(context, scalar));
+            address component_at = unsafe_address(address_bits(components) + u64(slot) * size_of<TreeComponent>());
+            unsafe_position<TreeComponent>(component_at) = component;
+            word += padded * parts;
+
+            u32 before = emit.paging.current_label(context);
+            u32 test = control.labels(control_context, 3);
+            u32 read = test + 1;
+            u32 end = test + 2;
+            address branch = control.reserve_words(control_context, 14u64);
+            control.finish_words(control_context, open_index_selection(bool_type, test, storage.lane, storage.length, true, read, end, branch));
+            TileKey key = storage.word(context, operation.a, offset);
+            u32 input = tile_storage_read(storage, key, storage.lane, 0, scalar, memory);
+            control.finish_words(control_context, next_control_block(end, end, 1, control.reserve_words(control_context, 4u64)));
+            u32 value = stream.ids(context, 1);
+            address merge = control.reserve_words(control_context, 7u64);
+            control.finish_words(control_context, ControlWords(phi_two(merge, 0u64, component.raw_type,
+                value, input, read, identity, before), 0, 1));
+            tile_tree_store(component, storage.lane, value, uint_type, memory);
+
+            if (padded > storage.width) {
+                u32 capacity = stream.constant(context, BuiltinScalar::U32, u64(padded));
+                u32 width = stream.constant(context, BuiltinScalar::U32, u64(storage.width));
+                u32 index = control.labels(control_context, 4);
+                u32 pad_end = index + 3;
+                address body = control.reserve_words(control_context, 19u64);
+                control.finish_words(control_context, open_tile_padding(uint_type, bool_type, storage.lane, width, capacity,
+                    index, index + 1, index + 2, pad_end, body));
+                tile_tree_store(component, index, identity, uint_type, memory);
+                control.finish_words(control_context, next_control_block(pad_end, pad_end, 1, control.reserve_words(control_context, 4u64)));
+            }
+        }
+        tile_workgroup_sync(0x148, memory);
+        u32 stride = 1;
+        while (stride < padded) {
+            tile_collective_layer(stride, padded, 0, components, batch, emit, memory, control);
+            stride *= 2;
+        }
+        u32 index = storage.lane;
+        if (operation.c != 0u64) {
+            u32 test = control.labels(control_context, 3);
+            u32 end = test + 2;
+            address branch = control.reserve_words(control_context, 14u64);
+            control.finish_words(control_context, open_index_selection(bool_type, test, storage.lane, zero, false, test + 1, end, branch));
+            u32 root = stream.constant(context, BuiltinScalar::U32, u64(padded - 1));
+            for (slot in 0..batch) {
+                usize row = first + u64(slot);
+                usize register = unsafe_position<usize>(unsafe_address(address_bits(operation.first.data) + row * operation.first.stride));
+                TreeComponent component = unsafe_position<TreeComponent>(
+                    unsafe_address(address_bits(components) + u64(slot) * size_of<TreeComponent>()));
+                BuiltinScalar raw = unsigned_scalar(scalar_definition(component.scalar).width);
+                u32 identity = stream.constant(context, raw, storage.identity(context, opcode, register));
+                tile_tree_store(component, root, identity, uint_type, memory);
+            }
+            control.finish_words(control_context, next_control_block(end, end, 1, control.reserve_words(control_context, 4u64)));
+            tile_workgroup_sync(0x108, memory);
+            stride = padded / 2;
+            while (stride != 0) {
+                tile_collective_layer(stride, padded, 1, components, batch, emit, memory, control);
+                stride /= 2;
+            }
+        } else {
+            index = stream.constant(context, BuiltinScalar::U32, u64(padded - 1));
+        }
+        for (slot in 0..batch) {
+            TreeComponent component = unsafe_position<TreeComponent>(
+                unsafe_address(address_bits(components) + u64(slot) * size_of<TreeComponent>()));
+            array<u32,2> pointers = tile_tree_pointers(component, index, uint_type, memory);
+            u32 result = block_span_register(emit.values.registers, operation.first, first + u64(slot));
+            emit_payload_load(PayloadShape(PayloadAccess::Local, component.scalar, BuiltinScalar::U32, component.count),
+                address_of(pointers[0]), result, memory);
+        }
+        // All lanes take the result before another batch can reuse the shared words.
+        tile_workgroup_sync(0x148, memory);
+        first += u64(batch);
     }
 }
 

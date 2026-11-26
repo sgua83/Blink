@@ -96,9 +96,14 @@ struct TileCell {
 pub(super) struct TileStorage {
     cell: unsafe extern "C" fn(*mut c_void, TileKey) -> TileCell,
     word: unsafe extern "C" fn(*mut c_void, usize, u32) -> TileKey,
+    identity: unsafe extern "C" fn(*mut c_void, CollectiveOperator, Reg) -> Bits,
+    components: unsafe extern "C" fn(*mut c_void, usize) -> *mut scan::TreeComponent,
     width: u32,
     lane: u32,
     length: u32,
+    shared: u32,
+    pointer: u32,
+    data_words: u32,
 }
 
 unsafe extern "C" fn tile_cell(context: *mut c_void, key: TileKey) -> TileCell {
@@ -120,6 +125,18 @@ impl TileCell {
 
 unsafe extern "C" fn tile_word(context: *mut c_void, tile: usize, word: u32) -> TileKey {
     unsafe { &*context.cast::<Emitter<'_>>() }.stage.shared_word(tile, word).into()
+}
+
+unsafe extern "C" fn tile_identity(context: *mut c_void, operator: CollectiveOperator, register: Reg) -> Bits {
+    let emitter = unsafe { &*context.cast::<Emitter<'_>>() };
+    operator.identity(emitter.stage.registers[register])
+}
+
+unsafe extern "C" fn tile_tree_components(context: *mut c_void, count: usize) -> *mut scan::TreeComponent {
+    let emitter = unsafe { &mut *context.cast::<Emitter<'_>>() };
+    // The B emitter writes and consumes the active prefix during one collection.
+    emitter.tile_tree_components.reserve(count);
+    emitter.tile_tree_components.as_mut_ptr()
 }
 
 #[repr(C)]
@@ -188,9 +205,6 @@ unsafe extern "C" fn tile_input_fragment(cursor: *mut c_void) -> TileInputFragme
 unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::emit_tile_input"]
     fn emit_tile_input(input: TileInputLayout, source: TileInputSource, memory: MemoryHost) -> TileInputRange;
-    #[link_name = "bootstrap.spirv_envelope::tile_storage_read"]
-    fn tile_storage_read(storage: TileStorage, key: TileKey, index: u32, offset: u32,
-        scalar: ScalarCode, memory: MemoryHost) -> u32;
 }
 
 impl Emitter<'_> {
@@ -224,15 +238,11 @@ impl Emitter<'_> {
     }
 
     pub(super) fn tile_storage(&self) -> TileStorage {
-        TileStorage { cell: tile_cell, word: tile_word, width: self.workgroup_width,
-            lane: self.tile_lane, length: self.tile_length }
-    }
-
-    pub(super) fn tile_read(
-        &mut self, scalar: Scalar, tile: usize, index: u32, word: u32, offset: Option<u32>,
-    ) -> u32 {
-        let key = self.stage.shared_word(tile, word).into();
-        unsafe { tile_storage_read(self.tile_storage(), key, index, offset.unwrap_or(0), scalar.into(), self.memory_host()) }
+        TileStorage {
+            cell: tile_cell, word: tile_word, identity: tile_identity, components: tile_tree_components,
+            width: self.workgroup_width, lane: self.tile_lane, length: self.tile_length,
+            shared: self.tile_shared, pointer: self.tile_pointer, data_words: self.tile_data_words,
+        }
     }
 
     pub(super) fn tile_phases(&mut self, active: u32, phases: Vec<TilePhase<'_>>) -> Result<(), &'static str> {
