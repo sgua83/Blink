@@ -410,6 +410,16 @@ void body_scalar_value(address emitter, View value, ScalarBodyHost host) on cpu
     }
 }
 
+ControlKind native_control_kind(u32 tag) on cpu {
+    if (tag == OP_LOOP_VALUE) { return ControlKind::Loop; }
+    if (tag == OP_SCOPE) { return ControlKind::Scope; }
+    if (tag == OP_EXIT_VALUE) { return ControlKind::Exit; }
+    if (tag == OP_BREAK_VALUE) { return ControlKind::Break; }
+    if (tag == OP_CONTINUE_VALUE) { return ControlKind::Continue; }
+    if (tag == OP_RAISE) { return ControlKind::Raise; }
+    return ControlKind::If;
+}
+
 extern "C" u32 emit_scalar_body(address context, address emitter, Span code, ControlTargets targets, ScalarBodyHost host) on cpu
     requires nonzero(host.addresses.values.ir.inspect) requires nonzero(host.addresses.values.location)
     requires nonzero(host.addresses.values.scalar) requires nonzero(host.addresses.tile_stream)
@@ -476,14 +486,7 @@ extern "C" u32 emit_scalar_body(address context, address emitter, Span code, Con
         } else if (kind >= OP_UNARY && kind <= OP_SELECT_VALUE) {
             body_scalar_value(emitter, value, host);
         } else if (kind >= OP_BRANCH && kind <= OP_RAISE) {
-            ControlKind control = ControlKind::If;
-            if (kind == OP_LOOP_VALUE) { control = ControlKind::Loop; }
-            if (kind == OP_SCOPE) { control = ControlKind::Scope; }
-            if (kind == OP_EXIT_VALUE) { control = ControlKind::Exit; }
-            if (kind == OP_BREAK_VALUE) { control = ControlKind::Break; }
-            if (kind == OP_CONTINUE_VALUE) { control = ControlKind::Continue; }
-            if (kind == OP_RAISE) { control = ControlKind::Raise; }
-            u32 status = emit_control(context, emitter, ControlInstruction(value.first, value.second, u64(value.a), control), targets, host.control);
+            u32 status = emit_control(context, emitter, ControlInstruction(value.first, value.second, u64(value.a), native_control_kind(kind)), targets, host.control);
             if (status != 0) { return status; }
         } else if (kind != OP_TILE_BARRIER) {
             return u32(ScalarBodyStatus::Unlowered);
@@ -2378,78 +2381,106 @@ struct PacketView {
     u64 stride; u32 offset; bool dynamic_stride; PacketViewAddress mode;
 };
 
-u64 emit_packet_step(read PacketBodyOp op, PacketLayout layout, ScalarValueHost values, address output) on cpu
-    requires nonzero(values.ir.inspect) requires nonzero(values.location) requires nonzero(values.scalar) {
-    MoveLocation target = op.locations[0];
-    if (op.kind == PacketBodyKind::Constant) {
-        return packet_constant(target, op.literal, output);
-    }
-    if (op.kind == PacketBodyKind::Index) {
-        return packet_index(target, layout.sparse != 0, layout.slots, output);
-    }
-    if (op.kind == PacketBodyKind::Uniform) {
-        return packet_uniform(target, op.literal, op.flag != 0, output);
-    }
-    if (op.kind == PacketBodyKind::Copy) {
-        return packet_copy(target, op.locations[1], output);
-    }
-    if (op.kind == PacketBodyKind::Unary) {
-        return packet_unary(target, op.locations[1], op.unary, output);
-    }
-    if (op.kind == PacketBodyKind::Binary) {
-        return packet_binary(target, op.locations[1], op.locations[2], op.source, op.binary, op.flag != 0, output);
-    }
-    if (op.kind == PacketBodyKind::Cast) {
-        return packet_cast(target, op.locations[1], op.source, op.target, output);
-    }
-    if (op.kind == PacketBodyKind::Math) {
-        return packet_math(target, op.locations[1], op.locations[2], op.math, output);
-    }
-    if (op.kind == PacketBodyKind::IntegerDivide) {
-        View value = values.ir.inspect(Node(op.instruction, N_INSTRUCTION));
+u64 emit_packet_step(View value, PacketPlanDecision decision, PacketLayout layout, PacketBodyHost host, address output) on cpu
+    requires nonzero(host.local) requires nonzero(host.values.ir.inspect)
+    requires nonzero(host.values.location) requires nonzero(host.values.scalar) {
+    ScalarValueHost values = host.values;
+    PacketPlanOperation operation = decision.operation;
+    if (operation == PacketPlanOperation::Divide) {
         return emit_integer_division(value, values, true, output);
     }
-    if (op.kind == PacketBodyKind::Select) {
-        return packet_select(target, op.locations[1], op.locations[2], op.locations[3], output);
+    if (operation == PacketPlanOperation::LocalStore) {
+        return packet_copy(host.local(values.context, value.a), values.location(values.context, value.b), output);
     }
-    if (op.kind == PacketBodyKind::View) {
-        PacketView input = PacketView(op.locations[1], op.locations[2], op.locations[3], op.locations[4],
-            op.locations[5], op.stride, op.literal, op.dynamic_stride != 0, op.view);
-        return packet_view(target, input, op.flag != 0, output);
+    if (operation == PacketPlanOperation::Store) {
+        u32 data = u32(value.a) * layout.buffer_bytes;
+        MoveLocation unused = MoveLocation(0u64, MOVE_IMMEDIATE, u8(0), NO_INDEX, u8(0));
+        PacketMemory memory = PacketMemory(unused, data, data + layout.stride_field, layout.slots, u32(value.c), decision.dataset);
+        return packet_write(values.location(values.context, value.d), memory, output);
     }
-    MoveLocation index = MoveLocation(0u64, MOVE_IMMEDIATE, u8(0), NO_INDEX, u8(0));
-    if (op.dataset == PacketAddress::Uniform || op.dataset == PacketAddress::Gather) {
-        index = values.location(values.context, op.index);
+    MoveLocation target = values.location(values.context, value.a);
+    if (operation == PacketPlanOperation::Constant) {
+        return packet_constant(target, u32(value.b), output);
     }
-    u32 data = u32(op.binding) * layout.buffer_bytes;
-    PacketMemory memory = PacketMemory(index, data, data + layout.stride_field, layout.slots, op.literal, op.dataset);
-    if (op.kind == PacketBodyKind::Load) { return packet_read(target, memory, op.flag != 0, output); }
-    return packet_write(target, memory, output);
+    if (operation == PacketPlanOperation::Index) {
+        return packet_index(target, layout.sparse != 0, layout.slots, output);
+    }
+    if (operation == PacketPlanOperation::Uniform) {
+        return packet_uniform(target, u32(value.b), values.scalar(values.context, value.a).kind == ScalarKind::Boolean, output);
+    }
+    if (operation == PacketPlanOperation::LocalLoad) {
+        return packet_copy(target, host.local(values.context, value.b), output);
+    }
+    if (operation == PacketPlanOperation::ViewLoad) {
+        View stride = values.ir.inspect(value.left);
+        MoveLocation unused = MoveLocation(0u64, MOVE_IMMEDIATE, u8(0), NO_INDEX, u8(0));
+        PacketView input = PacketView(values.location(values.context, value.b),
+            values.location(values.context, indexed_pair_word(value.first, 0u64)),
+            values.location(values.context, indexed_pair_word(value.first, 1u64)),
+            unused, unused, u64(stride.a), u32(value.c), stride.tag != 0, decision.view);
+        if (input.dynamic_stride) {
+            input.stride_low = values.location(values.context, indexed_pair_word(stride.first, 0u64));
+            input.stride_high = values.location(values.context, indexed_pair_word(stride.first, 1u64));
+        }
+        return packet_view(target, input, values.scalar(values.context, value.a).kind == ScalarKind::Boolean, output);
+    }
+    if (operation == PacketPlanOperation::Load) {
+        MoveLocation index = MoveLocation(0u64, MOVE_IMMEDIATE, u8(0), NO_INDEX, u8(0));
+        if (decision.dataset == PacketAddress::Uniform || decision.dataset == PacketAddress::Gather) {
+            index = values.location(values.context, value.c);
+        }
+        u32 data = u32(value.b) * layout.buffer_bytes;
+        PacketMemory memory = PacketMemory(index, data, data + layout.stride_field, layout.slots, u32(value.d), decision.dataset);
+        return packet_read(target, memory, values.scalar(values.context, value.a).kind == ScalarKind::Boolean, output);
+    }
+    if (operation == PacketPlanOperation::Math) {
+        MoveLocation first = values.location(values.context, indexed_pair_word(value.first, 0u64));
+        MoveLocation last = values.location(values.context, indexed_pair_word(value.first, value.first.count - 1u64));
+        return packet_math(target, first, last, decision.math, output);
+    }
+    MoveLocation first = values.location(values.context, value.b);
+    if (operation == PacketPlanOperation::Copy) {
+        return packet_copy(target, first, output);
+    }
+    if (operation == PacketPlanOperation::Unary) {
+        return packet_unary(target, first, ValueUnaryOperation(u32(value.c)), output);
+    }
+    if (operation == PacketPlanOperation::Cast) {
+        return packet_cast(target, first, values.scalar(values.context, value.b), values.scalar(values.context, value.a), output);
+    }
+    MoveLocation second = values.location(values.context, value.c);
+    if (operation == PacketPlanOperation::Binary) {
+        BinaryOperation binary = value_binary_operation(values.ir.inspect(value.right).tag);
+        return packet_binary(target, first, second, values.scalar(values.context, value.b), binary, decision.uniform_count != 0, output);
+    }
+    return packet_select(target, first, second, values.location(values.context, value.d), output);
 }
 
 extern "C" void emit_packet_body(address context, address emitter, Span code, ControlTargets targets, PacketLayout layout, PacketBodyHost host) on cpu
-    requires nonzero(host.step) requires nonzero(host.mark) requires nonzero(host.publish)
+    requires nonzero(host.step) requires nonzero(host.local) requires nonzero(host.mark) requires nonzero(host.publish)
     requires nonzero(host.reserve) requires nonzero(host.commit)
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location) requires nonzero(host.values.scalar)
     requires nonzero(host.control.emit) requires nonzero(host.control.load) requires nonzero(host.control.buffer)
     requires nonzero(host.control.commit) {
     u64 index = 0u64;
     while (index < code.count) {
-        address step = unsafe_address(address_bits(code.data) + index * u64(code.stride));
+        address entry = unsafe_address(address_bits(code.data) + index * u64(code.stride));
         ScalarCursor cursor = host.mark(emitter);
-        PacketBodyOp op = host.step(context, step);
-        if (op.kind == PacketBodyKind::Control) {
-            emit_control(context, emitter, op.control, targets, host.control);
+        PacketBodyStep step = host.step(entry);
+        View value = host.values.ir.inspect(Node(step.instruction, N_INSTRUCTION));
+        PacketPlanOperation operation = step.decision.operation;
+        if (u32(operation) >= u32(PacketPlanOperation::If)) {
+            emit_control(context, emitter, ControlInstruction(step.first, step.second, u64(value.a), native_control_kind(value.tag)), targets, host.control);
         } else {
             u64 capacity = 256u64;
-            if (op.kind == PacketBodyKind::View) { capacity = 1024u64; }
-            if (op.kind == PacketBodyKind::Load || op.kind == PacketBodyKind::Store) { capacity = 512u64; }
+            if (operation == PacketPlanOperation::ViewLoad) { capacity = 1024u64; }
+            if (operation == PacketPlanOperation::Load || operation == PacketPlanOperation::Store) { capacity = 512u64; }
             NativeCodeBuffer buffer = host.reserve(emitter, capacity);
             address output = unsafe_address(address_bits(buffer.image) + buffer.end);
-            u64 count = emit_packet_step(op, layout, host.values, output);
+            u64 count = emit_packet_step(value, step.decision, layout, host, output);
             host.commit(emitter, buffer.end + count);
         }
-        host.publish(emitter, op.instruction, cursor);
+        host.publish(emitter, step.instruction, cursor);
         index += 1u64;
     }
 }
@@ -5154,7 +5185,7 @@ address packet_plan_build(address context,PacketPlanBlock code,PacketPlanHeader 
         }else if(node.kind==PacketPlanKind::Break){decision.operation=PacketPlanOperation::Break;
         }else if(node.kind==PacketPlanKind::Continue){decision.operation=PacketPlanOperation::Continue;
         }else{host.plan_drop(plan);return unsafe_address(0u64);}
-        host.append(plan,node,decision,first,second);index+=1u64;
+        host.append(plan,node.instruction,decision,first,second);index+=1u64;
     }return plan;
 }
 extern "C" PacketPlanProduct packet_plan(address context,PacketPlanBlock code,PacketPlanHeader header,PacketPlanHost host) on cpu 

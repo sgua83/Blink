@@ -314,34 +314,25 @@ struct ScalarValueHost {
     cfn<ScalarEncoding,address,usize> ensures memory(read) scalar;
 };
 
-enum PacketBodyKind:u32 {
-    Constant=0; Index=1; Uniform=2; Copy=3; Unary=4;
-    Binary=5; Cast=6; Math=7; Select=8; IntegerDivide=9;
-    Load=10; Store=11; View=12; Control=13;
+enum PacketPlanOperation:u32 {
+    Constant=0; Index=1; Uniform=2; LocalLoad=3; LocalStore=4; Load=5; ViewLoad=6;
+    Store=7; Unary=8; Binary=9; Divide=10; Cast=11; Copy=12; Math=13; Select=14;
+    If=15; Loop=16; Scope=17; Exit=18; Break=19; Continue=20;
 };
-struct PacketBodyOp {
-    array<MoveLocation,6> locations;
-    ControlInstruction control;
+struct PacketPlanDecision {
+    PacketPlanOperation operation;u32 uniform_count;PacketAddress dataset;PacketViewAddress view;PacketMathOperation math;
+};
+struct PacketBodyStep {
     address instruction;
-    usize binding;
-    usize index;
-    u64 stride;
-    ScalarEncoding source;
-    ScalarEncoding target;
-    PacketBodyKind kind;
-    u32 literal;
-    u32 flag;
-    ValueUnaryOperation unary;
-    BinaryOperation binary;
-    PacketMathOperation math;
-    PacketAddress dataset;
-    PacketViewAddress view;
-    u32 dynamic_stride;
+    Span first;
+    Span second;
+    PacketPlanDecision decision;
 };
 struct PacketLayout { u32 sparse; u32 slots; u32 buffer_bytes; u32 stride_field; };
 struct PacketBodyHost {
     ControlHost control;
-    cfn<PacketBodyOp,address,address> step;
+    cfn<PacketBodyStep,address> step;
+    cfn<MoveLocation,address,usize> local;
     cfn<ScalarCursor,address> mark;
     cfn<void,address,address,ScalarCursor> publish;
     cfn<NativeCodeBuffer,address,u64> reserve;
@@ -349,7 +340,7 @@ struct PacketBodyHost {
     ScalarValueHost values;
 };
 extern "C" void emit_packet_body(address context, address emitter, Span code, ControlTargets targets, PacketLayout layout, PacketBodyHost host) on cpu
-    requires nonzero(host.step) requires nonzero(host.mark) requires nonzero(host.publish)
+    requires nonzero(host.step) requires nonzero(host.local) requires nonzero(host.mark) requires nonzero(host.publish)
     requires nonzero(host.reserve) requires nonzero(host.commit)
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location) requires nonzero(host.values.scalar)
     requires nonzero(host.control.emit) requires nonzero(host.control.load) requires nonzero(host.control.buffer)
@@ -636,17 +627,12 @@ enum PacketPlanKind:u32 {
     Load=6; ViewLoad=7; Store=8; Unary=9; Binary=10; Divide=11; Cast=12;
     Math=13; Select=14; If=15; Loop=16; Scope=17; Exit=18; Break=19; Continue=20;
 };
-enum PacketPlanOperation:u32 {
-    Constant=0; Index=1; Uniform=2; LocalLoad=3; LocalStore=4; Load=5; ViewLoad=6;
-    Store=7; Unary=8; Binary=9; Divide=10; Cast=11; Copy=12; Math=13; Select=14;
-    If=15; Loop=16; Scope=17; Exit=18; Break=19; Continue=20;
-};
 enum PacketPlanVisit:u32 { Operands=0; Results=1; Stride=2; Widths=3; };
 struct PacketPlanBlock { address instructions;u64 count; };
 struct PacketPlanNode {
     PacketPlanBlock first;PacketPlanBlock second;
-    address instruction;address payload;address other;address arguments;u64 argument_count;
-    u64 dst;u64 a;u64 b;u64 c;u64 binding;u64 bits;
+    address instruction;address payload;
+    u64 dst;u64 a;u64 b;u64 c;
     u32 word;u32 stride;u32 writes;PacketPlanKind kind;u32 math;
     ScalarEncoding from;ScalarEncoding into;
 };
@@ -655,9 +641,6 @@ struct PacketPlanState {address owner;address bytes;u64 count;};
 struct PacketPlanProduct { address plan; PacketPlanState uses; };
 struct PacketPlanFlow {PacketPlanState next;PacketPlanState breaks;PacketPlanState continues;PacketPlanState exits;};
 struct PacketPlanDefinition {PacketPlanState state;address definitions;u32 uniform;u32 record;};
-struct PacketPlanDecision {
-    PacketPlanOperation operation;u32 uniform_count;PacketAddress dataset;PacketViewAddress view;PacketMathOperation math;
-};
 struct PacketPlanHost {
     cfn<PacketPlanNode,address,PacketPlanBlock,u64> read;
     cfn<u32,address,address,PacketPlanVisit,address,cfn<u32,address,u64>> visit;
@@ -665,7 +648,7 @@ struct PacketPlanHost {
     cfn<void,PacketPlanState> state_drop;
     cfn<address> plan_new;
     cfn<void,address> plan_drop;
-    cfn<void,address,PacketPlanNode,PacketPlanDecision,address,address> append;
+    cfn<void,address,address,PacketPlanDecision,address,address> append;
 };
 // A successful plan transfers both the final Step vector and the original uses
 // buffer. The latter is consumed by packet coloring before emission.
