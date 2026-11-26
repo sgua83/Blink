@@ -291,7 +291,7 @@ void walk_residency_dependency(address names,address value,DependencyHost host) 
 
 void walk_dependency_model(address names,address value,DependencyHost host) on cpu
     requires nonzero(host.model) requires nonzero(host.residency) requires nonzero(host.walk) {
-    DependencyModel model=host.model(value);
+    ReturnedResidency model=host.model(value);
     if(address_bits(model.residency)!=0u64){
         walk_residency_dependency(names,model.residency,host);
         if(model.maximum!=0u64 && address_bits(model.elements)!=0u64){
@@ -451,4 +451,36 @@ extern "C" void collect_query_origin_keys(address context,address cursor,address
         }
         origin=host.next(cursor);
     }
+}
+
+extern "C" void collect_output_paths(address context,address value,OutputSnapshotHost host) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.insert) requires nonzero(host.elements)
+    requires nonzero(host.field_count) requires nonzero(host.field) {
+    ReturnedResidency model=host.inspect(value);
+    if(address_bits(model.residency)!=0u64){
+        host.insert(context,model.residency);
+        if(model.maximum==0u64){
+            host.elements(context,address());
+        }else if(address_bits(model.elements)!=0u64){
+            host.elements(context,model.elements);
+        }
+    }else if(address_bits(model.payloads)!=0u64){
+        u64 count=host.field_count(model.payloads);
+        u64 field=0u64;
+        while(field<count){
+            host.field(context,model.payloads,field);
+            field+=1u64;
+        }
+    }
+}
+
+extern "C" OutputPrefix find_output_prefix(address context,u64 fields,cfn<address,address,u64> lookup) on cpu
+    requires nonzero(lookup) {
+    u64 count=fields;
+    address residency=lookup(context,count);
+    while(residency==address() && count!=0u64){
+        count-=1u64;
+        residency=lookup(context,count);
+    }
+    return OutputPrefix(residency,count);
 }

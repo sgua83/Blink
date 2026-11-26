@@ -142,11 +142,11 @@ extern "C" u32 resolve_resource_origins(address cursor,u32 collect,ResourceOrigi
 enum DependencyItemKind:u32 { End=0; Reference=1; Model=2; Residency=3; Concrete=4; };
 enum DependencyList:u32 { Arguments=0; Origins=1; Payloads=2; };
 struct DependencyItem { DependencyItemKind kind; address value; address arguments; };
-struct DependencyModel { address residency; address elements; address payloads; u64 maximum; };
+struct ReturnedResidency { address residency; address elements; address payloads; u64 maximum; };
 struct DependencyHost {
     cfn<DependencyItem,address> next;
     cfn<void,address,address> insert;
-    cfn<DependencyModel,address> model;
+    cfn<ReturnedResidency,address> model;
     cfn<ResidencyCheckNode,address> residency;
     cfn<void,address,DependencyList,address> walk;
 };
@@ -193,3 +193,18 @@ struct QueryOriginKeyHost {
 };
 extern "C" void collect_query_origin_keys(address context,address cursor,address wanted,QueryOriginKeyHost host) on cpu
     requires nonzero(host.next) requires nonzero(host.matches) requires nonzero(host.append);
+
+struct OutputSnapshotHost {
+    cfn<ReturnedResidency,address> inspect;
+    cfn<void,address,address> insert;
+    cfn<void,address,address> elements;
+    cfn<u64,address> field_count;
+    cfn<void,address,address,u64> field;
+};
+extern "C" void collect_output_paths(address context,address value,OutputSnapshotHost host) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.insert) requires nonzero(host.elements)
+    requires nonzero(host.field_count) requires nonzero(host.field);
+
+struct OutputPrefix { address residency; u64 fields; };
+extern "C" OutputPrefix find_output_prefix(address context,u64 fields,cfn<address,address,u64> lookup) on cpu
+    requires nonzero(lookup);

@@ -114,8 +114,11 @@ impl Input {
         }
     }
 }
-fn scoped_indices(bindings:&BTreeMap<ValueIdentity,bounds::Proof>,depth:usize)->BTreeMap<ValueIdentity,bounds::Proof>{
-    let mut out=bindings.iter().map(|(id,value)|(match id{ValueIdentity::ElementIndex(index)=>ValueIdentity::ElementIndex(index+depth),other=>*other},value.scope_element_indices(depth))).collect::<BTreeMap<_,_>>();
+fn scoped_indices<'a>(
+    bindings: impl IntoIterator<Item = (&'a ValueIdentity, &'a bounds::Proof)>,
+    depth: usize,
+) -> BTreeMap<ValueIdentity,bounds::Proof> {
+    let mut out=bindings.into_iter().map(|(id,value)|(match id{ValueIdentity::ElementIndex(index)=>ValueIdentity::ElementIndex(index+depth),other=>*other},value.scope_element_indices(depth))).collect::<BTreeMap<_,_>>();
     for index in 0..depth{let id=ValueIdentity::ElementIndex(index);out.insert(id,bounds::Proof::default().with_identity(id));}out
 }
 fn scoped_names(bindings:&BTreeMap<ValueIdentity,ValueIdentity>,depth:usize)->BTreeMap<ValueIdentity,ValueIdentity>{
@@ -1529,7 +1532,8 @@ pub(super) enum Use {
     },
 }
 
-pub(super) type Outputs=BTreeMap<String,BTreeMap<(OutputKind,Vec<Part>),Residency>>;
+type OutputPaths = BTreeMap<Vec<Part>, Residency>;
+pub(super) type Outputs = BTreeMap<String, BTreeMap<OutputKind, OutputPaths>>;
 #[repr(u32)]
 enum DependencyItemKind { End, Reference, Model, Residency, Concrete }
 
@@ -1558,7 +1562,7 @@ impl DependencyItem {
 enum DependencyList { Arguments, Origins, Payloads }
 
 #[repr(C)]
-struct DependencyModel {
+struct ReturnedResidency {
     residency: Borrowed,
     elements: Borrowed,
     payloads: Borrowed,
@@ -1569,7 +1573,7 @@ struct DependencyModel {
 struct DependencyHost {
     next: unsafe extern "C" fn(Context) -> DependencyItem,
     insert: unsafe extern "C" fn(Context, Borrowed),
-    model: unsafe extern "C" fn(Borrowed) -> DependencyModel,
+    model: unsafe extern "C" fn(Borrowed) -> ReturnedResidency,
     residency: unsafe extern "C" fn(Borrowed) -> ResidencyCheckNode,
     walk: unsafe extern "C" fn(Context, DependencyList, Borrowed),
 }
@@ -1593,8 +1597,8 @@ unsafe extern "C" fn insert_dependency(names: Context, name: Borrowed) {
     names.insert(unsafe { &*name.cast::<String>() }.clone());
 }
 
-unsafe extern "C" fn dependency_model(model: Borrowed) -> DependencyModel {
-    let mut result = DependencyModel {
+unsafe extern "C" fn inspect_returned_residency(model: Borrowed) -> ReturnedResidency {
+    let mut result = ReturnedResidency {
         residency: ptr::null(), elements: ptr::null(), payloads: ptr::null(), maximum: 0,
     };
     match unsafe { &*model.cast::<Returned>() } {
@@ -1634,7 +1638,7 @@ unsafe extern "C" fn walk_dependency_list(names: Context, list: DependencyList, 
 fn walk_dependencies(names: Context, mut items: impl Iterator<Item = DependencyItem>) {
     let mut cursor: DependencyCursor<'_> = &mut items;
     let host = DependencyHost {
-        next: next_dependency, insert: insert_dependency, model: dependency_model,
+        next: next_dependency, insert: insert_dependency, model: inspect_returned_residency,
         residency: inspect_residency_visit, walk: walk_dependency_list,
     };
     // The B walk completes while the typed iterators and original contracts are borrowed.
@@ -1649,30 +1653,66 @@ pub(super) fn dependencies<'a>(contract: &Contract, models: impl Iterator<Item =
     names
 }
 // Project the requested resource through its original output definition.
-fn output_source(output:&Output,outputs:&Outputs)->Option<Residency>{
-    let values=&outputs[&output.function];let fields=path_model(&output.fields);
-    let depth=fields.iter().filter(|part|!matches!(part,Part::Field(_))).count();
-    let selection=path_selection(&fields);
-    let bindings=output.bindings.iter().filter(|(id,_)|!matches!(id,ValueIdentity::ElementIndex(_))).map(|(id,proof)|(*id,proof.clone())).collect();
-    let bindings=scoped_indices(&bindings,depth);
-    let arguments=output.arguments.iter().map(|(input,value)|(input.clone(),value.scope_indices(depth,input.depth()))).collect();
-    let mut prefix=(output.kind.clone(),output.fields.clone());
-    loop{
-        if let Some(value)=values.get(&prefix){
-            let end=prefix.1.len();let removed=fields[end..].iter().filter(|part|!matches!(part,Part::Field(_))).count();
-            let value=value.scope_indices(removed,0).project(&fields[end..],&selection).at_call(&bindings);
-            let selected=output.bindings.iter().filter(|(id,_)|matches!(id,ValueIdentity::ElementIndex(index)if *index<depth))
-                .map(|(id,proof)|(*id,proof.clone())).collect();
-            return value.element_indices(&selected).bind(&arguments).map(|value|{
-                let outer=value.index_names().into_iter().filter_map(|id|match id{
-                    ValueIdentity::ElementIndex(index)if index>=depth=>Some((id,bounds::Proof::default().with_identity(ValueIdentity::ElementIndex(index-depth)))),
-                    _=>None,
-                }).collect();
-                value.element_indices(&outer)
-            });
-        }
-        prefix.1.pop()?;
+#[repr(C)]
+struct OutputPrefix {
+    residency: Borrowed,
+    fields: usize,
+}
+
+struct OutputLookup<'a> {
+    paths: &'a OutputPaths,
+    fields: &'a [Part],
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ownership_path::find_output_prefix"]
+    fn find_output_prefix(
+        context: Borrowed,
+        fields: usize,
+        lookup: unsafe extern "C" fn(Borrowed, usize) -> Borrowed,
+    ) -> OutputPrefix;
+}
+
+unsafe extern "C" fn lookup_output_path(context: Borrowed, fields: usize) -> Borrowed {
+    let lookup = unsafe { &*context.cast::<OutputLookup<'_>>() };
+    lookup.paths.get(&lookup.fields[..fields]).map_or(ptr::null(), |value| ptr::from_ref(value).cast())
+}
+
+fn output_source(output: &Output, outputs: &Outputs) -> Option<Residency> {
+    let paths = outputs[&output.function].get(&output.kind)?;
+    let lookup = OutputLookup { paths, fields: &output.fields };
+    let prefix = unsafe {
+        find_output_prefix(ptr::from_ref(&lookup).cast(), lookup.fields.len(), lookup_output_path)
+    };
+    let value = unsafe { prefix.residency.cast::<Residency>().as_ref() }?;
+    if value.absent() {
+        return None;
     }
+    let fields = path_model(&output.fields);
+    let depth = fields.iter().filter(|part| !matches!(part, Part::Field(_))).count();
+    let selection = path_selection(&fields);
+    let bindings = scoped_indices(
+        output.bindings.iter().filter(|(id, _)| !matches!(id, ValueIdentity::ElementIndex(_))),
+        depth,
+    );
+    let arguments = output.arguments.iter().map(|(input, value)| {
+        (input.clone(), value.scope_indices(depth, input.depth()))
+    }).collect();
+    let fields = &fields[prefix.fields..];
+    let removed = fields.iter().filter(|part| !matches!(part, Part::Field(_))).count();
+    let value = value.scope_indices(removed, 0).project(fields, &selection).at_call(&bindings);
+    let selected = output.bindings.iter()
+        .filter(|(id, _)| matches!(id, ValueIdentity::ElementIndex(index) if *index < depth))
+        .map(|(id, proof)| (*id, proof.clone())).collect();
+    value.element_indices(&selected).bind(&arguments).map(|value| {
+        let outer = value.index_names().into_iter().filter_map(|id| match id {
+            ValueIdentity::ElementIndex(index) if index >= depth => Some((
+                id, bounds::Proof::default().with_identity(ValueIdentity::ElementIndex(index - depth)),
+            )),
+            _ => None,
+        }).collect();
+        value.element_indices(&outer)
+    })
 }
 // An active output refers to the actual bound resource and value snapshots.
 fn output_source_key(output: &Output) -> Vec<u8> {
@@ -1891,48 +1931,82 @@ pub(super) fn output(value: &mut Returned, function: &str,kind:OutputKind, argum
     });
 }
 
+#[derive(Default)]
+struct OutputSnapshot {
+    fields: Vec<Part>,
+    paths: OutputPaths,
+}
+
+#[repr(C)]
+struct OutputSnapshotHost {
+    inspect: unsafe extern "C" fn(Borrowed) -> ReturnedResidency,
+    insert: unsafe extern "C" fn(Context, Borrowed),
+    elements: unsafe extern "C" fn(Context, Borrowed),
+    field_count: unsafe extern "C" fn(Borrowed) -> usize,
+    field: unsafe extern "C" fn(Context, Borrowed, usize),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ownership_path::collect_output_paths"]
+    fn collect_output_paths(context: Context, value: Borrowed, host: OutputSnapshotHost);
+}
+
+const OUTPUT_SNAPSHOT_HOST: OutputSnapshotHost = OutputSnapshotHost {
+    inspect: inspect_returned_residency,
+    insert: snapshot_insert,
+    elements: snapshot_elements,
+    field_count: snapshot_field_count,
+    field: snapshot_field,
+};
+
+unsafe extern "C" fn snapshot_insert(context: Context, value: Borrowed) {
+    let snapshot = unsafe { &mut *context.cast::<OutputSnapshot>() };
+    let value = unsafe { &*value.cast::<Residency>() };
+    snapshot.paths.insert(snapshot.fields.clone(), value.clone());
+}
+
+unsafe extern "C" fn snapshot_elements(context: Context, elements: Borrowed) {
+    let snapshot = unsafe { &mut *context.cast::<OutputSnapshot>() };
+    snapshot.fields.push(Part::Elements);
+    if elements.is_null() {
+        snapshot.paths.insert(snapshot.fields.clone(), Residency::Absent);
+    } else {
+        unsafe { collect_output_paths(ptr::from_mut(snapshot).cast(), elements, OUTPUT_SNAPSHOT_HOST) };
+    }
+    snapshot.fields.pop();
+}
+
+unsafe extern "C" fn snapshot_field_count(value: Borrowed) -> usize {
+    unsafe { &*value.cast::<owned_values::OwnedValue>() }.payloads.len()
+}
+
+unsafe extern "C" fn snapshot_field(context: Context, value: Borrowed, field: usize) {
+    let value = unsafe { &*value.cast::<owned_values::OwnedValue>() };
+    if let Some(payload) = value.payloads[field].as_deref() {
+        let snapshot = unsafe { &mut *context.cast::<OutputSnapshot>() };
+        snapshot.fields.push(Part::Field(field));
+        unsafe { collect_output_paths(ptr::from_mut(snapshot).cast(), ptr::from_ref(payload).cast(), OUTPUT_SNAPSHOT_HOST) };
+        snapshot.fields.pop();
+    }
+}
+
 pub(super) fn output_sources<'a>(
     units: impl Iterator<Item = (&'a str, Option<&'a Returned>, &'a [Option<Returned>])>,
 ) -> Outputs {
-    fn collect<'a>(
-        value: &'a Returned,
-        kind: &OutputKind,
-        fields: &mut Vec<Part>,
-        values: &mut BTreeMap<(OutputKind,Vec<Part>), &'a Residency>,
-    ) {
-        match value {
-            Returned::Dataset(data) => {
-                values.insert((kind.clone(),fields.clone()), &data.residency);
-                fields.push(Part::Elements);
-                if data.length.maximum()==0{values.insert((kind.clone(),fields.clone()),&Residency::Absent);}
-                else if let Some(elements)=data.elements.known(){collect(elements,kind,fields,values);}
-                fields.pop();
+    units.map(|(name, returned, written)| {
+        let returned = returned.into_iter().map(|value| (OutputKind::Returned, value));
+        let written = written.iter().enumerate().filter_map(|(index, value)| {
+            value.as_ref().map(|value| (OutputKind::Written(index), value))
+        });
+        let values = returned.chain(written).filter_map(|(kind, value)| {
+            let mut snapshot = OutputSnapshot::default();
+            unsafe {
+                collect_output_paths(ptr::from_mut(&mut snapshot).cast(), ptr::from_ref(value).cast(), OUTPUT_SNAPSHOT_HOST);
             }
-            Returned::OwnedValue(value) => {
-                for (field, payload) in value.payloads.iter().enumerate() {
-                    if let Some(payload) = payload {
-                        fields.push(Part::Field(field));
-                        collect(payload, kind, fields, values);
-                        fields.pop();
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    units
-        .map(|(name, value,written)| {
-            let mut values = BTreeMap::new();
-            if let Some(value) = value {
-                collect(value, &OutputKind::Returned, &mut Vec::new(), &mut values);
-            }
-            for(index,value)in written.iter().enumerate(){if let Some(value)=value{
-                collect(value,&OutputKind::Written(index),&mut Vec::new(),&mut values);
-            }}
-            let values=values.into_iter().map(|(fields,value)|(fields,(*value).clone())).collect();
-            (name.to_owned(), values)
-        })
-        .collect()
+            (!snapshot.paths.is_empty()).then_some((kind, snapshot.paths))
+        }).collect();
+        (name.to_owned(), values)
+    }).collect()
 }
 
 pub(super) fn resolve_returned(value: &mut Returned, outputs: &Outputs) -> bool {
