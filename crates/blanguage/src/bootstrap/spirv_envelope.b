@@ -3810,7 +3810,7 @@ void tile_tree_store(TreeComponent component, u32 node, u32 value, u32 uint_type
         value, address_of(pointers[0]), address(), memory);
 }
 
-extern "C" void collective_tree(CollectiveLayout layout, CollectiveTree tree, ScalarHost host,
+void collective_tree(CollectiveLayout layout, CollectiveTree tree, ScalarHost host,
     address components) on cpu
     requires nonzero(layout.component) requires nonzero(host.constant) requires nonzero(host.type_id) {
     usize index = 0u64;
@@ -4144,7 +4144,7 @@ u32 write_reduction(inout StageCursor out, ReductionWriteback input, u32 lane, u
     return write.end;
 }
 
-extern "C" StageWords reduction_writeback(ReductionWriteback input, u32 lane, u32 root,
+StageWords reduction_writeback(ReductionWriteback input, u32 lane, u32 root,
     address fields, u32 count, address pointers, address body) on cpu {
     StageCursor out = StageCursor(body, 0u64, input.target.next);
     u32 label = write_reduction(out, input, lane, root, fields, count, pointers);
@@ -4204,7 +4204,7 @@ void initialize_collective(inout StageCursor out, PageAddress source, Collective
     stage_barrier(out, input.scope, input.semantics);
 }
 
-extern "C" TreeWords reduction_group(ReductionGroup input, address strides, address components,
+TreeWords reduction_group(ReductionGroup input, address strides, address components,
     address fields, u32 count, address workspace, address body, address decorations) on cpu {
     PageAddress source = input.output.target;
     source.descriptor = input.lanes.source;
@@ -4240,7 +4240,7 @@ u64 scan_tree_levels(inout StageCursor out, ScanGroup input, u32 remaining, bool
     return decorated;
 }
 
-extern "C" TreeWords scan_group(ScanGroup input, address levels, address components,
+TreeWords scan_group(ScanGroup input, address levels, address components,
     address fields, u32 count, address workspace, address body, address decorations) on cpu {
     PageAddress target = input.target;
     PageAddress source = target;
@@ -4344,7 +4344,7 @@ StageBranch open_marked_scan_prefix(inout StageCursor out, PageAddress head, u32
     return stage_open(out, apply);
 }
 
-extern "C" TreeWords add_scan_prefix(ScanPrefix input, address fields, u32 count,
+TreeWords add_scan_prefix(ScanPrefix input, address fields, u32 count,
     address body, address decorations) on cpu {
     StageCursor out = StageCursor(body, 0u64, input.target.next);
     u32 uint_type = input.target.u32_type;
@@ -5372,7 +5372,7 @@ TreeWords segment_group(SegmentGroup input, address levels, address fields,
 }
 
 
-extern "C" void scan_levels(ScalarHost host, address output) on cpu requires nonzero(host.constant) {
+void scan_levels(ScalarHost host, address output) on cpu requires nonzero(host.constant) {
     for (index in 0..6) {
         u32 width = 1 << index;
         u32 mask = host.constant(host.context, BuiltinScalar::U32, u64(width * 2 - 1));
@@ -5394,7 +5394,7 @@ SegmentMerge segment_merge(SegmentLayout layout, u32 value_words, ScalarHost hos
         host.type_id(context, BuiltinScalar::Bool), zero, value_words, layout.counted);
 }
 
-void clear_segment_workspace(address workspace, u64 words) on cpu {
+void clear_workspace(address workspace, u64 words) on cpu {
     u64 index = 0u64;
     while (index < words) {
         put(workspace, index, 0);
@@ -5404,16 +5404,16 @@ void clear_segment_workspace(address workspace, u64 words) on cpu {
 
 TreeWords emit_segment_add(SegmentLayout layout, SegmentBindings bindings, SegmentDispatch dispatch,
     PageInputs raw_page, SegmentScratch scratch, MemoryHost host, u32 value_words, u64 field_words, u64 span) on cpu
-    requires nonzero(layout.fields.component) requires nonzero(scratch.reserve)
+    requires nonzero(layout.fields.component) requires nonzero(scratch.words.reserve)
     requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
     requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.pointer_type) {
     ScalarHost stream = host.scalars;
     address context = stream.context;
     u64 count = layout.fields.count;
-    address fields = scratch.reserve(scratch.context, field_words + 5u64 * span);
+    address fields = scratch.words.reserve(scratch.words.context, field_words + 5u64 * span);
     address workspace = word_at(fields, field_words);
     segment_fields(layout.fields, stream, fields);
-    clear_segment_workspace(workspace, 5u64 * span);
+    clear_workspace(workspace, 5u64 * span);
     u32 width = stream.constant(context, BuiltinScalar::U32, 64u64);
     u32 step = stream.constant(context, BuiltinScalar::U64, 4u64);
     SegmentMerge merge = segment_merge(layout, value_words, stream);
@@ -5429,7 +5429,7 @@ TreeWords emit_segment_add(SegmentLayout layout, SegmentBindings bindings, Segme
 
 extern "C" TreeWords emit_segmented(EntryPass pass, u32 single_group, SegmentLayout layout,
     SegmentBindings bindings, SegmentDispatch dispatch, PageInputs raw_page, SegmentScratch scratch, MemoryHost host) on cpu
-    requires nonzero(layout.fields.component) requires nonzero(scratch.reserve) requires nonzero(scratch.identity)
+    requires nonzero(layout.fields.component) requires nonzero(scratch.words.reserve) requires nonzero(scratch.identity)
     requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
     requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.pointer_type) {
     u32 value_words = layout.value_bytes / 4 + u32(layout.value_bytes % 4 != 0);
@@ -5449,7 +5449,7 @@ extern "C" TreeWords emit_segmented(EntryPass pass, u32 single_group, SegmentLay
     u64 field_storage = count * size_of<SegmentStorageField>() / 4u64;
     u64 source_words = tail ? 0u64 : field_storage;
     u64 target_words = writes ? field_storage : 0u64;
-    address fields = scratch.reserve(scratch.context,
+    address fields = scratch.words.reserve(scratch.words.context,
         field_words + source_words + target_words + 9u64 * span + 6u64 * size_of<ScanLevel>() / 4u64);
     address source_fields = word_at(fields, field_words);
     address target_fields = word_at(source_fields, source_words);
@@ -5461,7 +5461,7 @@ extern "C" TreeWords emit_segmented(EntryPass pass, u32 single_group, SegmentLay
     SegmentMerge merge = segment_merge(layout, value_words, stream);
     segment_identity(stream, merge, scratch.context, scratch.identity, u32(count), identity);
     scan_levels(stream, levels);
-    clear_segment_workspace(workspace, 8u64 * span);
+    clear_workspace(workspace, 8u64 * span);
     for (index in 1..u32(span)) {
         put(workspace, u64(index), stream.constant(context, BuiltinScalar::U32, u64(index * 64)));
     }
@@ -5502,6 +5502,153 @@ extern "C" TreeWords emit_segmented(EntryPass pass, u32 single_group, SegmentLay
         + 1050u64 + 80u64 * span + 214u64 * count, 3u64 * count * (layers + final_merges));
     return segment_group(input, levels, fields, source_fields, target_fields, u32(count), identity,
         workspace, output.body, output.decorations);
+}
+
+struct NumericWorkspace {
+    array<u32,2> identity;
+    address components; address fields; address values; address levels;
+};
+
+NumericWorkspace numeric_workspace(NumericGroupInput input, u64 level_words, WordScratch temporary,
+    MemoryHost host) on cpu
+    requires nonzero(input.fields.component) requires nonzero(temporary.reserve)
+    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id) requires nonzero(host.pointer_type) {
+    ScalarHost stream = host.scalars;
+    address context = stream.context;
+    u64 count = input.fields.count;
+    u64 tree_words = count * size_of<TreeComponent>() / 4u64;
+    u64 field_words = count * size_of<CollectiveField>() / 4u64;
+    address components = temporary.reserve(temporary.context, tree_words + field_words + 4u64 * count + level_words);
+    address fields = word_at(components, tree_words);
+    address values = word_at(fields, field_words);
+    address levels = word_at(values, 4u64 * count);
+    BuiltinScalar scalar = input.fields.component(input.fields.source, 0u64).scalar;
+    u32 low = stream.constant(context, BuiltinScalar::U32, u64(u32(input.identity)));
+    u32 high = scalar_definition(scalar).width == 64
+        ? stream.constant(context, BuiltinScalar::U32, input.identity >> 32u64) : 0;
+    CollectiveTree tree = CollectiveTree(input.dispatch.shared, input.dispatch.pointer, input.operation);
+    collective_tree(input.fields, tree, stream, components);
+    collective_fields(input.fields, input.tail == 0 ? input.source_word : 0, 1, host, fields);
+    clear_workspace(values, 4u64 * count);
+    return NumericWorkspace(array<u32,2>(low, high), components, fields, values, levels);
+}
+
+CollectiveInput numeric_lanes(NumericDispatch dispatch, array<u32,2> identity, u32 source, ScalarHost stream) on cpu
+    requires nonzero(stream.constant) {
+    u32 scope = stream.constant(stream.context, BuiltinScalar::U32, 2u64);
+    u32 semantics = stream.constant(stream.context, BuiltinScalar::U32, 0x108u64);
+    return CollectiveInput(identity, source, dispatch.lane, dispatch.active, dispatch.count,
+        dispatch.before, scope, semantics);
+}
+
+u32 numeric_descriptor(NumericBindings bindings, usize index) on cpu {
+    return unsafe_position<u32>(word_at(bindings.descriptors, index));
+}
+
+extern "C" TreeWords emit_numeric_scan(NumericGroupInput input, NumericBindings bindings, NumericScanOptions options,
+    PageInputs raw_page, WordScratch temporary, MemoryHost host) on cpu
+    requires nonzero(input.fields.component) requires nonzero(temporary.reserve)
+    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.pointer_type) {
+    ScalarHost stream = host.scalars;
+    address context = stream.context;
+    u64 count = input.fields.count;
+    NumericWorkspace work = numeric_workspace(input, 6u64 * size_of<ScanLevel>() / 4u64, temporary, host);
+    scan_levels(stream, work.levels);
+    u32 last = stream.constant(context, BuiltinScalar::U32, 63u64);
+    u32 width = stream.constant(context, BuiltinScalar::U32, 64u64);
+    bool tail = input.tail != 0;
+    CollectiveInput lanes = numeric_lanes(input.dispatch, work.identity,
+        numeric_descriptor(bindings, tail ? bindings.prefix : bindings.source), stream);
+    PageInputs page = raw_page;
+    page.descriptor = numeric_descriptor(bindings, bindings.target);
+    page.word = options.target_word;
+    page.has_word = u32(!tail && options.root_operation != 0 && options.target_word != 0);
+    PageAddress target = prepare_page(page, host.pointer_type(context, BuiltinScalar::U32), stream);
+    ScanGroup group = ScanGroup(target, lanes, numeric_descriptor(bindings, bindings.summary), width,
+        last, stream.type_id(context, BuiltinScalar::Bool), u32(!tail && options.normalized_input != 0));
+    ScalarStreams words = stream.reserve(context, 12u64 * (42u64 + 176u64 * count) + 430u64 + 128u64 * count,
+        36u64 * count);
+    return scan_group(group, work.levels, work.components, work.fields, u32(count), work.values, words.body, words.decorations);
+}
+
+ReductionWriteback numeric_writeback(NumericOutput output, PageInputs page, MemoryHost host) on cpu
+    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.ids) requires nonzero(host.pointer_type) {
+    ScalarHost stream = host.scalars;
+    address context = stream.context;
+    u32 width = stream.constant(context, BuiltinScalar::U32, 64u64);
+    u32 length_word = stream.constant(context, BuiltinScalar::U32, u64(2 + u32(output.binding)));
+    u32 bias = output.word == 0 ? 0 : stream.constant(context, BuiltinScalar::U32, u64(output.word));
+    PageAddress target = prepare_page(page, host.pointer_type(context, BuiltinScalar::U32), stream);
+    return ReductionWriteback(target, stream.type_id(context, BuiltinScalar::Bool), output.push_pointer,
+        output.push, width, length_word, bias);
+}
+
+extern "C" TreeWords emit_numeric_reduction(NumericGroupInput input, u32 source, NumericOutput output,
+    PageInputs raw_page, WordScratch temporary, MemoryHost host) on cpu
+    requires nonzero(input.fields.component) requires nonzero(temporary.reserve)
+    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.pointer_type) {
+    ScalarHost stream = host.scalars;
+    address context = stream.context;
+    u64 count = input.fields.count;
+    NumericWorkspace work = numeric_workspace(input, 6u64, temporary, host);
+    for (index in 0..6) {
+        put(work.levels, u64(index), stream.constant(context, BuiltinScalar::U32, u64(32 >> index)));
+    }
+    CollectiveInput lanes = numeric_lanes(input.dispatch, work.identity, source, stream);
+    ReductionGroup group = ReductionGroup(numeric_writeback(output, raw_page, host), lanes);
+    ScalarStreams words = stream.reserve(context, 6u64 * (42u64 + 176u64 * count) + 350u64 + 108u64 * count,
+        18u64 * count);
+    return reduction_group(group, work.levels, work.components, work.fields, u32(count), work.values,
+        words.body, words.decorations);
+}
+
+extern "C" TreeWords emit_numeric_writeback(CollectiveLayout fields, NumericOutput output, PageInputs raw_page,
+    address pointers, u32 lane, WordScratch temporary, MemoryHost host) on cpu
+    requires nonzero(fields.component) requires nonzero(temporary.reserve)
+    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.pointer_type) {
+    ScalarHost stream = host.scalars;
+    address context = stream.context;
+    u64 count = fields.count;
+    address storage = temporary.reserve(temporary.context, count * size_of<CollectiveField>() / 4u64);
+    collective_fields(fields, 0, 0, host, storage);
+    u32 root = stream.constant(context, BuiltinScalar::U32, 63u64);
+    ReductionWriteback input = numeric_writeback(output, raw_page, host);
+    address body = stream.reserve(context, 180u64 + 44u64 * count, 0u64).body;
+    StageWords result = reduction_writeback(input, lane, root, storage, u32(count), pointers, body);
+    return TreeWords(result.words, 0u64, result.next, result.label);
+}
+
+extern "C" TreeWords emit_numeric_prefix(NumericPrefix input, NumericBindings bindings,
+    PageInputs raw_page, WordScratch temporary, MemoryHost host) on cpu
+    requires nonzero(input.fields.component) requires nonzero(temporary.reserve)
+    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.pointer_type) {
+    ScalarHost stream = host.scalars;
+    address context = stream.context;
+    u64 count = input.fields.count;
+    u32 width = stream.constant(context, BuiltinScalar::U32, 64u64);
+    address fields = temporary.reserve(temporary.context, count * size_of<PhysicalField>() / 4u64);
+    physical_fields(input.fields, 0, host, fields);
+    u32 head_descriptor = 0;
+    u32 head_word = 0;
+    if (input.segmented != 0) {
+        head_descriptor = numeric_descriptor(bindings, bindings.summary);
+        u32 value_words = input.value_bytes / 4 + u32(input.value_bytes % 4 != 0);
+        head_word = stream.constant(context, BuiltinScalar::U32, u64(value_words * 4));
+    }
+    PageInputs page = raw_page;
+    page.descriptor = numeric_descriptor(bindings, bindings.target);
+    page.word = input.target_word;
+    page.has_word = u32(input.root != 0 && input.target_word != 0);
+    PageAddress target = prepare_page(page, host.pointer_type(context, BuiltinScalar::U32), stream);
+    ScanPrefix prefix = ScanPrefix(target, numeric_descriptor(bindings, bindings.prefix), head_descriptor,
+        head_word, width, stream.type_id(context, BuiltinScalar::Bool), input.operation, input.label);
+    ScalarStreams words = stream.reserve(context, 233u64 + 148u64 * u64(input.segmented) + 144u64 * count, 3u64 * count);
+    return add_scan_prefix(prefix, fields, u32(count), words.body, words.decorations);
 }
 
 const u32 ENTRY_MAP=0;

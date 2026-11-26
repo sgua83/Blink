@@ -1,5 +1,5 @@
 //! 64 线程 work-efficient Blelloch 独占扫描，工作组间由设备递归前缀传播。
-use super::{reduce::{CollectiveField, CollectiveInput, CollectiveLayout}, *};
+use super::{reduce::{CollectiveLayout, NumericDispatch, NumericGroupInput, WordScratch}, *};
 #[repr(C)]
 pub(super) struct TreeComponent {
     shared: u32,
@@ -24,38 +24,29 @@ pub(super) struct TreeWords {
 }
 
 #[repr(C)]
-pub(super) struct ScanLevel {
-    mask: u32,
-    stride: u32,
+struct NumericBindings {
+    descriptors: *const u32,
+    source: usize,
+    prefix: usize,
+    target: usize,
+    summary: usize,
 }
 
 #[repr(C)]
-struct ScanGroup {
-    target: PageAddress,
-    lanes: CollectiveInput,
-    summary: u32,
-    width: u32,
-    last: u32,
-    bool_type: u32,
-    normalize: u32,
+struct NumericScanOptions {
+    target_word: u32,
+    root_operation: u32,
+    normalized_input: u32,
 }
 
 #[repr(C)]
-struct CollectiveTree {
-    shared: u32,
-    pointer: u32,
-    operation: CollectiveOperator,
-}
-
-#[repr(C)]
-struct ScanPrefix {
-    target: PageAddress,
-    prefix_descriptor: u32,
-    head_descriptor: u32,
-    head_word: u32,
-    width: u32,
-    bool_type: u32,
+struct NumericPrefix {
+    fields: CollectiveLayout,
     operation: u32,
+    target_word: u32,
+    value_bytes: u32,
+    root: u32,
+    segmented: u32,
     label: u32,
 }
 
@@ -74,20 +65,14 @@ pub(super) struct PhysicalField {
 
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.spirv_envelope::collective_tree"]
-    fn emit_collective_tree(layout: CollectiveLayout, tree: CollectiveTree, host: ScalarHost,
-        components: *mut TreeComponent);
     #[link_name = "bootstrap.spirv_envelope::physical_fields"]
     fn emit_physical_fields(layout: CollectiveLayout, first: u32, host: MemoryHost, output: *mut PhysicalField);
-    #[link_name = "bootstrap.spirv_envelope::scan_levels"]
-    fn emit_scan_levels(host: ScalarHost, output: *mut ScanLevel);
-    #[link_name = "bootstrap.spirv_envelope::scan_group"]
-    fn emit_scan_group(input: ScanGroup, levels: *const ScanLevel, components: *const TreeComponent,
-        fields: *const CollectiveField, count: u32, workspace: *mut u32, body: *mut u32,
-        decorations: *mut u32) -> TreeWords;
-    #[link_name = "bootstrap.spirv_envelope::add_scan_prefix"]
-    fn add_scan_prefix(input: ScanPrefix, fields: *const PhysicalField, count: u32,
-        body: *mut u32, decorations: *mut u32) -> TreeWords;
+    #[link_name = "bootstrap.spirv_envelope::emit_numeric_scan"]
+    fn emit_numeric_scan(input: NumericGroupInput, bindings: NumericBindings, options: NumericScanOptions,
+        page: PageInputs, temporary: WordScratch, host: MemoryHost) -> TreeWords;
+    #[link_name = "bootstrap.spirv_envelope::emit_numeric_prefix"]
+    fn emit_numeric_prefix(input: NumericPrefix, bindings: NumericBindings, page: PageInputs,
+        temporary: WordScratch, host: MemoryHost) -> TreeWords;
     #[link_name = "bootstrap.spirv_envelope::group_remaining"]
     fn emit_group_remaining(body: *mut u32, uint_type: u32, index: u32, lane: u32, count: u32, first: u32);
 }
@@ -136,76 +121,29 @@ impl Emitter<'_> {
         count: u32,
     ) {
         let r = &scan.values;
-        let identity = self.collective_identity(scan.ty.components[0].0, scan.operator);
-        let components = self.tree_components(&scan.ty, scan.operator, shared, pointer);
-        let fields = self.collective_fields(&scan.ty, Some(if tail { 0 } else { r.source_word }));
-        let mut workspace = vec![0; 4 * fields.len()];
-        let levels = self.scan_levels();
-        let last = self.constant(Scalar::U32, 63);
-        let width = self.constant(Scalar::U32, 64);
-        let scope = self.constant(Scalar::U32, 2);
-        let semantics = self.constant(Scalar::U32, 0x108);
-        let source = if tail { self.scan_input_binding(r) } else { r.source };
-        let root = !tail && matches!(self.stage.operation, Operation::ScanExclusive(_));
-        let bias = (root && r.target_word != 0).then_some(r.target_word);
-        let target = self.page_input(Scalar::U32, self.buffers[r.target],
-            self.index, bias, 0);
-        let normalize = !tail && (matches!(self.stage.operation, Operation::Compact(_))
-            || self.stage.selection.is_some());
-        let input = ScanGroup {
-            target,
-            lanes: CollectiveInput {
-                identity, source: self.buffers[source], lane, active, count,
-                before: self.current_label, scope, semantics,
-            },
-            summary: self.buffers[self.program.buffers.len()],
-            width, last, bool_type: self.types[&Scalar::Bool], normalize: u32::from(normalize),
+        let dispatch = NumericDispatch { lane, shared, pointer, active, count, before: self.current_label };
+        let input = NumericGroupInput::borrow(&scan.ty, scan.operator, r.source_word, tail, dispatch);
+        let options = NumericScanOptions {
+            target_word: r.target_word,
+            root_operation: u32::from(matches!(self.stage.operation, Operation::ScanExclusive(_))),
+            normalized_input: u32::from(matches!(self.stage.operation, Operation::Compact(_))
+                || self.stage.selection.is_some()),
         };
-
-        let count = fields.len();
-        let body = self.body.len();
-        let decorations = self.decorations.len();
-        self.body.reserve(12 * (42 + 176 * count) + 430 + 128 * count);
-        self.decorations.reserve(36 * count);
-        unsafe {
-            let emitted = emit_scan_group(input, levels.as_ptr(), components.as_ptr(), fields.as_ptr(),
-                count as u32, workspace.as_mut_ptr(), self.body.as_mut_ptr().add(body),
-                self.decorations.as_mut_ptr().add(decorations));
-            self.body.set_len(body + emitted.body as usize);
-            self.decorations.set_len(decorations + emitted.decorations as usize);
-            self.next = emitted.next;
-            self.current_label = emitted.label;
-        }
-    }
-
-    fn scan_levels(&mut self) -> [ScanLevel; 6] {
-        let mut levels = std::mem::MaybeUninit::<[ScanLevel; 6]>::uninit();
-        unsafe {
-            emit_scan_levels(self.scalar_host(), levels.as_mut_ptr().cast());
-            levels.assume_init()
-        }
-    }
-
-
-    pub(super) fn tree_components(&mut self, ty: &Ty, operation: CollectiveOperator,
-        shared: u32, pointer: u32) -> Vec<TreeComponent> {
-        let tree = CollectiveTree { shared, pointer, operation };
-        let count = ty.components.len();
-        let mut components = Vec::with_capacity(count);
-        unsafe {
-            emit_collective_tree(CollectiveLayout::borrow(ty), tree, self.scalar_host(), components.as_mut_ptr());
-            components.set_len(count);
-        }
-        components
+        let page = self.page_inputs(0, self.index, None, 0);
+        let mut words = Vec::new();
+        let result = unsafe {
+            emit_numeric_scan(input, self.numeric_bindings(r), options, page,
+                WordScratch::borrow(&mut words), self.memory_host())
+        };
+        self.finish_tree(result);
     }
 
     pub(super) fn scan_add(&mut self, scan: &Scan, root: bool) {
-        let target_word = if root { scan.values.target_word } else { 0 };
-        self.emit_scan_prefix(scan, target_word, None);
+        self.emit_scan_prefix(scan, root, false);
     }
 
     pub(super) fn segmented_root_add(&mut self, scan: &Scan) {
-        self.emit_scan_prefix(scan, scan.values.target_word, Some(scan.ty.size.div_ceil(4) * 4));
+        self.emit_scan_prefix(scan, true, true);
     }
 
     pub(super) fn physical_fields(&mut self, ty: &Ty, first: u32) -> Vec<PhysicalField> {
@@ -218,38 +156,29 @@ impl Emitter<'_> {
         fields
     }
 
-    fn emit_scan_prefix(&mut self, scan: &Scan, target_word: u32, head: Option<u32>) {
-        let r = &scan.values;
-        let width = self.constant(Scalar::U32, 64);
-        let fields = self.physical_fields(&scan.ty, 0);
-        let (head_descriptor, head_word) = match head {
-            Some(offset) => (self.buffers[self.program.buffers.len()], self.constant(Scalar::U32, offset)),
-            None => (0, 0),
-        };
-        let target = self.page_input(Scalar::U32, self.buffers[r.target],
-            self.index, (target_word != 0).then_some(target_word), 0);
-        let input = ScanPrefix {
-            target,
-            prefix_descriptor: self.buffers[self.scan_input_binding(r)],
-            head_descriptor,
-            head_word,
-            width,
-            bool_type: self.types[&Scalar::Bool],
+    fn numeric_bindings(&self, r: &Reduction) -> NumericBindings {
+        NumericBindings {
+            descriptors: self.buffers.as_ptr(), source: r.source, prefix: self.scan_input_binding(r),
+            target: r.target, summary: self.program.buffers.len(),
+        }
+    }
+
+    fn emit_scan_prefix(&mut self, scan: &Scan, root: bool, segmented: bool) {
+        let input = NumericPrefix {
+            fields: CollectiveLayout::borrow(&scan.ty),
             operation: scan.operator as u32,
+            target_word: scan.values.target_word,
+            value_bytes: scan.ty.size,
+            root: u32::from(root),
+            segmented: u32::from(segmented),
             label: self.current_label,
         };
-        let body = self.body.len();
-        let decorations = self.decorations.len();
-        self.body.reserve(233 + 148 * usize::from(head.is_some()) + 144 * fields.len());
-        self.decorations.reserve(3 * fields.len());
+        let page = self.page_inputs(0, self.index, None, 0);
+        let mut words = Vec::new();
         let result = unsafe {
-            let result = add_scan_prefix(input, fields.as_ptr(), fields.len() as u32,
-                self.body.as_mut_ptr().add(body), self.decorations.as_mut_ptr().add(decorations));
-            self.body.set_len(body + result.body as usize);
-            self.decorations.set_len(decorations + result.decorations as usize);
-            result
+            emit_numeric_prefix(input, self.numeric_bindings(&scan.values), page,
+                WordScratch::borrow(&mut words), self.memory_host())
         };
-        self.next = result.next;
-        self.current_label = result.label;
+        self.finish_tree(result);
     }
 }

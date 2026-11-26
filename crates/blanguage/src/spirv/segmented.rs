@@ -1,5 +1,5 @@
 //! 原内置分段着色器从 Rust 借用布局、绑定和单位元。
-use super::{reduce::CollectiveLayout, scan::TreeWords, *};
+use super::{reduce::{CollectiveLayout, WordScratch}, scan::TreeWords, *};
 use std::ffi::c_void;
 
 #[repr(C)]
@@ -11,8 +11,8 @@ struct SegmentIdentityField {
 
 #[repr(C)]
 struct SegmentScratch {
+    words: WordScratch,
     context: *mut c_void,
-    reserve: unsafe extern "C" fn(*mut c_void, usize) -> *mut u32,
     identity: unsafe extern "C" fn(*mut c_void, u32) -> SegmentIdentityField,
 }
 
@@ -59,13 +59,6 @@ unsafe extern "C" {
 struct SegmentData<'a> {
     ty: &'a Ty,
     operator: CollectiveOperator,
-    words: Vec<u32>,
-}
-
-unsafe extern "C" fn reserve_segment_words(context: *mut c_void, count: usize) -> *mut u32 {
-    let data = unsafe { &mut *context.cast::<SegmentData<'_>>() };
-    data.words.reserve_exact(count);
-    data.words.as_mut_ptr()
 }
 
 unsafe extern "C" fn segment_identity_field(context: *mut c_void, index: u32) -> SegmentIdentityField {
@@ -100,18 +93,16 @@ impl Emitter<'_> {
             summary: self.program.buffers.len(), counter: count.map_or(0, |field| field.binding),
         };
         let page = self.page_inputs(0, self.index, None, 0);
-        let mut data = SegmentData { ty, operator, words: Vec::new() };
+        let mut words = Vec::new();
+        let mut data = SegmentData { ty, operator };
         let scratch = SegmentScratch {
+            words: WordScratch::borrow(&mut words),
             context: std::ptr::from_mut(&mut data).cast(),
-            reserve: reserve_segment_words, identity: segment_identity_field,
+            identity: segment_identity_field,
         };
         let result = unsafe {
             emit_segmented(pass, u32::from(single_group), layout, bindings, dispatch, page, scratch, self.memory_host())
         };
-        unsafe { finish_value(std::ptr::from_mut(self).cast(), ScalarWords {
-            body: result.body, decorations: result.decorations,
-        }); }
-        self.next = result.next;
-        self.current_label = result.label;
+        self.finish_tree(result);
     }
 }

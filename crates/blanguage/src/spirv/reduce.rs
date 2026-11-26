@@ -1,5 +1,5 @@
 //! 全域数值归约：分量共用 64 路树的同步，递归结果在设备驻留。
-use super::{scan::{TreeComponent, TreeWords}, *};
+use super::{scan::TreeWords, *};
 use std::ffi::c_void;
 
 #[repr(C)]
@@ -59,45 +59,75 @@ unsafe extern "C" fn layout_component(source: *const c_void, index: usize) -> Co
 }
 
 #[repr(C)]
-struct ReductionWriteback {
-    target: PageAddress,
-    bool_type: u32,
-    push_pointer: u32,
-    push: u32,
-    width: u32,
-    length_word: u32,
-    bias: u32,
+pub(super) struct WordScratch {
+    context: *mut c_void,
+    reserve: unsafe extern "C" fn(*mut c_void, usize) -> *mut u32,
+}
+
+impl WordScratch {
+    pub(super) fn borrow(words: &mut Vec<u32>) -> Self {
+        Self { context: std::ptr::from_mut(words).cast(), reserve: reserve_words }
+    }
+}
+
+unsafe extern "C" fn reserve_words(context: *mut c_void, count: usize) -> *mut u32 {
+    let words = unsafe { &mut *context.cast::<Vec<u32>>() };
+    words.reserve_exact(count);
+    words.as_mut_ptr()
 }
 
 #[repr(C)]
-pub(super) struct CollectiveInput {
-    pub(super) identity: [u32; 2],
-    pub(super) source: u32,
+pub(super) struct NumericDispatch {
     pub(super) lane: u32,
+    pub(super) shared: u32,
+    pub(super) pointer: u32,
     pub(super) active: u32,
     pub(super) count: u32,
     pub(super) before: u32,
-    pub(super) scope: u32,
-    pub(super) semantics: u32,
 }
 
 #[repr(C)]
-struct ReductionGroup {
-    output: ReductionWriteback,
-    lanes: CollectiveInput,
+pub(super) struct NumericGroupInput {
+    fields: CollectiveLayout,
+    identity: u64,
+    operation: u32,
+    source_word: u32,
+    tail: u32,
+    dispatch: NumericDispatch,
+}
+
+impl NumericGroupInput {
+    pub(super) fn borrow(ty: &Ty, operator: CollectiveOperator, source_word: u32,
+        tail: bool, dispatch: NumericDispatch) -> Self {
+        Self {
+            fields: CollectiveLayout::borrow(ty),
+            identity: operator.identity(ty.components[0].0),
+            operation: operator as u32,
+            source_word,
+            tail: u32::from(tail),
+            dispatch,
+        }
+    }
+}
+
+#[repr(C)]
+struct NumericOutput {
+    binding: usize,
+    word: u32,
+    push_pointer: u32,
+    push: u32,
 }
 
 unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::collective_fields"]
     fn emit_collective_fields(layout: CollectiveLayout, source_word: u32, has_source: u32,
         host: MemoryHost, fields: *mut CollectiveField);
-    #[link_name = "bootstrap.spirv_envelope::reduction_group"]
-    fn emit_reduction_group(input: ReductionGroup, strides: *const u32, components: *const TreeComponent,
-        fields: *const CollectiveField, count: u32, workspace: *mut u32, body: *mut u32,
-        decorations: *mut u32) -> TreeWords;
-    #[link_name = "bootstrap.spirv_envelope::reduction_writeback"]
-    fn emit_reduction_writeback(input: ReductionWriteback, lane: u32, root: u32, fields: *const CollectiveField,
-        count: u32, pointers: *const u32, body: *mut u32) -> StageWords;
+    #[link_name = "bootstrap.spirv_envelope::emit_numeric_reduction"]
+    fn emit_numeric_reduction(input: NumericGroupInput, source: u32, output: NumericOutput,
+        page: PageInputs, temporary: WordScratch, host: MemoryHost) -> TreeWords;
+    #[link_name = "bootstrap.spirv_envelope::emit_numeric_writeback"]
+    fn emit_numeric_writeback(fields: CollectiveLayout, output: NumericOutput, page: PageInputs,
+        pointers: *const u32, lane: u32, temporary: WordScratch, host: MemoryHost) -> TreeWords;
     #[link_name = "bootstrap.spirv_envelope::collective_pair"]
     fn emit_collective_pair(input: CollectivePair, body: *mut u32, decorations: *mut u32) -> CollectiveWords;
 }
@@ -141,43 +171,15 @@ impl Emitter<'_> {
         count: u32,
     ) {
         let r = &reduction.fields;
-        let scalar = reduction.ty.components[0].0;
-        let identity = self.collective_identity(scalar, reduction.operator);
-        let components = self.tree_components(&reduction.ty, reduction.operator, shared, pointer);
-        let fields = self.collective_fields(&reduction.ty, Some(if tail { 0 } else { r.source_word }));
-        let mut workspace = vec![0; 4 * fields.len()];
-        let strides = [32, 16, 8, 4, 2, 1].map(|stride| self.constant(Scalar::U32, stride));
-        let scope = self.constant(Scalar::U32, 2);
-        let semantics = self.constant(Scalar::U32, 0x108);
-        let input = ReductionGroup {
-            output: self.reduction_writeback_input(r),
-            lanes: CollectiveInput {
-                identity, source: self.buffers[r.source], lane, active, count,
-                before: self.current_label, scope, semantics,
-            },
+        let dispatch = NumericDispatch { lane, shared, pointer, active, count, before: self.current_label };
+        let input = NumericGroupInput::borrow(&reduction.ty, reduction.operator, r.source_word, tail, dispatch);
+        let page = self.page_inputs(self.buffers[r.target], self.index, None, 0);
+        let mut words = Vec::new();
+        let result = unsafe {
+            emit_numeric_reduction(input, self.buffers[r.source], self.numeric_output(r), page,
+                WordScratch::borrow(&mut words), self.memory_host())
         };
-        let body = self.body.len();
-        let decorations = self.decorations.len();
-        self.body.reserve(6 * (42 + 176 * fields.len()) + 350 + 108 * fields.len());
-        self.decorations.reserve(18 * fields.len());
-        unsafe {
-            let emitted = emit_reduction_group(input, strides.as_ptr(), components.as_ptr(),
-                fields.as_ptr(), fields.len() as u32, workspace.as_mut_ptr(),
-                self.body.as_mut_ptr().add(body), self.decorations.as_mut_ptr().add(decorations));
-            self.body.set_len(body + emitted.body as usize);
-            self.decorations.set_len(decorations + emitted.decorations as usize);
-            self.next = emitted.next;
-            self.current_label = emitted.label;
-        }
-    }
-
-
-    pub(super) fn collective_identity(&mut self, scalar: Scalar, operator: CollectiveOperator) -> [u32; 2] {
-        let bits = operator.identity(scalar);
-        [
-            self.constant(Scalar::U32, bits as u32),
-            if scalar.size() == 8 { self.constant(Scalar::U32, (bits >> 32) as u32) } else { 0 },
-        ]
+        self.finish_tree(result);
     }
 
     pub(super) fn collective_fields(&mut self, ty: &Ty, source: Option<u32>) -> Vec<CollectiveField> {
@@ -191,35 +193,30 @@ impl Emitter<'_> {
         fields
     }
 
-    fn reduction_writeback_input(&mut self, r: &Reduction) -> ReductionWriteback {
-        let width = self.constant(Scalar::U32, 64);
-        let length_word = self.constant(Scalar::U32, 2 + r.target as u32);
-        let bias = if r.target_word == 0 { 0 } else { self.constant(Scalar::U32, r.target_word) };
-        let target = self.page_input(Scalar::U32, self.buffers[r.target],
-            self.index, None, 0);
-        ReductionWriteback {
-            target, bool_type: self.types[&Scalar::Bool], push_pointer: self.ptr_push_u32,
-            push: self.push, width, length_word, bias,
-        }
+    fn numeric_output(&self, r: &Reduction) -> NumericOutput {
+        NumericOutput { binding: r.target, word: r.target_word, push_pointer: self.ptr_push_u32, push: self.push }
     }
-
 
     pub(super) fn reduction_output(&mut self, r: &Reduction, ty: &Ty, pointers: &[u32], lane: u32) {
         if ty.components.is_empty() {
             return;
         }
-        let fields = self.collective_fields(ty, None);
-        let root = self.constant(Scalar::U32, 63);
-        let input = self.reduction_writeback_input(r);
-        let body = self.body.len();
-        self.body.reserve(180 + 44 * fields.len());
+        let page = self.page_inputs(self.buffers[r.target], self.index, None, 0);
+        let mut words = Vec::new();
+        let result = unsafe {
+            emit_numeric_writeback(CollectiveLayout::borrow(ty), self.numeric_output(r), page,
+                pointers.as_ptr(), lane, WordScratch::borrow(&mut words), self.memory_host())
+        };
+        self.finish_tree(result);
+    }
+
+    pub(super) fn finish_tree(&mut self, result: TreeWords) {
         unsafe {
-            let emitted = emit_reduction_writeback(input, lane, root, fields.as_ptr(),
-                fields.len() as u32, pointers.as_ptr(), self.body.as_mut_ptr().add(body));
-            self.body.set_len(body + emitted.words as usize);
-            self.next = emitted.next;
-            self.current_label = emitted.label;
+            finish_value(std::ptr::from_mut(self).cast(), ScalarWords {
+                body: result.body, decorations: result.decorations,
+            });
         }
+        self.next = result.next;
+        self.current_label = result.label;
     }
 }
-

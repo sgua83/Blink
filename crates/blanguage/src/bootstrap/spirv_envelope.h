@@ -575,9 +575,7 @@ struct CollectiveLayout {
     cfn<CollectiveComponent,address,usize> component;
 };
 struct CollectiveTree { u32 shared; u32 pointer; CollectiveOperation operation; };
-extern "C" void collective_tree(CollectiveLayout layout, CollectiveTree tree, ScalarHost host,
-    address components) on cpu
-    requires nonzero(layout.component) requires nonzero(host.constant) requires nonzero(host.type_id);
+struct WordScratch { address context; cfn<address,address,usize> reserve; };
 // group_remaining writes 10 words and two IDs, with the count at first + 1.
 extern "C" void group_remaining(address body, u32 uint_type, u32 index, u32 lane, u32 count, u32 first) on cpu;
 struct CustomTree {
@@ -683,13 +681,38 @@ struct ScanGroup {
     u32 normalize;
 };
 
-// Workspace has two pointer words and two input words per component.
-extern "C" TreeWords scan_group(ScanGroup input, address levels, address components,
-    address fields, u32 count, address workspace, address body, address decorations) on cpu;
-extern "C" TreeWords reduction_group(ReductionGroup input, address strides, address components,
-    address fields, u32 count, address workspace, address body, address decorations) on cpu;
-extern "C" StageWords reduction_writeback(ReductionWriteback input, u32 lane, u32 root,
-    address fields, u32 count, address pointers, address body) on cpu;
+struct NumericDispatch {
+    u32 lane; u32 shared; u32 pointer; u32 active; u32 count; u32 before;
+};
+struct NumericGroupInput {
+    CollectiveLayout fields;
+    u64 identity;
+    CollectiveOperation operation;
+    u32 source_word;
+    u32 tail;
+    NumericDispatch dispatch;
+};
+struct NumericBindings {
+    address descriptors;
+    usize source; usize prefix; usize target; usize summary;
+};
+struct NumericScanOptions { u32 target_word; u32 root_operation; u32 normalized_input; };
+struct NumericOutput { usize binding; u32 word; u32 push_pointer; u32 push; };
+extern "C" TreeWords emit_numeric_scan(NumericGroupInput input, NumericBindings bindings, NumericScanOptions options,
+    PageInputs raw_page, WordScratch temporary, MemoryHost host) on cpu
+    requires nonzero(input.fields.component) requires nonzero(temporary.reserve)
+    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.pointer_type);
+extern "C" TreeWords emit_numeric_reduction(NumericGroupInput input, u32 source, NumericOutput output,
+    PageInputs raw_page, WordScratch temporary, MemoryHost host) on cpu
+    requires nonzero(input.fields.component) requires nonzero(temporary.reserve)
+    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.pointer_type);
+extern "C" TreeWords emit_numeric_writeback(CollectiveLayout fields, NumericOutput output, PageInputs raw_page,
+    address pointers, u32 lane, WordScratch temporary, MemoryHost host) on cpu
+    requires nonzero(fields.component) requires nonzero(temporary.reserve)
+    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.pointer_type);
 
 struct ScanPrefix {
     PageAddress target;
@@ -717,10 +740,16 @@ extern "C" void physical_fields(CollectiveLayout layout, u32 first, MemoryHost h
     requires nonzero(layout.component) requires nonzero(host.scalars.constant)
     requires nonzero(host.scalars.type_id) requires nonzero(host.pointer_type);
 
-// The caller provides 233 + 144*count body words and 3*count decoration words.
-// A segment head descriptor uses a further 148 body words for its load and branch.
-extern "C" TreeWords add_scan_prefix(ScanPrefix input, address fields, u32 count,
-    address body, address decorations) on cpu;
+struct NumericPrefix {
+    CollectiveLayout fields;
+    CollectiveOperation operation;
+    u32 target_word; u32 value_bytes; u32 root; u32 segmented; u32 label;
+};
+extern "C" TreeWords emit_numeric_prefix(NumericPrefix input, NumericBindings bindings,
+    PageInputs raw_page, WordScratch temporary, MemoryHost host) on cpu
+    requires nonzero(input.fields.component) requires nonzero(temporary.reserve)
+    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.pointer_type);
 
 struct CustomInput {
     PageInputs source;
@@ -855,7 +884,6 @@ extern "C" StageWords close_custom_prefix(read CustomPrefix input, CustomPrefixO
     address fields, address locations, address values, u32 next, address body) on cpu;
 
 struct ScanLevel { u32 mask; u32 stride; };
-extern "C" void scan_levels(ScalarHost host, address output) on cpu requires nonzero(host.constant);
 
 struct PrivateAddress {
     u32 index_type;
@@ -1023,8 +1051,8 @@ extern "C" ShaderPass shader_pass(EntryPass kind, usize parameter, u32 word) on 
 
 struct SegmentIdentityField { u64 bits; u32 offset; BuiltinScalar scalar; };
 struct SegmentScratch {
+    WordScratch words;
     address context;
-    cfn<address,address,usize> reserve;
     cfn<SegmentIdentityField,address,u32> identity;
 };
 struct SegmentLayout {
@@ -1051,7 +1079,7 @@ struct SegmentDispatch {
 };
 extern "C" TreeWords emit_segmented(EntryPass pass, u32 single_group, SegmentLayout layout,
     SegmentBindings bindings, SegmentDispatch dispatch, PageInputs raw_page, SegmentScratch scratch, MemoryHost host) on cpu
-    requires nonzero(layout.fields.component) requires nonzero(scratch.reserve) requires nonzero(scratch.identity)
+    requires nonzero(layout.fields.component) requires nonzero(scratch.words.reserve) requires nonzero(scratch.identity)
     requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
     requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.pointer_type);
 
