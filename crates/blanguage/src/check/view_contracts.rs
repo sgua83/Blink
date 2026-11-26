@@ -33,11 +33,11 @@ impl Eq for ContentRead{}
 impl PartialOrd for ContentRead{fn partial_cmp(&self,other:&Self)->Option<std::cmp::Ordering>{Some(self.cmp(other))}}
 impl Ord for ContentRead{fn cmp(&self,other:&Self)->std::cmp::Ordering{self.key().cmp(&other.key())}}
 #[derive(Clone,PartialEq,Eq)]
-pub(super) struct PositionAccess {pub layout:address::Layout,pub written:Option<bounds::Proof>,pub writable:bool,pub initialized:bool}
+pub(super) struct PositionAccess {pub layout:address::Layout,pub written:Option<bounds::Proof>,pub writable:bool,pub initialized:bool,pub external_atomic:bool}
 impl Ord for PositionAccess {
     fn cmp(&self,other:&Self)->std::cmp::Ordering {
         use crate::module::codec::Encode;
-        (&self.layout,self.writable,self.initialized).cmp(&(&other.layout,other.writable,other.initialized))
+        (&self.layout,self.writable,self.initialized,self.external_atomic).cmp(&(&other.layout,other.writable,other.initialized,other.external_atomic))
             .then_with(||self.written.bytes().cmp(&other.written.bytes()))
     }
 }
@@ -73,7 +73,7 @@ impl<Path> Access<Path> {
     fn accessed(&self)->Option<(&Borrow,&Path,super::Access)> {
         match self {
             Self::Position{borrows,when,position}=>{
-                let access=if position.writable||position.written.is_some(){super::Access::Write}else{super::Access::Read};
+                let access=if position.external_atomic {super::Access::Atomic} else if position.writable||position.written.is_some(){super::Access::Write}else{super::Access::Read};
                 Some((borrows,when,access))
             },
             Self::Memory{borrows,when,access}|Self::Dataset{borrows,when,access,..}=>Some((borrows,when,*access)),
@@ -1961,7 +1961,7 @@ fn converge_access(
                 }
                 for(source,when)in read.borrow().sources.entries() {
                     if let Origin::Position(origin)=source {
-                        if let Some(value)=function.address_access(&parameters,Borrow::source(source.clone()),|borrows,when|Access::Position{borrows,when,position:PositionAccess{layout:origin.layout.clone(),written:None,writable:false,initialized:true}},
+                        if let Some(value)=function.address_access(&parameters,Borrow::source(source.clone()),|borrows,when|Access::Position{borrows,when,position:PositionAccess{layout:origin.layout.clone(),written:None,writable:false,initialized:true,external_atomic:false}},
                             &bounds::Clause::both(&usage.path,&when),&bounds::Clause::project_guard){insert(&mut access,value);}
                     }
                 }
@@ -1971,9 +1971,9 @@ fn converge_access(
                 Requirement::Unborrowed{resource,borrow,kind,..}=>function.access(
                     &parameters,evaluation.evaluate(resource),evaluation.evaluate(borrow),
                     *kind,&usage.path,&bounds::Clause::project_guard),
-                Requirement::Address{borrow,layout,written,writable,initialized,..}=>function.address_access(
+                Requirement::Address{borrow,layout,written,writable,initialized,external_atomic,..}=>function.address_access(
                     &parameters,evaluation.evaluate(borrow),
-                    |borrows,when|Access::Position{borrows,when,position:PositionAccess{layout:layout.clone(),written:written.as_ref().map(|proof|proof.at_call(&parameters)),writable:*writable,initialized:*initialized}},
+                    |borrows,when|Access::Position{borrows,when,position:PositionAccess{layout:layout.clone(),written:written.as_ref().map(|proof|proof.at_call(&parameters)),writable:*writable,initialized:*initialized,external_atomic:*external_atomic}},
                     &usage.path,&bounds::Clause::project_guard),
                 Requirement::Memory{target:address::MemoryTarget::Call(memory),borrow,access:Some(access),..} if function.call_at_memory(*memory, true).is_none()=>
                     function.address_access(&parameters,evaluation.evaluate(borrow),|borrows,when|Access::Memory{borrows,when,access:*access},&usage.path,&bounds::Clause::project_guard),
@@ -2098,7 +2098,7 @@ fn converge_access(
                         continue;
                     }
                     if !task_access && (matches!(requirement,Access::Stored{..})
-                        || matches!(requirement,Access::Position{position,..} if !position.writable && !position.initialized && (call.deferred || position.written.is_none()))) {
+                        || matches!(requirement,Access::Position{position,..} if !position.writable && !position.initialized && !position.external_atomic && (call.deferred || position.written.is_none()))) {
                         continue;
                     }
                     let value=access_at_call(requirement,call,&call.path,evaluation,&|| &*initialized);
@@ -2116,7 +2116,7 @@ fn converge_access(
                     let value=match value {
                         Access::Position{mut position,borrows,when}=>{
                             if call.deferred { position.written=None; }
-                            if position.written.is_none()&&!position.initialized&&!position.writable{continue;}
+                            if position.written.is_none()&&!position.initialized&&!position.writable&&!position.external_atomic{continue;}
                             position.written=position.written.as_ref()
                                 .map(|proof|proof.at_call(&call.arguments).at_call(parameters));
                             function.address_access(parameters,borrows,|borrows,when|Access::Position{borrows,when,position},&when,&project)
@@ -2872,7 +2872,7 @@ fn finish_function(
                 }.check(&call.source, None)?;
             }
             let requirement=match value {
-                Access::Position{borrows,position,..}=>Requirement::Address{borrow:borrows.restricted(&path),layout:position.layout,written:None,writable:position.writable,initialized:position.initialized,span:call.span},
+                Access::Position{borrows,position,..}=>Requirement::Address{borrow:borrows.restricted(&path),layout:position.layout,written:None,writable:position.writable,initialized:position.initialized,external_atomic:position.external_atomic,span:call.span},
                 Access::Resource{resources,borrows,kind,..}=>Requirement::Unborrowed{resource:resources.restricted(&path),borrow:borrows.restricted(&path),kind,span:call.span},
                 Access::Memory{..}|Access::Dataset{..}|Access::Stored{..}=>continue,
                 Access::Initialized{borrows,initialized,..}=>{
@@ -3018,6 +3018,7 @@ const _: () = {
                 written: <Option<bounds::Proof> as Native>::empty(),
                 writable: <bool as Native>::empty(),
                 initialized: <bool as Native>::empty(),
+                external_atomic: false,
             }
         }
         unsafe fn write(&self, output: Slot) {
@@ -3080,6 +3081,7 @@ const _: () = {
         dataset: ReadCallback,
         initialized: ReadCallback,
         stored: ReadCallback,
+        external_atomic: ReadCallback,
     }
     unsafe extern "C" fn build_resource(context: Slot, destination: Slot) -> ReadStatus {
         let mut resources = <Borrow as Native>::empty();
@@ -3135,9 +3137,16 @@ const _: () = {
         ReadStatus::Success
     }
     unsafe extern "C" fn build_position(context: Slot, destination: Slot) -> ReadStatus {
+        unsafe { position_payload(context, destination, false) }
+    }
+    unsafe extern "C" fn build_external_atomic(context: Slot, destination: Slot) -> ReadStatus {
+        unsafe { position_payload(context, destination, true) }
+    }
+    unsafe fn position_payload(context: Slot, destination: Slot, external_atomic: bool) -> ReadStatus {
         let mut borrows = <Borrow as Native>::empty();
         let mut when = <bounds::Condition as Native>::empty();
         let mut position = <PositionAccess as Native>::empty();
+        position.external_atomic = external_atomic;
         #[repr(C)]
         struct Fields {
             borrows: Slot,
@@ -3479,6 +3488,7 @@ const _: () = {
                             fields: Fields,
                             host: Host,
                             append: unsafe extern "C" fn(Slot, *const u8, usize),
+                            external_atomic: u32,
                         );
                     }
                     unsafe {
@@ -3495,6 +3505,7 @@ const _: () = {
                                 position: contracts::write_value::<PositionAccess>,
                             },
                             contracts::append,
+                            u32::from(position.external_atomic),
                         )
                     }
                 }
@@ -3702,6 +3713,7 @@ const _: () = {
                         dataset: build_dataset,
                         initialized: build_initialized,
                         stored: build_stored,
+                            external_atomic: build_external_atomic,
                     },
                 )
             }

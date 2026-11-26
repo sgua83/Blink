@@ -39,6 +39,14 @@ impl AtomicBuiltin {
 }
 
 impl Builder<'_> {
+    pub(super) fn require_atomic_type(&self, ty: &Ty, span: Span) -> Result<()> {
+        if unsafe { atomic_scalar(std::ptr::from_ref(ty).cast(), scalar_type) } != 0 {
+            Ok(())
+        } else {
+            self.fail(span, "B215", "原子位置只支持 u32/i32/u64/i64 标量")
+        }
+    }
+
     pub(super) fn atomic_storage(&self,place:&Place)->bool {
         let (kind,access)=match place.storage(){
             Place::AtomicParameter(_)=>(1,Access::Atomic),

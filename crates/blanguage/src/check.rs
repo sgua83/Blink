@@ -2073,7 +2073,7 @@ impl<'a> Builder<'a> {
             ReadPlaceNeed::AtomicDataError=>return self.fail(span,"B214","atomic 数据集元素只能通过显式原子操作读取"),
             ReadPlaceNeed::Array=>return unsafe {self.world.call(self.read_array_place(p,span)).await},
             ReadPlaceNeed::ReferenceMemory=>{memory=unsafe {self.world.call(self.reference_memory(p,span)).await}?;facts.memory=u32::from(memory.is_some());},
-            ReadPlaceNeed::Address=>{let(_,borrow)=memory.as_ref().unwrap();self.check_view_requirement(view::Requirement::Address {borrow:borrow.clone(),layout:address::Layout::of(p.ty()),written:None,writable:false,initialized:true,span})?;},
+            ReadPlaceNeed::Address=>{let(_,borrow)=memory.as_ref().unwrap();self.check_view_requirement(view::Requirement::Address {borrow:borrow.clone(),layout:address::Layout::of(p.ty()),written:None,writable:false,initialized:true,external_atomic:false,span})?;},
             ReadPlaceNeed::RememberRead=>content_read=Some((self.view_model.uses.len(),memory.as_ref().unwrap().1.clone())),
             ReadPlaceNeed::Memory=>{let(target,borrow)=memory.take().unwrap();self.check_view_requirement(view::Requirement::Memory {target,borrow,access:Some(Access::Read),written:None,snapshots:None,span,address_fields:Arc::from([])})?;},
             ReadPlaceNeed::Initialize=>{unsafe {self.world.call(self.require_initialized(p,span)).await}?;},

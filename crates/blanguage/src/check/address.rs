@@ -140,6 +140,16 @@ impl Origin {
             _=>false,
         }
     }
+    pub(super) fn has_blink_storage(&self, when: &bounds::Clause) -> bool {
+        match &self.root {
+            Root::External(_) => false,
+            Root::Derived(borrow) => borrow.sources.entries().any(|(source, edge)| {
+                matches!(source, view::Source::Position(parent)
+                    if parent.has_blink_storage(&bounds::Clause::both(when, &edge)))
+            }),
+            _ => when.possible(),
+        }
+    }
     pub fn layout_valid(&self)->bool {
         match &self.root {
             Root::Derived(borrow)|Root::Dataset{borrow,..}=>borrow.sources.iter().all(|source|match source {
@@ -1601,19 +1611,34 @@ impl Builder<'_> {
     }
     pub(super) async fn external_position_value(&mut self,explicit:&[GenericArgument],count:usize,span:Span,argument_span:Span,
         argument:impl std::ops::AsyncFnOnce(&mut Self)->Result<Option<Value>>)->Result<Option<Place>>{
+        let mut external_atomic = false;
         let mut cursor=AddressPhase{phase:0};let mut facts=ExternalPositionFacts{cpu:u32::from(self.program.target==Target::Cpu),explicit_type:match explicit{[GenericArgument::Type(name)]=>if name.dataset{2}else{1},_=>0},arguments:count as u64,..ExternalPositionFacts::default()};
         let mut argument=Some(argument);let mut ty:Option<Ty>=None;let mut value=None;let mut borrow:Option<view::Borrow>=None;let mut identity=None;let mut bits=None;let mut low=None;let mut high=None;
         let external=loop{let step=unsafe{external_position_step(cursor,ExternalPositionFacts{..facts})};cursor=step.cursor;match step.need{
             ExternalPositionNeed::BadTarget=>return self.fail(span,"B265","unsafe_position只解释本进程CPU地址"),
             ExternalPositionNeed::BadArguments=>return self.fail(span,"B153","unsafe_position<T>需要一个明确普通类型和一个address实参"),
-            ExternalPositionNeed::Type=>{let[GenericArgument::Type(name)]=explicit else{unsafe{std::hint::unreachable_unchecked()}};let actual=unsafe{self.world.call(self.world.ty(name,self.scope.source(),span,self.scope.module(),self.scope.imports())).await}?;facts.owns=u32::from(actual.owns_resources());facts.views=u32::from(actual.contains_views());facts.empty=u32::from(actual.components.is_empty());ty=Some(actual);},
+            ExternalPositionNeed::Type=>{let[GenericArgument::Type(name)]=explicit else{unsafe{std::hint::unreachable_unchecked()}};let name = if name.name == "atomic" && !name.canonical && !name.dataset && !name.view && !name.tile
+                    && name.count.is_none() && name.contracts.is_none() {
+                    let [GenericArgument::Type(scalar)] = name.arguments.as_slice() else {
+                        return self.fail(span,"B215","外部原子位置需要 atomic<T> 中的一个明确标量类型");
+                    };
+                    external_atomic = true;
+                    scalar
+                } else {
+                    name
+                };
+                let actual = unsafe { self.world.call(self.world.ty(name,self.scope.source(),span,self.scope.module(),self.scope.imports())).await }?;
+                if external_atomic {
+                    self.require_atomic_type(&actual, span)?;
+                }
+                facts.owns=u32::from(actual.owns_resources());facts.views=u32::from(actual.contains_views());facts.empty=u32::from(actual.components.is_empty());ty=Some(actual);},
             ExternalPositionNeed::Owned=>return self.fail(span,"B224","外部地址位置不能创建Blink拥有资源"),
             ExternalPositionNeed::BadLayout=>return self.fail(span,"B263","外部地址位置需要非空普通值布局，不能解释Blink资源引用"),
             ExternalPositionNeed::Argument=>{value=argument.take().unwrap()(self).await?;facts.present=u32::from(value.is_some());},
             ExternalPositionNeed::Empty=>return Ok(None),
             ExternalPositionNeed::RequireAddress=>self.require_same(&Ty::builtin("address").unwrap(),&value.as_ref().unwrap().ty,argument_span)?,
             ExternalPositionNeed::Borrow=>borrow=Some(borrow_in_path(&self.current_address_borrow(&value.as_ref().unwrap().proof.view_borrow(0)),&self.path)),
-            ExternalPositionNeed::Requirement=>self.check_view_requirement(view::Requirement::Address{borrow:borrow.as_ref().unwrap().clone(),layout:Layout::of(ty.as_ref().unwrap()),written:None,writable:false,initialized:false,span})?,
+            ExternalPositionNeed::Requirement=>self.check_view_requirement(view::Requirement::Address{borrow:borrow.as_ref().unwrap().clone(),layout:Layout::of(ty.as_ref().unwrap()),written:None,writable:false,initialized:false,external_atomic,span})?,
             ExternalPositionNeed::BorrowKind=>{let source=borrow.as_ref().unwrap();facts.external=u32::from(data_sources_external(source.pending(),source.sources.iter()));},
             ExternalPositionNeed::Identity=>{identity=value.as_ref().unwrap().proof.addresses.first().cloned().flatten();facts.identity=u32::from(identity.is_some());},
             ExternalPositionNeed::KnownBits=>{let value=value.as_ref().unwrap();bits=bounds::Proof::capture(value).known_value(&value.ty);facts.constant=u32::from(bits.is_some());},
@@ -1627,7 +1652,7 @@ impl Builder<'_> {
         }};
         let ty=ty.take().unwrap();let words=ty.components.iter().map(|(_,offset)|*offset).collect();let identity=identity.take().unwrap();let address=[low.unwrap(),high.unwrap()];
         let address=if external{ReferenceAddress::External{address,identity}}else{ReferenceAddress::Borrowed{address,identity,borrow:borrow.take().unwrap(),layout:Layout::of(&ty)}};
-        Ok(Some(Place::Reference{words,ty,address,scope:None,access:Access::InOut}))
+        Ok(Some(Place::Reference{words,ty,address,scope:None,access:if external_atomic { Access::Atomic } else { Access::InOut }}))
     }
 }
 

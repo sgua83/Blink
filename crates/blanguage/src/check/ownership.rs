@@ -105,7 +105,7 @@ impl Builder<'_> {
             return Ok(words.iter().map(|w| *w as usize).collect());
         }
         if matches!(place,Place::Reference{..}) {let borrow=unsafe { self.world.call(self.position_origin(place,span)).await }?.normalize();
-            self.check_view_requirement(view::Requirement::Address {borrow,layout:address::Layout::of(place.ty()),written,writable:true,initialized:false,span})?;
+            self.check_view_requirement(view::Requirement::Address {borrow,layout:address::Layout::of(place.ty()),written,writable:true,initialized:false,external_atomic:false,span})?;
         }
         match place {
             Place::Reference { words, access: Access::Write | Access::InOut, .. } => Ok(words.iter().map(|word| *word as usize).collect()),
@@ -237,7 +237,7 @@ impl Builder<'_> {
         if !self.is_initialized(place) {
             if self.defer_initialization(place,"B142",span)?{return Ok(());}
             if let Some((_,borrow))=unsafe { self.world.call(self.reference_memory(place,span)).await }? {
-                return self.check_view_requirement(view::Requirement::Address {borrow,layout:address::Layout::of(place.ty()),written:None,writable:false,initialized:true,span});
+                return self.check_view_requirement(view::Requirement::Address {borrow,layout:address::Layout::of(place.ty()),written:None,writable:false,initialized:true,external_atomic:false,span});
             }
             return self.fail(
                 span,

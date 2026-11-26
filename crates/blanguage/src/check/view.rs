@@ -870,7 +870,7 @@ pub(super) enum Exclusion {
 pub(super) enum Requirement {
     Unborrowed {resource:Borrow,borrow:Borrow,kind:Exclusion,span:Span},
     Return {borrow:Borrow,allowed:BTreeSet<ValueIdentity>,owned:Borrow,span:Span},
-    Address {borrow:Borrow,layout:address::Layout,written:Option<bounds::Proof>,writable:bool,initialized:bool,span:Span},
+    Address {borrow:Borrow,layout:address::Layout,written:Option<bounds::Proof>,writable:bool,initialized:bool,external_atomic:bool,span:Span},
     Memory {target:address::MemoryTarget,borrow:Borrow,access:Option<Access>,written:Option<bounds::Proof>,snapshots:Option<Arc<[view_contracts::ValueSnapshot]>>,address_fields:Arc<[(u32,usize)]>,span:Span},
     Dataset {borrow:Borrow,index:Option<bounds::Operand>,access:Access,atomic:bool,values:Option<Arc<[view_contracts::ElementRead]>>,span:Span},
     Initialized {borrow:Borrow,read:address::InitializationRead,code:&'static str,span:Span},
@@ -888,7 +888,7 @@ impl Requirement {
         match self {
             Self::Unborrowed{resource,borrow,kind,span}=>Self::Unborrowed{resource:map(resource),borrow:map(borrow),kind:*kind,span:*span},
             Self::Return{borrow,allowed,owned,span}=>Self::Return{borrow:map(borrow),allowed:allowed.clone(),owned:map(owned),span:*span},
-            Self::Address{borrow,layout,written,writable,initialized,span}=>Self::Address{borrow:map(borrow),layout:layout.clone(),written:written.clone(),writable:*writable,initialized:*initialized,span:*span},
+            Self::Address{borrow,layout,written,writable,initialized,external_atomic,span}=>Self::Address{borrow:map(borrow),layout:layout.clone(),written:written.clone(),writable:*writable,initialized:*initialized,external_atomic:*external_atomic,span:*span},
             Self::Memory{target,borrow,access,written,snapshots,address_fields,span}=>Self::Memory{target:*target,borrow:map(borrow),access:*access,written:written.clone(),snapshots:snapshots.clone(),address_fields:address_fields.clone(),span:*span},
             Self::Dataset{borrow,index,access,atomic,values,span}=>Self::Dataset{borrow:map(borrow),index:*index,access:*access,atomic:*atomic,values:values.clone(),span:*span},
             Self::Initialized{borrow,read,code,span}=>Self::Initialized{borrow:map(borrow),read:read.clone(),code,span:*span},
@@ -905,11 +905,13 @@ impl Requirement {
         if let Self::Nonzero{value,path,span}=self {
             return if bounds::integer_divisors(value,path).is_some(){Ok(())}else{source.fail(*span,"B152",bounds::INTEGER_DIVISOR_MESSAGE)};
         }
-        if let Self::Address{borrow,layout,writable,initialized,span,..}=self {
+        if let Self::Address{borrow,layout,writable,initialized,external_atomic,span,..}=self {
             for (origin_source, when) in borrow.sources.entries() {
                 let Source::Position(origin) = origin_source else { continue; };
                 let violation = if origin.layout != *layout || !origin.layout_valid() {
                     ("B263", "地址解释的布局与原自有位置不同")
+                } else if *external_atomic && origin.has_blink_storage(&when) {
+                    ("B214", "外部原子位置不能改变已知 Blink 位置的访问权")
                 } else if *writable && !origin.writable {
                     ("B227", "自有地址不能升级原只读位置的写权限")
                 } else if *initialized && !origin.symbolic_input() && !origin.initialized.iter().all(|ready| *ready) {

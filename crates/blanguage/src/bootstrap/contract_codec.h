@@ -499,7 +499,7 @@ struct ContractTaskProjectionVariants{cfn<ReadStatus,address,address> returned;c
 
 struct ContractExclusionVariants{cfn<ReadStatus,address,address> resource;cfn<ReadStatus,address,address> ownership;cfn<ReadStatus,address,address> position;cfn<ReadStatus,address,address> view;};
 
-struct ContractViewAccessVariants{cfn<ReadStatus,address,address> resource;cfn<ReadStatus,address,address> position;cfn<ReadStatus,address,address> memory;cfn<ReadStatus,address,address> dataset;cfn<ReadStatus,address,address> initialized;cfn<ReadStatus,address,address> stored;};
+struct ContractViewAccessVariants{cfn<ReadStatus,address,address> resource;cfn<ReadStatus,address,address> position;cfn<ReadStatus,address,address> memory;cfn<ReadStatus,address,address> dataset;cfn<ReadStatus,address,address> initialized;cfn<ReadStatus,address,address> stored;cfn<ReadStatus,address,address> external_atomic;};
 
 struct ContractResidencyPartVariants{cfn<ReadStatus,address,address> field;cfn<ReadStatus,address,address> elements;cfn<ReadStatus,address,address> selected;};
 
@@ -706,7 +706,7 @@ extern "C" void contract_write_view_access_resource(address output,ContractViewA
 
 extern "C" ReadStatus contract_read_view_access_resource(address context,ContractViewAccessResourceFields fields,ContractViewAccessResourceReader host) on cpu requires nonzero(host.resources) requires nonzero(host.borrows) requires nonzero(host.kind) requires nonzero(host.when);
 
-extern "C" void contract_write_view_access_position(address output,ContractViewAccessPositionFields fields,ContractViewAccessPositionWriter host,cfn<void,address,address,u64> append) on cpu requires nonzero(host.borrows) requires nonzero(host.when) requires nonzero(host.position) requires nonzero(append);
+extern "C" void contract_write_view_access_position(address output,ContractViewAccessPositionFields fields,ContractViewAccessPositionWriter host,cfn<void,address,address,u64> append,u32 external_atomic) on cpu requires nonzero(host.borrows) requires nonzero(host.when) requires nonzero(host.position) requires nonzero(append);
 
 extern "C" ReadStatus contract_read_view_access_position(address context,ContractViewAccessPositionFields fields,ContractViewAccessPositionReader host) on cpu requires nonzero(host.borrows) requires nonzero(host.when) requires nonzero(host.position);
 
@@ -926,7 +926,7 @@ extern "C" ReadStatus contract_read_task_projection(Bytes input,inout u64 positi
 
 extern "C" ReadStatus contract_read_exclusion(Bytes input,inout u64 position,address context,address output,ContractExclusionVariants host) on cpu requires nonzero(host.resource) requires nonzero(host.ownership) requires nonzero(host.position) requires nonzero(host.view);
 
-extern "C" ReadStatus contract_read_view_access(Bytes input,inout u64 position,address context,address output,ContractViewAccessVariants host) on cpu requires nonzero(host.resource) requires nonzero(host.position) requires nonzero(host.memory) requires nonzero(host.dataset) requires nonzero(host.initialized) requires nonzero(host.stored);
+extern "C" ReadStatus contract_read_view_access(Bytes input,inout u64 position,address context,address output,ContractViewAccessVariants host) on cpu requires nonzero(host.resource) requires nonzero(host.position) requires nonzero(host.memory) requires nonzero(host.dataset) requires nonzero(host.initialized) requires nonzero(host.stored) requires nonzero(host.external_atomic);
 
 extern "C" ReadStatus contract_read_residency_part(Bytes input,inout u64 position,address context,address output,ContractResidencyPartVariants host) on cpu requires nonzero(host.field) requires nonzero(host.elements) requires nonzero(host.selected);
 
