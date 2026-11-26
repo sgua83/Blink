@@ -153,14 +153,27 @@ unsafe extern "C" {
 struct RelationView<'g> {
     base: &'g Graph,
     tail: &'g [Node],
+    residual: Option<&'g ResidualRelation>,
+}
+
+struct RelationNode<'g> {
+    seeds: &'g Borrow,
+    edges: &'g [Edge],
 }
 
 impl<'g> RelationView<'g> {
-    fn node(self, id: usize) -> &'g Node {
-        if id < self.base.nodes.len() {
-            &self.base.nodes[id]
-        } else {
-            &self.tail[id - self.base.nodes.len()]
+    fn node(self, id: usize) -> RelationNode<'g> {
+        if id >= self.base.nodes.len() {
+            let node = &self.tail[id - self.base.nodes.len()];
+            return RelationNode { seeds: &node.seeds, edges: &node.edges };
+        }
+        let original = &self.base.nodes[id];
+        match self.residual.and_then(|residual| residual.nodes.get(&id)) {
+            Some(node) => RelationNode {
+                seeds: &node.seeds,
+                edges: node.edges.as_deref().unwrap_or(&original.edges),
+            },
+            None => RelationNode { seeds: &original.seeds, edges: &original.edges },
         }
     }
 
@@ -199,7 +212,7 @@ impl<'g> RelationView<'g> {
 
 unsafe extern "C" fn walk_edges(graph: Borrowed, node: usize) -> WalkSlice {
     let graph = unsafe { *graph.cast::<RelationView<'_>>() };
-    WalkSlice::of(&graph.node(node).edges)
+    WalkSlice::of(graph.node(node).edges)
 }
 
 unsafe extern "C" fn walk_edge(edges: Borrowed, index: usize) -> WalkEdge {
@@ -214,8 +227,10 @@ unsafe extern "C" fn walk_edge(edges: Borrowed, index: usize) -> WalkEdge {
 
 unsafe extern "C" fn walk_frame(graph: Borrowed, frame: usize) -> WalkFrame {
     let graph = unsafe { *graph.cast::<RelationView<'_>>() };
-    let frame = &graph.base.frames[frame];
-    WalkFrame { parent: frame.parent.unwrap_or(usize::MAX), writes: WalkSlice::of(&frame.writes) }
+    let original = &graph.base.frames[frame];
+    let writes = graph.residual.and_then(|residual| residual.writes.get(&frame))
+        .map_or(original.writes.as_slice(), Vec::as_slice);
+    WalkFrame { parent: original.parent.unwrap_or(usize::MAX), writes: WalkSlice::of(writes) }
 }
 
 unsafe extern "C" fn walk_write(writes: Borrowed, index: usize) -> WalkWrite {
@@ -327,9 +342,9 @@ struct RelationWalk<'g, F> {
     frames: [BTreeSet<usize>; 2],
 }
 
-impl<'g, F: FnMut(&Node) -> bool> RelationWalk<'g, F> {
+impl<'g, F: FnMut(RelationNode<'g>) -> bool> RelationWalk<'g, F> {
     fn new(graph: &'g Graph, accepts: F) -> Self {
-        Self::from_view(RelationView { base: graph, tail: &[] }, accepts)
+        Self::from_view(RelationView { base: graph, tail: &[], residual: None }, accepts)
     }
 
     fn from_view(graph: RelationView<'g>, accepts: F) -> Self {
@@ -873,10 +888,10 @@ impl Graph {
     }
 
     fn reachable(&self, root: usize) -> (BTreeSet<usize>, BTreeSet<usize>) {
-        RelationView { base: self, tail: &[] }.reachable(root)
+        RelationView { base: self, tail: &[], residual: None }.reachable(root)
     }
 
-    fn any_reachable(&self, root: usize, accepts: impl FnMut(&Node) -> bool) -> bool {
+    fn any_reachable<'g>(&'g self, root: usize, accepts: impl FnMut(RelationNode<'g>) -> bool) -> bool {
         RelationWalk::new(self, accepts).walk(root, false)
     }
 
@@ -939,7 +954,7 @@ impl Graph {
         EvaluationPlan { ordered, stable, fixed_inputs, completed }
     }
     pub(in crate::check) fn selected(&self, root: usize) -> Self {
-        RelationView { base: self, tail: &[] }.selected(root)
+        RelationView { base: self, tail: &[], residual: None }.selected(root)
     }
     pub(in crate::check) fn has_local(&self, root: usize) -> bool {
         self.any_reachable(root, |node| node.seeds.has_local())
@@ -1069,47 +1084,27 @@ impl Graph {
     fn private(&self, source: &Origin) -> bool {
         !self.references(source) && Borrow::source_has_local(source)
     }
-    fn residual(&self, query: &Query<'_>) -> Self {
-        let mut nodes = Vec::with_capacity(self.nodes.len());
-        for &id in query.values.keys() {
-            nodes.extend_from_slice(&self.nodes[nodes.len()..id]);
-            nodes.push(query.local_definition(id).into_owned());
+    fn residual(&self, query: &Query<'_>) -> ResidualRelation {
+        let mut history = RelationWalk::new(self, |_| false);
+        history.historical_frames(query.values.keys().chain(query.variables.keys()).copied());
+        let [frames, _] = history.frames;
+        let frames: Vec<_> = frames.into_iter().collect();
+        let graph = RelationView { base: self, tail: &[], residual: None };
+        let mut projection = ResidualProjection { query, result: ResidualRelation::default() };
+        unsafe {
+            project_relation_return(
+                ptr::from_ref(&graph).cast(), ptr::from_mut(&mut projection).cast(),
+                self.nodes.len(), WalkSlice::of(&frames), RelationSource::GRAPH,
+                ResidualProjection::OUTPUT,
+            );
         }
-        nodes.extend_from_slice(&self.nodes[nodes.len()..]);
-        let mut residual = Self {
-            nodes,
-            variables: self.variables.clone(),
-            frames: self.frames.clone(),
-            inputs: self.inputs.clone(),
-        };
-        for(id,node)in residual.nodes.iter_mut().enumerate(){
-            node.seeds.retain_sources(|source| !self.private(source));
-            if self.variables.contains(&id)||self.nodes[id].edges.iter().any(|e|matches!(e.op,Op::Read{..})) {
-                if !query.variables.contains_key(&id)&&!query.values.contains_key(&id){continue;}
-                for(source,when)in query.node(id).sources.entries(){
-                    if !self.references(source) && !Borrow::source_has_local(source) {
-                        node.seeds.sources.union_when(source.clone(), &when);
-                    }
-                }
-            }
-        }
-        let mut work = RelationWalk::new(self, |_| false);
-        work.historical_frames(query.values.keys().chain(query.variables.keys()).copied());
-        let [frames, _] = work.frames;
-        for id in frames {
-            let frame=&mut residual.frames[id];
-            frame.writes.retain(|write|query.node(write.target).sources.entries().any(|(source,when)|when.possible()&&!self.private(source)));
-            for write in &frame.writes{for(_,id)in write.fields.iter().flatten(){for(source,when)in query.node(*id).sources.entries(){
-                if self.private(source){residual.nodes[*id].seeds.sources.union_when(source.clone(),&when);}
-            }}}
-        }
-        residual
+        projection.result
     }
-    fn rebind<'r>(&self, value: &Borrow, residual: &impl Fn() -> &'r Graph) -> Borrow {
+    fn rebind<'r>(&self, value: &Borrow, residual: &impl Fn() -> &'r ResidualRelation) -> Borrow {
         value.map_sources(|source|match source{
             Origin::Relation(graph, root) if self.extension(&graph) => {
                 let tail = &graph.nodes[self.nodes.len()..];
-                let selected = RelationView { base: residual(), tail }.selected(root);
+                let selected = RelationView { base: self, tail, residual: Some(residual()) }.selected(root);
                 Borrow::source(Origin::Relation(Arc::new(selected), 0))
             },
             Origin::Element{parent,fields,index}=>Borrow::selected_element(self.rebind(&parent,residual),fields,index),
@@ -1274,6 +1269,124 @@ impl RelationRound<'_, '_, '_> {
     unsafe extern "C" fn forget(context: Slot, id: usize) {
         let round = unsafe { &mut *context.cast::<Self>() };
         round.query.values.remove(&id);
+    }
+}
+
+#[derive(Default)]
+struct ResidualRelation {
+    nodes: BTreeMap<usize, ResidualNode>,
+    writes: BTreeMap<usize, Vec<Write>>,
+}
+
+struct ResidualNode {
+    seeds: Borrow,
+    edges: Option<Vec<Edge>>,
+}
+
+impl ResidualNode {
+    fn seeds_of(node: &Node) -> Self {
+        Self { seeds: node.seeds.clone(), edges: None }
+    }
+}
+
+#[repr(C)]
+struct ResidualOutput {
+    node_facts: unsafe extern "C" fn(Slot, usize) -> u32,
+    node: unsafe extern "C" fn(Slot, usize, u32, u32),
+    keep: unsafe extern "C" fn(Slot, usize) -> u32,
+    write: unsafe extern "C" fn(Slot, usize, usize, u32),
+    field: unsafe extern "C" fn(Slot, usize),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.relation_order::project_return"]
+    fn project_relation_return(
+        graph: Borrowed, output: Slot, nodes: usize, frames: WalkSlice,
+        source: RelationSource, host: ResidualOutput,
+    );
+}
+
+struct ResidualProjection<'q, 'g> {
+    query: &'q Query<'g>,
+    result: ResidualRelation,
+}
+
+impl ResidualProjection<'_, '_> {
+    const OUTPUT: ResidualOutput = ResidualOutput {
+        node_facts: Self::node_facts, node: Self::node, keep: Self::keep,
+        write: Self::write, field: Self::field,
+    };
+
+    unsafe extern "C" fn node_facts(context: Slot, id: usize) -> u32 {
+        let query = unsafe { &*context.cast::<Self>() }.query;
+        let graph = query.graph;
+        let resolved = u32::from(query.values.contains_key(&id));
+        let bound = u32::from(query.variables.contains_key(&id));
+        let variable = graph.variables.contains(&id);
+        let reads = !variable && graph.nodes[id].edges.iter().any(|edge| matches!(edge.op, Op::Read { .. }));
+        resolved | (bound << 1) | (u32::from(variable) << 2) | (u32::from(reads) << 3)
+    }
+
+    unsafe extern "C" fn node(context: Slot, id: usize, expand: u32, publish: u32) {
+        let projection = unsafe { &mut *context.cast::<Self>() };
+        let query = projection.query;
+        let graph = query.graph;
+        let original = &graph.nodes[id];
+        let mut patch = if expand != 0 {
+            match query.local_definition(id) {
+                Cow::Owned(node) => Some(ResidualNode { seeds: node.seeds, edges: Some(node.edges) }),
+                Cow::Borrowed(_) => None,
+            }
+        } else {
+            None
+        };
+        if patch.is_none() && original.seeds.sources.iter().any(|source| graph.private(source)) {
+            patch = Some(ResidualNode::seeds_of(original));
+        }
+        if let Some(node) = &mut patch {
+            node.seeds.retain_sources(|source| !graph.private(source));
+        }
+        if publish != 0 {
+            for (source, when) in query.node(id).sources.entries() {
+                if !graph.references(source) && !Borrow::source_has_local(source) {
+                    patch.get_or_insert_with(|| ResidualNode::seeds_of(original))
+                        .seeds.sources.union_when(source.clone(), &when);
+                }
+            }
+        }
+        if let Some(node) = patch {
+            projection.result.nodes.insert(id, node);
+        }
+    }
+
+    unsafe extern "C" fn keep(context: Slot, target: usize) -> u32 {
+        let query = unsafe { &*context.cast::<Self>() }.query;
+        u32::from(query.node(target).sources.entries()
+            .any(|(source, when)| when.possible() && !query.graph.private(source)))
+    }
+
+    unsafe extern "C" fn write(context: Slot, frame: usize, index: usize, keep: u32) {
+        let projection = unsafe { &mut *context.cast::<Self>() };
+        let original = &projection.query.graph.frames[frame].writes;
+        let writes = &mut projection.result.writes;
+        if keep == 0 {
+            writes.entry(frame).or_insert_with(|| original[..index].to_vec());
+        } else if let Some(selected) = writes.get_mut(&frame) {
+            selected.push(original[index].clone());
+        }
+    }
+
+    unsafe extern "C" fn field(context: Slot, id: usize) {
+        let projection = unsafe { &mut *context.cast::<Self>() };
+        let query = projection.query;
+        let graph = query.graph;
+        for (source, when) in query.node(id).sources.entries() {
+            if graph.private(source) {
+                projection.result.nodes.entry(id)
+                    .or_insert_with(|| ResidualNode::seeds_of(&graph.nodes[id]))
+                    .seeds.sources.union_when(source.clone(), &when);
+            }
+        }
     }
 }
 

@@ -521,3 +521,44 @@ extern "C" void compact(address graph, address destination, RelationSelection se
         index += 1u64;
     }
 }
+
+const u32 RESOLVED_NODE = 1;
+const u32 BOUND_NODE = 2;
+const u32 VARIABLE_NODE = 4;
+const u32 READ_NODE = 8;
+
+extern "C" void project_return(address graph, address context, usize nodes, WalkSlice frames, RelationSource source, ResidualOutput output) on cpu
+    requires nonzero(source.frame) requires nonzero(source.write) requires nonzero(source.field)
+    requires nonzero(output.node_facts) requires nonzero(output.node) requires nonzero(output.keep)
+    requires nonzero(output.write) requires nonzero(output.field)
+{
+    usize id = 0u64;
+    while (id < nodes) {
+        u32 facts = output.node_facts(context,id);
+        bool solved = (facts & (RESOLVED_NODE | BOUND_NODE)) != 0;
+        bool publishes = (facts & (VARIABLE_NODE | READ_NODE)) != 0;
+        output.node(context,id,facts & RESOLVED_NODE,solved && publishes ? 1 : 0);
+        id += 1u64;
+    }
+
+    usize index = 0u64;
+    while (index < frames.count) {
+        usize frame_id = old_id(frames,index);
+        WalkFrame frame = source.frame(graph,frame_id);
+        usize item = 0u64;
+        while (item < frame.writes.count) {
+            WalkWrite write = source.write(frame.writes.data,item);
+            u32 keep = output.keep(context,write.target);
+            output.write(context,frame_id,item,keep);
+            if (keep != 0) {
+                usize field = 0u64;
+                while (field < write.fields.count) {
+                    output.field(context,source.field(write.fields.data,field));
+                    field += 1u64;
+                }
+            }
+            item += 1u64;
+        }
+        index += 1u64;
+    }
+}

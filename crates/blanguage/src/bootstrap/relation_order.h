@@ -124,3 +124,16 @@ extern "C" void compact(address graph, address destination, RelationSelection se
     requires nonzero(source.frame) requires nonzero(source.write) requires nonzero(source.field)
     requires nonzero(output.node) requires nonzero(output.edge)
     requires nonzero(output.frame) requires nonzero(output.write) requires nonzero(output.field);
+
+struct ResidualOutput {
+    cfn<u32,address,usize> node_facts;
+    cfn<void,address,usize,u32,u32> node;
+    cfn<u32,address,usize> keep;
+    cfn<void,address,usize,usize,u32> write;
+    cfn<void,address,usize> field;
+};
+
+extern "C" void project_return(address graph, address context, usize nodes, WalkSlice frames, RelationSource source, ResidualOutput output) on cpu
+    requires nonzero(source.frame) requires nonzero(source.write) requires nonzero(source.field)
+    requires nonzero(output.node_facts) requires nonzero(output.node) requires nonzero(output.keep)
+    requires nonzero(output.write) requires nonzero(output.field);
