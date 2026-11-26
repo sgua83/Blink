@@ -211,24 +211,3 @@ fn compact_slots(
 ) {
     compaction::run(code, registers, locals, inputs, outputs);
 }
-
-pub(crate) fn visit(code: &[Inst], f: &mut impl FnMut(&Inst)) {
-    for i in code {
-        f(i);
-        match &(i).kind {
-            InstKind::Scope(body) | InstKind::Cleanup{body,..} => visit(body, f),
-            InstKind::If { yes, no, .. } => {
-                visit(yes, f);
-                visit(no, f);
-            }
-            InstKind::Loop {
-                condition, body, ..
-            } => {
-                visit(condition, f);
-                visit(body, f);
-            }
-            _ => {}
-        }
-    }
-}
-

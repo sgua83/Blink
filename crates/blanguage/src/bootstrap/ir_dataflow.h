@@ -389,6 +389,16 @@ struct FoldHost {
 struct LowerCursor {LowerNode node;u32 flags;u32 phase;};
 struct LowerNeed {u32 kind;u32 flags;address child;Word test;LowerBranch branch;};
 struct FailureBranchNeed {u32 kind;Word test;LowerBranch branch;};
+struct CleanupError { u32 present; usize slot; usize reg; };
+struct CleanupFactsHost {
+ Host ir;
+ cfn<CleanupError,address> ensures memory(read) error;
+ cfn<void,address,usize> zero;
+};
+// Success facts come from the final source IR before failure lowering.
+extern "C" void cleanup_success_facts(Span code,usize slot,address facts,CleanupFactsHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.error) requires nonzero(host.zero);
+
 extern "C" LowerNeed lower_failure_start(address state,address block,address output,LowerHost host) on cpu
  requires nonzero(host.next) requires nonzero(host.reg) requires nonzero(host.capture) requires nonzero(host.set_error) requires nonzero(host.original) requires nonzero(host.cleanup_body) requires nonzero(host.cleanup_scope) requires nonzero(host.fold) requires nonzero(host.constant) requires nonzero(host.load) requires nonzero(host.store) requires nonzero(host.compare)
  requires nonzero(host.effects.inspect) requires nonzero(host.effects.contains);

@@ -372,6 +372,38 @@ pub(super) struct FloatingBound {
 
 type Facts = BTreeSet<Fact>;
 
+#[repr(C)]
+struct CleanupError {
+    present: u32,
+    slot: usize,
+    reg: Reg,
+}
+
+#[repr(C)]
+struct CleanupFactsHost {
+    ir: ir::dataflow::Host,
+    error: unsafe extern "C" fn(*const ir::Call) -> CleanupError,
+    zero: unsafe extern "C" fn(*mut Facts, Reg),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ir_dataflow::cleanup_success_facts"]
+    fn cleanup_success_facts(code: ir::dataflow::Span, slot: usize, facts: *mut Facts, host: CleanupFactsHost);
+}
+
+unsafe extern "C" fn cleanup_error(call: *const ir::Call) -> CleanupError {
+    let call = unsafe { &*call };
+    match (&call.failure, call.error) {
+        (Some(FailureContinuation::Cleanup(slot)), Some(reg)) => CleanupError { present: 1, slot: *slot, reg },
+        _ => CleanupError { present: 0, slot: 0, reg: 0 },
+    }
+}
+
+unsafe extern "C" fn cleanup_zero(facts: *mut Facts, reg: Reg) {
+    unsafe { &mut *facts }.insert(Fact::Zero(ValueIdentity::Register(reg)));
+}
+
+
 #[derive(Clone)]
 struct RequiredFacts {
     facts: Facts,
@@ -2326,6 +2358,12 @@ impl Clause {
     }
     pub(super) fn task_return_sources(&self,component:usize) -> Option<BTreeSet<u32>> {
         task_sources::query(self, component)
+    }
+    pub(super) fn cleanup_success(code: &[Inst], slot: usize) -> Self {
+        let mut facts = Facts::new();
+        let host = CleanupFactsHost { ir: ir::dataflow::HOST, error: cleanup_error, zero: cleanup_zero };
+        unsafe { cleanup_success_facts(ir::dataflow::Span::slice(code), slot, &mut facts, host); }
+        Self::facts(facts)
     }
     pub(super) fn zero_results(registers:impl IntoIterator<Item=Reg>)->Self {
         Self::facts(registers.into_iter().map(|reg|Fact::Zero(ValueIdentity::Register(reg))).collect())

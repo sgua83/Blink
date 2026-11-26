@@ -1598,6 +1598,26 @@ LowerNeed lower_continue(address state,LowerCursor original,address block,addres
   return lower_give(state,cursor,LowerNeed(2,0,unsafe_address(0u64),Word(0,error),LowerBranch(node.continuation,error,node.slot,0,0u64,0u64)));
  }
 }
+extern "C" void cleanup_success_facts(Span code,usize slot,address facts,CleanupFactsHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.error) requires nonzero(host.zero) {
+ usize index=0u64;
+ while(index<code.count){
+  View inst=host.ir.inspect(node_at(code,index,N_INSTRUCTION));
+  if(inst.tag==OP_LOAD_LOCAL && inst.b==slot){
+   host.zero(facts,inst.a);
+  }else if(inst.tag==OP_INVOKE){
+   CleanupError error=host.error(inst.left.data);
+   if(error.present!=0 && error.slot==slot){host.zero(facts,error.reg);}
+  }else if(inst.tag==OP_SCOPE || inst.tag==OP_CLEANUP){
+   cleanup_success_facts(inst.first,slot,facts,host);
+  }else if(inst.tag==OP_BRANCH || inst.tag==OP_LOOP_VALUE){
+   cleanup_success_facts(inst.first,slot,facts,host);
+   cleanup_success_facts(inst.second,slot,facts,host);
+  }
+  index+=1u64;
+ }
+}
+
 extern "C" LowerNeed lower_failure_start(address state,address block,address output,LowerHost host) on cpu
  requires nonzero(host.next) requires nonzero(host.reg) requires nonzero(host.capture) requires nonzero(host.set_error) requires nonzero(host.original) requires nonzero(host.cleanup_body) requires nonzero(host.cleanup_scope) requires nonzero(host.fold) requires nonzero(host.constant) requires nonzero(host.load) requires nonzero(host.store) requires nonzero(host.compare)
  requires nonzero(host.effects.inspect) requires nonzero(host.effects.contains) {

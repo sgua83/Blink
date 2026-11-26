@@ -1862,15 +1862,7 @@ impl<'a> Builder<'a> {
         result?;
         let failure=self.failure_scope(consumed);
         // On the normal edge the original group status stayed zero throughout.
-        let mut statuses=Vec::new();
-        crate::optimize::visit(&body,&mut |inst|match &inst.kind {
-            InstKind::LoadLocal(value,source) if *source==slot => statuses.push(*value),
-            InstKind::Call(call) if matches!(&call.failure,Some(FailureContinuation::Cleanup(target))if *target==slot) => {
-                statuses.extend(call.error);
-            }
-            _=>{}
-        });
-        self.path=bounds::Clause::both(&self.path,&bounds::Clause::zero_results(statuses));
+        self.path=bounds::Clause::both(&self.path,&bounds::Clause::cleanup_success(&body,slot));
         self.emit(InstKind::Cleanup{slot,body,failure});
         Ok(())
     }
