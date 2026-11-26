@@ -3158,7 +3158,9 @@ extern "C" void group_remaining(address body, u32 uint_type, u32 index, u32 lane
     stage_group_remaining(out, uint_type, index, lane, count);
 }
 
-extern "C" TileRangeWords tile_range(address body, u32 uint_type, u32 bool_type, u32 index, u32 count, u32 width, u32 first) on cpu {
+struct TileRangeWords { u64 words; u32 next; u32 lane; u32 length; };
+
+TileRangeWords tile_range(address body, u32 uint_type, u32 bool_type, u32 index, u32 count, u32 width, u32 first) on cpu {
     StageCursor out = StageCursor(body, 0u64, first);
     u32 lane = stage_op(out, 137, uint_type, index, width);
     u32 remaining = stage_group_remaining(out, uint_type, index, lane, count);
@@ -3525,13 +3527,106 @@ void block_tile_write(BlockValues values, TileStorage storage, TileKey key, u32 
         raw, address_of(pointers[0]), address(), memory);
 }
 
-void store_tile_word(TileCell cell, u32 raw, TileStorage storage, MemoryHost memory) on cpu
+void emit_shared_store(TileCell cell, u32 index, u32 width, u32 value, MemoryHost memory) on cpu
     requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
-    u32 pointer = tile_cell_address(cell, storage.lane, 0, storage.width, memory).pointer;
+    u32 pointer = tile_cell_address(cell, index, 0, width, memory).pointer;
     ScalarHost stream = memory.scalars;
     address body = stream.reserve(stream.context, 3u64, 0u64).body;
-    memory.finish_body(stream.context, plain_store(body, 0u64, pointer, raw));
+    memory.finish_body(stream.context, plain_store(body, 0u64, pointer, value));
+}
+
+void pack_tile_fragment(PackedField field, u32 word_type, u32 zero, address packed, MemoryHost memory) on cpu
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
+    ScalarHost stream = memory.scalars;
+    address context = stream.context;
+    u32 bits = field.offset % 4 * 8;
+    u32 shift = bits == 0 ? 0 : stream.constant(context, BuiltinScalar::U32, u64(bits));
+    u32 next = stream.ids(context, 0);
+    StageCursor out = StageCursor(stream.reserve(context, 14u64, 0u64).body, 0u64, next);
+    pack_field(out, field, word_type, zero, shift, 0, packed);
+    memory.finish_body(context, out.words);
+    stream.ids(context, out.next - next);
+}
+
+TileInputRow next_tile_snapshot(TileInputSource source, address context) on cpu
+    requires nonzero(source.row) {
+    TileInputRow row = source.row(source.cursor, context);
+    while (row.cell.variable != 0) {
+        if (row.cell.unit == BuiltinScalar::U64 ? row.cell.byte == 0 : row.fragments != 0u64) {
+            break;
+        }
+        row = source.row(source.cursor, context);
+    }
+    return row;
+}
+
+extern "C" TileInputRange emit_tile_input(TileInputLayout input, TileInputSource source, MemoryHost memory) on cpu
+    requires nonzero(source.row) requires nonzero(source.fragment) requires nonzero(memory.pointer_type)
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
+    ScalarHost stream = memory.scalars;
+    address context = stream.context;
+    u32 width = stream.constant(context, BuiltinScalar::U32, u64(input.width));
+    u32 uint_type = stream.type_id(context, BuiltinScalar::U32);
+    u32 bool_type = stream.type_id(context, BuiltinScalar::Bool);
+    u32 next = stream.ids(context, 0);
+    address range_body = stream.reserve(context, 26u64, 0u64).body;
+    TileRangeWords range = tile_range(range_body, uint_type, bool_type, input.page.index, input.count, width, next);
+    memory.finish_body(context, range.words);
+    stream.ids(context, range.next - next);
+
+    TileInputRow row = next_tile_snapshot(source, context);
+    if (row.cell.variable == 0) { return TileInputRange(range.lane, range.length, input.label); }
+
+    u32 load = stream.ids(context, 2);
+    u32 end = load + 1;
+    address selection = stream.reserve(context, 9u64, 0u64).body;
+    memory.finish_body(context, open_selection(end, input.active, load, end, selection).words);
+    // Each aligned word has four positions and three fragment widths (1, 2, 4 bytes).
+    // The ordered input set has unique (position, width) pairs.
+    array<PackedField,12> fields = array<PackedField,12>(PackedField(0, 0, 0, 0));
+    address scratch = address_of(fields[0]);
+    while (row.cell.variable != 0) {
+        PageInputs page = input.page;
+        page.descriptor = block_register(input.descriptors, row.binding);
+        page.word = row.word;
+        u32 value;
+        if (row.cell.unit == BuiltinScalar::U64) {
+            value = physical_scalar_read(PhysicalAccess(page, BuiltinScalar::U64, 0, 0), memory);
+        } else {
+            usize part = 0u64;
+            while (part < row.fragments) {
+                TileInputFragment fragment = source.fragment(source.cursor);
+                page.word = fragment.byte;
+                u32 raw = physical_scalar_read(PhysicalAccess(page, fragment.unit, 0, 0), memory);
+                u32 ty = stream.type_id(context, fragment.unit);
+                u32 bytes = scalar_definition(fragment.unit).width / 8;
+                address slot = unsafe_address(address_bits(scratch) + part * size_of<PackedField>());
+                unsafe_position<PackedField>(slot) = PackedField(raw, fragment.byte % 4, ty, bytes);
+                part += 1u64;
+            }
+            u32 zero = stream.constant(context, BuiltinScalar::U32, 0u64);
+            value = zero;
+            part = 0u64;
+            while (part < row.fragments) {
+                address slot = unsafe_address(address_bits(scratch) + part * size_of<PackedField>());
+                pack_tile_fragment(unsafe_position<PackedField>(slot), uint_type, zero, address_of(value), memory);
+                part += 1u64;
+            }
+        }
+        emit_shared_store(row.cell, range.lane, input.width, value, memory);
+        row = next_tile_snapshot(source, context);
+    }
+
+    address merge = stream.reserve(context, 4u64, 0u64).body;
+    memory.finish_body(context, next_control_block(end, end, 1, merge).words);
+    u32 scope = stream.constant(context, BuiltinScalar::U32, 2u64);
+    u32 semantics = stream.constant(context, BuiltinScalar::U32, 328u64);
+    address barrier = stream.reserve(context, 4u64, 0u64).body;
+    memory.finish_body(context, workgroup_barrier(barrier, 0u64, scope, semantics));
+    return TileInputRange(range.lane, range.length, end);
 }
 
 extern "C" void emit_tile_publication(TilePublication input, TileStorage storage, address workspace,
@@ -3551,7 +3646,7 @@ extern "C" void emit_tile_publication(TilePublication input, TileStorage storage
             address field = unsafe_address(address_bits(input.fields.data) + u64(i) * input.fields.stride);
             TileKey key = TileKey(input.tile, unsafe_position<u32>(field), TileKeyKind::Published);
             TileCell cell = storage.cell(context, key);
-            if (cell.variable != 0) { store_tile_word(cell, raw, storage, memory); }
+            if (cell.variable != 0) { emit_shared_store(cell, storage.lane, storage.width, raw, memory); }
         } else {
             put(workspace, u64(i), raw);
         }
@@ -3567,22 +3662,16 @@ extern "C" void emit_tile_publication(TilePublication input, TileStorage storage
             u32 offset = unsafe_position<u32>(field);
             u32 width = scalar_definition(scalar(context, unsafe_position<usize>(reg))).width;
             u32 raw_type = stream.type_id(context, unsigned_scalar(width));
-            u32 bits = offset % 4 * 8;
-            u32 shift = bits == 0 ? 0 : stream.constant(context, BuiltinScalar::U32, u64(bits));
             u32 slot = offset / 4;
             if (read_word(packed, slot) == 0) { put(packed, u64(slot), zero); }
-            u32 next = stream.ids(context, 0);
-            StageCursor out = StageCursor(stream.reserve(context, 33u64, 0u64).body, 0u64, next);
-            pack_field(out, PackedField(raw, offset, raw_type, width / 8), word_type, zero, shift, 0, packed);
-            memory.finish_body(context, out.words);
-            stream.ids(context, out.next - next);
+            pack_tile_fragment(PackedField(raw, offset, raw_type, width / 8), word_type, zero, packed, memory);
         }
     }
     for (i in 0..u32(input.words)) {
         u32 raw = read_word(packed, i);
         if (raw != 0) {
             TileKey key = TileKey(input.tile, i * 4, TileKeyKind::Published);
-            store_tile_word(storage.cell(context, key), raw, storage, memory);
+            emit_shared_store(storage.cell(context, key), storage.lane, storage.width, raw, memory);
         }
     }
 }

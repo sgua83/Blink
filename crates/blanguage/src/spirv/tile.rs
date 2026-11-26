@@ -1,15 +1,8 @@
 //! 输入与中间发布共用共享布局；阶段屏障覆盖所有 workgroup invocations。
 use super::*;
-use std::collections::btree_set;
+use crate::ir::dataflow::InputFragments;
+use std::collections::{btree_map, btree_set};
 use std::ffi::c_void;
-
-#[repr(C)]
-struct TileRangeWords {
-    words: u64,
-    next: u32,
-    lane: u32,
-    length: u32,
-}
 
 #[repr(u32)]
 enum TilePhaseKind { End, Plain, Publish, Barrier, Collective }
@@ -49,10 +42,6 @@ struct TilePhaseHost {
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.spirv_envelope::tile_range"]
-    fn emit_tile_range(
-        body: *mut u32, uint_type: u32, bool_type: u32, index: u32, count: u32, width: u32, first: u32,
-    ) -> TileRangeWords;
     #[link_name = "bootstrap.spirv_envelope::emit_tile_phases"]
     fn emit_tile_phases(active: u32, control: StructuredHost, host: TilePhaseHost);
 }
@@ -168,22 +157,87 @@ unsafe extern "C" fn tile_cell(context: *mut c_void, key: TileKey) -> TileCell {
         TileKeyKind::Input => SharedWord::Input { binding: key.owner, word: key.word },
         TileKeyKind::Published => SharedWord::Published { tile: key.owner, word: key.word },
     };
-    let Some(&(unit, slot, part)) = emitter.tile_layout.get(&shared.aligned()) else {
-        return TileCell { unit: ScalarCode::U32, slot: 0, byte: 0, variable: 0, pointer_type: 0 };
+    emitter.tile_layout.get(&shared.aligned()).map_or(TileCell::ABSENT, |&(unit, slot, part)| {
+        emitter.placed_tile_cell(unit, slot, part + key.word % 4)
+    })
+}
+
+impl TileCell {
+    const ABSENT: Self = Self {
+        unit: ScalarCode::U32, slot: 0, byte: 0, variable: 0, pointer_type: 0,
     };
-    let (pointer_type, variable) = if unit == Scalar::U64 {
-        (emitter.tile_pointer64, emitter.tile_shared64)
-    } else {
-        (emitter.tile_pointer, emitter.tile_shared)
-    };
-    TileCell { unit: unit.into(), slot: slot as u32, byte: part + key.word % 4, variable, pointer_type }
 }
 
 unsafe extern "C" fn tile_word(context: *mut c_void, tile: usize, word: u32) -> TileKey {
     unsafe { &*context.cast::<Emitter<'_>>() }.stage.shared_word(tile, word).into()
 }
 
+#[repr(C)]
+struct TileInputLayout {
+    page: PageInputs,
+    descriptors: *const u32,
+    count: u32,
+    active: u32,
+    width: u32,
+    label: u32,
+}
+
+#[repr(C)]
+struct TileInputRange {
+    lane: u32,
+    length: u32,
+    label: u32,
+}
+
+#[repr(C)]
+struct TileInputRow {
+    binding: usize,
+    word: u32,
+    fragments: usize,
+    cell: TileCell,
+}
+
+#[repr(C)]
+struct TileInputFragment {
+    byte: u32,
+    unit: ScalarCode,
+}
+
+struct TileInputCursor<'a> {
+    cells: btree_map::Range<'a, SharedWord, (Scalar, usize, u32)>,
+    inputs: &'a InputFragments,
+    fragments: btree_set::Iter<'a, (u32, Scalar)>,
+}
+
+#[repr(C)]
+struct TileInputSource {
+    cursor: *mut c_void,
+    row: unsafe extern "C" fn(*mut c_void, *mut c_void) -> TileInputRow,
+    fragment: unsafe extern "C" fn(*mut c_void) -> TileInputFragment,
+}
+
+unsafe extern "C" fn tile_input_row(cursor: *mut c_void, context: *mut c_void) -> TileInputRow {
+    let cursor = unsafe { &mut *cursor.cast::<TileInputCursor<'_>>() };
+    let Some((&SharedWord::Input { binding, word }, &(unit, slot, byte))) = cursor.cells.next() else {
+        return TileInputRow { binding: 0, word: 0, fragments: 0, cell: TileCell::ABSENT };
+    };
+    let emitter = unsafe { &*context.cast::<Emitter<'_>>() };
+    let fragments = cursor.inputs.get(&(binding, word)).map_or(0, |fragments| {
+        cursor.fragments = fragments.iter();
+        fragments.len()
+    });
+    TileInputRow { binding, word, fragments, cell: emitter.placed_tile_cell(unit, slot, byte) }
+}
+
+unsafe extern "C" fn tile_input_fragment(cursor: *mut c_void) -> TileInputFragment {
+    let cursor = unsafe { &mut *cursor.cast::<TileInputCursor<'_>>() };
+    let &(byte, unit) = cursor.fragments.next().unwrap();
+    TileInputFragment { byte, unit: unit.into() }
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::emit_tile_input"]
+    fn emit_tile_input(input: TileInputLayout, source: TileInputSource, memory: MemoryHost) -> TileInputRange;
     #[link_name = "bootstrap.spirv_envelope::tile_storage_pointer"]
     fn tile_storage_pointer(storage: TileStorage, key: TileKey, index: u32, offset: u32, memory: MemoryHost) -> u32;
     #[link_name = "bootstrap.spirv_envelope::tile_storage_read"]
@@ -195,65 +249,35 @@ unsafe extern "C" {
 }
 
 impl Emitter<'_> {
-    pub(super) fn tile_input(
-        &mut self, count: u32, active: u32, inputs: &mut crate::ir::dataflow::InputFragments,
-    ) {
-        let width = self.constant(Scalar::U32, self.workgroup_width);
-        let at = self.body.len();
-        self.body.reserve(26);
-        let range = unsafe {
-            let range = emit_tile_range(
-                self.body.as_mut_ptr().add(at), self.types[&Scalar::U32], self.types[&Scalar::Bool],
-                self.index, count, width, self.next,
-            );
-            self.body.set_len(at + range.words as usize);
-            range
+    pub(super) fn tile_input(&mut self, count: u32, active: u32, inputs: &InputFragments) {
+        let end = SharedWord::Published { tile: 0, word: 0 };
+        let empty = std::collections::BTreeSet::new();
+        let mut cursor = TileInputCursor {
+            cells: self.tile_layout.range(..end), inputs, fragments: empty.iter(),
         };
-        self.next = range.next;
+        let input = TileInputLayout {
+            page: self.page_inputs(0, self.index, Some(0), 0), descriptors: self.buffers.as_ptr(),
+            count, active, width: self.workgroup_width, label: self.current_label,
+        };
+        let source = TileInputSource {
+            cursor: std::ptr::from_mut(&mut cursor).cast(),
+            row: tile_input_row, fragment: tile_input_fragment,
+        };
+        let range = unsafe { emit_tile_input(input, source, self.memory_host()) };
         self.tile_lane = range.lane;
         self.tile_length = range.length;
-        for (key, (unit, _, part)) in self.tile_layout {
-            if *unit == Scalar::U64 && *part == 0 {
-                if let SharedWord::Input { binding, word } = key {
-                    inputs.entry((*binding, *word)).or_default();
-                }
-            }
-        }
-        if inputs.is_empty() {
-            return;
-        }
-        let load = self.id();
-        let end = self.id();
-        self.open_active(active, load, end);
-        for (&(source, word), fragments) in inputs.iter() {
-            let key = SharedWord::Input { binding: source, word };
-            let (unit, _, part) = self.tile_layout[&key];
-            if unit == Scalar::U64 {
-                if part == 0 {
-                    let raw = self.load_raw_buffer(unit, source, self.index, word);
-                    let at = self.tile_word_pointer(key, self.tile_lane, None);
-                    self.store_pointer(at, raw);
-                }
-                continue;
-            }
-            let components: Vec<_> = fragments.iter().map(|&(byte, unit)| {
-                let raw = self.load_raw_buffer(unit, source, self.index, byte);
-                (unit, byte % 4, raw)
-            }).collect();
-            let raw = self.pack_words(4, components)[0];
-            let target = self.tile_word_pointer(
-                SharedWord::Input {
-                    binding: source,
-                    word,
-                },
-                self.tile_lane,
-                None,
-            );
-            self.store_pointer(target, raw);
-        }
-        self.merge_active(end, true);
-        self.tile_barrier();
+        self.current_label = range.label;
     }
+
+    fn placed_tile_cell(&self, unit: Scalar, slot: usize, byte: u32) -> TileCell {
+        let (pointer_type, variable) = if unit == Scalar::U64 {
+            (self.tile_pointer64, self.tile_shared64)
+        } else {
+            (self.tile_pointer, self.tile_shared)
+        };
+        TileCell { unit: unit.into(), slot: slot as u32, byte, variable, pointer_type }
+    }
+
     pub(super) fn tile_storage(&self) -> TileStorage {
         TileStorage { cell: tile_cell, word: tile_word, width: self.workgroup_width,
             lane: self.tile_lane, length: self.tile_length }

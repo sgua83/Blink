@@ -1729,17 +1729,6 @@ impl Emitter<'_> {
         };
         unsafe { emit_payload_load(input, words.as_ptr(), self.value(dst), self.memory_host()); }
     }
-    fn pack_words<I>(&mut self, size: u32, components: I) -> Vec<u32>
-    where
-        I: IntoIterator<Item = (Scalar, u32, u32)>,
-        I::IntoIter: ExactSizeIterator,
-    {
-        let zero = self.constant(Scalar::U32, 0);
-        let mut values = vec![zero; size.div_ceil(4) as usize];
-        self.pack_word_fields(&mut values, zero, components);
-        values
-    }
-
     fn pack_word_fields<I>(&mut self, values: &mut [u32], zero: u32, components: I)
     where
         I: IntoIterator<Item = (Scalar, u32, u32)>,
@@ -1804,14 +1793,6 @@ impl Emitter<'_> {
     }
     fn physical_unit(scalar: Scalar) -> Scalar {
         Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 })
-    }
-
-    fn load_raw_buffer(&mut self, scalar: Scalar, binding: usize, index: u32, word: u32) -> u32 {
-        let input = PhysicalAccess {
-            page: self.page_inputs(self.buffers[binding], index, Some(word), 0),
-            scalar: scalar.into(), value: 0, value_type: 0,
-        };
-        unsafe { physical_scalar_read(input, self.memory_host()) }
     }
 
     fn ray(
@@ -1915,7 +1896,7 @@ pub fn emit_pass(
 ) -> Result<Vec<u32>, &'static str> {
     let stage = &program.stages[stage_index];
     program::check_shader_pages(program)?;
-    let (layout, mut inputs) = shader_stage_inputs(stage);
+    let (layout, inputs) = shader_stage_inputs(stage);
     let (float64, integer8, integer16) = crate::ir::dataflow::numeric_requirements(program);
     let features = ProgramShaderFeatures {
         float64, integer8, integer16,
@@ -1943,7 +1924,7 @@ pub fn emit_pass(
     };
     let pass = unsafe { shader_pass(kind, parameter, word) };
     let reduction = prepare_reduction(stage, pass);
-    emit_shader(program, stage, pass, &mut inputs, &layout, features, reduction.as_ref(), None, true)
+    emit_shader(program, stage, pass, &inputs, &layout, features, reduction.as_ref(), None, true)
         .map(|(words, _)| words)
 }
 fn shader_stage_inputs(
@@ -2056,7 +2037,7 @@ unsafe extern "C" {
 
 struct ShaderBodyEmission<'a, 'ir> {
     emitter: &'a mut Emitter<'ir>,
-    inputs: &'a mut crate::ir::dataflow::InputFragments,
+    inputs: &'a crate::ir::dataflow::InputFragments,
     operation: *const std::ffi::c_void,
     selection: *const Selection,
     kernel: Option<&'ir ReductionKernel>,
@@ -2214,7 +2195,7 @@ impl ShaderBodyEmission<'_, '_> {
 
 fn emit_shader(
     program: &Program, original_stage: &Stage, request: ShaderPass,
-    inputs: &mut crate::ir::dataflow::InputFragments, layout: &PlacedTiles,
+    inputs: &crate::ir::dataflow::InputFragments, layout: &PlacedTiles,
     program_features: ProgramShaderFeatures, reduction: Option<&PreparedReduction>,
     shared_original_facts: Option<&ShaderStageFacts>, publishes_summary: bool,
 ) -> Result<(Vec<u32>, u64), &'static str> {

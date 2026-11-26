@@ -97,8 +97,8 @@ pub(crate) fn compile_stage(
     program: &Program, i: usize, requirements: DeviceRequirements, buffers: ExecutionBuffers,
 ) -> Result<(ExecutionStage, StageCode), &'static str> {
     let stage = &program.stages()[i];
-    let (tile_layout, mut inputs) = shader_stage_inputs(stage);
-    // Shader input also includes the physical low half of a wide word.
+    let (tile_layout, inputs) = shader_stage_inputs(stage);
+    // Stage metadata describes the logical input words; the shader loads each placed wide cell once.
     let mut layout = ExecutionStage::from_stage(stage, inputs.keys().copied().collect());
     let can_use_single_group = program.buffers[stage.domain].count
         .is_none_or(|count| count <= layout.workgroup_width());
@@ -158,7 +158,7 @@ pub(crate) fn compile_stage(
         let facts = (request.flags & SHARED_FACTS != 0)
             .then(|| &*original_facts.get_or_insert_with(|| ShaderStageFacts::new(stage, true, true)));
         let result = emit_shader(
-            program, stage, pass, &mut inputs, &tile_layout, features, kernel, facts,
+            program, stage, pass, &inputs, &tile_layout, features, kernel, facts,
             request.flags & SUMMARY != 0,
         );
         let (words, bytes) = match result {
