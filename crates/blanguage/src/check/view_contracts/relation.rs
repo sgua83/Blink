@@ -1019,6 +1019,79 @@ unsafe extern "C" fn memory_use_facts(uses: Borrowed, index: usize) -> MemoryUse
     }
 }
 
+#[repr(C)]
+struct StoredUse {
+    path: Borrowed,
+    direct: Borrowed,
+    fields: Borrowed,
+}
+
+#[repr(C)]
+struct StoredLocationHost {
+    usage: unsafe extern "C" fn(Borrowed, usize) -> StoredUse,
+    call: unsafe extern "C" fn(Borrowed, usize) -> MemoryCallFacts,
+    project: unsafe extern "C" fn(Slot, StoredUse, usize),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.relation_order::visit_stored_locations"]
+    fn visit_stored_locations(uses: WalkSlice, calls: WalkSlice, context: Slot, host: StoredLocationHost);
+}
+
+pub(super) enum StoredLocation<'a> {
+    Call(usize, &'a Call),
+    Direct(&'a Borrow, &'a [(u32, usize)]),
+}
+
+impl Function {
+    pub(super) fn visit_stored_locations<F>(&self, project: F)
+    where
+        F: FnMut(&bounds::Clause, StoredLocation<'_>),
+    {
+        struct Projection<'a, F> {
+            calls: &'a [Call],
+            apply: F,
+        }
+        unsafe extern "C" fn project_at<F: FnMut(&bounds::Clause, StoredLocation<'_>)>(
+            context: Slot, event: StoredUse, index: usize,
+        ) {
+            let context = unsafe { &mut *context.cast::<Projection<'_, F>>() };
+            let path = unsafe { &*event.path.cast::<bounds::Clause>() };
+            let site = match context.calls.get(index) {
+                Some(call) => StoredLocation::Call(index, call),
+                None => {
+                    // B reports an unassociated event only with an actual direct write.
+                    let borrow = unsafe { &*event.direct.cast::<Borrow>() };
+                    let fields = unsafe { &*event.fields.cast::<Arc<[(u32, usize)]>>() };
+                    StoredLocation::Direct(borrow, fields)
+                }
+            };
+            (context.apply)(path, site);
+        }
+
+        let mut context = Projection { calls: &self.calls, apply: project };
+        unsafe {
+            visit_stored_locations(WalkSlice::of(&self.uses), WalkSlice::of(&self.calls),
+                ptr::from_mut(&mut context).cast(), StoredLocationHost {
+                    usage: stored_use, call: Function::memory_call_facts, project: project_at::<F>,
+                });
+        }
+    }
+}
+
+unsafe extern "C" fn stored_use(uses: Borrowed, index: usize) -> StoredUse {
+    let usage = unsafe { &*uses.cast::<Use>().add(index) };
+    let mut event = StoredUse { path: ptr::null(), direct: ptr::null(), fields: ptr::null() };
+    if let Requirement::Memory { borrow, written, address_fields, .. } = &usage.requirement {
+        event.path = ptr::from_ref(&usage.path).cast();
+        if written.is_some() {
+            event.direct = ptr::from_ref(borrow).cast();
+            event.fields = ptr::from_ref(address_fields).cast();
+        }
+    }
+    event
+}
+
 struct Builder<'a> { function:&'a Function,state:LoopScope<'a>,known:&'a States<'a>,keys:BTreeMap<Key,usize>,prefix:FramePrefix,graph:Graph,parameters:BTreeMap<ValueIdentity,usize> }
 impl Builder<'_> {
     fn empty(&mut self)->usize{let id=self.graph.nodes.len();self.graph.nodes.push(Node::default());id}

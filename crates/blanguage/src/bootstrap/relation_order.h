@@ -224,6 +224,21 @@ extern "C" u32 any_call_memory_write(
 extern "C" usize next_memory_event(WalkSlice uses, WalkSlice calls, address cursor, MemoryEventHost host) on cpu
     requires nonzero(host.usage) requires nonzero(host.call);
 
+struct StoredUse {
+    address path;
+    address direct;
+    address fields;
+};
+
+struct StoredLocationHost {
+    cfn<StoredUse,address,usize> usage;
+    cfn<MemoryCallFacts,address,usize> call;
+    cfn<void,address,StoredUse,usize> project;
+};
+
+extern "C" void visit_stored_locations(WalkSlice uses, WalkSlice calls, address context, StoredLocationHost host) on cpu
+    requires nonzero(host.usage) requires nonzero(host.call) requires nonzero(host.project);
+
 struct PrefixBoundary {
     usize memory;
     usize frame;

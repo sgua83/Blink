@@ -836,6 +836,33 @@ extern "C" usize next_memory_event(WalkSlice uses, WalkSlice calls, address curs
     return call;
 }
 
+extern "C" void visit_stored_locations(WalkSlice uses, WalkSlice calls, address context, StoredLocationHost host) on cpu
+    requires nonzero(host.usage) requires nonzero(host.call) requires nonzero(host.project)
+{
+    usize call = 0u64;
+    usize call_memory = WALK_END;
+    usize memory = 0u64;
+    while (memory < uses.count) {
+        StoredUse event = host.usage(uses.data,memory);
+        if (address_bits(event.path) != 0u64) {
+            while (call < calls.count) {
+                if (call_memory == WALK_END) {
+                    call_memory = host.call(calls.data,call).memory;
+                }
+                if (call_memory >= memory) { break; }
+                call += 1u64;
+                call_memory = WALK_END;
+            }
+            if (call_memory == memory) {
+                host.project(context,event,call);
+            } else if (address_bits(event.direct) != 0u64) {
+                host.project(context,event,WALK_END);
+            }
+        }
+        memory += 1u64;
+    }
+}
+
 PrefixBoundary prefix_boundary(WalkSlice runs, usize index) on cpu {
     return unsafe_position<PrefixBoundary>(cell(runs.data,index,16u64));
 }

@@ -981,12 +981,12 @@ impl StoredPaths<'_> {
     }
 
     fn project(&self, call_index: usize, index: usize, guard: &bounds::Condition,
-        usage: &Use, call: &Call,
+        path: &bounds::Clause, call: &Call,
     ) -> bounds::Condition {
         let projected = self.paths().lock().unwrap().entry((call_index, index))
             .or_default().clone();
         projected.get_or_init(|| {
-            bounds::Condition::execution(&usage.path).logical(guard.at_call(&call.arguments), false)
+            bounds::Condition::execution(path).logical(guard.at_call(&call.arguments), false)
         }).clone()
     }
 }
@@ -1007,7 +1007,7 @@ impl BorrowEvaluation<'_>{
             for (index, access) in known[&call.function].interface.access.iter().enumerate().rev() {
                 let Access::Stored { borrows, word, value, when } = access else { continue; };
                 let target = self.evaluate(&call_content_sources(borrows, call, &call.arguments).at_call(&call.arguments));
-                let execution = self.stored_paths.project(call_index, index, when, usage, call);
+                let execution = self.stored_paths.project(call_index, index, when, &usage.path, call);
                 let path = content_write_paths(query, position, &target, *word, &execution);
                 if path.active() {
                     let stored = self.evaluate(&call_content_sources(value, call, &call.arguments).at_call(&call.arguments));
@@ -1130,35 +1130,35 @@ impl BorrowEvaluation<'_>{
         let (function, known) = (self.function, self.known);
         let exposed = exposed_resources(function, |output| self.evaluate(&function.outputs[output]));
         let mut result = BTreeSet::new();
-        for(memory,usage)in function.uses.iter().enumerate(){
-            let Requirement::Memory{borrow,written,address_fields,..}=&usage.requirement else{continue;};
-            if let Some((call_index, call)) = function.call_at_memory(memory, false) {
+        function.visit_stored_locations(|path, site| match site {
+            relation::StoredLocation::Call(call_index, call) => {
                 for (index, access) in known[&call.function].interface.access.iter().enumerate() {
-                    let Access::Stored{borrows,word,when,..}=access else{continue;};
+                    let Access::Stored { borrows, word, when, .. } = access else { continue; };
                     let target = self.evaluate(&call_content_sources(borrows, call, &call.arguments).at_call(&call.arguments));
-                    let path = std::cell::LazyCell::new(|| self.stored_paths.project(call_index, index, when, usage, call)
+                    let write_path = std::cell::LazyCell::new(|| self.stored_paths.project(call_index, index, when, path, call)
                         .assume(&bounds::Clause::default(), true));
                     for (source, when) in target.sources.entries() {
                         if let Origin::Position(origin) = source
-                            && bounds::Clause::both(&when, &path).possible()
+                            && bounds::Clause::both(&when, &write_path).possible()
                         {
                             result.insert((origin.clone(), *word));
                         }
                     }
                 }
-            } else if written.is_some() {
+            }
+            relation::StoredLocation::Direct(borrow, fields) => {
                 let target = self.evaluate(borrow);
                 for (source, when) in target.sources.entries() {
                     if let Origin::Position(origin) = source
-                        && bounds::Clause::both(&when, &usage.path).possible()
+                        && bounds::Clause::both(&when, path).possible()
                     {
-                        for &(word, _) in address_fields.iter() {
+                        for &(word, _) in fields {
                             result.insert((origin.clone(), word));
                         }
                     }
                 }
             }
-        }
+        });
         result.retain(|(origin, _)| stored_target(origin, function, &exposed, &parameters).active());
         let result = Arc::new(result);
         self.stored = Some(Arc::clone(&result));
