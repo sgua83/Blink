@@ -1167,6 +1167,37 @@ impl Function {
     }
 }
 
+unsafe extern "C" {
+    #[link_name = "bootstrap.relation_order::visit_exit_writes"]
+    fn visit_exit_writes(events: WalkSlice, memory: usize, context: Slot,
+        visit: unsafe extern "C" fn(Slot, usize, usize, usize));
+}
+
+impl ExitContents {
+    pub(super) fn replay<F>(&self, memory: usize, apply: F)
+    where
+        F: FnMut(usize, &[ExitWrite]),
+    {
+        struct Replay<'a, F> {
+            writes: &'a [ExitWrite],
+            apply: F,
+        }
+
+        unsafe extern "C" fn visit<F: FnMut(usize, &[ExitWrite])>(
+            context: Slot, at: usize, first: usize, end: usize,
+        ) {
+            let replay = unsafe { &mut *context.cast::<Replay<'_, F>>() };
+            (replay.apply)(at, &replay.writes[first..end]);
+        }
+
+        let mut replay = Replay { writes: &self.writes, apply };
+        unsafe {
+            visit_exit_writes(WalkSlice::of(&self.events), memory,
+                ptr::from_mut(&mut replay).cast(), visit::<F>);
+        }
+    }
+}
+
 struct Builder<'a> { function:&'a Function,state:LoopScope<'a>,known:&'a States<'a>,keys:BTreeMap<Key,usize>,prefix:FramePrefix,graph:Graph,parameters:BTreeMap<ValueIdentity,usize> }
 impl Builder<'_> {
     fn empty(&mut self)->usize{let id=self.graph.nodes.len();self.graph.nodes.push(Node::default());id}

@@ -924,6 +924,34 @@ extern "C" usize latest_multiple_stored_return(WalkSlice uses,
     return WALK_END;
 }
 
+ExitEvent exit_event_at(WalkSlice events, usize index) on cpu {
+    return unsafe_position<ExitEvent>(cell(events.data,index,size_of<ExitEvent>()));
+}
+
+extern "C" void visit_exit_writes(WalkSlice events, usize memory, address context,
+    cfn<void,address,usize,usize,usize> visit) on cpu requires nonzero(visit)
+{
+    usize first = 0u64;
+    usize end = events.count;
+    while (first < end) {
+        usize middle = first + (end - first) / 2u64;
+        if (exit_event_at(events,middle).at >= memory) {
+            first = middle + 1u64;
+        } else {
+            end = middle;
+        }
+    }
+    if (first == events.count) { return; }
+
+    usize start = first == 0u64 ? 0u64 : exit_event_at(events,first - 1u64).end;
+    while (first < events.count) {
+        ExitEvent event = exit_event_at(events,first);
+        visit(context,event.at,start,event.end);
+        start = event.end;
+        first += 1u64;
+    }
+}
+
 PrefixBoundary prefix_boundary(WalkSlice runs, usize index) on cpu {
     return unsafe_position<PrefixBoundary>(cell(runs.data,index,16u64));
 }

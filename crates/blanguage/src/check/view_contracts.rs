@@ -1000,7 +1000,7 @@ impl Function {
 impl BorrowEvaluation<'_>{
     fn content_event<'call>(&mut self, query: Option<(&address::Origin, u32)>, position: Option<&Position>,
         memory: usize, call: impl FnOnce() -> Option<(usize, &'call Call)>,
-        mut write: impl FnMut(&Borrow, &bounds::Condition, bool)) {
+        mut write: impl FnMut(Borrow, bounds::Condition, bool)) {
         let(function,known)=(self.function,self.known);
         let usage=&function.uses[memory];
         let Requirement::Memory{borrow,access,written,address_fields,..}=&usage.requirement else{return;};
@@ -1012,7 +1012,7 @@ impl BorrowEvaluation<'_>{
                 let path = content_write_paths(query, position, &target, *word, &execution);
                 if path.active() {
                     let stored = self.evaluate(&call_content_sources(value, call, &call.arguments).at_call(&call.arguments));
-                    write(&stored, &path, true);
+                    write(stored, path, true);
                 }
             }
             return;
@@ -1026,7 +1026,7 @@ impl BorrowEvaluation<'_>{
             let when = &usage.path;
             // Every queried word consumes the same immutable write path.
             if *usage.opaque_write_possible.get_or_init(|| when.possible()) {
-                write(&Borrow::source(Origin::External), &bounds::Condition::execution(when), false);
+                write(Borrow::source(Origin::External), bounds::Condition::execution(when), false);
             }
             return;
         }
@@ -1037,7 +1037,7 @@ impl BorrowEvaluation<'_>{
                 let path = content_write_paths(query, position, &targets, word, &execution);
                 if path.active() {
                     let stored = self.evaluate(&written.view_borrow(component));
-                    write(&stored, &path, true);
+                    write(stored, path, true);
                 }
             }
             return;
@@ -1052,13 +1052,13 @@ impl BorrowEvaluation<'_>{
                             &Borrow::source(source.clone()).restricted(path), super::Access::Write, None,
                         );
                         if effect.written_bytes(position, Scalar::U64, None) != 0 {
-                            write(&Borrow::source(Origin::External), &bounds::Condition::execution(path), false);
+                            write(Borrow::source(Origin::External), bounds::Condition::execution(path), false);
                         }
                     }
                 },
                 Origin::External => {
                     if let Some(path) = *active {
-                        write(&Borrow::source(Origin::External), &bounds::Condition::execution(path), false);
+                        write(Borrow::source(Origin::External), bounds::Condition::execution(path), false);
                     }
                 },
                 _ => {},
@@ -1116,7 +1116,7 @@ impl BorrowEvaluation<'_>{
         function.visit_content_history(memory, |at, call| {
             let names = std::cell::LazyCell::new(|| function.history_names(at, memory, None));
             self.content_event(Some((origin, word)), position.as_ref(), at, || call,
-                |borrow, when, complete| result.write_with_history(borrow, when, complete, &names));
+                |borrow, when, complete| result.write_with_history(&borrow, &when, complete, &names));
         });
         result.with_initial(input_contents(origin,word))
     }
@@ -1186,13 +1186,12 @@ impl BorrowEvaluation<'_>{
                     && self.loop_bindings.is_none()) {
                     for location in history {
                         let mut result = ContentAtRead::default();
-                        let first = location.events.partition_point(|event| event.at >= *memory);
-                        for event in &location.events[first..] {
-                            let names = function.history_names(event.at, *memory, None);
-                            for write in &event.writes {
+                        location.replay(*memory, |at, writes| {
+                            let names = function.history_names(at, *memory, None);
+                            for write in writes {
                                 result.write_with_history(&write.borrow, &write.when, write.complete, &names);
                             }
-                        }
+                        });
                         let contents = result.with_initial(input_contents(&location.origin, location.word))
                             .restricted_by(&function.uses[*memory].path);
                         value.union(&contents);
@@ -1234,7 +1233,7 @@ impl BorrowEvaluation<'_>{
                 let function = self.function;
                 self.content_event(query.as_ref().map(|origin| (origin, 0)), Some(position), *memory,
                     || function.call_at_memory(*memory, true),
-                    |borrow, when, complete| result.write(borrow, when, complete));
+                    |borrow, when, complete| result.write(&borrow, &when, complete));
                 result.with_initial(value).restricted_by(&function.uses[*memory].path)
             },
             ContentRead::Call{memory,origin,word,snapshots}=>{
@@ -2580,15 +2579,17 @@ struct ExitWrite {
     complete: bool,
 }
 
+#[repr(C)]
 struct ExitEvent {
     at: usize,
-    writes: Vec<ExitWrite>,
+    end: usize,
 }
 
 struct ExitContents {
     origin: Arc<address::Origin>,
     word: u32,
     events: Vec<ExitEvent>,
+    writes: Vec<ExitWrite>,
 }
 
 type ReturnedWrites = Vec<ExitContents>;
@@ -2610,15 +2611,17 @@ fn prepare_returned_writes(
         |evaluation, (origin, word)| {
             let position = content_position(origin, *word);
             let mut events = Vec::new();
+            let mut writes = Vec::new();
             function.visit_content_history(latest, |at, call| {
-                let mut writes = Vec::new();
+                let first = writes.len();
                 evaluation.content_event(Some((origin, *word)), position.as_ref(), at, || call,
-                    |borrow, when, complete| writes.push(ExitWrite { borrow: borrow.clone(), when: when.clone(), complete }));
-                if !writes.is_empty() {
-                    events.push(ExitEvent { at, writes });
+                    |borrow, when, complete| writes.push(ExitWrite { borrow, when, complete }));
+                let end = writes.len();
+                if end != first {
+                    events.push(ExitEvent { at, end });
                 }
             });
-            Ok::<_, crate::ast::Diagnostic>(ExitContents { origin: origin.clone(), word: *word, events })
+            Ok::<_, crate::ast::Diagnostic>(ExitContents { origin: origin.clone(), word: *word, events, writes })
         }).map_err(|error| match error {
             crate::parallel::Error::Work(error) => error,
             crate::parallel::Error::Resource(error) => crate::compiler::diagnostic(&function.uses[latest].source.path, error),

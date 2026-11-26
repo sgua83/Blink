@@ -250,6 +250,14 @@ extern "C" void collect_stored_returns(WalkSlice uses, address context,
 extern "C" usize latest_multiple_stored_return(WalkSlice uses,
     cfn<u32,address,usize> marked) on cpu requires nonzero(marked);
 
+struct ExitEvent {
+    usize at;
+    usize end;
+};
+
+extern "C" void visit_exit_writes(WalkSlice events, usize memory, address context,
+    cfn<void,address,usize,usize,usize> visit) on cpu requires nonzero(visit);
+
 struct PrefixBoundary {
     usize memory;
     usize frame;
