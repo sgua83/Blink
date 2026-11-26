@@ -453,24 +453,24 @@ extern "C" void collect_query_origin_keys(address context,address cursor,address
     }
 }
 
-extern "C" void collect_output_paths(address context,address value,OutputSnapshotHost host) on cpu
-    requires nonzero(host.inspect) requires nonzero(host.insert) requires nonzero(host.elements)
-    requires nonzero(host.field_count) requires nonzero(host.field) {
-    ReturnedResidency model=host.inspect(value);
-    if(address_bits(model.residency)!=0u64){
-        host.insert(context,model.residency);
-        if(model.maximum==0u64){
-            host.elements(context,address());
-        }else if(address_bits(model.elements)!=0u64){
-            host.elements(context,model.elements);
+extern "C" void walk_resource_paths(address context,AvailabilityNode node,EmptyElements empty,ResourcePathHost host) on cpu
+    requires nonzero(host.dataset) requires nonzero(host.maximum)
+    requires nonzero(host.element) requires nonzero(host.field) requires nonzero(host.edge) {
+    if(node.kind==AvailabilityKind::Dataset){
+        host.dataset(context,node.model);
+        if(host.maximum(node.model)==0){
+            if(empty==EmptyElements::Record){host.edge(context,PathPart::Elements,0u64,address());}
+        }else{
+            address child=host.element(node.model);
+            if(child!=address()){host.edge(context,PathPart::Elements,0u64,child);}
         }
-    }else if(address_bits(model.payloads)!=0u64){
-        u64 count=host.field_count(model.payloads);
-        u64 field=0u64;
-        while(field<count){
-            host.field(context,model.payloads,field);
-            field+=1u64;
-        }
+        return;
+    }
+    u64 field=0u64;
+    while(field<node.fields){
+        address child=host.field(node.model,field);
+        if(child!=address()){host.edge(context,PathPart::Field,field,child);}
+        field+=1u64;
     }
 }
 

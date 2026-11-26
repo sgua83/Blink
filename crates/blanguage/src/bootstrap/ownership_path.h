@@ -194,23 +194,26 @@ struct QueryOriginKeyHost {
 extern "C" void collect_query_origin_keys(address context,address cursor,address wanted,QueryOriginKeyHost host) on cpu
     requires nonzero(host.next) requires nonzero(host.matches) requires nonzero(host.append);
 
-struct OutputSnapshotHost {
-    cfn<ReturnedResidency,address> inspect;
-    cfn<void,address,address> insert;
-    cfn<void,address,address> elements;
-    cfn<u64,address> field_count;
-    cfn<void,address,address,u64> field;
-};
-extern "C" void collect_output_paths(address context,address value,OutputSnapshotHost host) on cpu
-    requires nonzero(host.inspect) requires nonzero(host.insert) requires nonzero(host.elements)
-    requires nonzero(host.field_count) requires nonzero(host.field);
-
 struct ResidencyPrefix { address residency; u64 fields; };
 extern "C" ResidencyPrefix find_residency_prefix(address context,u64 fields,cfn<address,address,u64> lookup) on cpu
     requires nonzero(lookup);
 
 enum AvailabilityKind:u32 { Value=0; Dataset=1; Aggregate=2; Variant=3; };
 struct AvailabilityNode { AvailabilityKind kind; address model; u64 fields; };
+
+enum PathPart:u32 { Elements=0; Field=1; };
+enum EmptyElements:u32 { Skip=0; Record=1; };
+struct ResourcePathHost {
+    cfn<void,address,address> dataset;
+    cfn<u32,address> maximum;
+    cfn<address,address> element;
+    cfn<address,address,u64> field;
+    cfn<void,address,PathPart,u64,address> edge;
+};
+extern "C" void walk_resource_paths(address context,AvailabilityNode node,EmptyElements empty,ResourcePathHost host) on cpu
+    requires nonzero(host.dataset) requires nonzero(host.maximum)
+    requires nonzero(host.element) requires nonzero(host.field) requires nonzero(host.edge);
+
 struct OutputAvailabilityHost {
     cfn<AvailabilityNode,address> inspect;
     cfn<u32,address,address> present;

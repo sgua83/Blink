@@ -1520,32 +1520,46 @@ pub(super) fn visit(
     input: &mut Input,
     apply: &mut impl FnMut(&mut application::Data, &Input),
 ) {
-    match value {
-        Returned::Dataset(data) => {
-            apply(data, input);
-            if data.length.maximum() != 0 {
-                input.fields.push(Part::Elements);
-                if let Some(elements)=data.elements.known_mut(){visit(elements, input, apply);}
-                input.fields.pop();
-            }
-        },
-        Returned::OwnedValue(value) => visit_owned(value, input, apply),
-        _ => {}
-    }
+    let root = unsafe { inspect_availability(ptr::from_mut(value).cast()) };
+    visit_path(root, input, apply);
 }
-fn visit_owned(
-    value: &mut owned_values::OwnedValue,
+
+struct PathVisit<'a> {
+    input: &'a mut Input,
+    apply: &'a mut dyn FnMut(&mut application::Data, &Input),
+}
+
+fn visit_path(
+    root: AvailabilityNode,
     input: &mut Input,
-    apply: &mut impl FnMut(&mut application::Data, &Input),
+    apply: &mut dyn FnMut(&mut application::Data, &Input),
 ) {
-    for (field, payload) in value.payloads.iter_mut().enumerate() {
-        if let Some(payload) = payload {
-            input.fields.push(Part::Field(field));
-            visit(payload, input, apply);
-            input.fields.pop();
-        }
-    }
+    let mut visit = PathVisit { input, apply };
+    unsafe { walk_resource_paths(ptr::from_mut(&mut visit).cast(), root, EmptyElements::Skip, MUTABLE_PATH_HOST) };
 }
+
+const MUTABLE_PATH_HOST: ResourcePathHost = ResourcePathHost {
+    dataset: visit_path_dataset,
+    maximum: dataset_maximum,
+    element: dataset_element,
+    field: availability_field,
+    edge: visit_path_edge,
+};
+
+unsafe extern "C" fn visit_path_dataset(context: Context, model: Context) {
+    let visit = unsafe { &mut *context.cast::<PathVisit<'_>>() };
+    let data = unsafe { &mut *model.cast::<application::Data>() };
+    (visit.apply)(data, visit.input);
+}
+
+unsafe extern "C" fn visit_path_edge(context: Context, part: PathPart, index: usize, child: Context) {
+    let visit = unsafe { &mut *context.cast::<PathVisit<'_>>() };
+    visit.input.fields.push(part.at(index));
+    let node = unsafe { inspect_availability(child) };
+    unsafe { walk_resource_paths(ptr::from_mut(visit).cast(), node, EmptyElements::Skip, MUTABLE_PATH_HOST) };
+    visit.input.fields.pop();
+}
+
 // Only location facts are selected here; ordinary value and borrow joins remain owned by Returned.
 pub(super) fn model_location<'a>(mut model:&'a Returned,path:&[Part])->Option<&'a application::Data>{
     for part in path{model=match(part,model){
@@ -1607,8 +1621,8 @@ pub(super) fn owned_argument(
     parameter: usize,
     value: &mut owned_values::OwnedValue,
 ) {
-    visit_owned(value, &mut Input::new(parameter), &mut |data, input| {
-        argument_data(arguments,input,data);
+    visit_path(owned_availability(value), &mut Input::new(parameter), &mut |data, input| {
+        argument_data(arguments, input, data);
     });
 }
 // 这里只交接载荷存在性。位置继续由同一调用的输出路径消费，不能先折成父位置。
@@ -2079,57 +2093,85 @@ struct OutputSnapshot {
     paths: OutputPaths,
 }
 
+#[repr(u32)]
+enum PathPart { Elements, Field }
+
+impl PathPart {
+    fn at(self, index: usize) -> Part {
+        match self {
+            Self::Elements => Part::Elements,
+            Self::Field => Part::Field(index),
+        }
+    }
+}
+
+#[repr(u32)]
+enum EmptyElements { Skip, Record }
+
 #[repr(C)]
-struct OutputSnapshotHost {
-    inspect: unsafe extern "C" fn(Borrowed) -> ReturnedResidency,
-    insert: unsafe extern "C" fn(Context, Borrowed),
-    elements: unsafe extern "C" fn(Context, Borrowed),
-    field_count: unsafe extern "C" fn(Borrowed) -> usize,
-    field: unsafe extern "C" fn(Context, Borrowed, usize),
+struct ResourcePathHost {
+    dataset: unsafe extern "C" fn(Context, Context),
+    maximum: unsafe extern "C" fn(Context) -> u32,
+    element: unsafe extern "C" fn(Context) -> Context,
+    field: unsafe extern "C" fn(Context, usize) -> Context,
+    edge: unsafe extern "C" fn(Context, PathPart, usize, Context),
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.ownership_path::collect_output_paths"]
-    fn collect_output_paths(context: Context, value: Borrowed, host: OutputSnapshotHost);
+    #[link_name = "bootstrap.ownership_path::walk_resource_paths"]
+    fn walk_resource_paths(context: Context, node: AvailabilityNode, empty: EmptyElements, host: ResourcePathHost);
 }
 
-const OUTPUT_SNAPSHOT_HOST: OutputSnapshotHost = OutputSnapshotHost {
-    inspect: inspect_returned_residency,
-    insert: snapshot_insert,
-    elements: snapshot_elements,
-    field_count: snapshot_field_count,
+const SNAPSHOT_PATH_HOST: ResourcePathHost = ResourcePathHost {
+    dataset: snapshot_dataset,
+    maximum: dataset_maximum,
+    element: snapshot_element,
     field: snapshot_field,
+    edge: snapshot_edge,
 };
 
-unsafe extern "C" fn snapshot_insert(context: Context, value: Borrowed) {
-    let snapshot = unsafe { &mut *context.cast::<OutputSnapshot>() };
-    let value = unsafe { &*value.cast::<Residency>() };
-    snapshot.paths.insert(snapshot.fields.clone(), value.clone());
+// Snapshot addresses are borrowed. Only the snapshot host reads through them.
+fn snapshot_shape(value: &Returned) -> AvailabilityNode {
+    match value {
+        Returned::Dataset(data) => AvailabilityNode {
+            kind: AvailabilityKind::Dataset,
+            model: ptr::from_ref(data).cast_mut().cast(),
+            fields: 0,
+        },
+        Returned::OwnedValue(value) => AvailabilityNode {
+            kind: AvailabilityKind::Aggregate,
+            model: ptr::from_ref(value).cast_mut().cast(),
+            fields: value.payloads.len(),
+        },
+        _ => AvailabilityNode { kind: AvailabilityKind::Value, model: ptr::null_mut(), fields: 0 },
+    }
 }
 
-unsafe extern "C" fn snapshot_elements(context: Context, elements: Borrowed) {
+unsafe extern "C" fn snapshot_dataset(context: Context, model: Context) {
     let snapshot = unsafe { &mut *context.cast::<OutputSnapshot>() };
-    snapshot.fields.push(Part::Elements);
-    if elements.is_null() {
-        snapshot.paths.insert(snapshot.fields.clone(), Residency::Absent);
+    let data = unsafe { &*model.cast::<application::Data>() };
+    snapshot.paths.insert(snapshot.fields.clone(), data.residency.clone());
+}
+
+unsafe extern "C" fn snapshot_element(model: Context) -> Context {
+    let data = unsafe { &*model.cast::<application::Data>() };
+    data.elements.known().map_or(ptr::null_mut(), |element| ptr::from_ref(element).cast_mut().cast())
+}
+
+unsafe extern "C" fn snapshot_field(model: Context, index: usize) -> Context {
+    let value = unsafe { &*model.cast::<owned_values::OwnedValue>() };
+    value.payloads[index].as_deref().map_or(ptr::null_mut(), |value| ptr::from_ref(value).cast_mut().cast())
+}
+
+unsafe extern "C" fn snapshot_edge(context: Context, part: PathPart, index: usize, child: Context) {
+    let snapshot = unsafe { &mut *context.cast::<OutputSnapshot>() };
+    snapshot.fields.push(part.at(index));
+    if let Some(value) = unsafe { child.cast::<Returned>().as_ref() } {
+        unsafe { walk_resource_paths(ptr::from_mut(snapshot).cast(), snapshot_shape(value), EmptyElements::Record, SNAPSHOT_PATH_HOST) };
     } else {
-        unsafe { collect_output_paths(ptr::from_mut(snapshot).cast(), elements, OUTPUT_SNAPSHOT_HOST) };
+        snapshot.paths.insert(snapshot.fields.clone(), Residency::Absent);
     }
     snapshot.fields.pop();
-}
-
-unsafe extern "C" fn snapshot_field_count(value: Borrowed) -> usize {
-    unsafe { &*value.cast::<owned_values::OwnedValue>() }.payloads.len()
-}
-
-unsafe extern "C" fn snapshot_field(context: Context, value: Borrowed, field: usize) {
-    let value = unsafe { &*value.cast::<owned_values::OwnedValue>() };
-    if let Some(payload) = value.payloads[field].as_deref() {
-        let snapshot = unsafe { &mut *context.cast::<OutputSnapshot>() };
-        snapshot.fields.push(Part::Field(field));
-        unsafe { collect_output_paths(ptr::from_mut(snapshot).cast(), ptr::from_ref(payload).cast(), OUTPUT_SNAPSHOT_HOST) };
-        snapshot.fields.pop();
-    }
 }
 
 pub(super) fn output_sources<'a>(
@@ -2143,7 +2185,7 @@ pub(super) fn output_sources<'a>(
         let values = returned.chain(written).filter_map(|(kind, value)| {
             let mut snapshot = OutputSnapshot::default();
             unsafe {
-                collect_output_paths(ptr::from_mut(&mut snapshot).cast(), ptr::from_ref(value).cast(), OUTPUT_SNAPSHOT_HOST);
+                walk_resource_paths(ptr::from_mut(&mut snapshot).cast(), snapshot_shape(value), EmptyElements::Record, SNAPSHOT_PATH_HOST);
             }
             (!snapshot.paths.is_empty()).then_some((kind, snapshot.paths))
         }).collect();
@@ -2183,12 +2225,16 @@ unsafe extern "C" fn inspect_availability(value: Context) -> AvailabilityNode {
             model: ptr::from_mut(data).cast(),
             fields: 0,
         },
-        Returned::OwnedValue(value) => AvailabilityNode {
-            kind: if value.value.ty.has_variants() { AvailabilityKind::Variant } else { AvailabilityKind::Aggregate },
-            fields: value.payloads.len(),
-            model: ptr::from_mut(value).cast(),
-        },
+        Returned::OwnedValue(value) => owned_availability(value),
         _ => AvailabilityNode { kind: AvailabilityKind::Value, model: ptr::null_mut(), fields: 0 },
+    }
+}
+
+fn owned_availability(value: &mut owned_values::OwnedValue) -> AvailabilityNode {
+    AvailabilityNode {
+        kind: if value.value.ty.has_variants() { AvailabilityKind::Variant } else { AvailabilityKind::Aggregate },
+        fields: value.payloads.len(),
+        model: ptr::from_mut(value).cast(),
     }
 }
 
