@@ -363,11 +363,12 @@ impl Graph {
         let parameters=residency::input_parameters(&function.parameters,function.input_width);
         Some(roots.into_iter().map(|(input,root)|{let value=graph.solve(root,&mut evaluation);(input,function.address_borrows(&parameters,value).unwrap_or_default())}).collect())
     }
-    pub(super) fn component_inputs<'name, 'state>(
+    pub(super) fn component_inputs<'name, 'state, 'bindings>(
         entry: &'name str,
         members: &[&'name str],
         functions: &'state BTreeMap<String, &Function>,
         known: &'state States<'state>,
+        public_parameters: impl Fn(&'name str) -> &'bindings BTreeMap<ValueIdentity, bounds::Proof>,
     ) -> Vec<(&'name str, BTreeMap<ValueIdentity, bounds::Proof>, BTreeMap<ValueIdentity, Borrow>)> {
         fn roots(builder: &mut Builder<'_>, scalars: &BTreeMap<ValueIdentity, bounds::Proof>, initial: bool)
             -> BTreeMap<ValueIdentity,usize>
@@ -400,13 +401,13 @@ impl Graph {
             port += 1;
             let function = functions[caller];
             let state = known[caller].loop_scope();
-            let public = residency::input_parameters(&function.parameters, function.input_width);
+            let public = public_parameters(caller);
             let mut local = Self::builder(function, state, known);
             let mut operands = Vec::new();
             let empty = BTreeMap::new();
             for call in &function.calls {
                 let Some((&callee, inputs)) = formals.get_key_value(call.function.as_str()) else { continue; };
-                let when = call.path.project_guard(&public).project_guard(&scalars);
+                let when = call.path.project_guard(public).project_guard(&scalars);
                 if !when.possible() { continue; }
                 let incoming = inputs.iter().map(|&input| {
                     let scalar = call.arguments.get(&input).map_or_else(bounds::Proof::default, |proof| {
@@ -451,7 +452,7 @@ impl Graph {
             builder.parameters = parameters;
             for (target, source, when) in operands {
                 let value = local.solve(source, &mut evaluation);
-                if let Some(actual) = function.address_borrows(&public, value) {
+                if let Some(actual) = function.address_borrows(public, value) {
                     let source = builder.borrow(&actual.at_call(&identities), &Epoch::Input);
                     builder.edge(target, source, Op::Identity, when);
                 }
