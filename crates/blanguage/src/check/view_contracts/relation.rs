@@ -1390,6 +1390,24 @@ impl ResidualProjection<'_, '_> {
     }
 }
 
+#[repr(u32)]
+enum WriteReplay {
+    Continue = 0,
+    FinishFrame = 1,
+    Stop = 2,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.relation_order::replay_writes"]
+    fn replay_relation_writes(
+        graph: Borrowed,
+        context: Slot,
+        frame: usize,
+        frame_at: unsafe extern "C" fn(Borrowed, usize) -> WalkFrame,
+        write: unsafe extern "C" fn(Slot, Borrowed, usize) -> WriteReplay,
+    ) -> u32;
+}
+
 struct Query<'g> {
     graph: &'g Graph,
     relation: Arc<Graph>,
@@ -1438,6 +1456,24 @@ impl<'g> Query<'g> {
         Cow::Owned(value)
     }
 
+    fn replay_writes<F: FnMut(&Write) -> WriteReplay>(&self, frame: Option<usize>, mut write: F) -> bool {
+        unsafe extern "C" fn visit<F: FnMut(&Write) -> WriteReplay>(
+            context: Slot,
+            writes: Borrowed,
+            index: usize,
+        ) -> WriteReplay {
+            let write = unsafe { &*writes.cast::<Write>().add(index) };
+            let apply = unsafe { &mut *context.cast::<F>() };
+            apply(write)
+        }
+
+        let graph = RelationView { base: self.graph, tail: &[], residual: None };
+        unsafe {
+            replay_relation_writes(ptr::from_ref(&graph).cast(), ptr::from_mut(&mut write).cast(),
+                frame.unwrap_or(usize::MAX), walk_frame, visit::<F>) != 0
+        }
+    }
+
     fn local_definition(&self, id: usize) -> Cow<'g, Node> {
         let node = &self.graph.nodes[id];
         if !node.edges.iter().any(|edge| matches!(edge.op, Op::Initial { .. })) {
@@ -1448,78 +1484,78 @@ impl<'g> Query<'g> {
             let Op::Initial{origin,frame}=&edge.op else{result.edges.push(edge.clone());continue;};
             let path = edge.when.path();
             let execution = edge.when.condition();
-            let position=content_position(origin,0);let mut earlier=bounds::Condition::constant(true);let mut at=*frame;
-            while let Some(fi)=at{
-                let f=&self.graph.frames[fi];at=f.parent;
-                for write in f.writes.iter().rev() {
-                    let targets = self.node(write.target);
-                    let targets = targets.sources.entries().filter_map(|(target, selected)| {
-                        let yes = write.when.assume(&bounds::Clause::both(path, &selected), true);
-                        yes.possible().then_some((target, yes))
-                    });
-                    let Some(fields) = &write.fields else {
-                        // A possible external write contributes a source while retaining the earlier value.
-                        for (target, yes) in targets {
-                            let affected = match target {
-                                Origin::Position(target) if target.symbolic_input() && !target.has_local() => false,
-                                Origin::Position(target) => address::MemoryEffect::of(
-                                    &Borrow::source(Origin::Position(target.clone())), super::super::Access::Write, None,
-                                ).written_bytes(position.as_ref().unwrap(), Scalar::U64, None) != 0,
-                                Origin::External => true,
-                                _ => false,
-                            };
-                            if affected {
-                                result.seeds.sources.union_when(Origin::External, &earlier.assume(&yes, true));
-                            }
-                        }
-                        continue;
-                    };
-
-                    let mut hit = bounds::Clause::impossible();
-                    let mut miss = bounds::Clause::impossible();
+            let position = content_position(origin, 0);
+            let mut earlier = bounds::Condition::constant(true);
+            self.replay_writes(*frame, |write| {
+                let targets = self.node(write.target);
+                let targets = targets.sources.entries().filter_map(|(target, selected)| {
+                    let yes = write.when.assume(&bounds::Clause::both(path, &selected), true);
+                    yes.possible().then_some((target, yes))
+                });
+                let Some(fields) = &write.fields else {
+                    // A possible external write contributes a source while retaining the earlier value.
                     for (target, yes) in targets {
-                        let mut complete = false;
-                        if let Origin::Position(target) = target {
-                            // A formal input cannot reach this invocation's private slots.
-                            if target.symbolic_input() && !target.has_local() {
-                                miss = bounds::Clause::either(&miss, &yes);
-                                continue;
-                            }
-                            for (word, value) in fields {
-                                if let Some(full) = content_write_overlap(
-                                    Some((origin, 0)), position.as_ref(), target, *word, || Some(&yes),
-                                ) {
-                                    result.edges.push(Edge {
-                                        from: *value,
-                                        op: Op::Identity,
-                                        when: {
-                                            let visible = earlier.clone()
-                                                .logical(bounds::Condition::guard(yes.clone()), false);
-                                            // The selected write already includes the read path.
-                                            RelationPath::Cases(bounds::Condition::paths(
-                                                visible.assume(&bounds::Clause::default(), true),
-                                                bounds::Clause::either(
-                                                    &visible.assume(&bounds::Clause::default(), false),
-                                                    &execution.assume(&bounds::Clause::default(), false),
-                                                ),
-                                            ))
-                                        },
-                                    });
-                                    hit = bounds::Clause::either(&hit, &yes);
-                                    complete |= full;
-                                }
-                            }
-                        } else if matches!(target, Origin::External) {
+                        let affected = match target {
+                            Origin::Position(target) if target.symbolic_input() && !target.has_local() => false,
+                            Origin::Position(target) => address::MemoryEffect::of(
+                                &Borrow::source(Origin::Position(target.clone())), super::super::Access::Write, None,
+                            ).written_bytes(position.as_ref().unwrap(), Scalar::U64, None) != 0,
+                            Origin::External => true,
+                            _ => false,
+                        };
+                        if affected {
                             result.seeds.sources.union_when(Origin::External, &earlier.assume(&yes, true));
                         }
-                        if !complete {
-                            miss = bounds::Clause::either(&miss, &yes);
-                        }
                     }
-                    let no = bounds::Clause::either(&write.when.assume(path, false), &miss);
-                    earlier = earlier.logical(bounds::Condition::paths(hit, no).negate(), false);
+                    return WriteReplay::Continue;
+                };
+
+                let mut hit = bounds::Clause::impossible();
+                let mut miss = bounds::Clause::impossible();
+                for (target, yes) in targets {
+                    let mut complete = false;
+                    if let Origin::Position(target) = target {
+                        // A formal input cannot reach this invocation's private slots.
+                        if target.symbolic_input() && !target.has_local() {
+                            miss = bounds::Clause::either(&miss, &yes);
+                            continue;
+                        }
+                        for (word, value) in fields {
+                            if let Some(full) = content_write_overlap(
+                                Some((origin, 0)), position.as_ref(), target, *word, || Some(&yes),
+                            ) {
+                                result.edges.push(Edge {
+                                    from: *value,
+                                    op: Op::Identity,
+                                    when: {
+                                        let visible = earlier.clone()
+                                            .logical(bounds::Condition::guard(yes.clone()), false);
+                                        // The selected write already includes the read path.
+                                        RelationPath::Cases(bounds::Condition::paths(
+                                            visible.assume(&bounds::Clause::default(), true),
+                                            bounds::Clause::either(
+                                                &visible.assume(&bounds::Clause::default(), false),
+                                                &execution.assume(&bounds::Clause::default(), false),
+                                            ),
+                                        ))
+                                    },
+                                });
+                                hit = bounds::Clause::either(&hit, &yes);
+                                complete |= full;
+                            }
+                        }
+                    } else if matches!(target, Origin::External) {
+                        result.seeds.sources.union_when(Origin::External, &earlier.assume(&yes, true));
+                    }
+                    if !complete {
+                        miss = bounds::Clause::either(&miss, &yes);
+                    }
                 }
-            }
+                let no = bounds::Clause::either(&write.when.assume(path, false), &miss);
+                let previous = std::mem::take(&mut earlier);
+                earlier = previous.logical(bounds::Condition::paths(hit, no).negate(), false);
+                WriteReplay::Continue
+            });
             result.edges.push(Edge { from: edge.from, op: Op::Identity, when: RelationPath::Cases(earlier.logical(execution.into_owned(), false)) });
         }
         Cow::Owned(result)
@@ -1560,76 +1596,80 @@ impl<'g> Query<'g> {
             let (_, word) = content_word(&origin, word)?;
             Some((binding, origin, word))
         });
-        for(source,path)in from.sources.entries(){
-            let Origin::Position(origin)=source else{continue;};let position=content_position(origin,word);let mut content=ContentAtRead::default();let mut at=frame;let mut delayed=false;let mut ready=true;
-            while let Some(fi)=at{
-                let frame = &self.graph.frames[fi];
-                at = frame.parent;
-                for write in frame.writes.iter().rev() {
-                    let yes=write.when.assume(&path,true);if !yes.possible(){continue;}
-                    let matches = write.fields.as_deref().filter(|fields| !fields.is_empty()).and_then(|fields| {
-                        let (read_binding, read, read_word) = read_location.as_ref()?;
-                        let (write_binding, target) = self.location(write.target)?;
-                        let same_binding = *read_binding == write_binding
-                            || (!self.graph.variables.contains(read_binding)
-                                && !self.graph.variables.contains(&write_binding)
-                                && self.graph.nodes[*read_binding] == self.graph.nodes[write_binding]);
-                        if !same_binding || read.root != target.root || read.base != target.base {
-                            return None;
-                        }
-                        let read_word = *read_word;
-                        Some(fields.iter().filter_map(move |&(field, value)| {
-                            let (_, word) = content_word(&target, field)?;
-                            (word == read_word).then_some(value)
-                        }).peekable())
-                    });
-                    if let Some(mut values) = matches && values.peek().is_some() {
-                        let mut incoming = Borrow::default();
-                        for value in values {
-                            let value = self.node(value);
-                            if value.empty() && !write.when.assume(&path, false).possible() {
-                                ready = false;
-                                break;
-                            }
-                            incoming.sources.union(&value.sources);
-                        }
-                        content.write(&incoming, &write.when, true);
-                        continue;
+        for (source, path) in from.sources.entries() {
+            let Origin::Position(origin) = source else { continue; };
+            let position = content_position(origin, word);
+            let mut content = ContentAtRead::default();
+            let mut delayed = false;
+            let ready = self.replay_writes(frame, |write| {
+                let yes = write.when.assume(&path, true);
+                if !yes.possible() { return WriteReplay::Continue; }
+                let not_written = std::cell::LazyCell::new(|| write.when.assume(&path, false));
+                let mut decision = WriteReplay::Continue;
+                let matches = write.fields.as_deref().filter(|fields| !fields.is_empty()).and_then(|fields| {
+                    let (read_binding, read, read_word) = read_location.as_ref()?;
+                    let (write_binding, target) = self.location(write.target)?;
+                    let same_binding = *read_binding == write_binding
+                        || (!self.graph.variables.contains(read_binding)
+                            && !self.graph.variables.contains(&write_binding)
+                            && self.graph.nodes[*read_binding] == self.graph.nodes[write_binding]);
+                    if !same_binding || read.root != target.root || read.base != target.base {
+                        return None;
                     }
-                    let targets=self.node(write.target);if targets.empty(){ready=false;break;}
-                    let mut hit=bounds::Clause::impossible();let mut miss=bounds::Clause::impossible();let mut incoming=Borrow::default();
-                    for(target,selected)in targets.sources.entries(){
-                        let selected=bounds::Clause::both(&yes,&selected);if !selected.possible(){continue;}
-                        let mut complete=false;let mut possible=false;
-                        if let Origin::Position(target)=target{
-                            if let Some(fields)=&write.fields{
-                                for (field,value)in fields{
-                                    if let Some(full) = content_write_overlap(
-                                        Some((origin, word)), position.as_ref(), target, *field, || Some(&selected),
-                                    ) {
-                                        let v = self.node(*value);
-                                        if v.empty() && !write.when.assume(&path, false).possible() {
-                                            ready = false;
-                                            break;
-                                        }
-                                        incoming.sources.union_restricted(&v.sources, &selected);
-                                        possible = true;
-                                        complete |= full;
-                                    } else if origin.symbolic_input() || target.symbolic_input()
-                                        || matches!(origin.root, address::Root::Parameter(_))
-                                        || matches!(target.root, address::Root::Parameter(_))
-                                    {
-                                        delayed = true;
-                                    }
-                                }
-                            }else if position.as_ref().is_some_and(|p|address::MemoryEffect::of(&Borrow::source(Origin::Position(target.clone())).restricted(&selected),super::super::Access::Write,None).written_bytes(p,Scalar::U64,None)!=0){possible=true;incoming.sources.union_when(Origin::External, &selected);}
-                        }else if matches!(target,Origin::External){possible=true;incoming.sources.union_when(Origin::External, &selected);}
-                        if possible{hit=bounds::Clause::either(&hit,&selected);}if !complete{miss=bounds::Clause::either(&miss,&selected);}
+                    let read_word = *read_word;
+                    Some(fields.iter().filter_map(move |&(field, value)| {
+                        let (_, word) = content_word(&target, field)?;
+                        (word == read_word).then_some(value)
+                    }).peekable())
+                });
+                if let Some(mut values) = matches && values.peek().is_some() {
+                    let mut incoming = Borrow::default();
+                    for value in values {
+                        let value = self.node(value);
+                        if value.empty() && !not_written.possible() {
+                            decision = WriteReplay::FinishFrame;
+                            break;
+                        }
+                        incoming.sources.union(&value.sources);
                     }
-                    let no=bounds::Clause::either(&write.when.assume(&path,false),&miss);content.write(&incoming,&bounds::Condition::paths(hit,no),true);
+                    content.write(&incoming, &write.when, true);
+                    return decision;
                 }
-                if !ready{break;}
-            }
+                let targets = self.node(write.target);
+                if targets.empty() { return WriteReplay::Stop; }
+                let mut hit=bounds::Clause::impossible();let mut miss=bounds::Clause::impossible();let mut incoming=Borrow::default();
+                for(target,selected)in targets.sources.entries(){
+                    let selected=bounds::Clause::both(&yes,&selected);if !selected.possible(){continue;}
+                    let mut complete=false;let mut possible=false;
+                    if let Origin::Position(target)=target{
+                        if let Some(fields)=&write.fields{
+                            for (field,value)in fields{
+                                if let Some(full) = content_write_overlap(
+                                    Some((origin, word)), position.as_ref(), target, *field, || Some(&selected),
+                                ) {
+                                    let v = self.node(*value);
+                                    if v.empty() && !not_written.possible() {
+                                        decision = WriteReplay::FinishFrame;
+                                        break;
+                                    }
+                                    incoming.sources.union_restricted(&v.sources, &selected);
+                                    possible = true;
+                                    complete |= full;
+                                } else if origin.symbolic_input() || target.symbolic_input()
+                                    || matches!(origin.root, address::Root::Parameter(_))
+                                    || matches!(target.root, address::Root::Parameter(_))
+                                {
+                                    delayed = true;
+                                }
+                            }
+                        }else if position.as_ref().is_some_and(|p|address::MemoryEffect::of(&Borrow::source(Origin::Position(target.clone())).restricted(&selected),super::super::Access::Write,None).written_bytes(p,Scalar::U64,None)!=0){possible=true;incoming.sources.union_when(Origin::External, &selected);}
+                    }else if matches!(target,Origin::External){possible=true;incoming.sources.union_when(Origin::External, &selected);}
+                    if possible{hit=bounds::Clause::either(&hit,&selected);}if !complete{miss=bounds::Clause::either(&miss,&selected);}
+                }
+                let no = bounds::Clause::either(&not_written, &miss);
+                content.write(&incoming, &bounds::Condition::paths(hit, no), true);
+                decision
+            });
             let value=if !ready{Borrow::default()}else if delayed{self.deferred(id)}else if content.earlier.as_ref().is_some_and(|p|!p.possible()){content.with_initial(Borrow::default())}else if origin.symbolic_input(){self.deferred(id)}else{
                 let base=match epoch{Epoch::Input=>input_contents(origin,word),Epoch::Local{memory,snapshots}=>evaluation.content_before(origin,word,*memory,snapshots.as_deref())};
                 if base.sources.iter().any(|s|matches!(s,Origin::Contents{..})){self.deferred(id)}else{content.with_initial(base)}

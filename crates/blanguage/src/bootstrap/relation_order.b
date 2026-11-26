@@ -562,3 +562,27 @@ extern "C" void project_return(address graph, address context, usize nodes, Walk
         index += 1u64;
     }
 }
+
+const u32 REPLAY_FINISH_FRAME = 1;
+const u32 REPLAY_STOP = 2;
+
+extern "C" u32 replay_writes(address graph, address context, usize frame,
+    cfn<WalkFrame,address,usize> frame_at, cfn<u32,address,address,usize> write) on cpu
+    requires nonzero(frame_at) requires nonzero(write)
+{
+    usize at = frame;
+    while (at != WALK_END) {
+        WalkFrame current = frame_at(graph,at);
+        usize remaining = current.writes.count;
+        bool next_frame = true;
+        while (remaining != 0u64) {
+            remaining -= 1u64;
+            u32 step = write(context,current.writes.data,remaining);
+            if (step == REPLAY_STOP) { return 0; }
+            if (step == REPLAY_FINISH_FRAME) { next_frame = false; }
+        }
+        if (!next_frame) { return 0; }
+        at = current.parent;
+    }
+    return 1;
+}

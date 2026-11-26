@@ -137,3 +137,7 @@ extern "C" void project_return(address graph, address context, usize nodes, Walk
     requires nonzero(source.frame) requires nonzero(source.write) requires nonzero(source.field)
     requires nonzero(output.node_facts) requires nonzero(output.node) requires nonzero(output.keep)
     requires nonzero(output.write) requires nonzero(output.field);
+
+extern "C" u32 replay_writes(address graph, address context, usize frame,
+    cfn<WalkFrame,address,usize> frame_at, cfn<u32,address,address,usize> write) on cpu
+    requires nonzero(frame_at) requires nonzero(write);
