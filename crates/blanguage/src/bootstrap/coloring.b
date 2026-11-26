@@ -3,6 +3,7 @@ import bootstrap.names;
 import bootstrap.ir_dataflow;
 import bootstrap.stage_fusion;
 import bootstrap.x64_instruction;
+import bootstrap.call_layout;
 
 const u32 UNSEEN = 0;
 const u32 IMMEDIATE = 1;
@@ -519,8 +520,7 @@ Node graph_node_at(Span span, usize index, u32 kind) on cpu {
 bool graph_indexed_reference(Node reference, Host ir) on cpu requires nonzero(ir.inspect) {
     return ir.inspect(ir.inspect(reference).left).tag==STORAGE_INDEXED;
 }
-bool graph_call_uses_r15(Node call, Host ir) on cpu requires nonzero(ir.inspect) {
-    Span arguments=ir.inspect(call).first;
+bool graph_call_uses_r15(Span arguments, Host ir) on cpu requires nonzero(ir.inspect) {
     usize index=0u64;
     while(index<arguments.count){
         View argument=ir.inspect(graph_node_at(arguments,index,N_ARGUMENT));
@@ -533,12 +533,14 @@ u32 graph_instruction(address graph,View node,Span registers,address live,
     u64 weight,GraphHost host) on cpu
     requires nonzero(host.core.visit_set)
     requires nonzero(host.live.ir.inspect) requires nonzero(host.scalar)
-    requires nonzero(host.call_outgoing) requires nonzero(host.register_operand) requires nonzero(host.live.change) {
+    requires nonzero(host.call_abi) requires nonzero(host.call_argument) requires nonzero(host.register_operand) requires nonzero(host.live.change) {
     u32 uses_r15=0;
     u64 outgoing=0u64;
     if(node.tag==OP_INVOKE){
-        outgoing=host.call_outgoing(node.left.data);
-        if(graph_call_uses_r15(node.left,host.live.ir)){uses_r15=1;}
+        Span arguments=host.live.ir.inspect(node.left).first;
+        CallAbi abi=host.call_abi(node.left.data);
+        outgoing=outgoing_bytes(node.left.data,arguments.count,abi,host.call_argument);
+        if(graph_call_uses_r15(arguments,host.live.ir)){uses_r15=1;}
     } else if(node.tag==OP_POSITION_ADDRESS){
         if(graph_indexed_reference(node.left,host.live.ir)){uses_r15=1;}
     } else if(node.tag==OP_TEXTURE_BINDING_ADDRESS || (node.tag>=OP_TEXTURE_SIZE && node.tag<=OP_TEXTURE_FETCH) ||
@@ -697,7 +699,7 @@ void walk_replace(WalkReplace replace,GraphHost host) on cpu
 u32 walk_block(address graph,address work,WalkBlock block,Span registers,address empty,GraphHost host) on cpu
     requires nonzero(host.core.visit_set)
     requires nonzero(host.live.ir.inspect) requires nonzero(host.scalar)
-    requires nonzero(host.call_outgoing)
+    requires nonzero(host.call_abi) requires nonzero(host.call_argument)
     requires nonzero(host.live.clone_set) requires nonzero(host.live.drop_set) requires nonzero(host.live.change)
     requires nonzero(host.live.insert_register) requires nonzero(host.register_operand) {
     u32 uses_r15=0;
@@ -735,7 +737,7 @@ u32 walk_block(address graph,address work,WalkBlock block,Span registers,address
 u32 walk_step(address graph,address work,GraphWork step,Span registers,address empty,GraphHost host) on cpu
     requires nonzero(host.core.visit_set)
     requires nonzero(host.live.ir.inspect) requires nonzero(host.scalar)
-    requires nonzero(host.call_outgoing)
+    requires nonzero(host.call_abi) requires nonzero(host.call_argument)
     requires nonzero(host.live.clone_set) requires nonzero(host.live.drop_set) requires nonzero(host.live.change)
     requires nonzero(host.live.insert_register) requires nonzero(host.register_operand) {
     match(step){
@@ -749,7 +751,7 @@ u32 walk_step(address graph,address work,GraphWork step,Span registers,address e
 u32 walk_graph(address graph,GraphRequest input,GraphHost host) on cpu
     requires nonzero(host.core.visit_set)
     requires nonzero(host.live.ir.inspect) requires nonzero(host.scalar)
-    requires nonzero(host.call_outgoing)
+    requires nonzero(host.call_abi) requires nonzero(host.call_argument)
     requires nonzero(host.live.clone_set) requires nonzero(host.live.drop_set) requires nonzero(host.live.change)
     requires nonzero(host.live.insert_register) requires nonzero(host.register_operand) {
     address work=color_offset(graph,size_of<GraphData>());
@@ -766,7 +768,7 @@ u32 walk_graph(address graph,GraphRequest input,GraphHost host) on cpu
 extern "C" GraphBuilt graph_create(address request,GraphHost host) on cpu
     requires nonzero(host.core.visit_set)
     requires nonzero(host.live.ir.inspect) requires nonzero(host.scalar)
-    requires nonzero(host.call_outgoing)
+    requires nonzero(host.call_abi) requires nonzero(host.call_argument)
     requires nonzero(host.live.clone_set) requires nonzero(host.live.drop_set) requires nonzero(host.live.change)
     requires nonzero(host.live.insert_register) requires nonzero(host.register_operand) {
     GraphRequest input=unsafe_position<GraphRequest>(request);

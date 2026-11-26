@@ -22,7 +22,8 @@ struct Host {
     core: Core,
     live: PrivateLiveHost,
     scalar: unsafe extern "C" fn(Span, Reg) -> ScalarEncoding,
-    call_outgoing: unsafe extern "C" fn(*const Call) -> u64,
+    call_abi: unsafe extern "C" fn(*const Call) -> external::CallAbi,
+    call_argument: external::ArgumentType,
     register_operand: unsafe extern "C" fn(*mut c_void, Reg) -> u32,
 }
 #[repr(C)]
@@ -68,9 +69,6 @@ unsafe extern "C" fn scalar(registers: Span, register: Reg) -> ScalarEncoding {
     let registers = unsafe { registers.as_slice::<Scalar>() };
     registers[register].into()
 }
-unsafe extern "C" fn call_outgoing(call: *const Call) -> u64 {
-    external::outgoing_bytes(unsafe { &*call })
-}
 unsafe extern "C" fn visit_set(live: *const Slots, limit: usize, graph: *mut c_void, event: Event) {
     for (ordinal, slot) in unsafe { &*live }.iter().take(limit).enumerate() {
         let (space, index) = match slot { PrivateSlot::Register(index) => (Space::Register, *index), PrivateSlot::Local(index) => (Space::Local, *index) };
@@ -94,5 +92,6 @@ unsafe extern "C" fn register_operand(context: *mut c_void, register: Reg) -> u3
 
 const CORE: Core = Core { visit_set };
 const HOST: Host = Host {
-    core: CORE, live: PRIVATE_LIVE_HOST, scalar, call_outgoing, register_operand,
+    core: CORE, live: PRIVATE_LIVE_HOST, scalar,
+    call_abi: external::call_abi, call_argument: external::argument_type, register_operand,
 };

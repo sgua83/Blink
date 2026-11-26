@@ -5,8 +5,9 @@ import bootstrap.frame_layout;
 
 // float_size is the width in bytes of an intrinsic scalar float, or zero.
 struct AbiType { u32 size; u32 alignment; u32 float_size; u32 value; };
-// flags: an error result, or an indirect target. The reader borrows the original Call.
-extern "C" u64 outgoing_bytes(address context, u64 count, AbiType result, u32 flags,
+// Flags mark an error result and an indirect target in the original call.
+struct CallAbi { AbiType result; u32 flags; };
+u64 outgoing_bytes(address context, u64 count, CallAbi abi,
     cfn<AbiType,address,u64> argument) on cpu requires nonzero(argument);
 
 struct CallValueLoan { Span components; Span values; address allocation; address registers; };

@@ -24,7 +24,10 @@ impl AbiType {
         ty.map_or_else(Self::reference, Self::value)
     }
 }
-type ArgumentType = unsafe extern "C" fn(*const c_void, usize) -> AbiType;
+pub(super) type ArgumentType = unsafe extern "C" fn(*const c_void, usize) -> AbiType;
+
+#[repr(C)]
+pub(super) struct CallAbi { result: AbiType, flags: u32 }
 
 #[repr(C)]
 pub(super) struct CallValueLoan {
@@ -87,9 +90,6 @@ unsafe extern "C" {
         result: ScalarEncoding, output: *mut u8) -> SymbolEncoding;
     #[link_name = "bootstrap.x64_instruction::symbol_target"]
     fn encode_symbol_target(invoke: u32, output: *mut u8) -> SymbolEncoding;
-    #[link_name = "bootstrap.call_layout::outgoing_bytes"]
-    fn call_stack_size(context: *const c_void, count: usize, result: AbiType, flags: u32,
-        argument: ArgumentType) -> u64;
     #[link_name = "bootstrap.call_layout::emit_call"]
     fn emit_call(context: *mut c_void, input: CallInput, host: CallHost) -> usize;
 }
@@ -101,18 +101,14 @@ fn argument_abi(call: &Call, index: usize) -> AbiType {
     }
 }
 
-unsafe extern "C" fn argument_type(context: *const c_void, index: usize) -> AbiType {
+pub(super) unsafe extern "C" fn argument_type(context: *const c_void, index: usize) -> AbiType {
     argument_abi(unsafe { &*context.cast::<Call>() }, index)
 }
 
-fn call_flags(call: &Call) -> u32 {
-    u32::from(call.error.is_some()) | (u32::from(matches!(call.target, CallTarget::Indirect(_))) << 1)
-}
-
-pub(super) fn outgoing_bytes(call: &Call) -> u64 {
-    let context = std::ptr::from_ref(call).cast();
-    unsafe { call_stack_size(context, call.arguments.len(), AbiType::result(call.result.as_ref()),
-        call_flags(call), argument_type) }
+pub(super) unsafe extern "C" fn call_abi(call: *const Call) -> CallAbi {
+    let call = unsafe { &*call };
+    let flags = u32::from(call.error.is_some()) | (u32::from(matches!(call.target, CallTarget::Indirect(_))) << 1);
+    CallAbi { result: AbiType::result(call.result.as_ref()), flags }
 }
 
 struct CallEmission<'a, 'b> {
@@ -203,11 +199,12 @@ impl Emitter<'_> {
             argument: emission_argument, operand: emission_operand, component: abi_component,
             reserve: reserve_call, commit: commit_call,
         };
+        let abi = unsafe { call_abi(call) };
         let input = CallInput {
-            source: Node::call(call), result: AbiType::result(call.result.as_ref()),
+            source: Node::call(call), result: abi.result,
             values: CallValueLoan::new(call.result.as_ref().map_or(&[][..], |ty| ty.components.as_slice()),
                 &call.values, &self.allocation, &self.registers),
-            error: call.error.unwrap_or_default(), flags: call_flags(call),
+            error: call.error.unwrap_or_default(), flags: abi.flags,
         };
         let mut context = CallEmission { call, locations: &locations, code: &mut self.code };
         let field = unsafe { emit_call(std::ptr::from_mut(&mut context).cast(), input, host) };

@@ -74,10 +74,10 @@ CallStack call_stack(address context, u64 count, AbiType result, u64 first_slot,
     return CallStack(homes, target, copy_start(end));
 }
 
-extern "C" u64 outgoing_bytes(address context, u64 count, AbiType result, u32 flags,
+u64 outgoing_bytes(address context, u64 count, CallAbi abi,
     cfn<AbiType,address,u64> argument) on cpu requires nonzero(argument) {
-    u64 first_slot = result_location(result, flags) == ResultLocation::Indirect ? 1u64 : 0u64;
-    return call_stack(context, count, result, first_slot, flags, argument, true).bytes;
+    u64 first_slot = result_location(abi.result, abi.flags) == ResultLocation::Indirect ? 1u64 : 0u64;
+    return call_stack(context, count, abi.result, first_slot, abi.flags, argument, true).bytes;
 }
 
 Node call_argument(Span arguments, u64 index) on cpu {

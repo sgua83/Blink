@@ -2,6 +2,7 @@ module bootstrap.coloring;
 import bootstrap.ir_dataflow;
 import bootstrap.stage_fusion;
 import bootstrap.scalar_fold;
+import bootstrap.call_layout;
 
 struct ColorPlace { u64 value; u32 kind; u8 width; u8 floating; };
 struct ColorLayout { u64 end; u32 gpr; u32 xmm; };
@@ -28,7 +29,8 @@ struct GraphHost {
     GraphCore core;
     LiveHost live;
     cfn<ScalarEncoding,Span,usize> ensures memory(read) scalar;
-    cfn<u64,address> ensures memory(read) call_outgoing;
+    cfn<CallAbi,address> ensures memory(read) call_abi;
+    cfn<AbiType,address,u64> call_argument;
     cfn<u32,address,usize> register_operand;
 };
 // Borrow the original IR and native live sets for the synchronous graph walk.
@@ -36,7 +38,7 @@ struct GraphRequest {Span code;Span registers;address places;u64 count;address l
 struct GraphBuilt {address state;u32 uses_r15;};
 extern "C" GraphBuilt graph_create(address request,GraphHost host) on cpu
     requires nonzero(host.core.visit_set) requires nonzero(host.live.ir.inspect) requires nonzero(host.scalar)
-    requires nonzero(host.call_outgoing)
+    requires nonzero(host.call_abi) requires nonzero(host.call_argument)
     requires nonzero(host.live.clone_set) requires nonzero(host.live.drop_set) requires nonzero(host.live.change)
     requires nonzero(host.live.insert_register) requires nonzero(host.register_operand);
 extern "C" void graph_together(address graph,address live,GraphCore core) on cpu
