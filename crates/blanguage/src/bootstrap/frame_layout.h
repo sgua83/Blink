@@ -43,10 +43,10 @@ extern "C" RangePrologue range_prologue(u32 frame, address saved, u64 count,
 // The caller lends 20 + 9 * count bytes at end. Exit rel32 fields point to
 // restoration after the success status write.
 extern "C" u64 range_epilogue(u32 frame, address saved, u64 count,
-    address image, u64 end, address exits, u64 exit_count) on cpu;
+    address image, u64 end, u64 exits) on cpu;
 
 // The caller lends 10 + 9 * count bytes at end. Offsets refer to the
 // actual restored ranges and return in the original image.
 struct FunctionEpilogue { u64 saved_end; u64 frame_end; u64 scratch_end; u64 end; };
 extern "C" FunctionEpilogue function_epilogue(u32 frame, u32 scratch, address saved, u64 count,
-    address image, u64 end, address exits, u64 exit_count) on cpu;
+    address image, u64 end, u64 exits) on cpu;

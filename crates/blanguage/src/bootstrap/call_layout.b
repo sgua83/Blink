@@ -315,7 +315,7 @@ extern "C" FunctionCode emit_function_code(address context, FunctionCodeInput in
     requires nonzero(host.abi.component) requires nonzero(host.abi.publish)
     requires nonzero(host.entry) requires nonzero(host.body) requires nonzero(host.reserve)
     requires nonzero(host.result) requires nonzero(host.commit) requires nonzero(host.literal)
-    requires nonzero(host.exit_buffer) requires nonzero(host.complete) {
+    requires nonzero(host.exit_buffer) {
     FunctionFrame frame = function_frame(input.data_end, input.result, input.flags);
     if (frame.bytes > 2147483647u64) { return FunctionCode(0u64, 1); }
 
@@ -323,7 +323,9 @@ extern "C" FunctionCode emit_function_code(address context, FunctionCodeInput in
         + 16u64 * input.parameters + 24u64 * input.inputs;
     FrameOutput entry = host.entry(context, entry_bytes, 2u64 + input.saved);
     FunctionPrologue prologue = function_prologue(context, input.parameters, frame, input.flags, entry, host.abi);
-    if (host.body(context, prologue) == 0) { return FunctionCode(0u64, 0); }
+    u64 exits = 0u64;
+    ControlTargets targets = ControlTargets(address_of(exits), address_of(exits), address(), 0u64);
+    if (host.body(context, prologue, targets) == 0) { return FunctionCode(0u64, 0); }
 
     u64 result_fields = input.result_fields < input.outputs ? input.result_fields : input.outputs;
     NativeCodeBuffer buffer = host.reserve(context, 26u64 + 48u64 * result_fields);
@@ -346,8 +348,8 @@ extern "C" FunctionCode emit_function_code(address context, FunctionCodeInput in
 
     FunctionExitBuffer exiting = host.exit_buffer(context, 10u64 + 9u64 * input.saved);
     FunctionEpilogue tail = function_epilogue(u32(frame.bytes), (input.flags & 2) >> 1,
-        exiting.saved, exiting.saved_count, exiting.code.image, exiting.code.end, exiting.exits, exiting.exit_count);
-    host.complete(context, tail.end);
+        exiting.saved, exiting.saved_count, exiting.code.image, exiting.code.end, exits);
+    host.commit(context, tail.end);
     host.abi.publish(context, FunctionRange(exiting.code.end, tail.saved_end, 0u64, 0u64, FunctionRangeKind::NonvolatileRestore));
     if (tail.frame_end != tail.saved_end) {
         host.abi.publish(context, FunctionRange(tail.saved_end, tail.frame_end, 0u64, frame.bytes, FunctionRangeKind::FrameRelease));

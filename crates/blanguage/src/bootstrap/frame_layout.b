@@ -137,8 +137,8 @@ RestoredFrame restore_frame(u32 frame, address saved, u64 count, u64 start) on c
 }
 
 extern "C" FunctionEpilogue function_epilogue(u32 frame, u32 scratch, address saved, u64 count,
-    address image, u64 end, address exits, u64 exit_count) on cpu {
-    patch_branches(image, end, exits, exit_count);
+    address image, u64 end, u64 exits) on cpu {
+    patch_control_branches(image, end, exits);
     u64 bytes = address_bits(image);
     RestoredFrame restored = restore_frame(frame, saved, count, bytes + end);
     u64 cursor = restored.frame_end;
@@ -149,12 +149,12 @@ extern "C" FunctionEpilogue function_epilogue(u32 frame, u32 scratch, address sa
 }
 
 extern "C" u64 range_epilogue(u32 frame, address saved, u64 count,
-    address image, u64 end, address exits, u64 exit_count) on cpu {
+    address image, u64 end, u64 exits) on cpu {
     u64 start = address_bits(image) + end;
     unsafe_position<u8>(unsafe_address(start)) = u8(0x31);
     unsafe_position<u8>(unsafe_address(start + 1u64)) = u8(0xc0);
     u64 cursor = start + 2u64;
-    patch_branches(image, end + 2u64, exits, exit_count);
+    patch_control_branches(image, end + 2u64, exits);
     cursor = restore_frame(frame, saved, count, cursor).frame_end;
     for (index in 0..RANGE_SAVE_COUNT) {
         u8 register = RANGE_SAVES[RANGE_SAVE_COUNT - 1 - index];

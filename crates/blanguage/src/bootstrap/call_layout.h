@@ -68,19 +68,16 @@ struct FunctionExitBuffer {
     NativeCodeBuffer code;
     address saved;
     u64 saved_count;
-    address exits;
-    u64 exit_count;
 };
 struct FunctionCodeHost {
     FunctionHost abi;
     cfn<FrameOutput,address,u64,u64> entry;
-    cfn<u32,address,FunctionPrologue> body;
+    cfn<u32,address,FunctionPrologue,ControlTargets> body;
     cfn<NativeCodeBuffer,address,u64> reserve;
     cfn<CallValueLoan,address> result;
     cfn<void,address,u64> commit;
     cfn<void,address,u64,u64,u64> literal;
     cfn<FunctionExitBuffer,address,u64> exit_buffer;
-    cfn<void,address,u64> complete;
 };
 struct FunctionCode { u64 stack; u32 oversized; };
 
@@ -89,4 +86,4 @@ extern "C" FunctionCode emit_function_code(address context, FunctionCodeInput in
     requires nonzero(host.abi.component) requires nonzero(host.abi.publish)
     requires nonzero(host.entry) requires nonzero(host.body) requires nonzero(host.reserve)
     requires nonzero(host.result) requires nonzero(host.commit) requires nonzero(host.literal)
-    requires nonzero(host.exit_buffer) requires nonzero(host.complete);
+    requires nonzero(host.exit_buffer);

@@ -83,30 +83,24 @@ extern "C" CodeTail write_tail(address image,u64 end,u64 probe,u64 literal_count
 extern "C" void patch_relative(address field, u64 offset, u64 target) on cpu;
 // Known-target jump: output has five bytes and offset is its function-relative start.
 extern "C" u64 jump_to(u64 offset, u64 target, address output) on cpu;
-// fields is the scope's existing array of u64 function-relative rel32 positions.
+// The literal and helper writers share the original array of rel32 references.
 extern "C" void patch_branches(address image, u64 target, address fields, u64 count) on cpu;
 
 // condition is zero for JMP; test_bits is zero for flags, or 32/64 for EAX/RAX.
 // The caller owns nine output bytes. The returned length includes the rel32.
 enum ControlKind:u32 { If=0; Loop=1; Scope=2; Exit=3; Break=4; Continue=5; Raise=6; };
 enum ControlJump:u32 { Always=0; Zero=1; Nonzero=2; };
-enum ControlScope:u32 { Block=0; Loop=1; };
-enum ControlTarget:u32 { Block=0; Loop=1; Function=2; };
 struct ControlInstruction { Span first; Span second; u64 register; ControlKind kind; };
+struct ControlTargets { address function; address block; address loop_exit; u64 loop_begin; };
 struct ControlHost {
-    cfn<u32,address,address,Span> emit;
+    cfn<u32,address,address,Span,ControlTargets> emit;
     cfn<void,address,address,u64> load;
-    cfn<u64,address> offset;
-    cfn<u64,address,ControlJump> jump;
-    cfn<void,address,u64> jump_to;
-    cfn<void,address,u64> patch_here;
-    cfn<void,address,ControlScope,u64> open;
-    cfn<void,address,ControlScope> close;
-    cfn<void,address,ControlTarget,u64> defer;
-    cfn<u64,address> continuation;
+    cfn<NativeCodeBuffer,address,u64> buffer;
+    cfn<void,address,u64> commit;
 };
-// The original emitter owns code, fixups, scopes and observations. Both the
-// scalar loop and its nested blocks borrow the same lowered instruction span.
+void patch_control_branches(address image, u64 target, u64 pending) on cpu;
+// The original emitter owns code and observations. The B entry owns the exit
+// head and lends it to emitted bodies. Nested targets live for their scope.
 enum ScalarLeaf:u32 {
     Call=0; Print=1; Texture=2; Publish=3; Collective=4;
     TileLength=5; TileLane=6; FunctionAddress=7;
@@ -353,14 +347,12 @@ struct PacketBodyHost {
     cfn<void,address,u64> commit;
     ScalarValueHost values;
 };
-extern "C" void emit_packet_body(address context, address emitter, Span code, PacketLayout layout, PacketBodyHost host) on cpu
+extern "C" void emit_packet_body(address context, address emitter, Span code, ControlTargets targets, PacketLayout layout, PacketBodyHost host) on cpu
     requires nonzero(host.step) requires nonzero(host.mark) requires nonzero(host.publish)
     requires nonzero(host.reserve) requires nonzero(host.commit)
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location) requires nonzero(host.values.scalar)
-    requires nonzero(host.control.emit) requires nonzero(host.control.load) requires nonzero(host.control.offset)
-    requires nonzero(host.control.jump) requires nonzero(host.control.jump_to) requires nonzero(host.control.patch_here)
-    requires nonzero(host.control.open) requires nonzero(host.control.close) requires nonzero(host.control.defer)
-    requires nonzero(host.control.continuation);
+    requires nonzero(host.control.emit) requires nonzero(host.control.load) requires nonzero(host.control.buffer)
+    requires nonzero(host.control.commit);
 
 // The caller owns the output and consumes the returned native memory operand.
 // B retains no address after return; the emitter owns the code and memory operand.
@@ -760,11 +752,11 @@ struct TilePrivateSlot {
 struct MapRangeHost {
     address context;
     cfn<MapRangeEntry,address,u32> enter;
-    cfn<u64,address,u32> leave;
+    cfn<u64,address,u32,u64> leave;
     cfn<NativeCodeBuffer,address,u64> reserve;
     cfn<void,address,u64> commit;
-    cfn<void,address,address> packet;
-    cfn<u32,address,Span> scalar;
+    cfn<void,address,address,ControlTargets> packet;
+    cfn<u32,address,Span,ControlTargets> scalar;
     cfn<TileInputFragment,address> next_input;
     cfn<void,address,u64,u64,TileInputFragment,u32> observe_input;
     Host ir;
@@ -816,16 +808,14 @@ struct ScalarBodyHost {
     cfn<void,address,u64,u64,bool> literal;
     cfn<void,address,u64,ScalarMathReference> math_symbol;
 };
-extern "C" u32 emit_scalar_body(address context, address emitter, Span code, ScalarBodyHost host) on cpu
+extern "C" u32 emit_scalar_body(address context, address emitter, Span code, ControlTargets targets, ScalarBodyHost host) on cpu
     requires nonzero(host.addresses.values.ir.inspect) requires nonzero(host.addresses.values.location)
     requires nonzero(host.addresses.values.scalar) requires nonzero(host.addresses.tile_stream)
     requires nonzero(host.local) requires nonzero(host.reserve) requires nonzero(host.commit)
     requires nonzero(host.literal) requires nonzero(host.math_symbol)
     requires nonzero(host.mark) requires nonzero(host.publish) requires nonzero(host.emit)
-    requires nonzero(host.control.emit) requires nonzero(host.control.load) requires nonzero(host.control.offset)
-    requires nonzero(host.control.jump) requires nonzero(host.control.jump_to) requires nonzero(host.control.patch_here)
-    requires nonzero(host.control.open) requires nonzero(host.control.close) requires nonzero(host.control.defer)
-    requires nonzero(host.control.continuation);
+    requires nonzero(host.control.emit) requires nonzero(host.control.load) requires nonzero(host.control.buffer)
+    requires nonzero(host.control.commit);
 
 struct CustomRangeInput {
     Span initialize;
@@ -840,8 +830,7 @@ struct CustomRangeInput {
 
 struct CustomRangeHost {
     cfn<u32,address,u32> enter;
-    cfn<void,address,u32> leave;
-    cfn<void,address,bool> breaks;
+    cfn<void,address,u32,u64> leave;
     cfn<AbiValueComponent,address,u64> summary_component;
 };
 
@@ -851,14 +840,12 @@ struct CustomRangeProduct { u32 stack_bytes; u32 status; };
 // the active break scope, source observations and final native image.
 extern "C" CustomRangeProduct emit_custom_range(address emitter, CustomRangeInput input,
     ScalarBodyHost scalar, CustomRangeHost host) on cpu
-    requires nonzero(host.enter) requires nonzero(host.leave) requires nonzero(host.breaks)
+    requires nonzero(host.enter) requires nonzero(host.leave)
     requires nonzero(host.summary_component)
     requires nonzero(scalar.addresses.values.ir.inspect) requires nonzero(scalar.addresses.values.location)
     requires nonzero(scalar.addresses.values.scalar) requires nonzero(scalar.addresses.tile_stream)
     requires nonzero(scalar.local) requires nonzero(scalar.reserve) requires nonzero(scalar.commit)
     requires nonzero(scalar.literal) requires nonzero(scalar.math_symbol)
     requires nonzero(scalar.mark) requires nonzero(scalar.publish) requires nonzero(scalar.emit)
-    requires nonzero(scalar.control.emit) requires nonzero(scalar.control.load) requires nonzero(scalar.control.offset)
-    requires nonzero(scalar.control.jump) requires nonzero(scalar.control.jump_to) requires nonzero(scalar.control.patch_here)
-    requires nonzero(scalar.control.open) requires nonzero(scalar.control.close) requires nonzero(scalar.control.defer)
-    requires nonzero(scalar.control.continuation);
+    requires nonzero(scalar.control.emit) requires nonzero(scalar.control.load) requires nonzero(scalar.control.buffer)
+    requires nonzero(scalar.control.commit);

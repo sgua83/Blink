@@ -17,33 +17,27 @@ pub(super) struct Control {
     pub(super) kind: ControlKind,
 }
 
-#[repr(u32)]
-enum Jump { Always, Zero, Nonzero }
-
-#[repr(u32)]
-enum Scope { Block, Loop }
-
-#[repr(u32)]
-enum Target { Block, Loop, Function }
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(super) struct ControlTargets {
+    function: *mut usize,
+    block: *mut usize,
+    loop_exit: *mut usize,
+    loop_begin: usize,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(super) struct Host {
-    emit: unsafe extern "C" fn(Slot, Slot, Span) -> u32,
+    emit: unsafe extern "C" fn(Slot, Slot, Span, ControlTargets) -> u32,
     load: unsafe extern "C" fn(Slot, Slot, Reg),
-    offset: unsafe extern "C" fn(Slot) -> usize,
-    jump: unsafe extern "C" fn(Slot, Jump) -> usize,
-    jump_to: unsafe extern "C" fn(Slot, usize),
-    patch_here: unsafe extern "C" fn(Slot, usize),
-    open: unsafe extern "C" fn(Slot, Scope, usize),
-    close: unsafe extern "C" fn(Slot, Scope),
-    defer: unsafe extern "C" fn(Slot, Target, usize),
-    continuation: unsafe extern "C" fn(Slot) -> usize,
+    buffer: unsafe extern "C" fn(Slot, usize) -> NativeCodeBuffer,
+    commit: unsafe extern "C" fn(Slot, usize),
 }
 
 unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::emit_scalar_body"]
-    fn emit_scalar_body(context: Slot, emitter: Slot, code: Span, host: ScalarHost) -> ScalarBodyStatus;
+    fn emit_scalar_body(context: Slot, emitter: Slot, code: Span, targets: ControlTargets, host: ScalarHost) -> ScalarBodyStatus;
 }
 
 unsafe fn emitter<'a, 'b>(slot: Slot) -> &'a mut Emitter<'b> {
@@ -51,63 +45,10 @@ unsafe fn emitter<'a, 'b>(slot: Slot) -> &'a mut Emitter<'b> {
 }
 
 pub(super) fn control_host(
-    emit: unsafe extern "C" fn(Slot, Slot, Span) -> u32,
+    emit: unsafe extern "C" fn(Slot, Slot, Span, ControlTargets) -> u32,
     load: unsafe extern "C" fn(Slot, Slot, Reg),
 ) -> Host {
-    Host { emit, load, offset, jump, jump_to, patch_here, open, close, defer, continuation }
-}
-
-unsafe extern "C" fn offset(slot: Slot) -> usize { unsafe { emitter(slot) }.code.len() }
-
-unsafe extern "C" fn jump(slot: Slot, kind: Jump) -> usize {
-    let branch = match kind {
-        Jump::Always => Branch::Always,
-        Jump::Zero => Branch::Zero32,
-        Jump::Nonzero => Branch::Nonzero32,
-    };
-    unsafe { emitter(slot) }.jump(branch)
-}
-
-unsafe extern "C" fn jump_to(slot: Slot, target: usize) { unsafe { emitter(slot) }.jump_to(target); }
-
-unsafe extern "C" fn patch_here(slot: Slot, field: usize) {
-    let e = unsafe { emitter(slot) };
-    e.patch(field, e.code.len());
-}
-
-unsafe extern "C" fn open(slot: Slot, scope: Scope, target: usize) {
-    let e = unsafe { emitter(slot) };
-    match scope {
-        Scope::Block => e.exits.push(Vec::new()),
-        Scope::Loop => {
-            e.breaks.push(Vec::new());
-            e.continues.push(target);
-        }
-    }
-}
-
-unsafe extern "C" fn close(slot: Slot, scope: Scope) {
-    let e = unsafe { emitter(slot) };
-    match scope {
-        Scope::Block => e.close_exits(),
-        Scope::Loop => {
-            e.continues.pop();
-            e.close_breaks();
-        }
-    }
-}
-
-unsafe extern "C" fn defer(slot: Slot, target: Target, field: usize) {
-    let e = unsafe { emitter(slot) };
-    match target {
-        Target::Block => e.exits.last_mut().unwrap().push(field),
-        Target::Loop => e.breaks.last_mut().unwrap().push(field),
-        Target::Function => e.exits[0].push(field),
-    }
-}
-
-unsafe extern "C" fn continuation(slot: Slot) -> usize {
-    *unsafe { emitter(slot) }.continues.last().unwrap()
+    Host { emit, load, buffer: reserve_scalar, commit: commit_scalar }
 }
 
 #[repr(u32)]
@@ -172,9 +113,9 @@ unsafe extern "C" fn scalar_math_symbol(slot: Slot, start: usize, reference: Sca
     unsafe { emitter(slot) }.record_symbol_target(start + reference.field as usize, target, true);
 }
 
-unsafe extern "C" fn scalar_child(context: Slot, slot: Slot, code: Span) -> u32 {
+unsafe extern "C" fn scalar_child(context: Slot, slot: Slot, code: Span, targets: ControlTargets) -> u32 {
     let host = unsafe { *context.cast::<ScalarHost>() };
-    unsafe { emit_scalar_body(context, slot, code, host) as u32 }
+    unsafe { emit_scalar_body(context, slot, code, targets, host) as u32 }
 }
 
 unsafe extern "C" fn scalar_load(_: Slot, slot: Slot, register: Reg) {
@@ -229,10 +170,10 @@ impl ScalarHost {
 }
 
 impl Emitter<'_> {
-    pub(super) fn block(&mut self, code: &[Inst]) -> Result<(), &'static str> {
+    pub(super) fn block(&mut self, code: &[Inst], targets: ControlTargets) -> Result<(), &'static str> {
         let workgroup = self.workgroup;
         let slot = std::ptr::from_mut(self).cast();
         let mut host = ScalarHost::new(slot, workgroup);
-        unsafe { emit_scalar_body(std::ptr::from_mut(&mut host).cast(), slot, Span::slice(code), host) }.result()
+        unsafe { emit_scalar_body(std::ptr::from_mut(&mut host).cast(), slot, Span::slice(code), targets, host) }.result()
     }
 }

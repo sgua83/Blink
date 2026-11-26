@@ -121,7 +121,7 @@ impl From<PacketPlace> for operands::MoveLocation {
 }
 unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::emit_packet_body"]
-    fn emit_packet_body(context: Slot, emitter: Slot, code: Span, layout: PacketLayout, host: PacketBodyHost);
+    fn emit_packet_body(context: Slot, emitter: Slot, code: Span, targets: structure::ControlTargets, layout: PacketLayout, host: PacketBodyHost);
     #[link_name = "bootstrap.x64_instruction::packet_lane"]
     fn encode_packet_lane(src: operands::MoveLocation, lane: u8, gpr: u8, output: *mut u8) -> u64;
 }
@@ -228,9 +228,9 @@ fn packet_host(context: Slot) -> PacketBodyHost {
     }
 }
 
-unsafe extern "C" fn emit_packet_child(context: Slot, emitter: Slot, code: Span) -> u32 {
+unsafe extern "C" fn emit_packet_child(context: Slot, emitter: Slot, code: Span, targets: structure::ControlTargets) -> u32 {
     let layout = unsafe { &*context.cast::<PacketBody<'_>>() }.layout;
-    unsafe { emit_packet_body(context, emitter, code, layout, packet_host(context)) };
+    unsafe { emit_packet_body(context, emitter, code, targets, layout, packet_host(context)) };
     0
 }
 
@@ -367,12 +367,12 @@ unsafe extern "C" fn packet_body_step(context: Slot, step: *const Step<'_>) -> P
 }
 
 impl Emitter<'_> {
-    pub(super) fn emit_packet_plan(&mut self, plan: &Plan<'_>, allocation: &PacketAllocation, sparse: u32) {
+    pub(super) fn emit_packet_plan(&mut self, plan: &Plan<'_>, allocation: &PacketAllocation, sparse: u32, targets: structure::ControlTargets) {
         let layout = PacketLayout { sparse, slots: self.frame.end as u32, buffer_bytes: BUFFER_BYTES,
             stride_field: BUFFER_STRIDE };
         let mut body = PacketBody { allocation, registers: self.registers, layout };
         let context = std::ptr::from_mut(&mut body).cast();
         let emitter = std::ptr::from_mut(self).cast();
-        unsafe { emit_packet_body(context, emitter, Span::slice(&plan.code), layout, packet_host(context)) };
+        unsafe { emit_packet_body(context, emitter, Span::slice(&plan.code), targets, layout, packet_host(context)) };
     }
 }

@@ -282,62 +282,111 @@ extern "C" void patch_branches(address image, u64 target, address fields, u64 co
     }
 }
 
-u32 emit_control(address context,address emitter,ControlInstruction instruction,ControlHost host) on cpu
-    requires nonzero(host.emit) requires nonzero(host.load) requires nonzero(host.offset)
-    requires nonzero(host.jump) requires nonzero(host.jump_to) requires nonzero(host.patch_here)
-    requires nonzero(host.open) requires nonzero(host.close) requires nonzero(host.defer)
-    requires nonzero(host.continuation) {
-    ControlKind kind=instruction.kind;
-    if(kind==ControlKind::If){
-        host.load(context,emitter,instruction.register);
-        Span first=instruction.first;
-        Span other=instruction.second;
-        ControlJump branch=ControlJump::Zero;
-        if(first.count==0u64){
-            first=instruction.second;
-            other=instruction.first;
-            branch=ControlJump::Nonzero;
+// Deferred branches all reach the same forward rel32 target. Their fields can
+// hold a backwards distance to the previous pending field until that target is known.
+void patch_control_branches(address image, u64 target, u64 pending) on cpu {
+    u64 base = address_bits(image);
+    u64 cursor = pending;
+    while (cursor != 0u64) {
+        address field = unsafe_address(base + cursor);
+        u32 previous = unsafe_position<u32>(field);
+        patch_relative(field, cursor, target);
+        cursor = previous == 0 ? 0u64 : cursor - u64(previous);
+    }
+}
+
+void defer_control_branch(address emitter, address target, ControlHost host) on cpu
+    requires nonzero(host.buffer) requires nonzero(host.commit) {
+    NativeCodeBuffer buffer = host.buffer(emitter, 5u64);
+    u64 field = buffer.end + 1u64;
+    u64 previous = unsafe_position<u64>(target);
+    u64 output = jump_field(address_bits(buffer.image) + buffer.end);
+    write_word(output, previous == 0u64 ? 0 : u32(field - previous));
+    host.commit(emitter, field + 4u64);
+    unsafe_position<u64>(target) = field;
+}
+
+u64 append_control_jump(address emitter, ControlJump branch, ControlHost host) on cpu
+    requires nonzero(host.buffer) requires nonzero(host.commit) {
+    NativeCodeBuffer buffer = host.buffer(emitter, 9u64);
+    u8 condition = branch == ControlJump::Always ? u8(0) :
+        (branch == ControlJump::Zero ? u8(0x84) : u8(0x85));
+    u32 test_bits = branch == ControlJump::Always ? 0 : 32;
+    u64 bytes = encode_branch(condition, test_bits, unsafe_address(address_bits(buffer.image) + buffer.end));
+    u64 end = buffer.end + bytes;
+    host.commit(emitter, end);
+    return end - 4u64;
+}
+
+void append_control_back_edge(address emitter, u64 target, ControlHost host) on cpu
+    requires nonzero(host.buffer) requires nonzero(host.commit) {
+    NativeCodeBuffer buffer = host.buffer(emitter, 5u64);
+    u64 bytes = jump_to(buffer.end, target, unsafe_address(address_bits(buffer.image) + buffer.end));
+    host.commit(emitter, buffer.end + bytes);
+}
+
+void patch_control_here(NativeCodeBuffer buffer, u64 field) on cpu {
+    patch_relative(unsafe_address(address_bits(buffer.image) + field), field, buffer.end);
+}
+
+u32 emit_control(address context, address emitter, ControlInstruction instruction,
+    ControlTargets targets, ControlHost host) on cpu
+    requires nonzero(host.emit) requires nonzero(host.load) requires nonzero(host.buffer)
+    requires nonzero(host.commit) {
+    ControlKind kind = instruction.kind;
+    if (kind == ControlKind::If) {
+        host.load(context, emitter, instruction.register);
+        Span first = instruction.first;
+        Span other = instruction.second;
+        ControlJump branch = ControlJump::Zero;
+        if (first.count == 0u64) {
+            first = instruction.second;
+            other = instruction.first;
+            branch = ControlJump::Nonzero;
         }
-        u64 alternate=host.jump(emitter,branch);
-        u32 first_status=host.emit(context,emitter,first);
-        if(first_status!=0){return first_status;}
-        if(other.count!=0u64){
-            u64 end=host.jump(emitter,ControlJump::Always);
-            host.patch_here(emitter,alternate);
-            u32 other_status=host.emit(context,emitter,other);
-            if(other_status!=0){return other_status;}
-            host.patch_here(emitter,end);
+        u64 alternate = append_control_jump(emitter, branch, host);
+        u32 first_status = host.emit(context, emitter, first, targets);
+        if (first_status != 0) { return first_status; }
+        if (other.count != 0u64) {
+            u64 end = append_control_jump(emitter, ControlJump::Always, host);
+            patch_control_here(host.buffer(emitter, 0u64), alternate);
+            u32 other_status = host.emit(context, emitter, other, targets);
+            if (other_status != 0) { return other_status; }
+            patch_control_here(host.buffer(emitter, 0u64), end);
         } else {
-            host.patch_here(emitter,alternate);
+            patch_control_here(host.buffer(emitter, 0u64), alternate);
         }
-    } else if(kind==ControlKind::Loop){
-        u64 begin=host.offset(emitter);
-        u32 test_status=host.emit(context,emitter,instruction.first);
-        if(test_status!=0){return test_status;}
-        host.load(context,emitter,instruction.register);
-        u64 end=host.jump(emitter,ControlJump::Zero);
-        host.open(emitter,ControlScope::Loop,begin);
-        u32 body_status=host.emit(context,emitter,instruction.second);
-        if(body_status!=0){return body_status;}
-        host.jump_to(emitter,begin);
-        host.patch_here(emitter,end);
-        host.close(emitter,ControlScope::Loop);
-    } else if(kind==ControlKind::Scope){
-        host.open(emitter,ControlScope::Block,0u64);
-        u32 body_status=host.emit(context,emitter,instruction.first);
-        if(body_status!=0){return body_status;}
-        host.close(emitter,ControlScope::Block);
-    } else if(kind==ControlKind::Continue){
-        host.jump_to(emitter,host.continuation(emitter));
+    } else if (kind == ControlKind::Loop) {
+        u64 begin = host.buffer(emitter, 0u64).end;
+        u32 test_status = host.emit(context, emitter, instruction.first, targets);
+        if (test_status != 0) { return test_status; }
+        host.load(context, emitter, instruction.register);
+        u64 end = append_control_jump(emitter, ControlJump::Zero, host);
+        u64 breaks = 0u64;
+        ControlTargets nested = ControlTargets(targets.function, targets.block, address_of(breaks), begin);
+        u32 body_status = host.emit(context, emitter, instruction.second, nested);
+        if (body_status != 0) { return body_status; }
+        append_control_back_edge(emitter, begin, host);
+        NativeCodeBuffer buffer = host.buffer(emitter, 0u64);
+        patch_control_here(buffer, end);
+        patch_control_branches(buffer.image, buffer.end, breaks);
+    } else if (kind == ControlKind::Scope) {
+        u64 exits = 0u64;
+        ControlTargets nested = ControlTargets(targets.function, address_of(exits), targets.loop_exit, targets.loop_begin);
+        u32 body_status = host.emit(context, emitter, instruction.first, nested);
+        if (body_status != 0) { return body_status; }
+        NativeCodeBuffer buffer = host.buffer(emitter, 0u64);
+        patch_control_branches(buffer.image, buffer.end, exits);
+    } else if (kind == ControlKind::Continue) {
+        append_control_back_edge(emitter, targets.loop_begin, host);
     } else {
-        ControlTarget target=ControlTarget::Block;
-        if(kind==ControlKind::Break){target=ControlTarget::Loop;}
-        if(kind==ControlKind::Raise){
-            host.load(context,emitter,instruction.register);
-            target=ControlTarget::Function;
+        address target = targets.block;
+        if (kind == ControlKind::Break) { target = targets.loop_exit; }
+        if (kind == ControlKind::Raise) {
+            host.load(context, emitter, instruction.register);
+            target = targets.function;
         }
-        u64 field=host.jump(emitter,ControlJump::Always);
-        host.defer(emitter,target,field);
+        defer_control_branch(emitter, target, host);
     }
     return 0;
 }
@@ -361,16 +410,14 @@ void body_scalar_value(address emitter, View value, ScalarBodyHost host) on cpu
     }
 }
 
-extern "C" u32 emit_scalar_body(address context, address emitter, Span code, ScalarBodyHost host) on cpu
+extern "C" u32 emit_scalar_body(address context, address emitter, Span code, ControlTargets targets, ScalarBodyHost host) on cpu
     requires nonzero(host.addresses.values.ir.inspect) requires nonzero(host.addresses.values.location)
     requires nonzero(host.addresses.values.scalar) requires nonzero(host.addresses.tile_stream)
     requires nonzero(host.local) requires nonzero(host.reserve) requires nonzero(host.commit)
     requires nonzero(host.literal) requires nonzero(host.math_symbol)
     requires nonzero(host.mark) requires nonzero(host.publish) requires nonzero(host.emit)
-    requires nonzero(host.control.emit) requires nonzero(host.control.load) requires nonzero(host.control.offset)
-    requires nonzero(host.control.jump) requires nonzero(host.control.jump_to) requires nonzero(host.control.patch_here)
-    requires nonzero(host.control.open) requires nonzero(host.control.close) requires nonzero(host.control.defer)
-    requires nonzero(host.control.continuation) {
+    requires nonzero(host.control.emit) requires nonzero(host.control.load) requires nonzero(host.control.buffer)
+    requires nonzero(host.control.commit) {
     u64 index = 0u64;
     while (index < code.count) {
         address instruction = unsafe_address(address_bits(code.data) + index * u64(code.stride));
@@ -436,7 +483,7 @@ extern "C" u32 emit_scalar_body(address context, address emitter, Span code, Sca
             if (kind == OP_BREAK_VALUE) { control = ControlKind::Break; }
             if (kind == OP_CONTINUE_VALUE) { control = ControlKind::Continue; }
             if (kind == OP_RAISE) { control = ControlKind::Raise; }
-            u32 status = emit_control(context, emitter, ControlInstruction(value.first, value.second, u64(value.a), control), host.control);
+            u32 status = emit_control(context, emitter, ControlInstruction(value.first, value.second, u64(value.a), control), targets, host.control);
             if (status != 0) { return status; }
         } else if (kind != OP_TILE_BARRIER) {
             return u32(ScalarBodyStatus::Unlowered);
@@ -2380,21 +2427,19 @@ u64 emit_packet_step(read PacketBodyOp op, PacketLayout layout, ScalarValueHost 
     return packet_write(target, memory, output);
 }
 
-extern "C" void emit_packet_body(address context, address emitter, Span code, PacketLayout layout, PacketBodyHost host) on cpu
+extern "C" void emit_packet_body(address context, address emitter, Span code, ControlTargets targets, PacketLayout layout, PacketBodyHost host) on cpu
     requires nonzero(host.step) requires nonzero(host.mark) requires nonzero(host.publish)
     requires nonzero(host.reserve) requires nonzero(host.commit)
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location) requires nonzero(host.values.scalar)
-    requires nonzero(host.control.emit) requires nonzero(host.control.load) requires nonzero(host.control.offset)
-    requires nonzero(host.control.jump) requires nonzero(host.control.jump_to) requires nonzero(host.control.patch_here)
-    requires nonzero(host.control.open) requires nonzero(host.control.close) requires nonzero(host.control.defer)
-    requires nonzero(host.control.continuation) {
+    requires nonzero(host.control.emit) requires nonzero(host.control.load) requires nonzero(host.control.buffer)
+    requires nonzero(host.control.commit) {
     u64 index = 0u64;
     while (index < code.count) {
         address step = unsafe_address(address_bits(code.data) + index * u64(code.stride));
         ScalarCursor cursor = host.mark(emitter);
         PacketBodyOp op = host.step(context, step);
         if (op.kind == PacketBodyKind::Control) {
-            emit_control(context, emitter, op.control, host.control);
+            emit_control(context, emitter, op.control, targets, host.control);
         } else {
             u64 capacity = 256u64;
             if (op.kind == PacketBodyKind::View) { capacity = 1024u64; }
@@ -5309,7 +5354,7 @@ u64 close_map_loop(MapRangeHost host, u64 begin, u64 exit_field, u64 skip_field,
     return range.end;
 }
 
-void emit_map_packet(MapRangeInput input, MapRangeHost host, u32 data, u32 stride) on cpu
+void emit_map_packet(MapRangeInput input, MapRangeHost host, ControlTargets targets, u32 data, u32 stride) on cpu
     requires nonzero(host.reserve) requires nonzero(host.commit)
     requires nonzero(host.packet) requires nonzero(host.observe) {
     bool sparse = input.selected != 0;
@@ -5329,7 +5374,7 @@ void emit_map_packet(MapRangeInput input, MapRangeHost host, u32 data, u32 strid
         map_range_part(host, MapRangePart::PacketBounds, begin, end);
         tail = end - 4u64;
     }
-    host.packet(host.context, input.packet);
+    host.packet(host.context, input.packet, targets);
     close_map_loop(host, begin, tail, 0u64, sparse ? u8(0) : u8(4),
         MapRangePart::PacketAdvance, MapRangePart::PacketBackEdge);
     if (sparse) {
@@ -5415,7 +5460,7 @@ void advance_tile_phase(MapRangeInput input, MapRangeHost host, u64 phase, u32 b
     host.observe(host.context, MapRangeObservation(buffer.end, end, usize(phase), 0, MapRangePart::TilePhaseAdvance));
 }
 
-bool emit_map_tile_phases(MapRangeInput input, MapRangeHost host) on cpu
+bool emit_map_tile_phases(MapRangeInput input, MapRangeHost host, ControlTargets targets) on cpu
     requires nonzero(host.reserve) requires nonzero(host.commit) requires nonzero(host.observe)
     requires nonzero(host.scalar) requires nonzero(host.next_input) requires nonzero(host.observe_input)
     requires nonzero(host.ir.inspect) requires nonzero(host.phase)
@@ -5428,7 +5473,7 @@ bool emit_map_tile_phases(MapRangeInput input, MapRangeHost host) on cpu
         TilePhaseView row = host.phase(host.context, phase);
         u64 begin = move_tile_base(host, base, phase, true);
         emit_tile_private_values(input, host, phase, true);
-        if (host.scalar(host.context, row.code) == 0) { return false; }
+        if (host.scalar(host.context, row.code, targets) == 0) { return false; }
         if (address_bits(row.step.data) == 0u64) {
             advance_tile_phase(input, host, phase, base, begin);
         } else {
@@ -5452,11 +5497,13 @@ extern "C" u32 emit_map_range(MapRangeInput input, MapRangeHost host) on cpu
     requires nonzero(host.packet) requires nonzero(host.scalar) requires nonzero(host.next_input) requires nonzero(host.observe_input)
     requires nonzero(host.ir.inspect) requires nonzero(host.phase)
     requires nonzero(host.next_private) requires nonzero(host.observe_private) requires nonzero(host.tile_step) {
+    u64 exits = 0u64;
+    ControlTargets targets = ControlTargets(address_of(exits), address_of(exits), address(), 0u64);
     MapRangeEntry entry = host.enter(host.context, input.frame);
     host.observe(host.context, MapRangeObservation(0u64, entry.end, usize(0), input.frame, MapRangePart::Enter));
     u32 data = u32(input.binding) * input.buffer_bytes;
     u32 stride = data + input.stride_field;
-    if (address_bits(input.packet) != 0u64) { emit_map_packet(input, host, data, stride); }
+    if (address_bits(input.packet) != 0u64) { emit_map_packet(input, host, targets, data, stride); }
 
     NativeCodeBuffer buffer = host.reserve(host.context, 64u64);
     ScalarRangePrefix prefix = scalar_range_prefix(buffer.image, buffer.end, input.selected, data, stride, input.word);
@@ -5469,15 +5516,15 @@ extern "C" u32 emit_map_range(MapRangeInput input, MapRangeHost host) on cpu
     }
     u8 step = u8(0);
     if (input.phase_count != 0u64) {
-        if (!emit_map_tile_phases(input, host)) { return entry.stack_bytes; }
+        if (!emit_map_tile_phases(input, host, targets)) { return entry.stack_bytes; }
     } else {
         if (input.tile_scope != 0) { emit_map_tile_input(input, host); }
-        if (host.scalar(host.context, input.code) == 0) { return entry.stack_bytes; }
+        if (host.scalar(host.context, input.code, targets) == 0) { return entry.stack_bytes; }
         step = u8(1);
     }
     u64 exit = close_map_loop(host, buffer.end, prefix.exit_field, prefix.skip_field, step,
         MapRangePart::ScalarAdvance, MapRangePart::ScalarBackEdge);
-    u64 end = host.leave(host.context, input.frame);
+    u64 end = host.leave(host.context, input.frame, exits);
     host.observe(host.context, MapRangeObservation(exit, end, usize(0), input.frame, MapRangePart::Exit));
     return entry.stack_bytes;
 }
@@ -5828,21 +5875,21 @@ u64 emit_append(View value, ScalarValueHost host, u32 buffer_bytes,
 
 extern "C" CustomRangeProduct emit_custom_range(address emitter, CustomRangeInput input,
     ScalarBodyHost scalar, CustomRangeHost host) on cpu
-    requires nonzero(host.enter) requires nonzero(host.leave) requires nonzero(host.breaks)
+    requires nonzero(host.enter) requires nonzero(host.leave)
     requires nonzero(host.summary_component)
     requires nonzero(scalar.addresses.values.ir.inspect) requires nonzero(scalar.addresses.values.location)
     requires nonzero(scalar.addresses.values.scalar) requires nonzero(scalar.addresses.tile_stream)
     requires nonzero(scalar.local) requires nonzero(scalar.reserve) requires nonzero(scalar.commit)
     requires nonzero(scalar.literal) requires nonzero(scalar.math_symbol)
     requires nonzero(scalar.mark) requires nonzero(scalar.publish) requires nonzero(scalar.emit)
-    requires nonzero(scalar.control.emit) requires nonzero(scalar.control.load) requires nonzero(scalar.control.offset)
-    requires nonzero(scalar.control.jump) requires nonzero(scalar.control.jump_to) requires nonzero(scalar.control.patch_here)
-    requires nonzero(scalar.control.open) requires nonzero(scalar.control.close) requires nonzero(scalar.control.defer)
-    requires nonzero(scalar.control.continuation) {
+    requires nonzero(scalar.control.emit) requires nonzero(scalar.control.load) requires nonzero(scalar.control.buffer)
+    requires nonzero(scalar.control.commit) {
     u32 stack_bytes = host.enter(emitter, input.frame);
+    u64 exits = 0u64;
+    ControlTargets targets = ControlTargets(address_of(exits), address_of(exits), address(), 0u64);
     ScalarBodyHost dispatch = scalar;
     address context = address_of(dispatch);
-    u32 status = emit_scalar_body(context, emitter, input.initialize, scalar);
+    u32 status = emit_scalar_body(context, emitter, input.initialize, targets, scalar);
     if (status != 0) { return CustomRangeProduct(stack_bytes, status); }
 
     NativeCodeBuffer buffer = scalar.reserve(emitter, 16u64);
@@ -5851,15 +5898,19 @@ extern "C" CustomRangeProduct emit_custom_range(address emitter, CustomRangeInpu
     u64 bounds_end = begin + range_bounds(false, output);
     scalar.commit(emitter, bounds_end);
 
-    if (input.break_on_head != 0) { host.breaks(emitter, true); }
-    status = emit_scalar_body(context, emitter, input.body, scalar);
+    u64 breaks = 0u64;
+    ControlTargets body_targets = targets;
+    if (input.break_on_head != 0) {
+        body_targets = ControlTargets(targets.function, targets.block, address_of(breaks), begin);
+    }
+    status = emit_scalar_body(context, emitter, input.body, body_targets, scalar);
     if (status != 0) { return CustomRangeProduct(stack_bytes, status); }
     buffer = scalar.reserve(emitter, 8u64);
     RangeEnd range = finish_range(buffer.image, buffer.end, begin, bounds_end - 4u64, 0u64, u8(1));
     scalar.commit(emitter, range.end);
-    if (input.break_on_head != 0) { host.breaks(emitter, false); }
+    patch_control_branches(buffer.image, range.end, breaks);
 
-    status = emit_scalar_body(context, emitter, input.finish, scalar);
+    status = emit_scalar_body(context, emitter, input.finish, targets, scalar);
     if (status != 0) { return CustomRangeProduct(stack_bytes, status); }
     if (input.publish != 0) {
         buffer = scalar.reserve(emitter, 16u64 + 24u64 * input.summary_count);
@@ -5868,6 +5919,6 @@ extern "C" CustomRangeProduct emit_custom_range(address emitter, CustomRangeInpu
             input.summary, host.summary_component, output);
         scalar.commit(emitter, buffer.end + bytes);
     }
-    host.leave(emitter, input.frame);
+    host.leave(emitter, input.frame, exits);
     return CustomRangeProduct(stack_bytes, 0);
 }

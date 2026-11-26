@@ -247,8 +247,7 @@ struct CustomRangeInput {
 #[repr(C)]
 struct CustomRangeHost {
     enter: unsafe extern "C" fn(*mut c_void, u32) -> u32,
-    leave: unsafe extern "C" fn(*mut c_void, u32),
-    breaks: unsafe extern "C" fn(*mut c_void, u32),
+    leave: unsafe extern "C" fn(*mut c_void, u32, usize),
     summary_component: AbiComponent,
 }
 
@@ -291,17 +290,8 @@ unsafe extern "C" fn enter_range(slot: *mut c_void, frame: u32) -> u32 {
     unsafe { &mut *slot.cast::<Emitter<'_>>() }.enter(frame)
 }
 
-unsafe extern "C" fn leave_range(slot: *mut c_void, frame: u32) {
-    unsafe { &mut *slot.cast::<Emitter<'_>>() }.leave(frame);
-}
-
-unsafe extern "C" fn break_scope(slot: *mut c_void, open: u32) {
-    let emitter = unsafe { &mut *slot.cast::<Emitter<'_>>() };
-    if open != 0 {
-        emitter.breaks.push(Vec::new());
-    } else {
-        emitter.close_breaks();
-    }
+unsafe extern "C" fn leave_range(slot: *mut c_void, frame: u32, exits: usize) {
+    unsafe { &mut *slot.cast::<Emitter<'_>>() }.leave(frame, exits);
 }
 
 pub(super) fn emit(
@@ -395,9 +385,6 @@ pub(super) fn emit(
         workgroup: Stage::DEFAULT_WORKGROUP_WIDTH,
         buffer_count,
         textures: &program.textures,
-        breaks: Vec::new(),
-        exits: vec![Vec::new()],
-        continues: Vec::new(),
         allocation,
         frame: layout,
     };
@@ -417,7 +404,7 @@ pub(super) fn emit(
     };
     let emitted = unsafe {
         emit_custom_range(emitter.cast(), input, ScalarHost::new(emitter.cast(), Stage::DEFAULT_WORKGROUP_WIDTH),
-            CustomRangeHost { enter: enter_range, leave: leave_range, breaks: break_scope, summary_component })
+            CustomRangeHost { enter: enter_range, leave: leave_range, summary_component })
     };
     emitted.status.result()?;
     Ok(e.finish(emitted.stack_bytes, true))

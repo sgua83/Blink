@@ -109,20 +109,12 @@ unsafe extern "C" {
     fn write_tail(image: *mut u8, end: usize, probe: usize, literal_count: usize,
         regions: *mut super::Region, context: *mut std::ffi::c_void,
         next_literal: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> TailLiteral) -> CodeTail;
-    #[link_name = "bootstrap.x64_instruction::patch_relative"]
-    fn patch_relative(field: *mut u8, offset: u64, target: u64);
-    #[link_name = "bootstrap.x64_instruction::encode_branch"]
-    fn encode_branch(condition: u8, test_bits: u32, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::jump_to"]
-    fn encode_jump_to(offset: u64, target: u64, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::patch_branches"]
-    fn patch_branches(image: *mut u8, target: u64, fields: *const usize, count: u64);
     #[link_name = "bootstrap.frame_layout::range_prologue"]
     fn range_prologue(frame: u32, saved: *const allocation::SavedRegister, count: usize,
         operations: *mut UnwindOperation, output: *mut u8) -> RangePrologue;
     #[link_name = "bootstrap.frame_layout::range_epilogue"]
     fn range_epilogue(frame: u32, saved: *const allocation::SavedRegister, count: usize,
-        image: *mut u8, end: usize, exits: *const usize, exit_count: usize) -> usize;
+        image: *mut u8, end: usize, exits: usize) -> usize;
     #[link_name = "bootstrap.x64_instruction::emit_map_range"]
     fn emit_map_range(input: MapRangeInput, host: MapRangeHost) -> u32;
 
@@ -210,14 +202,6 @@ fn emit_collective_leaf(body_capacity: usize, emit: impl FnOnce(CollectiveLeafOu
     code
 }
 
-enum Branch {
-    Always,
-    Flags(u8),
-    Zero32,
-    Nonzero32,
-    Nonzero64,
-}
-
 static EMPTY_TILE_WORDS: std::collections::BTreeSet<SharedWord> = std::collections::BTreeSet::new();
 
 struct Emitter<'a> {
@@ -237,9 +221,6 @@ struct Emitter<'a> {
     workgroup: u32,
     buffer_count: usize,
     textures: &'a [TextureBinding],
-    breaks: Vec<Vec<usize>>,
-    exits: Vec<Vec<usize>>,
-    continues: Vec<usize>,
     allocation: Allocation,
     frame: Frame,
 }
@@ -307,15 +288,14 @@ impl Emitter<'_> {
         self.prolog = entry.prolog;
         entry.stack_bytes
     }
-    fn leave(&mut self, frame: u32) {
-        let exits = self.exits.pop().unwrap();
+    fn leave(&mut self, frame: u32, exits: usize) {
         let saved = &self.frame.saved;
         let end = self.code.len();
         self.code.reserve(20 + 9 * saved.len());
         unsafe {
             let bytes = range_epilogue(
                 frame, saved.as_ptr(), saved.len(), self.code.as_mut_ptr(), end,
-                exits.as_ptr(), exits.len(),
+                exits,
             );
             self.code.set_len(end + bytes);
         }
@@ -323,43 +303,6 @@ impl Emitter<'_> {
     fn bytes(&mut self, b: &[u8]) {
         self.code.extend_from_slice(b);
     }
-    fn jump(&mut self, branch: Branch) -> usize {
-        let (condition, test_bits) = match branch {
-            Branch::Always => (0, 0),
-            Branch::Flags(condition) => (condition, 0),
-            Branch::Zero32 => (0x84, 32),
-            Branch::Nonzero32 => (0x85, 32),
-            Branch::Nonzero64 => (0x85, 64),
-        };
-        self.emit_bytes(9, |output| unsafe { encode_branch(condition, test_bits, output) });
-        self.code.len() - 4
-    }
-    fn patch(&mut self, at: usize, target: usize) {
-        let field = &mut self.code[at..at + 4];
-        unsafe { patch_relative(field.as_mut_ptr(), at as u64, target as u64); }
-    }
-    fn jump_to(&mut self, target: usize) {
-        let start = self.code.len();
-        self.emit_bytes(5, |output| unsafe { encode_jump_to(start as u64, target as u64, output) });
-    }
-
-    fn patch_scope(&mut self, fields: &[usize]) {
-        if !fields.is_empty() {
-            let target = self.code.len() as u64;
-            unsafe { patch_branches(self.code.as_mut_ptr(), target, fields.as_ptr(), fields.len() as u64) };
-        }
-    }
-
-    fn close_exits(&mut self) {
-        let fields = self.exits.pop().unwrap();
-        self.patch_scope(&fields);
-    }
-
-    fn close_breaks(&mut self) {
-        let fields = self.breaks.pop().unwrap();
-        self.patch_scope(&fields);
-    }
-
     fn abi_range(&mut self, start: usize, kind: super::AbiRangeKind) {
         self.record_abi_range(start..self.code.len(), kind);
     }
@@ -455,11 +398,11 @@ type MapRangeSlot = *mut std::ffi::c_void;
 struct MapRangeHost {
     context: MapRangeSlot,
     enter: unsafe extern "C" fn(MapRangeSlot, u32) -> MapRangeEntry,
-    leave: unsafe extern "C" fn(MapRangeSlot, u32) -> usize,
+    leave: unsafe extern "C" fn(MapRangeSlot, u32, usize) -> usize,
     reserve: unsafe extern "C" fn(MapRangeSlot, usize) -> NativeCodeBuffer,
     commit: unsafe extern "C" fn(MapRangeSlot, usize),
-    packet: unsafe extern "C" fn(MapRangeSlot, *const std::ffi::c_void),
-    scalar: unsafe extern "C" fn(MapRangeSlot, Span) -> u32,
+    packet: unsafe extern "C" fn(MapRangeSlot, *const std::ffi::c_void, structure::ControlTargets),
+    scalar: unsafe extern "C" fn(MapRangeSlot, Span, structure::ControlTargets) -> u32,
     next_input: unsafe extern "C" fn(MapRangeSlot) -> TileInputFragment,
     observe_input: unsafe extern "C" fn(MapRangeSlot, usize, usize, TileInputFragment, u32),
     ir: dataflow::Host,
@@ -486,9 +429,9 @@ unsafe extern "C" fn map_range_enter(slot: MapRangeSlot, frame: u32) -> MapRange
     MapRangeEntry { end: range.emitter.code.len(), stack_bytes }
 }
 
-unsafe extern "C" fn map_range_leave(slot: MapRangeSlot, frame: u32) -> usize {
+unsafe extern "C" fn map_range_leave(slot: MapRangeSlot, frame: u32, exits: usize) -> usize {
     let range = unsafe { &mut *slot.cast::<MapRange<'_, '_>>() };
-    range.emitter.leave(frame);
+    range.emitter.leave(frame, exits);
     range.emitter.code.len()
 }
 
@@ -512,15 +455,15 @@ unsafe extern "C" fn map_range_commit(slot: MapRangeSlot, end: usize) {
     unsafe { range.emitter.commit_native_code(end) };
 }
 
-unsafe extern "C" fn map_range_packet(slot: MapRangeSlot, packet: *const std::ffi::c_void) {
+unsafe extern "C" fn map_range_packet(slot: MapRangeSlot, packet: *const std::ffi::c_void, targets: structure::ControlTargets) {
     let range = unsafe { &mut *slot.cast::<MapRange<'_, '_>>() };
     let (plan, allocation) = unsafe { &*packet.cast::<(packet::Plan<'_>, PacketAllocation)>() };
-    range.emitter.emit_packet_plan(plan, allocation, u32::from(range.stage.selection.is_some()));
+    range.emitter.emit_packet_plan(plan, allocation, u32::from(range.stage.selection.is_some()), targets);
 }
 
-unsafe extern "C" fn map_range_scalar(slot: MapRangeSlot, code: Span) -> u32 {
+unsafe extern "C" fn map_range_scalar(slot: MapRangeSlot, code: Span, targets: structure::ControlTargets) -> u32 {
     let range = unsafe { &mut *slot.cast::<MapRange<'_, '_>>() };
-    range.result = range.emitter.block(unsafe { code.as_slice() });
+    range.result = range.emitter.block(unsafe { code.as_slice() }, targets);
     u32::from(range.result.is_ok())
 }
 
@@ -681,9 +624,6 @@ fn emit_map(
         workgroup,
         buffer_count: program.buffers.len(),
         textures: &program.textures,
-        breaks: Vec::new(),
-        exits: vec![Vec::new()],
-        continues: Vec::new(),
         allocation,
         frame: frame_layout,
     };

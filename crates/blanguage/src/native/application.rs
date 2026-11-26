@@ -88,21 +88,18 @@ struct FunctionExitBuffer {
     code: NativeCodeBuffer,
     saved: *const allocation::SavedRegister,
     saved_count: usize,
-    exits: *const usize,
-    exit_count: usize,
 }
 
 #[repr(C)]
 struct FunctionCodeHost {
     abi: FunctionHost,
     entry: unsafe extern "C" fn(*mut c_void, usize, usize) -> FrameOutput,
-    body: unsafe extern "C" fn(*mut c_void, FunctionPrologue) -> u32,
+    body: unsafe extern "C" fn(*mut c_void, FunctionPrologue, structure::ControlTargets) -> u32,
     reserve: unsafe extern "C" fn(*mut c_void, usize) -> NativeCodeBuffer,
     result: unsafe extern "C" fn(*const c_void) -> CallValueLoan,
     commit: unsafe extern "C" fn(*mut c_void, usize),
     literal: unsafe extern "C" fn(*mut c_void, usize, Bits, usize),
     exit_buffer: unsafe extern "C" fn(*mut c_void, usize) -> FunctionExitBuffer,
-    complete: unsafe extern "C" fn(*mut c_void, usize),
 }
 
 #[repr(C)]
@@ -184,7 +181,7 @@ unsafe extern "C" fn entry_buffer(context: *mut c_void, code_bytes: usize, opera
     }
 }
 
-unsafe extern "C" fn emit_body(context: *mut c_void, entry: FunctionPrologue) -> u32 {
+unsafe extern "C" fn emit_body(context: *mut c_void, entry: FunctionPrologue, targets: structure::ControlTargets) -> u32 {
     let state = unsafe { &mut *context.cast::<FunctionEmission<'_, '_>>() };
     let e = &mut *state.emitter;
     unsafe {
@@ -193,8 +190,7 @@ unsafe extern "C" fn emit_body(context: *mut c_void, entry: FunctionPrologue) ->
     }
     e.probe = (entry.probe_field != 0).then_some(entry.probe_field);
     e.prolog = entry.prolog;
-    e.exits.push(Vec::new());
-    state.body_result = e.block(state.code);
+    state.body_result = e.block(state.code, targets);
     u32::from(state.body_result.is_ok())
 }
 
@@ -223,18 +219,10 @@ unsafe extern "C" fn exit_buffer(context: *mut c_void, count: usize) -> Function
     let state = unsafe { &mut *context.cast::<FunctionEmission<'_, '_>>() };
     let e = &mut *state.emitter;
     let code = NativeCodeBuffer::reserve(&mut e.code, count);
-    let exits = e.exits.last().unwrap();
     let saved = &e.frame.saved;
     FunctionExitBuffer {
         code, saved: saved.as_ptr(), saved_count: saved.len(),
-        exits: exits.as_ptr(), exit_count: exits.len(),
     }
-}
-
-unsafe extern "C" fn complete_code(context: *mut c_void, end: usize) {
-    let state = unsafe { &mut *context.cast::<FunctionEmission<'_, '_>>() };
-    unsafe { state.emitter.code.set_len(end) };
-    state.emitter.exits.pop();
 }
 
 const FUNCTION_CODE_HOST: FunctionCodeHost = FunctionCodeHost {
@@ -246,7 +234,6 @@ const FUNCTION_CODE_HOST: FunctionCodeHost = FunctionCodeHost {
     commit: commit_code,
     literal: record_literal,
     exit_buffer,
-    complete: complete_code,
 };
 
 fn emit_value(
@@ -294,9 +281,6 @@ fn emit_value(
         workgroup: Stage::DEFAULT_WORKGROUP_WIDTH,
         buffer_count: 0,
         textures: &[],
-        breaks: Vec::new(),
-        exits: Vec::new(),
-        continues: Vec::new(),
         allocation,
         frame: layout,
     };
