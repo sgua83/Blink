@@ -22,31 +22,25 @@ impl From<Option<(usize, u32)>> for Field {
     }
 }
 #[repr(C)]
-struct StageView {
-    code: Span, reads: Span, writes: Span, cross: Span,
-    domain: usize, prefix: Field, selection: Field, operation: u32, boundary: u32,
+struct StageAccess {
+    reads: Span, writes: Span, cross: Span,
+    domain: usize, prefix: Field, selection: Field, boundary: u32,
 }
-unsafe extern "C" fn stage_view(owner: *const c_void) -> StageView {
+unsafe extern "C" fn stage_access(owner: *const c_void) -> StageAccess {
     let stage = unsafe { &*owner.cast::<Stage>() };
-    let operation = match stage.operation {
-        Operation::Map => 0, Operation::Reduce(_) => 1, Operation::CustomReduce(_) => 2,
-        Operation::CustomScan(_) => 3, Operation::CustomSegmentedReduce(_) => 4,
-        Operation::SegmentedReduce(_) => 5, Operation::ScanExclusive(_) => 6,
-        Operation::Compact(_) => 7, Operation::StableSort(_) => 8,
-    };
-    StageView {
-        code: Span::of(&stage.code), reads: Span::of(&stage.reads), writes: Span::of(&stage.writes),
+    StageAccess {
+        reads: Span::of(&stage.reads), writes: Span::of(&stage.writes),
         cross: Span::of(&stage.cross_access), domain: stage.domain,
         prefix: stage.prefix.map(|v| (v.binding, v.word)).into(),
         selection: stage.selection.map(|v| (v.binding, v.word)).into(),
-        operation, boundary: u32::from(stage.boundary_before),
+        boundary: u32::from(stage.boundary_before),
     }
 }
 #[repr(C)]
 struct FusionHost {
     ir: crate::ir::dataflow::Host, context: *mut c_void,
     at: unsafe extern "C" fn(*mut c_void, usize) -> *mut c_void,
-    stage: unsafe extern "C" fn(*const c_void) -> StageView,
+    access: unsafe extern "C" fn(*const c_void) -> StageAccess,
     swap: unsafe extern "C" fn(*mut c_void, usize, usize),
     truncate: unsafe extern "C" fn(*mut c_void, usize),
     rewrite: rewrite::Host,
@@ -81,7 +75,7 @@ const VALUE_HOST: ValueHost = ValueHost { flow: value_flow, eliminate: value_eli
 #[repr(C)]
 struct StageHost {
     ir: crate::ir::dataflow::Host, context: *mut c_void, values: ValueHost,
-    stage: unsafe extern "C" fn(*const c_void) -> StageView,
+    stage: unsafe extern "C" fn(*const c_void) -> *const c_void,
     custom: unsafe extern "C" fn(*mut c_void) -> Values,
     flow: unsafe extern "C" fn(*mut c_void),
     eliminate: unsafe extern "C" fn(*mut c_void),
@@ -137,7 +131,7 @@ pub(super) fn run(program: &mut Program, worker: &crate::compiler::Worker) -> st
     let host = ProgramHost {
         fusion: FusionHost {
             ir: crate::ir::dataflow::HOST, context: ptr::from_mut(&mut state).cast(),
-            at: stage_at, stage: stage_view, swap: swap_stages, truncate: truncate_stages,
+            at: stage_at, access: stage_access, swap: swap_stages, truncate: truncate_stages,
             rewrite: rewrite::HOST, layout: fusion_layout, origin: fusion_origin,
             retain: fusion_retain, commit: fusion_commit, joined,
         },
@@ -266,13 +260,13 @@ fn run_stage(stage: &mut Stage, bindings: usize) {
     let mut state = StageState { stage, bindings, words: BTreeSet::new() };
     unsafe { b_stage(StageHost {
         ir: crate::ir::dataflow::HOST, context: ptr::from_mut(&mut state).cast(), values: VALUE_HOST,
-        stage: stage_state_view, custom, flow: stage_flow, eliminate: stage_eliminate, words: stage_words,
+        stage: stage_owner, custom, flow: stage_flow, eliminate: stage_eliminate, words: stage_words,
         prune, select, bindings: bindings_map, release_words, compact: stage_compact,
     }, has_tiles); }
 }
-unsafe extern "C" fn stage_state_view(context: *const c_void) -> StageView {
+unsafe extern "C" fn stage_owner(context: *const c_void) -> *const c_void {
     let state = unsafe { &*context.cast::<StageState<'_>>() };
-    unsafe { stage_view(ptr::from_ref(&*state.stage).cast()) }
+    ptr::from_ref(&*state.stage).cast()
 }
 unsafe extern "C" fn custom(context: *mut c_void) -> Values {
     let state = unsafe { &mut *context.cast::<StageState<'_>>() };

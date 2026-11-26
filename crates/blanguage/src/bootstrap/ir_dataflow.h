@@ -242,17 +242,17 @@ extern "C" u32 selection_run(address code,SelectionInput input,SelectionHost hos
 // Views expire before callbacks mutate those owners. Work stays in the original
 // synchronous native Worker batch; its actual io::Error remains with the host.
 struct PipelineField { usize binding; u32 word; u32 present; };
-struct PipelineStage {
- Span code; Span reads; Span writes; Span cross;
+struct PipelineAccess {
+ Span reads; Span writes; Span cross;
  usize domain; PipelineField prefix; PipelineField selection;
- u32 operation; u32 boundary;
+ u32 boundary;
 };
 struct RewriteOffsets { usize registers; usize locals; };
 struct FusionLayout { RewriteSpan code; RewriteOffsets offsets; };
 struct PipelineFusion {
  Host ir; address context;
  cfn<address,address,usize> at;
- cfn<PipelineStage,address> ensures memory(read) stage;
+ cfn<PipelineAccess,address> ensures memory(read) access;
  cfn<void,address,usize,usize> swap;
  cfn<void,address,usize> truncate;
  RewriteHost rewrite;
@@ -277,7 +277,7 @@ struct PipelineValue {
 };
 struct PipelineStageHost {
  Host ir; address context; PipelineValue values;
- cfn<PipelineStage,address> ensures memory(read) stage;
+ cfn<address,address> ensures memory(read) stage;
  cfn<PipelineValues,address> custom;
  cfn<void,address> flow;
  cfn<void,address> eliminate;
@@ -303,7 +303,7 @@ struct PipelineMap {
 struct PipelineAccessCounts { usize reads; usize writes; usize cross; };
 extern "C" void optimize_program(usize count,PipelineProgram host) on cpu
  requires nonzero(host.fusion.ir.inspect) requires nonzero(host.fusion.at)
- requires nonzero(host.fusion.stage) requires nonzero(host.fusion.swap) requires nonzero(host.fusion.truncate)
+ requires nonzero(host.fusion.access) requires nonzero(host.fusion.swap) requires nonzero(host.fusion.truncate)
  requires nonzero(host.fusion.rewrite.inspect) requires nonzero(host.fusion.layout)
  requires nonzero(host.fusion.origin) requires nonzero(host.fusion.retain) requires nonzero(host.fusion.commit)
  requires nonzero(host.fusion.joined) requires nonzero(host.batch) requires nonzero(host.removed)

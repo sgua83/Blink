@@ -953,7 +953,7 @@ bool pipeline_contains(Span span,inout usize at,usize binding) on cpu {
  }
  return false;
 }
-bool pipeline_cross(PipelineStage left,PipelineStage right) on cpu {
+bool pipeline_cross(PipelineAccess left,PipelineAccess right) on cpu {
  usize lc=0u64;usize rc=0u64;usize lr=0u64;usize lw=0u64;usize rr=0u64;usize rw=0u64;
  while(lc<left.cross.count||rc<right.cross.count){
   usize binding;
@@ -990,32 +990,54 @@ bool pipeline_ordered(Span code,Host host) on cpu requires nonzero(host.inspect)
 bool pipeline_same_field(PipelineField left,PipelineField right) on cpu {
  return left.present==right.present&&left.binding==right.binding&&left.word==right.word;
 }
-bool pipeline_fusible(PipelineStage left,PipelineStage right,Host host) on cpu requires nonzero(host.inspect) {
- return left.operation==0&&right.operation==0&&left.domain==right.domain&&right.boundary==0
-  &&pipeline_same_field(left.prefix,right.prefix)&&pipeline_same_field(left.selection,right.selection)
-  &&!pipeline_cross(left,right)&&!pipeline_ordered(left.code,host)&&!pipeline_ordered(right.code,host);
+enum StageOrder:u32 { Unknown=0; Unordered=1; Ordered=2; };
+StageOrder pipeline_order(Span code,Host host) on cpu requires nonzero(host.inspect) {
+ return pipeline_ordered(code,host) ? StageOrder::Ordered : StageOrder::Unordered;
+}
+bool pipeline_fusible(address previous,address current,inout StageOrder previous_order,
+ inout StageOrder current_order,PipelineFusion host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.access) {
+ if(previous_order==StageOrder::Ordered){return false;}
+ View left_ir=host.ir.inspect(Node(previous,N_STAGE));
+ if(host.ir.inspect(left_ir.left).tag!=0){return false;}
+ View right_ir=host.ir.inspect(Node(current,N_STAGE));
+ if(host.ir.inspect(right_ir.left).tag!=0){return false;}
+ PipelineAccess left=host.access(previous);
+ PipelineAccess right=host.access(current);
+ if(left.domain!=right.domain||right.boundary!=0
+    ||!pipeline_same_field(left.prefix,right.prefix)||!pipeline_same_field(left.selection,right.selection)
+    ||pipeline_cross(left,right)){return false;}
+ if(previous_order==StageOrder::Unknown){
+  previous_order=pipeline_order(left_ir.first,host.ir);
+  if(previous_order==StageOrder::Ordered){return false;}
+ }
+ current_order=pipeline_order(right_ir.first,host.ir);
+ return current_order==StageOrder::Unordered;
 }
 usize pipeline_fuse(usize count,u32 record,PipelineFusion host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.at) requires nonzero(host.stage)
+ requires nonzero(host.ir.inspect) requires nonzero(host.at) requires nonzero(host.access)
  requires nonzero(host.swap) requires nonzero(host.truncate) requires nonzero(host.rewrite.inspect)
  requires nonzero(host.layout) requires nonzero(host.origin) requires nonzero(host.retain)
  requires nonzero(host.commit) requires nonzero(host.joined) {
  usize index=0u64;
  usize kept=0u64;
  usize last_join=0u64;
+ StageOrder previous_order=StageOrder::Unknown;
  while(index<count){
   bool merged=false;
+  StageOrder current_order=StageOrder::Unknown;
   if(kept!=0u64){
    usize target=kept-1u64;
    address previous=host.at(host.context,target);
    address current=host.at(host.context,index);
-   if(pipeline_fusible(host.stage(previous),host.stage(current),host.ir)){
+   if(pipeline_fusible(previous,current,previous_order,current_order,host)){
     host.origin(previous,current);
     FusionLayout layout=host.layout(previous,current);
     RewriteOffsets offsets=layout.offsets;
     rewrite_offsets(layout.code,host.rewrite,offsets);
     host.retain(previous,current);
     host.commit(host.context,target,index,offsets.locals);
+    // The fused body consists only of the two bodies already classified as unordered.
     if(record!=0&&last_join!=kept){
      host.joined(host.context,target);
      last_join=kept;
@@ -1026,6 +1048,7 @@ usize pipeline_fuse(usize count,u32 record,PipelineFusion host) on cpu
   if(!merged){
    if(index!=kept){host.swap(host.context,kept,index);}
    kept+=1u64;
+   previous_order=current_order;
   }
   index+=1u64;
  }
@@ -1033,19 +1056,21 @@ usize pipeline_fuse(usize count,u32 record,PipelineFusion host) on cpu
  return kept;
 }
 usize pipeline_remove_empty(usize count,PipelineProgram host) on cpu
- requires nonzero(host.fusion.at) requires nonzero(host.fusion.stage) requires nonzero(host.fusion.swap)
+ requires nonzero(host.fusion.at) requires nonzero(host.fusion.ir.inspect)
+ requires nonzero(host.fusion.access) requires nonzero(host.fusion.swap)
  requires nonzero(host.fusion.truncate) requires nonzero(host.removed) requires nonzero(host.boundary) {
  PipelineFusion fusion=host.fusion;
  usize index=0u64;
  usize kept=0u64;
  u32 carry=0;
  while(index<count){
-  PipelineStage stage=fusion.stage(fusion.at(fusion.context,index));
-  if(stage.operation==0&&stage.code.count==0u64){
-   carry=carry|stage.boundary;
+  address owner=fusion.at(fusion.context,index);
+  View stage=fusion.ir.inspect(Node(owner,N_STAGE));
+  if(stage.first.count==0u64&&fusion.ir.inspect(stage.left).tag==0){
+   carry=carry|fusion.access(owner).boundary;
    host.removed(fusion.context,index);
   }else{
-   if(carry!=0&&stage.boundary==0){host.boundary(fusion.context,index);}
+   if(carry!=0&&fusion.access(owner).boundary==0){host.boundary(fusion.context,index);}
    carry=0;
    if(index!=kept){fusion.swap(fusion.context,kept,index);}
    kept+=1u64;
@@ -1057,7 +1082,7 @@ usize pipeline_remove_empty(usize count,PipelineProgram host) on cpu
 }
 extern "C" void optimize_program(usize count,PipelineProgram host) on cpu
  requires nonzero(host.fusion.ir.inspect) requires nonzero(host.fusion.at)
- requires nonzero(host.fusion.stage) requires nonzero(host.fusion.swap) requires nonzero(host.fusion.truncate)
+ requires nonzero(host.fusion.access) requires nonzero(host.fusion.swap) requires nonzero(host.fusion.truncate)
  requires nonzero(host.fusion.rewrite.inspect) requires nonzero(host.fusion.layout)
  requires nonzero(host.fusion.origin) requires nonzero(host.fusion.retain) requires nonzero(host.fusion.commit)
  requires nonzero(host.fusion.joined) requires nonzero(host.batch) requires nonzero(host.removed)
@@ -1081,7 +1106,8 @@ extern "C" void optimize_stage(PipelineStageHost host,u32 has_tiles) on cpu
  requires nonzero(host.flow) requires nonzero(host.eliminate) requires nonzero(host.words)
  requires nonzero(host.prune) requires nonzero(host.select) requires nonzero(host.bindings)
  requires nonzero(host.release_words) requires nonzero(host.compact) {
- u32 operation=host.stage(host.context).operation;
+ View stage=host.ir.inspect(Node(host.stage(host.context),N_STAGE));
+ u32 operation=host.ir.inspect(stage.left).tag;
  if(operation==2||operation==3||operation==4){
   PipelineValues values=host.custom(host.context);
   if(address_bits(values.project)!=0u64){optimize_value(values.project,host.values);}
@@ -1092,7 +1118,8 @@ extern "C" void optimize_stage(PipelineStageHost host,u32 has_tiles) on cpu
   host.eliminate(host.context);
   u32 changed=0;
   if(has_tiles!=0){
-   u32 preserve=has_subgroups(host.stage(host.context).code,host.ir);
+   Span code=host.ir.inspect(Node(host.stage(host.context),N_STAGE)).first;
+   u32 preserve=has_subgroups(code,host.ir);
    host.words(host.context);
    changed=host.prune(host.context,preserve);
   }
