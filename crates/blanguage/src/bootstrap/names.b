@@ -65,47 +65,6 @@ u64 qualification_separator(NameBytes name) on cpu {
     }
     return name.length;
 }
-bool directly_imported(NameBytes owner, u64 count, address context,
-    cfn<NameBytes,address,u64> import_name) on cpu requires nonzero(import_name) {
-    u64 index=0u64;
-    while(index<count){
-        if(equal(import_name(context,index),owner)){return true;}
-        index+=1u64;
-    }
-    return false;
-}
-extern "C" NameResult resolve(NameBytes name, NameBytes module, u64 count, address context,
-    cfn<NameBytes,address,u64> import_name, cfn<NameHit,address,NameBytes,NameBytes> lookup) on cpu
-    requires nonzero(import_name) requires nonzero(lookup) {
-    u64 separator=qualification_separator(name);
-    if(separator<name.length){
-        NameHit hit=lookup(context,empty(),name);
-        NameBytes owner=NameBytes(name.bytes,separator);
-        if(hit.present!=0u64&&(equal(owner,module)||(hit.public!=0u64&&directly_imported(owner,count,context,import_name)))){
-            return NameResult(hit.name,1u64);
-        }
-    }
-    NameHit local=lookup(context,module,name);
-    if(local.present!=0u64){return NameResult(local.name,1u64);}
-
-    NameBytes first=empty();
-    u64 found=0u64;
-    u64 index=0u64;
-    while(index<count){
-        NameHit hit=lookup(context,import_name(context,index),name);
-        if(hit.public!=0u64){
-            if(found==0u64){
-                first=hit.name;
-                found=1u64;
-            } else if(!equal(first,hit.name)){
-                return NameResult(empty(),2u64);
-            }
-        }
-        index+=1u64;
-    }
-    return NameResult(first,found);
-}
-
 address row_at<T>(address rows, u64 index) on cpu {
     return unsafe_address(address_bits(rows) + index * size_of<T>());
 }

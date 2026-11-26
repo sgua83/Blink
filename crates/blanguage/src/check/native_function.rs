@@ -2637,12 +2637,12 @@ pub(crate) async fn compile_module(
     Ok(crate::module::Module {
         compiler: world.worker.compiler().clone(),
         name: entry.into(),
-        header: world.interfaces[entry].source.text.clone(),
+        header: world.modules[entry].interface.source.text.clone(),
         requirements: Arc::new(world
             .functions
             .iter()
             .filter(|(_, d)| d.module == entry && d.public)
-            .map(|(name, d)| (name.clone(), d.execution))
+            .map(|(name, d)| (name.to_owned(), d.execution))
             .collect()),
         functions,
         imports: finalized.imports,

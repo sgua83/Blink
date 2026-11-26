@@ -9,7 +9,7 @@ impl World {
     ) -> crate::Result<()> {
         let Some(declaration) = &definition.interface_declaration else { return Ok(()); };
         let actual = &definition.function;
-        let interface = &self.interfaces[&definition.module];
+        let interface = &self.modules[&definition.module].interface;
         let bind = async |name: &crate::syntax::Type, source: &Source, span: Span| -> crate::Result<TypeName> {
             let name=unsafe{self.call(bindings.type_name(self,name,(source,&definition.module,&definition.imports),span)).await}?;
             unsafe{self.call(self.type_reference(&name,source,span,&definition.module,&definition.imports)).await}

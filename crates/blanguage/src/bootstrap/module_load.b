@@ -276,7 +276,7 @@ extern "C" u32 plan_source_module(SourceMode mode,SourcePlanningHost host) on cp
     u32 open_public_domain = 0;
     while (true) {
         SourceCandidate candidate = host.next(host.context);
-        if (address_bits(candidate.key) == 0u64) { break; }
+        if (address_bits(candidate.key.bytes) == 0u64) { break; }
         bool public_root = candidate.local != 0 && candidate.exported != 0;
         SourcePlan plan = source_plan(candidate,mode,public_root);
         bool open = false;
@@ -359,7 +359,7 @@ void run_world_checks(WorldPreparation host,address rows,u64 count) on cpu
     bool interfaces=run_pending(host,rows,count,CHECK_INTERFACE,WorldCheck::Interface);
     host.finish_interface(host.context);
     if (!interfaces) { return; }
-    if (host.run(host.context,WorldCheck::Types,WorldFunction(address(),address()))==0) { return; }
+    if (host.run(host.context,WorldCheck::Types,WorldFunction(NameBytes(address(),0u64),address()))==0) { return; }
     run_pending(host,rows,count,CHECK_EXTERNAL,WorldCheck::External);
 }
 

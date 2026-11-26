@@ -51,7 +51,7 @@ extern "C" u32 source_module_entry(SignatureNode source,u32 local,u32 exported) 
 
 struct SourcePlan { SourceRoute route; u32 schedule; u32 cpu_signature; };
 struct SourceCandidate {
-    address key;
+    NameBytes key;
     address definition;
     SignatureNode source;
     u32 compiled;
@@ -65,8 +65,8 @@ struct SourcePlanningHost {
     address context;
     cfn<SourceCandidate,address> next;
     cfn<u32,address,address> is_open;
-    cfn<SourceExpansion,address,address,address,SourceRoute,u32> schedule;
-    cfn<void,address,address> record_open;
+    cfn<SourceExpansion,address,NameBytes,address,SourceRoute,u32> schedule;
+    cfn<void,address,NameBytes> record_open;
     cfn<void,address,SourceRoute> selected;
 };
 extern "C" u32 plan_source_module(SourceMode mode,SourcePlanningHost host) on cpu
@@ -87,7 +87,7 @@ extern "C" void compile_source_instance(SourceRoute route,u32 cpu_signature,Sour
     requires nonzero(host.build_program) requires nonzero(host.application);
 
 enum WorldCheck:u32 { Constant=0; Interface=1; External=2; Types=3; };
-struct WorldFunction { address name; address definition; };
+struct WorldFunction { NameBytes name; address definition; };
 struct WorldDeclaration { SignatureNode source; WorldFunction function; u32 present; u32 paired; };
 struct WorldPreparation {
     address context;

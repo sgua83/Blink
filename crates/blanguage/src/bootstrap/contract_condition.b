@@ -285,7 +285,7 @@ TypeResult binary_condition(address context,Node node,TypeResult a,TypeResult b,
 }
 
 extern "C" BindingCursor bind_start(address value,u32 is_public) on cpu {
-    return BindingCursor(value,nil(),0,is_public);
+    return BindingCursor(value,nil(),Bytes(nil(),0u64),0,is_public);
 }
 QueryCursor query_start(address value) on cpu {return QueryCursor(value,nil(),0,0);}
 extern "C" QueryCursor identity_start(address value) on cpu {return query_start(value);}
@@ -330,7 +330,7 @@ extern "C" BindingNeed bind_step(address state,address context,Host host) on cpu
             Lookup found=host.lookup(context,node.text);
             if(found.found==0||found.constant==0){host.fail(context,1,node.text);return give_binding(state,cursor,BindingNeed::Done);}
             if(cursor.is_public!=0&&found.is_public==0){host.fail(context,2,node.text);return give_binding(state,cursor,BindingNeed::Done);}
-            cursor.request=found.key;cursor.stage=3;
+            cursor.constant_name=found.key;cursor.stage=3;
             return give_binding(state,cursor,BindingNeed::Constant);
         }
         if(node.kind==3){

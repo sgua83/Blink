@@ -169,10 +169,6 @@ impl World {
 
 impl crate::Declarations {
     pub(crate) fn resolve_type_set(&self, name: &str, module: &str, imports: &[String]) -> Option<String> {
-        crate::names::resolve(name,module,imports,|name| {
-            self.type_sets.get_key_value(name).map(|(key,(_,source,..))|crate::names::Declaration {
-                name:key,public:source.path.extension().is_some_and(|extension|extension=="h"),
-            })
-        }).unique()
+        self.type_sets.resolve(name, module, imports).unique()
     }
 }

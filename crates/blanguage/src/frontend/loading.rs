@@ -67,7 +67,7 @@ struct Loaded {
     key: String,
 }
 struct Context<'a> {
-    root: &'a Path, world: &'a mut Declarations,
+    root: &'a Path, world: &'a mut DeclarationInput,
     imported: Option<&'a module::Imports>,
     inputs: Option<&'a build::Inputs>, compiled: Option<&'a module::Imported>,
     data: Loaded, error: Option<Diagnostic>,
@@ -81,14 +81,15 @@ unsafe fn source_module<'a>(raw: *const c_void) -> &'a syntax::Module {
 
 unsafe extern "C" fn contains(raw: *mut c_void) -> bool {
     let context = unsafe { context(raw) };
-    context.world.sources.contains_key(context.data.interface.name())
+    context.world.modules.contains_key(context.data.interface.name())
 }
 unsafe extern "C" fn enter(raw: *mut c_void) {
     let context = unsafe { context(raw) };
     let data = &context.data;
-    let source = data.implementation.as_ref().map_or(&data.interface.source, |module| &module.source);
-    context.world.sources.insert(data.interface.name().to_owned(), source.clone());
-    context.world.interfaces.insert(data.interface.name().to_owned(), data.interface.clone());
+    context.world.modules.insert(data.interface.name(), ModuleDeclaration {
+        interface: data.interface.clone(),
+        implementation: data.implementation.as_ref().map(|module| module.source.clone()),
+    });
 }
 unsafe extern "C" fn imports(raw: *mut c_void) -> u64 {
     let data = &mut unsafe { context(raw) }.data;
@@ -125,10 +126,10 @@ unsafe extern "C" fn insert_type(raw: *mut c_void, owner: *const c_void, offset:
     let module = unsafe { source_module(owner) };
     let key = std::mem::take(&mut data.key);
     if namespace == 0 {
-        context.world.records.insert(key, (module.root.child::<wire::RecordNode>(offset),
+        context.world.records.insert(&key, (module.root.child::<wire::RecordNode>(offset),
             module.source.clone(), data.interface.name().to_owned(), data.imports.clone()));
     } else {
-        context.world.type_sets.insert(key, (module.root.child::<wire::TypeSetNode>(offset),
+        context.world.type_sets.insert(&key, (module.root.child::<wire::TypeSetNode>(offset),
             module.source.clone(), data.interface.name().to_owned(), data.imports.clone()));
     }
 }
@@ -159,7 +160,7 @@ unsafe extern "C" fn insert_function(raw: *mut c_void, owner: *const c_void, off
     let data = &mut context.data;
     let module = unsafe { source_module(owner) };
     let key = std::mem::take(&mut data.key);
-    context.world.functions.insert(key, Arc::new(Definition {
+    context.world.functions.insert(&key, Arc::new(Definition {
         constant: OnceLock::new(),
         function: module.root.child::<wire::FunctionNode>(offset),
         interface_declaration: (interface.present != 0).then(|| data.interface.root.child::<wire::FunctionNode>(interface.value.offset)),
@@ -203,15 +204,15 @@ enum Provider<'a> {
     Source(ModuleSource<'a>),
 }
 
-pub(super) fn load(path: &Path, root: &Path, world: &mut Declarations,
+pub(super) fn load(path: &Path, root: &Path, world: &mut DeclarationInput,
     imported: Option<&module::Imports>, inputs: Option<&build::Inputs>) -> Result<String> {
     let provider = Provider::Source(ModuleSource::Entry(path));
     load_provider(&provider, root, world, imported, inputs).map(|module| module.name().to_owned())
 }
 
-fn load_import<'a>(name: &'a str, root: &'a Path, world: &'a mut Declarations,
+fn load_import<'a>(name: &'a str, root: &'a Path, world: &'a mut DeclarationInput,
     imported: Option<&'a module::Imports>, inputs: Option<&'a build::Inputs>) -> Result<&'a syntax::Module> {
-    let loaded = world.sources.contains_key(name).then_some(Provider::Loaded(name));
+    let loaded = world.modules.contains_key(name).then_some(Provider::Loaded(name));
     let compiled = imported.and_then(|imports| imports.modules.get(name))
         .map(|module| Provider::Compiled { name, module });
     let source = Provider::Source(ModuleSource::Import(name));
@@ -224,11 +225,11 @@ fn load_import<'a>(name: &'a str, root: &'a Path, world: &'a mut Declarations,
 }
 
 fn load_provider<'a>(
-    selected: &Provider<'a>, root: &'a Path, world: &'a mut Declarations,
+    selected: &Provider<'a>, root: &'a Path, world: &'a mut DeclarationInput,
     imported: Option<&'a module::Imports>, inputs: Option<&'a build::Inputs>,
 ) -> Result<&'a syntax::Module> {
     let (interface, implementation, captured_imports, compiled) = match selected {
-        Provider::Loaded(name) => return Ok(world.interfaces[*name].as_ref()),
+        Provider::Loaded(name) => return Ok(world.modules[*name].interface.as_ref()),
         Provider::Compiled { name, module } => {
             let (interface, imports) = match inputs {
                 Some(inputs) => inputs.interface(name, &module.header)?,
@@ -270,14 +271,14 @@ fn load_provider<'a>(
         contains, enter, imports, import_module, prepare, insert_type, pair, signature, requirement, insert_function, report); }
     match context.error.take() {
         Some(error) => Err(error),
-        None => Ok(context.world.interfaces[context.data.interface.name()].as_ref()),
+        None => Ok(context.world.modules[context.data.interface.name()].interface.as_ref()),
     }
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct WorldFunction {
-    name: *const c_void,
+    name: crate::names::Bytes,
     definition: *const c_void,
 }
 
@@ -312,7 +313,7 @@ unsafe extern "C" {
 
 struct WorldChecks<'a, 'w> {
     world: &'w mut World,
-    declarations: std::collections::btree_map::Iter<'a, String, Arc<Definition>>,
+    declarations: declarations::Iter<'a, Arc<Definition>>,
     bindings: Option<Arc<generics::Bindings>>,
     track_constants: bool,
     error: Option<Diagnostic>,
@@ -324,7 +325,7 @@ unsafe extern "C" fn next_declaration(raw: *mut c_void) -> WorldDeclaration {
         WorldDeclaration {
             source: definition.function.signature_node(),
             function: WorldFunction {
-                name: std::ptr::from_ref(name).cast(),
+                name: crate::names::Bytes::new(name),
                 definition: std::ptr::from_ref(definition).cast(),
             },
             present: 1,
@@ -337,7 +338,7 @@ unsafe extern "C" fn next_declaration(raw: *mut c_void) -> WorldDeclaration {
                 text: std::ptr::null_mut(), text_bytes: 0,
                 source: std::ptr::null_mut(), source_bytes: 0,
             }, offset: 0 },
-            function: WorldFunction { name: std::ptr::null(), definition: std::ptr::null() },
+            function: WorldFunction { name: crate::names::Bytes::absent(), definition: std::ptr::null() },
             present: 0,
             paired: 0,
         }
@@ -369,7 +370,7 @@ impl WorldChecks<'_, '_> {
         let world = &*self.world;
         match check {
             WorldCheck::Constant => {
-                let name = unsafe { &*function.name.cast::<String>() };
+                let name = unsafe { function.name.text() };
                 unsafe { world.run(world.prepare_constant(name)) }.map(|_| ())
             }
             WorldCheck::Interface => {
@@ -379,7 +380,7 @@ impl WorldChecks<'_, '_> {
             }
             WorldCheck::Types => unsafe { world.run(super::validate_types(world)) },
             WorldCheck::External => {
-                let name = unsafe { &*function.name.cast::<String>() };
+                let name = unsafe { function.name.text() };
                 let definition = unsafe { &*function.definition.cast::<Arc<Definition>>() };
                 let instance = unsafe { world.run(generics::instantiate(world, name, definition, Vec::new(), &[])) }?;
                 unsafe { world.run(check::external::check_declaration(world, &instance)) }
@@ -479,17 +480,17 @@ pub(super) fn visit_export_types<F: FnMut(&str) -> bool>(
 }
 
 fn load_export_owner(
-    name: &str, root: &Path, world: &mut Declarations,
+    name: &str, root: &Path, world: &mut DeclarationInput,
     imported: &module::Imports, inputs: Option<&build::Inputs>,
 ) -> Result<()> {
     let Some(module) = imported.modules.get(name) else { return Ok(()); };
-    if world.sources.contains_key(name) { return Ok(()); }
+    if world.modules.contains_key(name) { return Ok(()); }
     let provider = Provider::Compiled { name, module };
     load_provider(&provider, root, world, Some(imported), inputs).map(|_| ())
 }
 
 pub(super) fn prepare_exports(
-    requests: &[String], root: &Path, world: &mut Declarations,
+    requests: &[String], root: &Path, world: &mut DeclarationInput,
     imported: &module::Imports, inputs: Option<&build::Inputs>,
 ) -> Result<Vec<ExportRequest>> {
     requests.iter().map(|text| {
@@ -505,7 +506,7 @@ pub(super) fn prepare_exports(
 }
 
 pub(super) fn load_captured_exports(
-    requests: &[Result<CapturedExport>], root: &Path, world: &mut Declarations,
+    requests: &[Result<CapturedExport>], root: &Path, world: &mut DeclarationInput,
     imported: &module::Imports, inputs: Option<&build::Inputs>,
 ) -> Result<()> {
     for request in requests {

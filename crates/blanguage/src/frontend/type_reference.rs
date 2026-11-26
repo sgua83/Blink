@@ -61,7 +61,7 @@ unsafe extern "C" fn resource(raw:*mut c_void) {
 }
 unsafe extern "C" fn record(raw:*mut c_void)->Parameters {
     let f=unsafe{frame(raw)};
-    let key=if f.input.canonical {f.world.records.get_key_value(&f.input.name).map(|(key,_)|key.clone())}
+    let key=if f.input.canonical {f.world.records.get_key_value(&f.input.name).map(|(key,_)|key.to_owned())}
         else {f.world.resolve(&f.input.name,f.module,f.imports,false).unique()};
     let Some(key)=key else {
         f.error=Some(Diagnostic{source:f.source.clone(),span:f.span,code:"B031",message:format!("未知或不明确的类型 {}",f.input.name)});

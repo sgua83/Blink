@@ -368,13 +368,13 @@ unsafe extern "C" {
 struct SourceFiles<'a> {
     world: &'a crate::World,
     module: &'a str,
-    interfaces: std::collections::btree_map::Iter<'a, String, std::sync::Arc<crate::syntax::Module>>,
-    implementations: std::collections::btree_map::Iter<'a, String, crate::ast::Source>,
+    interfaces: crate::frontend::declarations::Iter<'a, crate::ModuleDeclaration>,
+    implementations: crate::frontend::declarations::Iter<'a, crate::ModuleDeclaration>,
 }
 
 impl<'a> SourceFiles<'a> {
     fn new(world: &'a crate::World, module: &'a str) -> Self {
-        Self { world, module, interfaces: world.interfaces.iter(), implementations: world.sources.iter() }
+        Self { world, module, interfaces: world.modules.iter(), implementations: world.modules.iter() }
     }
 }
 
@@ -387,11 +387,12 @@ fn source_file(name: &str, source: &crate::ast::Source, root: bool, implementati
 
 unsafe extern "C" fn next_source_file(context: *mut c_void) -> SourceFile {
     let stream = unsafe { &mut *context.cast::<SourceFiles<'_>>() };
-    if let Some((name, interface)) = stream.interfaces.next() {
-        return source_file(name, &interface.source, name == stream.module, false, false);
+    if let Some((name, declaration)) = stream.interfaces.next() {
+        return source_file(name, &declaration.interface.source, name == stream.module, false, false);
     }
-    if let Some((name, source)) = stream.implementations.next() {
-        let same_path = source.path == stream.world.interfaces[name].source.path;
+    if let Some((name, declaration)) = stream.implementations.next() {
+        let source = declaration.source();
+        let same_path = source.path == declaration.interface.source.path;
         return source_file(name, source, name == stream.module, true, same_path);
     }
     SourceFile { source: ptr::null(), name: ABSENT, text: ABSENT, root: 0, implementation: 0, shares_interface: 0 }
@@ -399,8 +400,8 @@ unsafe extern "C" fn next_source_file(context: *mut c_void) -> SourceFile {
 
 unsafe extern "C" fn rewind_source_files(context: *mut c_void) {
     let rows = unsafe { &mut *context.cast::<SourceFiles<'_>>() };
-    rows.interfaces = rows.world.interfaces.iter();
-    rows.implementations = rows.world.sources.iter();
+    rows.interfaces = rows.world.modules.iter();
+    rows.implementations = rows.world.modules.iter();
 }
 
 unsafe extern "C" fn next_source_definition<I: Iterator<Item = SourceDefinition>>(context: *mut c_void) -> SourceDefinition {

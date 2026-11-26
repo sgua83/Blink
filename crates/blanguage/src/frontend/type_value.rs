@@ -765,7 +765,7 @@ unsafe extern "C" fn record(raw: *mut c_void) -> RecordInfo {
         c.world
             .records
             .get_key_value(&f.input.name)
-            .map(|(key, _)| key.clone())
+            .map(|(key, _)| key.to_owned())
     } else {
         c.world
             .resolve(&f.input.name, c.module, c.imports, false)

@@ -242,6 +242,7 @@ const MODULES: &[&str] = &[
     "stage_fusion",
     "source_bind",
     "generic_bindings",
+    "declarations",
     "type_reference",
     "c_function",
     "type_value",

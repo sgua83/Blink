@@ -1,12 +1,13 @@
-//! B chooses names and visibility; the original declaration maps keep their storage.
-use crate::{frontend::NameResolution, syntax::{List, wire::FunctionNode}};
+//! Shared name spans and the original ordered name and dependency operations.
+use crate::syntax::{List, wire::FunctionNode};
 use std::{cell::UnsafeCell, ffi::c_void, marker::PhantomData};
 #[derive(Clone,Copy)]
 #[repr(C)]
-struct Bytes { bytes:*const u8, length:u64 }
+pub(crate) struct Bytes { bytes:*const u8, length:u64 }
 impl Bytes {
-    fn new(value:&str)->Self {Self{bytes:value.as_ptr(),length:value.len()as u64}}
-    unsafe fn text<'a>(self)->&'a str {
+    pub(crate) fn new(value:&str)->Self {Self{bytes:value.as_ptr(),length:value.len()as u64}}
+    pub(crate) fn absent()->Self {Self{bytes:std::ptr::null(),length:0}}
+    pub(crate) unsafe fn text<'a>(self)->&'a str {
         unsafe{std::str::from_utf8_unchecked(std::slice::from_raw_parts(self.bytes,self.length as usize))}
     }
 }
@@ -31,11 +32,6 @@ struct FunctionName {
     name: Bytes,
     ordinal: u64,
 }
-#[repr(C)]
-struct Hit { name:Bytes, public:u64, present:u64 }
-#[repr(C)]
-struct Resolution { name:Bytes, count:u64 }
-pub(crate) struct Declaration<'a> { pub name:&'a str, pub public:bool }
 unsafe extern "C" {
     #[link_name = "bootstrap.names::collect_external_module_names"]
     fn collect_external_module_names(
@@ -53,12 +49,6 @@ unsafe extern "C" {
     fn order_imports(names: *mut Bytes, count: u64) -> u64;
     #[link_name = "bootstrap.names::pair_functions"]
     fn pair_functions(names: *mut FunctionName, declarations: u64, implementations: u64, output: *mut u64);
-    #[link_name="bootstrap.names::resolve"]
-    fn choose(
-        name: Bytes, module: Bytes, count: u64, context: *mut c_void,
-        import_name: unsafe extern "C" fn(*const c_void, u64) -> Bytes,
-        lookup: unsafe extern "C" fn(*mut c_void, Bytes, Bytes) -> Hit,
-    ) -> Resolution;
 }
 
 #[repr(C)]
@@ -115,56 +105,6 @@ impl ActiveDependencies {
         Some(evaluate().await)
     }
 }
-struct Resolver<'a, F> {
-    imports: &'a [String],
-    declarations: F,
-    candidate: String,
-}
-
-unsafe extern "C" fn import_name<F>(context: *const c_void, index: u64) -> Bytes {
-    let resolver = unsafe { &*context.cast::<Resolver<'_, F>>() };
-    Bytes::new(&resolver.imports[index as usize])
-}
-
-unsafe extern "C" fn lookup<'a, F: Fn(&str) -> Option<Declaration<'a>>>(
-    context: *mut c_void, prefix: Bytes, name: Bytes,
-) -> Hit {
-    let resolver = unsafe { &mut *context.cast::<Resolver<'_, F>>() };
-    let name = unsafe { name.text() };
-    let key = if prefix.bytes.is_null() {
-        name
-    } else {
-        let prefix = unsafe { prefix.text() };
-        let key = &mut resolver.candidate;
-        key.clear();
-        key.reserve(prefix.len() + 2 + name.len());
-        key.push_str(prefix);
-        key.push_str("::");
-        key.push_str(name);
-        key.as_str()
-    };
-    match (resolver.declarations)(key) {
-        Some(declaration) => Hit { name: Bytes::new(declaration.name), public: u64::from(declaration.public), present: 1 },
-        None => Hit { name: Bytes::new(""), public: 0, present: 0 },
-    }
-}
-
-pub(crate) fn resolve<'a, F: Fn(&str) -> Option<Declaration<'a>>>(
-    name: &str, module: &str, imports: &[String], declarations: F,
-) -> NameResolution {
-    let mut resolver = Resolver { imports, declarations, candidate: String::new() };
-    let result = unsafe {
-        choose(Bytes::new(name), Bytes::new(module), imports.len() as u64,
-            std::ptr::from_mut(&mut resolver).cast(), import_name::<F>, lookup::<F>)
-    };
-    match result.count {
-        0=>NameResolution::Missing,
-        1=>NameResolution::Unique(unsafe{result.name.text()}.to_owned()),
-        _=>NameResolution::Ambiguous,
-    }
-}
-
-
 pub(crate) fn module_imports(
     interface: &crate::syntax::Module,
     implementation: Option<&crate::syntax::Module>,

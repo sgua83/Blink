@@ -22,7 +22,7 @@ struct Constant { ty: Address, bits: Address, count: u64 }
 #[repr(C)]
 struct TypeInfo { scalar: u32, width: u32, is_array: u32, is_variant: u32, components: u64, length: u64 }
 #[repr(C)]
-struct Lookup { key: Address, found: u32, constant: u32, is_public: u32 }
+struct Lookup { key: Bytes, found: u32, constant: u32, is_public: u32 }
 #[repr(C)]
 struct Variant { found: u32, discriminant: u32 }
 #[repr(C)]
@@ -238,8 +238,8 @@ unsafe extern "C" fn lookup(ctx: Address, name: Bytes) -> Lookup {
     let (world, definition) = (ctx.world, &ctx.definition);
     let found = world.resolve(unsafe { name.text() }, definition.module, definition.imports, true).unique();
     if let Some((key, definition)) = found.as_ref().and_then(|key| world.functions.get_key_value(key)) {
-        Lookup { key: address(key), found: 1, constant: u32::from(definition.function.kind() == FunctionKind::Constant), is_public: u32::from(definition.public) }
-    } else { Lookup { key: ptr::null_mut(), found: 0, constant: 0, is_public: 0 } }
+        Lookup { key: Bytes::of(key), found: 1, constant: u32::from(definition.function.kind() == FunctionKind::Constant), is_public: u32::from(definition.public) }
+    } else { Lookup { key: Bytes::of(""), found: 0, constant: 0, is_public: 0 } }
 }
 unsafe extern "C" fn variant(ty: Address, field: Bytes) -> Variant {
     let ty = unsafe { borrowed::<Ty>(ty) };
@@ -343,7 +343,7 @@ fn host() -> Host {
         take_bound, put_bound, term, take_term, put_term, term_type, typed, put_type, clear_type }
 }
 #[repr(C)]
-struct BindingCursor { source: Address, request: Address, stage: u32, is_public: u32 }
+struct BindingCursor { source: Address, request: Address, constant_name: Bytes, stage: u32, is_public: u32 }
 #[repr(C)]
 struct QueryCursor { source: Address, request: Address, stage: u32, slot: u32 }
 #[repr(u32)]
@@ -401,7 +401,7 @@ async fn bind_node(world: &World, definition: ConditionScope<'_>, value: &Output
                 ctx.nodes[0]=Some(unsafe { world.call(bind_node(world,definition,input,span)).await }?);
             }
             BindingNeed::Constant => {
-                let key=unsafe { borrowed::<String>(cursor.request) };
+                let key=unsafe { cursor.constant_name.text() };
                 let constant=unsafe { world.call(constant::evaluate(world,key,&[])).await }?;
                 let (ty,bits,generated_origin)=constant.value.clone();
                 ctx.nodes[0]=Some(Box::new(OutputCondition::Constant(OutputConstant { ty,bits,generated_origin })));

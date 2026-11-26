@@ -3,9 +3,12 @@ pub(crate) use evaluation::Call;
 mod type_reference;
 mod type_value;
 mod loading;
+pub(crate) mod declarations;
 mod entry_checks;
 pub(crate) use entry_checks::EntryChecks;
 use loading::load;
+use declarations::{Directory, OrderedDirectory};
+use crate::names::Bytes;
 use crate::{file_bytes::FileBytes, *};
 use std::{
     cell::RefCell,
@@ -78,12 +81,37 @@ pub struct Compilation {
 }
 type RecordDeclaration = (crate::syntax::Record, Source, String, Arc<[String]>);
 
+pub(crate) struct ModuleDeclaration {
+    pub(crate) interface: Arc<crate::syntax::Module>,
+    implementation: Option<Source>,
+}
+impl ModuleDeclaration {
+    pub(crate) fn source(&self) -> &Source {
+        self.implementation.as_ref().unwrap_or(&self.interface.source)
+    }
+}
+#[derive(Default)]
+struct DeclarationInput {
+    modules: Directory<ModuleDeclaration>,
+    records: Directory<RecordDeclaration>,
+    functions: Directory<Arc<Definition>>,
+    type_sets: Directory<(crate::syntax::TypeSet, Source, String, Arc<[String]>)>,
+}
+impl DeclarationInput {
+    fn publish(self) -> Declarations {
+        Declarations {
+            modules: self.modules.publish(),
+            records: self.records.publish(),
+            functions: self.functions.publish(),
+            type_sets: self.type_sets.publish(),
+        }
+    }
+}
 pub(crate) struct Declarations {
-    pub(crate) sources: BTreeMap<String, Source>,
-    pub(crate) interfaces: BTreeMap<String, Arc<crate::syntax::Module>>,
-    pub(crate) records: BTreeMap<String, RecordDeclaration>,
-    pub(crate) functions: BTreeMap<String, Arc<Definition>>,
-    pub(crate) type_sets: BTreeMap<String, (crate::syntax::TypeSet, Source, String, Arc<[String]>)>,
+    pub(crate) modules: OrderedDirectory<ModuleDeclaration>,
+    pub(crate) records: OrderedDirectory<RecordDeclaration>,
+    pub(crate) functions: OrderedDirectory<Arc<Definition>>,
+    pub(crate) type_sets: OrderedDirectory<(crate::syntax::TypeSet, Source, String, Arc<[String]>)>,
 }
 pub(crate) struct World {
     calls: evaluation::Calls,
@@ -257,7 +285,7 @@ impl Compiler {
             let span = Span { start: 0, end: request.len() };
             let name = parser::type_query(source.clone())?;
             let (world, module, _) = read_world(path, root, None, &[], worker, None, None)?;
-            let imports = &world.interfaces[&module].imports().map(str::to_owned).collect::<Vec<_>>();
+            let imports = &world.modules[&module].interface.imports().map(str::to_owned).collect::<Vec<_>>();
             let bindings=Arc::new(generics::Bindings::default());
             let name=unsafe { world.run(bindings.type_name(&world,&name,(&source,&module,imports),span)) }?;
             let value = unsafe { world.run(world.ty(&name, &source, span, &module, imports)) }?;
@@ -274,7 +302,7 @@ impl Compiler {
             let span = Span { start: 0, end: request.len() };
             let name = parser::type_query(source.clone())?;
             let (world, module, _) = read_world(path, root, None, &[], worker, None, None)?;
-            let imports = &world.interfaces[&module].imports().map(str::to_owned).collect::<Vec<_>>();
+            let imports = &world.modules[&module].interface.imports().map(str::to_owned).collect::<Vec<_>>();
             let bindings=Arc::new(generics::Bindings::default());
             let name=unsafe { world.run(bindings.type_name(&world,&name,(&source,&module,imports),span)) }?;
             let value = unsafe { world.run(world.ty(&name, &source, span, &module, imports)) }?;
@@ -370,7 +398,7 @@ enum Output {
 
 #[repr(C)]
 struct SourceCandidate {
-    key: *const String,
+    key: Bytes,
     definition: *const Arc<Definition>,
     source: crate::syntax::wire::SignatureNode,
     compiled: u32,
@@ -388,7 +416,7 @@ struct SourcePlanner<'a> {
     world: &'a World,
     entry: &'a str,
     selected: Option<&'a SelectedSource>,
-    definitions: std::collections::btree_map::Iter<'a, String, Arc<Definition>>,
+    definitions: declarations::Iter<'a, Arc<Definition>>,
     jobs: Vec<Job<'a>>,
     open_generics: Vec<String>,
 }
@@ -399,9 +427,9 @@ struct SourcePlanningHost<'a> {
     next: unsafe extern "C" fn(*mut SourcePlanner<'a>) -> SourceCandidate,
     is_open: unsafe extern "C" fn(*mut SourcePlanner<'a>, *const Arc<Definition>) -> u32,
     schedule: unsafe extern "C" fn(
-        *mut SourcePlanner<'a>, *const String, *const Arc<Definition>, SourceRoute, u32,
+        *mut SourcePlanner<'a>, Bytes, *const Arc<Definition>, SourceRoute, u32,
     ) -> SourceExpansion,
-    record_open: unsafe extern "C" fn(*mut SourcePlanner<'a>, *const String),
+    record_open: unsafe extern "C" fn(*mut SourcePlanner<'a>, Bytes),
     selected: unsafe extern "C" fn(*mut SourcePlanner<'a>, SourceRoute),
 }
 
@@ -409,7 +437,7 @@ unsafe extern "C" fn next_source_candidate(context: *mut SourcePlanner<'_>) -> S
     let planner = unsafe { &mut *context };
     let Some((key, definition)) = planner.definitions.next() else {
         return SourceCandidate {
-            key: std::ptr::null(), definition: std::ptr::null(),
+            key: Bytes::absent(), definition: std::ptr::null(),
             source: crate::syntax::wire::SignatureNode {
                 storage: crate::syntax::wire::StorageView {
                     nodes: std::ptr::null_mut(), node_bytes: 0, text: std::ptr::null_mut(), text_bytes: 0,
@@ -421,7 +449,7 @@ unsafe extern "C" fn next_source_candidate(context: *mut SourcePlanner<'_>) -> S
         };
     };
     SourceCandidate {
-        key, definition, source: definition.function.signature_node(),
+        key: Bytes::new(key), definition, source: definition.function.signature_node(),
         compiled: u32::from(definition.compiled.is_some()),
         local: u32::from(definition.module == planner.entry),
         exported: u32::from(definition.public),
@@ -436,14 +464,14 @@ unsafe extern "C" fn source_is_open(_: *mut SourcePlanner<'_>, definition: *cons
 }
 
 unsafe extern "C" fn schedule_source_instances(
-    context: *mut SourcePlanner<'_>, key: *const String, definition: *const Arc<Definition>,
+    context: *mut SourcePlanner<'_>, key: Bytes, definition: *const Arc<Definition>,
     route: SourceRoute, cpu_signature: u32,
 ) -> SourceExpansion {
     let planner = unsafe { &mut *context };
     let start = planner.jobs.len();
     // B enumerates at the synchronous SDK entry. Each expansion owns its World invocation.
     let expanded = unsafe {
-        planner.world.run(generics::for_each_instance(planner.world, &*key, &*definition, |instance| {
+        planner.world.run(generics::for_each_instance(planner.world, key.text(), &*definition, |instance| {
             planner.jobs.push(Job::Instance(instance, route, cpu_signature != 0));
         }))
     };
@@ -458,8 +486,8 @@ unsafe extern "C" fn schedule_source_instances(
     }
 }
 
-unsafe extern "C" fn record_open_source(context: *mut SourcePlanner<'_>, key: *const String) {
-    unsafe { &mut *context }.open_generics.push(unsafe { &*key }.clone());
+unsafe extern "C" fn record_open_source(context: *mut SourcePlanner<'_>, key: Bytes) {
+    unsafe { &mut *context }.open_generics.push(unsafe { key.text() }.to_owned());
 }
 
 unsafe extern "C" fn schedule_selected_source<'a>(context: *mut SourcePlanner<'a>, route: SourceRoute) {
@@ -590,7 +618,7 @@ pub(crate) fn compile_world(
         world, entry: &entry, selected: selected.as_ref(), definitions: world.functions.iter(), jobs: Vec::new(),
         open_generics: world.records.iter()
             .filter(|(_, (record, ..))| generics::is_open(&record.types(), &record.values()))
-            .map(|(name, _)| name.clone()).collect(),
+            .map(|(name, _)| name.to_owned()).collect(),
     };
     let open_public_domain = unsafe {
         plan_source_module(mode, SourcePlanningHost {
@@ -668,7 +696,7 @@ pub(crate) fn compile_world(
     }).map_err(|error| match error {
         parallel::Error::Work(error) => error,
         parallel::Error::Resource(error) => Diagnostic {
-            source: world.sources[&entry].clone(), span: Span::default(), code: "B020",
+            source: world.modules[&entry].source().clone(), span: Span::default(), code: "B020",
             message: format!("无法创建本机编译工作：{error}"),
         },
     })?;
@@ -694,13 +722,13 @@ pub(crate) fn compile_world(
     }
     if require_program && programs.is_empty() && templates.is_empty() {
         if open_public_domain {
-            return world.sources[&entry].fail(
+            return world.modules[&entry].source().fail(
                 Span::default(),
                 "B240",
                 "开放泛型 program 需要选择具体入口，例如 compile_entry(..., \"run<13>\")",
             );
         }
-        return world.sources[&entry].fail(
+        return world.modules[&entry].source().fail(
             Span::default(),
             "B021",
             "入口模块没有公开的 program；函数库使用 check，并在 program 中实例化原生代码",
@@ -768,13 +796,7 @@ pub(crate) fn read_world<'a>(
     inputs: Option<&'a build::Inputs>,
     build_declarations: Option<RefCell<BTreeSet<build::Declaration>>>,
 ) -> Result<(World, String, ExportRequests<'a>)> {
-    let mut world = Declarations {
-        sources: BTreeMap::new(),
-        interfaces: BTreeMap::new(),
-        records: BTreeMap::new(),
-        functions: BTreeMap::new(),
-        type_sets: BTreeMap::new(),
-    };
+    let mut world = DeclarationInput::default();
     let entry = load(
         path,
         module_root,
@@ -792,6 +814,7 @@ pub(crate) fn read_world<'a>(
     } else {
         ExportRequests::Text(requests.iter())
     };
+    let mut world = world.publish();
     execution::infer(&mut world, build_declarations.as_ref());
     let mut world = World::new(Arc::new(world), worker.clone());
     loading::prepare_world(&mut world, build_declarations.is_some())?;
@@ -849,17 +872,8 @@ impl Declarations {
         imports: &[String],
         functions: bool,
     ) -> NameResolution {
-        crate::names::resolve(name,module,imports,|name| {
-            if functions {
-                self.functions.get_key_value(name).map(|(key,declaration)|crate::names::Declaration {
-                    name:key,public:declaration.public,
-                })
-            } else {
-                self.records.get_key_value(name).map(|(key,(_,source,..))|crate::names::Declaration {
-                    name:key,public:source.path.extension().is_some_and(|extension|extension=="h"),
-                })
-            }
-        })
+        if functions { self.functions.resolve(name, module, imports) }
+        else { self.records.resolve(name, module, imports) }
     }
 }
 impl World {

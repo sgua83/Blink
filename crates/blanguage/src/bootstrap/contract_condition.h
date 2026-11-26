@@ -9,7 +9,7 @@ struct TypeResult {address ty;u32 literal;u32 ok;};
 struct Node {u32 kind;u32 flag;Bytes text;address left;address right;};
 struct Constant {address ty;address bits;u64 count;};
 struct TypeInfo {u32 scalar;u32 width;u32 is_array;u32 is_variant;u64 components;u64 length;};
-struct Lookup {address key;u32 found;u32 constant;u32 is_public;};
+struct Lookup {Bytes key;u32 found;u32 constant;u32 is_public;};
 struct Variant {u32 found;u32 discriminant;};
 struct Member {address ty;address indices;address owner;u64 count;u32 ok;};
 struct BinaryRule {address ty;u32 kind;u32 scalar;u32 cast_left;u32 cast_right;u32 comparison;u32 operation;u32 ok;};
@@ -57,7 +57,7 @@ struct Host {
 enum BindingNeed:u32 { Done=0; Child=1; Constant=2; };
 enum IdentityNeed:u32 { Done=0; Child=1; Type=2; };
 enum TypeNeed:u32 { Done=0; Child=1; Path=2; };
-struct BindingCursor {address source;address request;u32 stage;u32 is_public;};
+struct BindingCursor {address source;address request;Bytes constant_name;u32 stage;u32 is_public;};
 struct QueryCursor {address source;address request;u32 stage;u32 slot;};
 
 extern "C" BindingCursor bind_start(address value,u32 is_public) on cpu;
