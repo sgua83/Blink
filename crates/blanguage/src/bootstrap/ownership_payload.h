@@ -5,6 +5,7 @@ struct Field {address ty;u32 offset;u32 owns;};
 struct Indices {address values;u64 count;};
 struct Count {u32 known;u32 value;};
 enum PayloadState:u32 { Moved=0; Owned=1; Borrowed=2; Conditional=3; };
+enum JoinStorage:u32 { Current=0; Stored=1; Element=2; };
 struct Host {
     cfn<Info,address> inspect;
     cfn<address,address> value;
@@ -35,7 +36,7 @@ struct Host {
     cfn<void,address,u32> length_constant;
     cfn<u32,address> view_empty;
     cfn<void,address> install_source;
-    cfn<void,address,address,u64,u32,address,address,u32> join_child;
+    cfn<void,address,address,u64,JoinStorage,address,address,u32> join_child;
     cfn<void,address,address,address> join_ownership;
     cfn<void,address,address,u64> move_child;
     cfn<address,address> data_root;
@@ -255,10 +256,10 @@ struct ReturnedHost {
     cfn<void,address,address,address> save;
     cfn<void,address,address,address> restore;
     cfn<u32,address> maximum;
-    cfn<void,address,address,DataJoin,address,address> elements;
+    cfn<void,address,address,DataJoin,address,address,JoinStorage> elements;
     cfn<void,address,address,address> prefixes;
 };
-extern "C" void join_returned(Item left,Item right,u32 stored,address choice,address presence,u32 merge_metadata,ReturnedHost host) on cpu
+extern "C" void join_returned(Item left,Item right,JoinStorage stored,address choice,address presence,u32 merge_metadata,ReturnedHost host) on cpu
     requires nonzero(host.values.inspect) requires nonzero(host.values.value)
     requires nonzero(host.values.ownership) requires nonzero(host.values.child)
     requires nonzero(host.values.state_equal) requires nonzero(host.values.state_set_moved)

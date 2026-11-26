@@ -135,10 +135,10 @@ unsafe extern "C" fn install_source(value:Address){
     let v=unsafe{&mut *value.cast::<Value>()};let identity=v.identity();
     v.proof.set_view_borrow(0,view::Borrow::source(view::Source::Data(identity)));
 }
-unsafe extern "C" fn join_child(a:Address,b:Address,at:u64,stored:u32,when:Address,presence:Address,merge_metadata:u32){
+unsafe extern "C" fn join_child(a:Address,b:Address,at:u64,stored:JoinStorage,when:Address,presence:Address,merge_metadata:u32){
     let a=unsafe{&mut *a.cast::<OwnedValuePayload>()};let b=unsafe{&mut *b.cast::<OwnedValuePayload>()};
     let other=b.payloads[at as usize].take().unwrap();
-    a.payloads[at as usize].as_mut().unwrap().join_returned(*other,stored!=0,unsafe{choice(when)},unsafe{presence.cast::<owned_presence::Presence>().as_ref()},merge_metadata);
+    a.payloads[at as usize].as_mut().unwrap().join_returned(*other,stored,unsafe{choice(when)},unsafe{presence.cast::<owned_presence::Presence>().as_ref()},merge_metadata);
 }
 unsafe extern "C" fn move_child(a:Address,b:Address,at:u64){
     let a=unsafe{&mut *a.cast::<OwnedValuePayload>()};let b=unsafe{&mut *b.cast::<OwnedValuePayload>()};
@@ -216,7 +216,7 @@ struct Host{
     length_constant:unsafe extern "C" fn(Address,u32),
     view_empty:unsafe extern "C" fn(Address)->u32,
     install_source:unsafe extern "C" fn(Address),
-    join_child:unsafe extern "C" fn(Address,Address,u64,u32,Address,Address,u32),
+    join_child:unsafe extern "C" fn(Address,Address,u64,JoinStorage,Address,Address,u32),
     join_ownership:unsafe extern "C" fn(Address,Address,Address),
     move_child:unsafe extern "C" fn(Address,Address,u64),
     data_root:unsafe extern "C" fn(Address)->Address,
@@ -815,6 +815,10 @@ unsafe extern "C" fn data_merge_residency(a:Address,b:Address,mode:DataJoin,when
     };
     let target=if take_right!=0 {right}else{left};target.residency=residency;
 }
+#[derive(Clone, Copy)]
+#[repr(u32)]
+enum JoinStorage { Current, Stored, Element }
+
 struct ReturnedJoin {borrows:Option<(view::Borrow,view::Borrow)>}
 #[repr(C)]
 struct ReturnedHost {
@@ -822,7 +826,7 @@ struct ReturnedHost {
     save:unsafe extern "C" fn(Address,Address,Address),
     restore:unsafe extern "C" fn(Address,Address,Address),
     maximum:unsafe extern "C" fn(Address)->u32,
-    elements:unsafe extern "C" fn(Address,Address,DataJoin,Address,Address),
+    elements:unsafe extern "C" fn(Address,Address,DataJoin,Address,Address,JoinStorage),
     prefixes:unsafe extern "C" fn(Address,Address,Address),
 }
 unsafe extern "C" fn save_root_borrows(context:Address,a:Address,b:Address) {
@@ -836,14 +840,25 @@ unsafe extern "C" fn restore_root_borrows(context:Address,a:Address,when:Address
     unsafe { &mut *a.cast::<Data>() }.root.proof.set_view_borrow(0,left.selected(unsafe { &*when.cast::<bounds::Condition>() },&right));
 }
 unsafe extern "C" fn data_maximum(value:Address)->u32 {unsafe { &*value.cast::<Data>() }.length.maximum()}
-unsafe extern "C" fn merge_elements(a:Address,b:Address,mode:DataJoin,when:Address,presence:Address) {
+unsafe extern "C" fn merge_elements(a:Address,b:Address,mode:DataJoin,when:Address,presence:Address,stored:JoinStorage) {
     let left=unsafe { &mut *a.cast::<Data>() };let right=unsafe { &mut *b.cast::<Data>() };
     let elements=std::mem::take(&mut left.elements);let other=std::mem::take(&mut right.elements);
     let presence=unsafe { presence.cast::<owned_presence::Presence>().as_ref() };
     left.elements=match mode {
         DataJoin::Left=>elements.retain_side(other,false,presence),
         DataJoin::Right=>elements.retain_side(other,true,presence),
-        DataJoin::Selected=>elements.join_selected(other,unsafe { &*when.cast::<bounds::Condition>() },presence),
+        DataJoin::Selected => {
+            let when = unsafe { &*when.cast::<bounds::Condition>() };
+            let scoped;
+            let when = if matches!(stored, JoinStorage::Element) {
+                // A nested dataset introduces its own ordinal ahead of the parent's selection.
+                scoped = when.scope_element_indices(1);
+                &scoped
+            } else {
+                when
+            };
+            elements.join_selected(other, when, presence)
+        },
         DataJoin::Common=>elements.common(other),
     };
 }
@@ -853,14 +868,14 @@ unsafe extern "C" fn merge_prefixes(a:Address,b:Address,when:Address) {
 }
 unsafe extern "C" {
     #[link_name="bootstrap.ownership_payload::join_returned"]
-    fn source_join_returned(left:Item,right:Item,stored:u32,choice:Address,presence:Address,merge_metadata:u32,host:ReturnedHost);
+    fn source_join_returned(left:Item,right:Item,stored:JoinStorage,choice:Address,presence:Address,merge_metadata:u32,host:ReturnedHost);
 }
 
-fn join_items(left: Item, right: Item, stored: bool, choice: Option<&bounds::Condition>,
+fn join_items(left: Item, right: Item, stored: JoinStorage, choice: Option<&bounds::Condition>,
     presence: Option<&owned_presence::Presence>, merge_metadata: u32)
 {
     let mut context = ReturnedJoin { borrows: None };
-    unsafe { source_join_returned(left, right, u32::from(stored),
+    unsafe { source_join_returned(left, right, stored,
         choice.map_or(std::ptr::null_mut(),pointer), presence.map_or(std::ptr::null_mut(),pointer), merge_metadata, ReturnedHost {
             context:pointer_mut(&mut context),values:MUT_HOST,data:DATA_PRESENCE,
             save:save_root_borrows,restore:restore_root_borrows,maximum:data_maximum,
@@ -881,7 +896,7 @@ fn join_selected_model<T>(left: &mut T, mut right: T, when: &owned_presence::Pre
         Some(condition) => condition,
         None => { projected = when.condition(); &projected }
     };
-    join_items(item(left), item(&mut right), false, Some(condition), Some(when), 1);
+    join_items(item(left), item(&mut right), JoinStorage::Current, Some(condition), Some(when), 1);
 }
 
 pub(in crate::check) fn select_dataset(left: &mut Data, right: Data, when: &owned_presence::Presence, condition: &bounds::Condition) {
@@ -899,14 +914,19 @@ impl Returned {
 
     pub(in crate::check) fn join_with_presence(&mut self, other: Self, stored: bool,
         choice: Option<&bounds::Condition>, presence: Option<&owned_presence::Presence>) {
-        self.join_returned(other, stored, choice, presence, 1);
+        let storage = if stored { JoinStorage::Stored } else { JoinStorage::Current };
+        self.join_returned(other, storage, choice, presence, 1);
+    }
+
+    pub(in crate::check) fn join_element(&mut self, other: Self, choice: &bounds::Condition) {
+        self.join_returned(other, JoinStorage::Element, Some(choice), None, 1);
     }
 
     pub(in crate::check) fn join_place_payload(&mut self, other: Self) {
-        self.join_returned(other, false, None, None, 0);
+        self.join_returned(other, JoinStorage::Current, None, None, 0);
     }
 
-    fn join_returned(&mut self, mut other: Self, stored: bool, choice: Option<&bounds::Condition>,
+    fn join_returned(&mut self, mut other: Self, stored: JoinStorage, choice: Option<&bounds::Condition>,
         presence: Option<&owned_presence::Presence>, merge_metadata: u32) {
         join_items(mutable_item(Some(self)), mutable_item(Some(&mut other)), stored, choice, presence, merge_metadata);
     }

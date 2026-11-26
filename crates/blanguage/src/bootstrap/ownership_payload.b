@@ -13,7 +13,7 @@ extern "C" void visit_values(Item item,address context,cfn<void,address,address>
 }
 // Info flags: variants=1, own-presence=2. Item tags: absent=0, Unit=1,
 // ordinary Value=2, Dataset=3, OwnedValuePayload=4. All storage is original.
-void join(address left,address right,u32 stored,address choice,address presence,u32 merge_metadata,Host host) on cpu
+void join(address left,address right,JoinStorage stored,address choice,address presence,u32 merge_metadata,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.value)
     requires nonzero(host.ownership)
@@ -35,7 +35,7 @@ void join(address left,address right,u32 stored,address choice,address presence,
         else if(host.state_equal(a,b)==0){host.state_set_moved(a);}
     }
     address av=host.value(left);address bv=host.value(right);
-    if(stored!=0){host.proof_join_stored(av,bv,choice);}else{host.proof_join_common(av,bv,choice);}
+    if(stored!=JoinStorage::Current){host.proof_join_stored(av,bv,choice);}else{host.proof_join_common(av,bv,choice);}
     host.set_uniform(av,host.uniform(av)&host.uniform(bv));
     if(host.constant_equal(av,bv)==0){host.clear_constant(av);}
     u64 count=host.inspect(left).count;u64 other=host.inspect(right).count;
@@ -46,11 +46,11 @@ void join(address left,address right,u32 stored,address choice,address presence,
         i+=1u64;
     }
 }
-void join_value(address left,address right,u32 stored,address choice,Host host) on cpu
+void join_value(address left,address right,JoinStorage stored,address choice,Host host) on cpu
     requires nonzero(host.proof_join_stored) requires nonzero(host.proof_join_common)
     requires nonzero(host.uniform) requires nonzero(host.set_uniform)
     requires nonzero(host.constant_equal) requires nonzero(host.clear_constant) {
-    if(stored!=0){host.proof_join_stored(left,right,choice);}else{host.proof_join_common(left,right,choice);}
+    if(stored!=JoinStorage::Current){host.proof_join_stored(left,right,choice);}else{host.proof_join_common(left,right,choice);}
     host.set_uniform(left,host.uniform(left)&host.uniform(right));
     if(host.constant_equal(left,right)==0){host.clear_constant(left);}
 }
@@ -71,7 +71,7 @@ void dataset_presence(address left,address right,address presence,u32 take_right
         if(address_bits(choice)!=0u64){host.residency(left,right,DataJoin::Selected,choice,take_right);}
     }
 }
-extern "C" void join_returned(Item left,Item right,u32 stored,address choice,address presence,u32 merge_metadata,ReturnedHost host) on cpu
+extern "C" void join_returned(Item left,Item right,JoinStorage stored,address choice,address presence,u32 merge_metadata,ReturnedHost host) on cpu
     requires nonzero(host.values.inspect) requires nonzero(host.values.value)
     requires nonzero(host.values.ownership) requires nonzero(host.values.child)
     requires nonzero(host.values.state_equal) requires nonzero(host.values.state_set_moved)
@@ -101,14 +101,14 @@ extern "C" void join_returned(Item left,Item right,u32 stored,address choice,add
         }
     }
     address first=host.values.data_root(left.node);address second=host.values.data_root(right.node);
-    if(stored!=0){host.values.proof_join_stored(first,second,address());}
+    if(stored!=JoinStorage::Current){host.values.proof_join_stored(first,second,address());}
     else{host.values.proof_join_common(first,second,address());}
     if(address_bits(choice)!=0u64){host.restore(host.context,left.node,choice);}
     DataJoin elements=DataJoin::Common;
     if(host.maximum(left.node)==0){elements=DataJoin::Right;}
     else if(host.maximum(right.node)==0){elements=DataJoin::Left;}
     else if(address_bits(choice)!=0u64){elements=DataJoin::Selected;}
-    host.elements(left.node,right.node,elements,choice,presence);
+    host.elements(left.node,right.node,elements,choice,presence,stored);
     host.prefixes(left.node,right.node,choice);
     join_value(host.values.data_length(left.node),host.values.data_length(right.node),stored,choice,host.values);
 }

@@ -89,7 +89,14 @@ impl ElementFacts {
         match(self,other){
             (Self::Unknown,Self::Unknown)=>Self::Unknown,
             (Self::Input(a),Self::Input(b))=>Self::Input(bounds::Condition::branch(when.clone(),a,b)),
-            (Self::Known(mut a),Self::Known(b))=>{a.join_with_presence(*b,true,Some(when),presence);Self::Known(a)},
+            (Self::Known(mut a), Self::Known(b)) => {
+                if let Some(presence) = presence {
+                    a.join_with_presence(*b, true, Some(when), Some(presence));
+                } else {
+                    a.join_element(*b, when);
+                }
+                Self::Known(a)
+            },
             (Self::Cleanup(a),Self::Cleanup(b))=>Self::Cleanup(bounds::Condition::branch(when.clone(),a,b)),
             (Self::Cleanup(a),Self::Unknown)=>Self::Cleanup(when.clone().logical(a,false)),
             (Self::Unknown,Self::Cleanup(b))=>Self::Cleanup(when.clone().negate().logical(b,false)),
@@ -2627,7 +2634,8 @@ impl Builder<'_> {
         self.view_uses.invocation(span);
         retained.union(&unsafe { self.world.call(self.view_uses.all(self,&[view_liveness::Transfer::OwnedData(&data)])).await }?);
         self.application_movable(&data, &retained, span)?;
-        if fill.ty.owns_resources() {
+        let owns_fill = fill.ty.owns_resources();
+        if owns_fill {
             let exact = data.length.minimum() == data.length.maximum()
                 && length.minimum() == length.maximum()
                 && data.length.maximum().checked_add(1) == Some(length.minimum());
@@ -2641,7 +2649,14 @@ impl Builder<'_> {
         let incoming = self.capture_element_model(&data, &[], returned, None);
         let growth = bounds::Condition::comparison(Comparison::Greater, &length, &data.length);
         let grows = growth.truth_in(&self.path);
-        let elements = if grows == Some(false) { data.elements } else if data.length.maximum() == 0 { ElementFacts::Known(incoming) } else if let ElementFacts::Known(mut previous)=data.elements {
+        let elements = if grows == Some(false) {
+            data.elements
+        } else if data.length.maximum() == 0 {
+            ElementFacts::Known(incoming)
+        } else if owns_fill {
+            let appended = bounds::Condition::element_index(0, bounds::Operand::of(&data.length, 0));
+            ElementFacts::Known(incoming).selected(data.elements, &appended)
+        } else if let ElementFacts::Known(mut previous)=data.elements {
             if let Some(value)=previous.view_value_mut(){
                 let present=bounds::Condition::selected(ownership::ApplicationIndex::of(&data.length),0).negate();
                 value.proof.under_path(&value.ty,&present.assume(&bounds::Clause::default(),true));
@@ -4627,8 +4642,31 @@ impl Builder<'_> {
         None
     }
 
-    fn application_owned_references(&self,place:&Place)->Vec<(DataReference,Vec<Vec<usize>>)>{
-        let Place::ApplicationElement{sources,resource,words,..}=place.storage()else{unreachable!()};
+    fn application_owned_references(&self, place: &Place, prefer_owner: bool) -> Vec<(DataReference, Vec<Vec<usize>>)> {
+        let Place::ApplicationElement { sources, resource, words, .. } = place.storage() else { unreachable!() };
+        let reference = |data: &Data| {
+            let mut paths = Vec::new();
+            Self::owned_element_projections(
+                &data.ty, place.ty(), words, matches!(place, Place::Indexed { .. }), 0, &mut Vec::new(), &mut paths,
+            );
+            if paths.is_empty() {
+                return None;
+            }
+            let mut data = data.clone();
+            data.root.proof.set_view_borrow(0, resource.clone());
+            Some((DataReference::direct(data), paths))
+        };
+
+        // A detached resource still aliases its former storage path. The live direct model owns the
+        // bound indices and residency used by a read of that resource.
+        if prefer_owner && let [source] = sources.as_slice()
+            && let Some(owner) = self.env.values().flat_map(Binding::application_resources)
+                .filter(|data| data.ownership != Ownership::Moved && data.root.identity() == *source)
+                .find_map(&reference)
+        {
+            return vec![owner];
+        }
+
         let mut references = Vec::new();
         for binding in self.env.values() {
             let mut collect = |data: &Data| {
@@ -4637,13 +4675,7 @@ impl Builder<'_> {
                     for fields in scope {
                         data = model_data(data.elements.known(), &fields).unwrap();
                     }
-                    let mut paths = Vec::new();
-                    Self::owned_element_projections(&data.ty, place.ty(), words, matches!(place, Place::Indexed{..}), 0, &mut Vec::new(), &mut paths);
-                    if !paths.is_empty() {
-                        let mut data = data.clone();
-                        data.root.proof.set_view_borrow(0, resource.clone());
-                        references.push((DataReference::direct(data), paths));
-                    }
+                    references.extend(reference(data));
                 }
             };
             match binding {
@@ -4671,7 +4703,7 @@ impl Builder<'_> {
 
     pub(super) async fn application_owned_argument(&mut self, place: &Place, read: bool, span: Span) -> Result<returns::Returned> {
         let loaded = if read { Some(unsafe { self.world.call(self.read_storage_value(place, span, None)).await }?) } else { None };
-        let references=self.application_owned_references(place);let mut values=Vec::new();
+        let references=self.application_owned_references(place, true);let mut values=Vec::new();
         for(mut data,paths)in references{for path in paths{data.projection=path;values.push(unsafe { self.world.call(self.materialize_element(&data,loaded.clone(),place)).await }?);}}
         let mut models=values.into_iter();
         let mut model=models.next().unwrap();for other in models{model.join(other,false,None);}
@@ -4679,7 +4711,7 @@ impl Builder<'_> {
         Ok(model)
     }
     pub(super) async fn assign_application_owned_argument(&mut self,place:&Place,value:Option<&returns::Returned>)->Result<()> {
-        for(data,paths)in self.application_owned_references(place){unsafe { self.world.call(self.assign_application_element_model(&data,place,&paths,value)).await }?;}
+        for(data,paths)in self.application_owned_references(place, false){unsafe { self.world.call(self.assign_application_element_model(&data,place,&paths,value)).await }?;}
         Ok(())
     }
     fn capture_element_model(
@@ -5169,7 +5201,12 @@ impl Builder<'_>{
                 unsafe { self.world.call(contracts::mark_cleanup_model(self,&mut model,when.scope_element_indices(1),span)).await }?;model
             },
             ElementFacts::Common(a,b)=>{let mut model=unsafe { self.world.call(self.element_model(ty,a,location,span)).await }?;model.join(*unsafe { self.world.call(self.element_model(ty,b,location,span)).await }?,true,None);model},
-            ElementFacts::Selected(when,a,b)=>{let mut model=unsafe { self.world.call(self.element_model(ty,a,location,span)).await }?;model.join(*unsafe { self.world.call(self.element_model(ty,b,location,span)).await }?,true,Some(when));model},
+            ElementFacts::Selected(when, a, b) => {
+                let mut model = unsafe { self.world.call(self.element_model(ty, a, location, span)).await }?;
+                let other = unsafe { self.world.call(self.element_model(ty, b, location, span)).await }?;
+                model.join_element(*other, when);
+                model
+            },
         })
     }
     pub(super) async fn normalize_element_facts(&mut self,value:&mut returns::Returned,span:Span)->Result<()> {
