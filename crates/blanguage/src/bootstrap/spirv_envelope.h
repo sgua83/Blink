@@ -484,6 +484,17 @@ extern "C" void emit_tile_publication(TilePublication input, TileStorage storage
     requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body);
 
+struct TextureSampling {
+    address bindings;
+    cfn<TextureDeclaration,address,usize> declaration;
+    address variables;
+    SampledType sampled2;
+    SampledType sampled3;
+    u32 vec2;
+    u32 vec3;
+    u32 vec4;
+};
+
 struct BlockHost {
     Host ir;
     BlockValues values;
@@ -491,8 +502,8 @@ struct BlockHost {
     BlockLocals locals;
     TileStorage tile;
     BlockSubgroup subgroup;
+    TextureSampling textures;
     cfn<BlockFlow,address,BlockRejection> reject;
-    cfn<void,address,address,address,Span,usize> texture_sample;
     cfn<void,address,address> ray;
     cfn<void,address> barrier;
     cfn<void,address,address> publish;
@@ -501,7 +512,7 @@ struct BlockHost {
 extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     StructuredHost host, BlockHost emit) on cpu
     requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
-    requires nonzero(emit.texture_sample) requires nonzero(emit.ray)
+    requires nonzero(emit.textures.declaration) requires nonzero(emit.ray)
     requires nonzero(emit.barrier)
     requires nonzero(emit.publish) requires nonzero(emit.collective)
     requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
@@ -543,26 +554,6 @@ extern "C" void lower_return_loop(address edges, u32 count, u32 bool_type, Struc
     requires nonzero(host.record_return) requires nonzero(host.reserve_words) requires nonzero(host.finish_words);
 
 
-struct TextureSampleEmission {
-    u32 variable;
-    u32 element;
-    u32 index_type;
-    u32 sampled_type;
-    u32 sampled_pointer;
-    u32 coordinate_type;
-    u32 vector_type;
-    u32 component_type;
-    u32 x;
-    u32 y;
-    u32 z;
-    u32 lod;
-    u32 next;
-};
-struct TextureWords { u64 body; u64 decorations; u32 next; };
-// Element and z are zero for a single binding and a two-component coordinate
-// respectively. The emitter lends four result IDs and room for 46 body and
-// nine decoration words.
-extern "C" TextureWords encode_texture_sample(TextureSampleEmission input, address results, address body, address decorations) on cpu;
 
 struct AppendEmission {
     u32 uint_type;

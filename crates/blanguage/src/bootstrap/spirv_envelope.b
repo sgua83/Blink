@@ -1958,7 +1958,7 @@ void block_private_storage(View instruction, BlockValues values, BlockLocals loc
 extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     StructuredHost host, BlockHost emit) on cpu
     requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
-    requires nonzero(emit.texture_sample) requires nonzero(emit.ray)
+    requires nonzero(emit.textures.declaration) requires nonzero(emit.ray)
     requires nonzero(emit.barrier)
     requires nonzero(emit.publish) requires nonzero(emit.collective)
     requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
@@ -1985,7 +1985,7 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
         } else if (kind == OP_INVOKE || kind == OP_RAISE || kind == OP_CLEANUP) {
             return emit.reject(context, BlockRejection::CpuCall);
         } else if (kind == OP_TEXTURE_SAMPLE) {
-            emit.texture_sample(context, value.first.data, value.left.data, value.second, value.a);
+            block_texture_sample(value, emit.ir.inspect(value.left), emit.values, emit.textures);
         } else if (kind <= OP_TEXTURE_FETCH) {
             return emit.reject(context, BlockRejection::CpuTexture);
         } else if (kind == OP_SCOPE) {
@@ -2201,41 +2201,64 @@ void block_subgroup(View instruction, BlockValues values, BlockSubgroup group, M
     memory.finish_body(context, words);
 }
 
-extern "C" TextureWords encode_texture_sample(TextureSampleEmission input, address results, address body, address decorations) on cpu {
-    u32 sampled = input.next;
-    u32 pointer = input.variable;
+u32 texture_register(address registers, Span values, usize index) on cpu {
+    address at = unsafe_address(address_bits(values.data) + index * values.stride);
+    return block_register(registers, unsafe_position<usize>(at));
+}
+
+void block_texture_sample(View sample, View texture, BlockValues values, TextureSampling bindings) on cpu
+    requires nonzero(bindings.declaration) requires nonzero(values.finish)
+    requires nonzero(values.scalars.type_id) requires nonzero(values.scalars.ids) requires nonzero(values.scalars.reserve) {
+    ScalarHost stream = values.scalars;
+    address context = stream.context;
+    address registers = values.registers;
+    bool volume = bindings.declaration(bindings.bindings, texture.a).dimensions == 3;
+    SampledType type = volume ? bindings.sampled3 : bindings.sampled2;
+    u32 coordinate_type = volume ? bindings.vec3 : bindings.vec2;
+    u32 variable = block_register(bindings.variables, texture.a);
+    bool arrayed = texture.second.count != 0u64;
+    u32 sampled = stream.ids(context, arrayed ? 5 : 3);
+    u32 pointer = variable;
     u64 at = 0u64;
     u64 annotated = 0u64;
-    if (input.element != 0) {
+    ScalarStreams words = stream.reserve(context, 46u64, arrayed ? 9u64 : 0u64);
+    if (arrayed) {
+        u32 element = texture_register(registers, texture.second, 0u64);
         u32 index = sampled;
         pointer = sampled + 1;
         sampled += 2;
-        at = words_three(body, at, 83, input.index_type, index, input.element);
-        at = words_four(body, at, 65, input.sampled_pointer, pointer, input.variable, index);
-        annotated = flag_decoration(decorations, annotated, FlagDecoration::NonUniform, index);
-        annotated = flag_decoration(decorations, annotated, FlagDecoration::NonUniform, pointer);
-        annotated = flag_decoration(decorations, annotated, FlagDecoration::NonUniform, sampled);
+        u32 index_type = stream.type_id(context, BuiltinScalar::U32);
+        at = words_three(words.body, at, 83, index_type, index, element);
+        at = words_four(words.body, at, 65, type.pointer, pointer, variable, index);
+        annotated = flag_decoration(words.decorations, annotated, FlagDecoration::NonUniform, index);
+        annotated = flag_decoration(words.decorations, annotated, FlagDecoration::NonUniform, pointer);
+        annotated = flag_decoration(words.decorations, annotated, FlagDecoration::NonUniform, sampled);
     }
     u32 coordinate = sampled + 1;
-    u32 value = sampled + 2;
-    at = words_three(body, at, 61, input.sampled_type, sampled, pointer);
-    if (input.z == 0) {
-        at = words_four(body, at, 80, input.coordinate_type, coordinate, input.x, input.y);
+    u32 result = sampled + 2;
+    at = words_three(words.body, at, 61, type.sampled, sampled, pointer);
+    u32 x = texture_register(registers, sample.second, 0u64);
+    u32 y = texture_register(registers, sample.second, 1u64);
+    if (volume) {
+        u32 z = texture_register(registers, sample.second, 2u64);
+        at = words_five(words.body, at, 80, coordinate_type, coordinate, x, y, z);
     } else {
-        at = words_five(body, at, 80, input.coordinate_type, coordinate, input.x, input.y, input.z);
+        at = words_four(words.body, at, 80, coordinate_type, coordinate, x, y);
     }
-    put(body, at, instruction(88, 7));
-    put(body, at + 1u64, input.vector_type);
-    put(body, at + 2u64, value);
-    put(body, at + 3u64, sampled);
-    put(body, at + 4u64, coordinate);
-    put(body, at + 5u64, 2);
-    put(body, at + 6u64, input.lod);
+    put(words.body, at, instruction(88, 7));
+    put(words.body, at + 1u64, bindings.vec4);
+    put(words.body, at + 2u64, result);
+    put(words.body, at + 3u64, sampled);
+    put(words.body, at + 4u64, coordinate);
+    put(words.body, at + 5u64, 2);
+    put(words.body, at + 6u64, block_register(registers, sample.a));
     at += 7u64;
+    u32 component_type = stream.type_id(context, BuiltinScalar::F32);
     for (component in 0..4) {
-        at = words_four(body, at, 81, input.component_type, read_word(results, component), value, component);
+        u32 dst = texture_register(registers, sample.first, u64(component));
+        at = words_four(words.body, at, 81, component_type, dst, result, component);
     }
-    return TextureWords(at, annotated, sampled + 3);
+    values.finish(context, ScalarWords(at, annotated));
 }
 
 enum AtomicOperation:u32 {

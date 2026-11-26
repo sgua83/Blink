@@ -24,8 +24,6 @@ mod segmented;
 mod selection;
 #[path = "sort.rs"]
 mod sort;
-#[path = "texture.rs"]
-mod texture;
 #[path = "tile.rs"]
 mod tile;
 #[path = "tile_collective.rs"]
@@ -755,6 +753,18 @@ unsafe extern "C" fn private_array_field(context: *mut std::ffi::c_void, base: u
 }
 
 #[repr(C)]
+struct TextureSampling {
+    bindings: *const std::ffi::c_void,
+    declaration: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> TextureDeclaration,
+    variables: *const u32,
+    sampled2: SampledType,
+    sampled3: SampledType,
+    vec2: u32,
+    vec3: u32,
+    vec4: u32,
+}
+
+#[repr(C)]
 struct BlockHost {
     ir: dataflow::Host,
     values: BlockValues,
@@ -762,8 +772,8 @@ struct BlockHost {
     locals: BlockLocals,
     tile: tile::TileStorage,
     subgroup: BlockSubgroup,
+    textures: TextureSampling,
     reject: unsafe extern "C" fn(StructuredContext, BlockRejection) -> BlockFlow,
-    texture_sample: unsafe extern "C" fn(StructuredContext, *const [Reg; 4], *const TextureSource, Span, Reg),
     ray: unsafe extern "C" fn(StructuredContext, *const Inst),
     barrier: unsafe extern "C" fn(StructuredContext),
     publish: unsafe extern "C" fn(StructuredContext, *const Publication),
@@ -799,7 +809,16 @@ fn block_host(emitter: &mut Emitter<'_>) -> BlockHost {
         tile: emitter.tile_storage(),
         subgroup: BlockSubgroup { lane, size, id, ballot_type: emitter.ballot_type },
         reject: block_reject,
-        texture_sample: block_texture_sample,
+        textures: TextureSampling {
+            bindings: emitter.program.textures.as_ptr().cast(),
+            declaration: texture_declaration,
+            variables: emitter.textures.as_ptr(),
+            sampled2: emitter.texture_types[0],
+            sampled3: emitter.texture_types[1],
+            vec2: emitter.vec2_type,
+            vec3: emitter.vec3_type,
+            vec4: emitter.vec4_type,
+        },
         ray: block_ray,
         barrier: block_barrier,
         publish: block_publish,
@@ -828,12 +847,6 @@ unsafe extern "C" fn block_reject(context: StructuredContext, rejection: BlockRe
     BlockFlow::Error
 }
 
-unsafe extern "C" fn block_texture_sample(context: StructuredContext, result: *const [Reg; 4],
-    texture: *const TextureSource, coordinate: Span, lod: Reg,
-) {
-    unsafe { block_emitter(context).texture_sample(*result, *texture, coordinate.as_slice(), lod) };
-}
-
 unsafe extern "C" fn block_ray(context: StructuredContext, instruction: *const Inst) {
     let InstKind::RayQuery { scene, origin, direction, minimum, maximum, cull_back_faces, result } =
         &unsafe { &*instruction }.kind else { unreachable!() };
@@ -855,30 +868,6 @@ unsafe extern "C" fn block_collective(context: StructuredContext, collective: *c
 #[repr(u32)]
 enum FlagDecoration {
     NoContraction = 42,
-}
-
-#[repr(C)]
-struct TextureSampleEmission {
-    variable: u32,
-    element: u32,
-    index_type: u32,
-    sampled_type: u32,
-    sampled_pointer: u32,
-    coordinate_type: u32,
-    vector_type: u32,
-    component_type: u32,
-    x: u32,
-    y: u32,
-    z: u32,
-    lod: u32,
-    next: u32,
-}
-
-#[repr(C)]
-struct TextureWords {
-    body: u64,
-    decorations: u64,
-    next: u32,
 }
 
 #[repr(C)]
@@ -1019,10 +1008,6 @@ unsafe extern "C" {
     fn encode_prefix_index(input: PrefixIndexEmission, body: *mut u32) -> PrefixIndexWords;
     #[link_name = "bootstrap.spirv_envelope::flag_decoration"]
     fn flag_decoration(decorations: *mut u32, at: u64, decoration: FlagDecoration, id: u32) -> u64;
-    #[link_name = "bootstrap.spirv_envelope::encode_texture_sample"]
-    fn encode_texture_sample(
-        input: TextureSampleEmission, results: *const u32, body: *mut u32, decorations: *mut u32,
-    ) -> TextureWords;
     #[link_name = "bootstrap.spirv_envelope::envelope_capacity"]
     fn envelope_capacity() -> u64;
     #[link_name = "bootstrap.spirv_envelope::encode"]
