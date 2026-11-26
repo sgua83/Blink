@@ -428,14 +428,22 @@ struct BlockValues {
     u32 push_block;
     u32 extended_set;
 };
+struct BlockPaging {
+    PageInputs base;
+    address descriptors;
+    cfn<u32,address,BuiltinScalar> pointer_type;
+    cfn<void,address,u64> finish_body;
+    cfn<u32,address> current_label;
+    u32 ballot_type;
+};
 struct BlockHost {
     Host ir;
     BlockValues values;
+    BlockPaging paging;
     cfn<BlockFlow,address,BlockRejection> reject;
     cfn<void,address,address,address,Span,usize> texture_sample;
     cfn<void,address,address> ray;
     cfn<BlockFlow,address,address> atomic;
-    cfn<void,address,address> append;
     cfn<void,address,usize,SubgroupOperation,Span,Span> subgroup;
     cfn<void,address> barrier;
     cfn<void,address,address> publish;
@@ -444,31 +452,26 @@ struct BlockHost {
     cfn<void,address,usize> tile_lane;
     cfn<void,address,usize,usize,usize,u32,usize,u32> tile_load;
     cfn<void,address,usize,usize,usize,u32,usize> tile_store;
-    cfn<void,address,usize,address,address,usize,u32> view_load;
-    cfn<void,address,usize,address,usize,u32> indexed_load;
-    cfn<void,address,address,usize,u32,usize> indexed_store;
     cfn<void,address,usize,usize> local_load;
     cfn<void,address,usize,usize> local_store;
     cfn<void,address,usize,usize,usize,u32> private_load;
     cfn<void,address,usize,usize,usize,u32> private_store;
-    cfn<void,address,usize,usize,usize,u32> load;
-    cfn<void,address,usize,usize,u32,usize> store;
 };
 extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     StructuredHost host, BlockHost emit) on cpu
     requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
     requires nonzero(emit.texture_sample) requires nonzero(emit.ray) requires nonzero(emit.atomic)
-    requires nonzero(emit.append) requires nonzero(emit.subgroup) requires nonzero(emit.barrier)
+    requires nonzero(emit.subgroup) requires nonzero(emit.barrier)
     requires nonzero(emit.publish) requires nonzero(emit.collective)
     requires nonzero(emit.tile_length) requires nonzero(emit.tile_lane)
     requires nonzero(emit.tile_load) requires nonzero(emit.tile_store)
-    requires nonzero(emit.view_load) requires nonzero(emit.indexed_load) requires nonzero(emit.indexed_store)
+    requires nonzero(emit.paging.pointer_type) requires nonzero(emit.paging.finish_body)
+    requires nonzero(emit.paging.current_label)
     requires nonzero(emit.values.scalar) requires nonzero(emit.values.binary) requires nonzero(emit.values.finish)
     requires nonzero(emit.values.scalars.constant) requires nonzero(emit.values.scalars.type_id)
     requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve)
     requires nonzero(emit.local_load) requires nonzero(emit.local_store)
     requires nonzero(emit.private_load) requires nonzero(emit.private_store)
-    requires nonzero(emit.load) requires nonzero(emit.store)
     requires nonzero(host.labels) requires nonzero(host.reserve_words) requires nonzero(host.finish_words)
     requires nonzero(host.block) requires nonzero(host.value) requires nonzero(host.begin_return)
     requires nonzero(host.normal_exit) requires nonzero(host.finish_return)
@@ -588,8 +591,6 @@ struct AppendWords {
     u32 write_label;
     u32 finish;
 };
-
-extern "C" AppendWords encode_append_reservation(AppendEmission input, address body) on cpu;
 
 struct SharedAddress {
     u32 index_type;

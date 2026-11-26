@@ -3,8 +3,6 @@ use crate::ir::*;
 use crate::ir::dataflow::{self, Span};
 use crate::builtin_types::{ScalarBinaryOp, ScalarCode};
 use super::{PAGE_BYTES, PREFIX_LEVELS, SCAN_WIDTH, ProgramImage, ShaderCode, StageCode};
-#[path = "append.rs"]
-mod append;
 #[path = "atomic.rs"]
 mod atomic;
 #[path = "compact.rs"]
@@ -414,11 +412,6 @@ unsafe extern "C" fn scalar_reserve(
     }
 }
 
-enum PageSource {
-    Dataset(u32),
-    View { low: u32, high: u32, stride: u32 },
-}
-
 #[repr(C)]
 struct PageInputs {
     descriptor_pointer: u32,
@@ -731,14 +724,24 @@ unsafe extern "C" fn finish_value(context: *mut std::ffi::c_void, words: ScalarW
 }
 
 #[repr(C)]
+struct BlockPaging {
+    base: PageInputs,
+    descriptors: *const u32,
+    pointer_type: unsafe extern "C" fn(*mut std::ffi::c_void, ScalarCode) -> u32,
+    finish_body: unsafe extern "C" fn(*mut std::ffi::c_void, u64),
+    current_label: unsafe extern "C" fn(*mut std::ffi::c_void) -> u32,
+    ballot_type: u32,
+}
+
+#[repr(C)]
 struct BlockHost {
     ir: dataflow::Host,
     values: BlockValues,
+    paging: BlockPaging,
     reject: unsafe extern "C" fn(StructuredContext, BlockRejection) -> BlockFlow,
     texture_sample: unsafe extern "C" fn(StructuredContext, *const [Reg; 4], *const TextureSource, Span, Reg),
     ray: unsafe extern "C" fn(StructuredContext, *const Inst),
     atomic: unsafe extern "C" fn(StructuredContext, *const Inst) -> BlockFlow,
-    append: unsafe extern "C" fn(StructuredContext, *const Inst),
     subgroup: unsafe extern "C" fn(StructuredContext, Reg, SubgroupOp, Span, Span),
     barrier: unsafe extern "C" fn(StructuredContext),
     publish: unsafe extern "C" fn(StructuredContext, *const Publication),
@@ -747,15 +750,10 @@ struct BlockHost {
     tile_lane: unsafe extern "C" fn(StructuredContext, Reg),
     tile_load: unsafe extern "C" fn(StructuredContext, Reg, usize, Reg, u32, Reg, u32),
     tile_store: unsafe extern "C" fn(StructuredContext, usize, Reg, Reg, u32, Reg),
-    view_load: unsafe extern "C" fn(StructuredContext, Reg, *const [Reg; 2], *const ElementStride, Reg, u32),
-    indexed_load: unsafe extern "C" fn(StructuredContext, Reg, *const IndexedSource, Reg, u32),
-    indexed_store: unsafe extern "C" fn(StructuredContext, *const IndexedSource, Reg, u32, Reg),
     local_load: unsafe extern "C" fn(StructuredContext, Reg, usize),
     local_store: unsafe extern "C" fn(StructuredContext, usize, Reg),
     private_load: unsafe extern "C" fn(StructuredContext, Reg, usize, Reg, u32),
     private_store: unsafe extern "C" fn(StructuredContext, Reg, usize, Reg, u32),
-    load: unsafe extern "C" fn(StructuredContext, Reg, usize, Reg, u32),
-    store: unsafe extern "C" fn(StructuredContext, usize, Reg, u32, Reg),
 }
 
 fn block_host(emitter: &mut Emitter<'_>) -> BlockHost {
@@ -772,11 +770,18 @@ fn block_host(emitter: &mut Emitter<'_>) -> BlockHost {
             push_block: emitter.push,
             extended_set: emitter.ext,
         },
+        paging: BlockPaging {
+            base: emitter.page_inputs(0, 0, None, 0),
+            descriptors: emitter.buffers.as_ptr(),
+            pointer_type: memory_pointer_type,
+            finish_body: memory_finish_body,
+            current_label: block_current_label,
+            ballot_type: emitter.ballot_type,
+        },
         reject: block_reject,
         texture_sample: block_texture_sample,
         ray: block_ray,
         atomic: block_atomic,
-        append: block_append,
         subgroup: block_subgroup,
         barrier: block_barrier,
         publish: block_publish,
@@ -785,16 +790,15 @@ fn block_host(emitter: &mut Emitter<'_>) -> BlockHost {
         tile_lane: block_tile_lane,
         tile_load: block_tile_load,
         tile_store: block_tile_store,
-        view_load: block_view_load,
-        indexed_load: block_indexed_load,
-        indexed_store: block_indexed_store,
         local_load: block_local_load,
         local_store: block_local_store,
         private_load: block_private_load,
         private_store: block_private_store,
-        load: block_load,
-        store: block_store,
     }
+}
+
+unsafe extern "C" fn block_current_label(context: *mut std::ffi::c_void) -> u32 {
+    unsafe { &*context.cast::<Emitter<'_>>() }.current_label
 }
 
 unsafe fn block_emitter<'a, 'program>(context: StructuredContext) -> &'a mut Emitter<'program> {
@@ -835,11 +839,6 @@ unsafe extern "C" fn block_atomic(context: StructuredContext, instruction: *cons
             BlockFlow::Error
         }
     }
-}
-
-unsafe extern "C" fn block_append(context: StructuredContext, instruction: *const Inst) {
-    let InstKind::Append(append) = &unsafe { &*instruction }.kind else { unreachable!() };
-    unsafe { block_emitter(context) }.append(append);
 }
 
 unsafe extern "C" fn block_subgroup(context: StructuredContext, dst: Reg, op: SubgroupOp, value: Span, argument: Span) {
@@ -897,32 +896,6 @@ unsafe extern "C" fn block_tile_store(context: StructuredContext, tile: usize, i
     e.store_raw(scalar, unit, &pointers[..count], raw, true);
 }
 
-unsafe extern "C" fn block_view_load(context: StructuredContext, dst: Reg, address: *const [Reg; 2],
-    stride: *const ElementStride, index: Reg, word: u32,
-) {
-    let e = unsafe { block_emitter(context) };
-    let source = unsafe { e.view_source(&*address, *stride) };
-    e.load_paged(dst, source, e.value(index), word, 0);
-}
-
-unsafe extern "C" fn block_indexed_load(context: StructuredContext, dst: Reg,
-    source: *const IndexedSource, offset: Reg, word: u32,
-) {
-    let e = unsafe { block_emitter(context) };
-    let offset = e.value(offset);
-    let (page, index) = unsafe { e.indexed_page(&*source) };
-    e.load_paged(dst, page, index, word, offset);
-}
-
-unsafe extern "C" fn block_indexed_store(context: StructuredContext, source: *const IndexedSource,
-    offset: Reg, word: u32, value: Reg,
-) {
-    let e = unsafe { block_emitter(context) };
-    let offset = e.value(offset);
-    let (page, index) = unsafe { e.indexed_page(&*source) };
-    e.store_paged(value, page, index, word, offset);
-}
-
 unsafe extern "C" fn block_local_load(context: StructuredContext, dst: Reg, slot: usize) {
     let e = unsafe { block_emitter(context) };
     let pointer = e.locals[slot];
@@ -949,17 +922,6 @@ unsafe extern "C" fn block_private_load(context: StructuredContext, dst: Reg, sl
 
 unsafe extern "C" fn block_private_store(context: StructuredContext, value: Reg, slot: usize, index: Reg, word: u32) {
     unsafe { block_emitter(context) }.store_private(value, slot, Some(index), word);
-}
-
-unsafe extern "C" fn block_load(context: StructuredContext, dst: Reg, binding: usize, index: Reg, word: u32) {
-    let e = unsafe { block_emitter(context) };
-    let source = PageSource::Dataset(e.buffers[binding]);
-    e.load_paged(dst, source, e.value(index), word, 0);
-}
-
-unsafe extern "C" fn block_store(context: StructuredContext, binding: usize, index: Reg, word: u32, value: Reg) {
-    let e = unsafe { block_emitter(context) };
-    e.store_buffer(binding, e.value(index), word, value);
 }
 
 #[repr(C)]
@@ -1100,33 +1062,6 @@ struct PrefixIndexWords {
 }
 
 #[repr(C)]
-struct AppendEmission {
-    uint_type: u32,
-    bool_type: u32,
-    ballot_type: u32,
-    device_scope: u32,
-    relaxed: u32,
-    subgroup_scope: u32,
-    active: u32,
-    counter: u32,
-    push_pointer_type: u32,
-    push: u32,
-    capacity_word: u32,
-    outer: u32,
-    accepted: u32,
-    next: u32,
-}
-
-#[repr(C)]
-struct AppendWords {
-    words: u64,
-    next: u32,
-    ticket: u32,
-    write_label: u32,
-    finish: u32,
-}
-
-#[repr(C)]
 struct PrivateAddress {
     index_type: u32,
     pointer_type: u32,
@@ -1233,8 +1168,6 @@ unsafe extern "C" {
     ) -> PrefixIndexWords;
     #[link_name = "bootstrap.spirv_envelope::encode_prefix_index"]
     fn encode_prefix_index(input: PrefixIndexEmission, body: *mut u32) -> PrefixIndexWords;
-    #[link_name = "bootstrap.spirv_envelope::encode_append_reservation"]
-    fn encode_append_reservation(input: AppendEmission, body: *mut u32) -> AppendWords;
     #[link_name = "bootstrap.spirv_envelope::flag_decoration"]
     fn flag_decoration(decorations: *mut u32, at: u64, decoration: FlagDecoration, id: u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::encode_texture_sample"]
@@ -1834,7 +1767,7 @@ impl Emitter<'_> {
     }
 
     fn address_scalar(&mut self, unit: Scalar, binding: usize, index: u32, word: u32) -> u32 {
-        self.page_address(unit, PageSource::Dataset(self.buffers[binding]), index, word, 0)
+        self.page_address(unit, self.buffers[binding], index, word, 0)
     }
 
     fn summary_addresses(&mut self, count: usize, binding: usize, index: u32) -> Vec<u32> {
@@ -1842,7 +1775,7 @@ impl Emitter<'_> {
             return Vec::new();
         }
         let step = if count > 1 { self.constant(Scalar::U64, 4) } else { 0 };
-        let input = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[binding]), index, Some(0), 0);
+        let input = self.page_input(Scalar::U32, self.buffers[binding], index, Some(0), 0);
         let at = self.body.len();
         self.body.reserve(109 + 9 * (count - 1));
         let mut pointers = Vec::with_capacity(count);
@@ -1856,8 +1789,8 @@ impl Emitter<'_> {
         pointers
     }
 
-    fn page_address(&mut self, unit: Scalar, source: PageSource, index: u32, word: u32, extra: u32) -> u32 {
-        let input = self.page_input(unit, source, index, Some(word), extra);
+    fn page_address(&mut self, unit: Scalar, descriptor: u32, index: u32, word: u32, extra: u32) -> u32 {
+        let input = self.page_input(unit, descriptor, index, Some(word), extra);
         let at = self.body.len();
         self.body.reserve(109);
         unsafe {
@@ -1868,23 +1801,19 @@ impl Emitter<'_> {
         }
     }
 
-    fn page_inputs(&self, source: PageSource, index: u32, word: Option<u32>, extra: u32) -> PageInputs {
-        let (descriptor, low, high, stride) = match source {
-            PageSource::Dataset(descriptor) => (descriptor, 0, 0, 0),
-            PageSource::View { low, high, stride } => (0, low, high, stride),
-        };
+    fn page_inputs(&self, descriptor: u32, index: u32, word: Option<u32>, extra: u32) -> PageInputs {
         PageInputs {
             descriptor_pointer: self.ptr_table_u64,
             page_pointer: self.physical_pointers[&Scalar::U64],
-            descriptor, low, high, stride, index,
+            descriptor, low: 0, high: 0, stride: 0, index,
             word: word.unwrap_or(0), has_word: u32::from(word.is_some()), extra, page_bytes: PAGE_BYTES,
         }
     }
 
     fn page_input(
-        &mut self, unit: Scalar, source: PageSource, index: u32, word: Option<u32>, extra: u32,
+        &mut self, unit: Scalar, descriptor: u32, index: u32, word: Option<u32>, extra: u32,
     ) -> PageAddress {
-        let input = self.page_inputs(source, index, word, extra);
+        let input = self.page_inputs(descriptor, index, word, extra);
         let result_pointer = self.physical_pointers[&unit];
         unsafe { prepare_page(input, result_pointer, self.scalar_host()) }
     }
@@ -1904,7 +1833,7 @@ impl Emitter<'_> {
         let count = stride / unit_bytes;
         let step = if count > 1 { self.constant(Scalar::U64, unit_bytes) } else { 0 };
         let source = self.page_input(
-            scalar, PageSource::Dataset(self.buffers[source_binding]), self.index, None, 0,
+            scalar, self.buffers[source_binding], self.index, None, 0,
         );
         Some(RecordCopy {
             source,
@@ -1924,24 +1853,6 @@ impl Emitter<'_> {
             self.body.set_len(at + emitted.words as usize);
             self.next = emitted.next;
             self.current_label = emitted.label;
-        }
-    }
-
-    fn view_source(&mut self, table: &[Reg; 2], stride: ElementStride) -> PageSource {
-        let stride = match stride {
-            ElementStride::Constant(bytes) => self.constant(Scalar::U32, bytes as u32),
-            ElementStride::Value(parts) => self.value(parts[0]),
-        };
-        PageSource::View { low: self.value(table[0]), high: self.value(table[1]), stride }
-    }
-
-    fn indexed_page(&mut self, source: &IndexedSource) -> (PageSource, u32) {
-        match source {
-            IndexedSource::Data { binding, index } =>
-                (PageSource::Dataset(self.buffers[*binding]), self.value(*index)),
-            IndexedSource::View { address, index, stride } =>
-                (self.view_source(address, *stride), self.value(*index)),
-            _ => unreachable!(),
         }
     }
 
@@ -2129,36 +2040,12 @@ impl Emitter<'_> {
         Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 })
     }
 
-    fn load_paged(&mut self, dst: Reg, source: PageSource, index: u32, word: u32, extra: u32) {
-        let input = PhysicalAccess {
-            page: self.page_inputs(source, index, Some(word), extra),
-            scalar: self.stage.registers[dst].into(),
-            value: self.value(dst),
-            value_type: self.ty(dst),
-        };
-        unsafe { physical_scalar_read(input, self.memory_host()); }
-    }
-
     fn load_raw_buffer(&mut self, scalar: Scalar, binding: usize, index: u32, word: u32) -> u32 {
         let input = PhysicalAccess {
-            page: self.page_inputs(PageSource::Dataset(self.buffers[binding]), index, Some(word), 0),
+            page: self.page_inputs(self.buffers[binding], index, Some(word), 0),
             scalar: scalar.into(), value: 0, value_type: 0,
         };
         unsafe { physical_scalar_read(input, self.memory_host()) }
-    }
-
-    fn store_paged(&mut self, value: Reg, source: PageSource, index: u32, word: u32, extra: u32) {
-        let input = PhysicalAccess {
-            page: self.page_inputs(source, index, Some(word), extra),
-            scalar: self.stage.registers[value].into(),
-            value: self.value(value),
-            value_type: 0,
-        };
-        unsafe { physical_scalar_write(input, self.memory_host()); }
-    }
-
-    fn store_buffer(&mut self, binding: usize, index: u32, word: u32, value: Reg) {
-        self.store_paged(value, PageSource::Dataset(self.buffers[binding]), index, word, 0);
     }
 
     fn ray(

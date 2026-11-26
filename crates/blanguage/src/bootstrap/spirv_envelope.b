@@ -1766,27 +1766,104 @@ ScalarWords block_calculation(View instruction, BlockValues values, Host ir) on 
         source, block_register(registers, instruction.c)), host);
 }
 
+PageInputs block_dataset_page(BlockPaging paging, usize binding) on cpu {
+    PageInputs input = paging.base;
+    input.descriptor = block_register(paging.descriptors, binding);
+    return input;
+}
+
+PageInputs block_view_page(PageInputs base, address registers, Span table, View stride, ScalarHost scalars) on cpu
+    requires nonzero(scalars.constant) {
+    PageInputs input = base;
+    usize low = unsafe_position<usize>(table.data);
+    usize high = unsafe_position<usize>(unsafe_address(address_bits(table.data) + u64(table.stride)));
+    input.low = block_register(registers, low);
+    input.high = block_register(registers, high);
+    input.stride = stride.tag == 0 ? scalars.constant(scalars.context, BuiltinScalar::U32, u64(u32(stride.a))) :
+        block_register(registers, unsafe_position<usize>(stride.first.data));
+    return input;
+}
+
+void block_physical_access(PageInputs page, usize reg, bool write, BlockValues values, MemoryHost memory) on cpu
+    requires nonzero(values.scalar)
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve)
+    requires nonzero(memory.pointer_type) requires nonzero(memory.finish_body) {
+    BuiltinScalar scalar = values.scalar(memory.scalars.context, reg);
+    u32 type_id = write ? 0 : memory.scalars.type_id(memory.scalars.context, scalar);
+    PhysicalAccess access = PhysicalAccess(page, scalar, block_register(values.registers, reg), type_id);
+    if (write) {
+        physical_scalar_write(access, memory);
+    } else {
+        physical_scalar_read(access, memory);
+    }
+}
+
+void block_append(View instruction, BlockValues values, BlockPaging paging, MemoryHost memory, StructuredHost control) on cpu
+    requires nonzero(values.scalar) requires nonzero(paging.current_label)
+    requires nonzero(control.reserve_words) requires nonzero(control.finish_words)
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve)
+    requires nonzero(memory.pointer_type) requires nonzero(memory.finish_body) {
+    ScalarHost scalars = memory.scalars;
+    address context = scalars.context;
+    u32 relaxed = scalars.constant(context, BuiltinScalar::U32, 0u64);
+    PageInputs count = block_dataset_page(paging, instruction.b);
+    count.index = relaxed;
+    count.word = u32(instruction.d);
+    count.has_word = 1;
+    u32 counter = locate_scalar(count, physical_shape(BuiltinScalar::U32), memory).pointer;
+    u32 device = scalars.constant(context, BuiltinScalar::U32, 1u64);
+    u32 subgroup = scalars.constant(context, BuiltinScalar::U32, 3u64);
+    u32 active = scalars.constant(context, BuiltinScalar::Bool, 1u64);
+    u32 capacity = scalars.constant(context, BuiltinScalar::U32, u64(2 + u32(instruction.c)));
+    u32 outer = paging.current_label(context);
+    u32 next = scalars.ids(context, 0);
+    AppendEmission input = AppendEmission(scalars.type_id(context, BuiltinScalar::U32),
+        scalars.type_id(context, BuiltinScalar::Bool), paging.ballot_type,
+        device, relaxed, subgroup, active, counter, values.push_pointer, values.push_block,
+        capacity, outer, block_register(values.registers, instruction.a), next);
+    AppendWords result = encode_append_reservation(input, scalars.reserve(context, 173u64, 0u64).body);
+    control.finish_words(control.context, ControlWords(result.words, result.write_label, 1));
+    scalars.ids(context, result.next - next);
+
+    PageInputs page = block_dataset_page(paging, instruction.c);
+    page.index = result.ticket;
+    page.has_word = 1;
+    usize field = 0u64;
+    while (field < instruction.first.count) {
+        address reg = unsafe_address(address_bits(instruction.first.data) + u64(field) * u64(instruction.first.stride));
+        address byte = unsafe_address(address_bits(instruction.second.data) + u64(field) * u64(instruction.second.stride));
+        page.word = unsafe_position<u32>(byte);
+        block_physical_access(page, unsafe_position<usize>(reg), true, values, memory);
+        field += 1u64;
+    }
+    control.finish_words(control.context, next_control_block(result.finish, result.finish, 1,
+        control.reserve_words(control.context, 4u64)));
+}
+
 extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     StructuredHost host, BlockHost emit) on cpu
     requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
     requires nonzero(emit.texture_sample) requires nonzero(emit.ray) requires nonzero(emit.atomic)
-    requires nonzero(emit.append) requires nonzero(emit.subgroup) requires nonzero(emit.barrier)
+    requires nonzero(emit.subgroup) requires nonzero(emit.barrier)
     requires nonzero(emit.publish) requires nonzero(emit.collective)
     requires nonzero(emit.tile_length) requires nonzero(emit.tile_lane)
     requires nonzero(emit.tile_load) requires nonzero(emit.tile_store)
-    requires nonzero(emit.view_load) requires nonzero(emit.indexed_load) requires nonzero(emit.indexed_store)
+    requires nonzero(emit.paging.pointer_type) requires nonzero(emit.paging.finish_body)
+    requires nonzero(emit.paging.current_label)
     requires nonzero(emit.values.scalar) requires nonzero(emit.values.binary) requires nonzero(emit.values.finish)
     requires nonzero(emit.values.scalars.constant) requires nonzero(emit.values.scalars.type_id)
     requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve)
     requires nonzero(emit.local_load) requires nonzero(emit.local_store)
     requires nonzero(emit.private_load) requires nonzero(emit.private_store)
-    requires nonzero(emit.load) requires nonzero(emit.store)
     requires nonzero(host.labels) requires nonzero(host.reserve_words) requires nonzero(host.finish_words)
     requires nonzero(host.block) requires nonzero(host.value) requires nonzero(host.begin_return)
     requires nonzero(host.normal_exit) requires nonzero(host.finish_return)
     requires nonzero(host.constant) requires nonzero(host.open_function) requires nonzero(host.close_function)
     requires nonzero(host.exit_targets) requires nonzero(host.record_return) {
     address context = host.context;
+    MemoryHost memory = MemoryHost(emit.values.scalars, emit.paging.pointer_type, emit.paging.finish_body);
     usize i = 0u64;
     while (i < code.count) {
         address instruction = unsafe_address(address_bits(code.data) + i * code.stride);
@@ -1805,7 +1882,7 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
         } else if (kind == OP_EXIT_VALUE) {
             return lower_function_exit(host) != 0 ? BlockFlow::Next : BlockFlow::Stop;
         } else if (kind == OP_APPEND) {
-            emit.append(context, instruction);
+            block_append(value, emit.values, emit.paging, memory, host);
         } else if (kind == OP_ATOMIC) {
             if (emit.atomic(context, instruction) == BlockFlow::Error) { return BlockFlow::Error; }
         } else if (kind == OP_TILE_BARRIER) {
@@ -1823,7 +1900,12 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
         } else if (kind == OP_SUBGROUP) {
             emit.subgroup(context, value.a, SubgroupOperation(u32(value.c)), value.first, value.second);
         } else if (kind == OP_VIEW_LOAD) {
-            emit.view_load(context, value.a, value.first.data, value.left.data, value.b, u32(value.c));
+            PageInputs page = block_view_page(emit.paging.base, emit.values.registers, value.first,
+                emit.ir.inspect(value.left), emit.values.scalars);
+            page.index = block_register(emit.values.registers, value.b);
+            page.word = u32(value.c);
+            page.has_word = 1;
+            block_physical_access(page, value.a, false, emit.values, memory);
         } else if (kind == OP_RAY_QUERY) {
             emit.ray(context, instruction);
         } else if (kind == OP_POSITION_ADDRESS || kind == OP_BUFFER_STRIDE) {
@@ -1833,16 +1915,27 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
             if (source.tag == INDEXED_POINTER) {
                 return emit.reject(context, BlockRejection::CpuAddress);
             }
-            if (kind == OP_LOAD_INDEXED) {
-                if (source.tag == INDEXED_TILE) {
-                    emit.tile_load(context, value.a, source.a, source.b, u32(value.c), value.b, 1);
+            bool write = kind == OP_STORE_INDEXED;
+            if (source.tag == INDEXED_TILE) {
+                if (write) {
+                    emit.tile_store(context, source.a, source.b, value.a, u32(value.c), value.b);
                 } else {
-                    emit.indexed_load(context, value.a, value.left.data, value.b, u32(value.c));
+                    emit.tile_load(context, value.a, source.a, source.b, u32(value.c), value.b, 1);
                 }
-            } else if (source.tag == INDEXED_TILE) {
-                emit.tile_store(context, source.a, source.b, value.a, u32(value.c), value.b);
             } else {
-                emit.indexed_store(context, value.left.data, value.a, u32(value.c), value.b);
+                address registers = emit.values.registers;
+                PageInputs page = emit.paging.base;
+                if (source.tag == INDEXED_DATA) {
+                    page = block_dataset_page(emit.paging, source.a);
+                    page.index = block_register(registers, source.b);
+                } else {
+                    page = block_view_page(page, registers, source.first, emit.ir.inspect(source.left), emit.values.scalars);
+                    page.index = block_register(registers, source.a);
+                }
+                page.word = u32(value.c);
+                page.has_word = 1;
+                page.extra = block_register(registers, write ? value.a : value.b);
+                block_physical_access(page, write ? value.b : value.a, write, emit.values, memory);
             }
         } else if (kind == OP_FUNCTION_ADDRESS) {
             return emit.reject(context, BlockRejection::CpuFunction);
@@ -1871,10 +1964,13 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
             emit.private_load(context, value.a, value.b, value.d, read_word(value.first.data, 0));
         } else if (kind == OP_STORE_LOCAL_INDEXED) {
             emit.private_store(context, value.d, value.a, value.c, read_word(value.first.data, 0));
-        } else if (kind == OP_LOAD) {
-            emit.load(context, value.a, value.b, value.c, u32(value.d));
-        } else if (kind == OP_STORE) {
-            emit.store(context, value.a, value.b, u32(value.c), value.d);
+        } else if (kind == OP_LOAD || kind == OP_STORE) {
+            bool write = kind == OP_STORE;
+            PageInputs page = block_dataset_page(emit.paging, write ? value.a : value.b);
+            page.index = block_register(emit.values.registers, write ? value.b : value.c);
+            page.word = u32(write ? value.c : value.d);
+            page.has_word = 1;
+            block_physical_access(page, write ? value.d : value.a, write, emit.values, memory);
         } else if (kind >= OP_UNARY && kind <= OP_SELECT_VALUE) {
             ScalarWords written = block_calculation(value, emit.values, emit.ir);
             if (kind == OP_MATH && written.body == 0u64) {
@@ -2098,7 +2194,7 @@ extern "C" u64 phi_two(address body, u64 at, u32 type, u32 result,
     return at + 7u64;
 }
 
-extern "C" AppendWords encode_append_reservation(AppendEmission input, address body) on cpu {
+AppendWords encode_append_reservation(AppendEmission input, address body) on cpu {
     u32 uint_type = input.uint_type;
     u32 bool_type = input.bool_type;
     u32 subgroup_scope = input.subgroup_scope;

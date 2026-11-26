@@ -240,7 +240,7 @@ impl Emitter<'_> {
         let semantics = self.constant(Scalar::U32, 0x108);
         let step = self.constant(Scalar::U64, 4);
         let source = self.page_input(Scalar::U32,
-            PageSource::Dataset(self.buffers[source_binding]), self.index, None, 0);
+            self.buffers[source_binding], self.index, None, 0);
         let input = SegmentGroup {
             merge, source, pass, target: self.buffers[values.target],
             summary,
@@ -285,7 +285,7 @@ impl Emitter<'_> {
         let width = self.constant(Scalar::U32, 64);
         let step = self.constant(Scalar::U64, 4);
         let merge = self.segment_merge_input(scan);
-        let target = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[fields.target]),
+        let target = self.page_input(Scalar::U32, self.buffers[fields.target],
             self.index, Some(0), 0);
         let input = SegmentAdd {
             merge,

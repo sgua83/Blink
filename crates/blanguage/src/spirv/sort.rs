@@ -32,10 +32,10 @@ impl Emitter<'_> {
     ) {
         let (word, scalar, order) = s.keys[key_index];
         let target = self.page_inputs(
-            PageSource::Dataset(self.buffers[s.target]), self.index, Some(0), 0,
+            self.buffers[s.target], self.index, Some(0), 0,
         );
         let source = self.page_inputs(
-            PageSource::Dataset(self.buffers[s.source]), self.index, Some(word), 0,
+            self.buffers[s.source], self.index, Some(word), 0,
         );
         let input = SortKeyInput {
             target, source, scalar: scalar.into(),
@@ -48,7 +48,7 @@ impl Emitter<'_> {
     pub(super) fn sort_gather(&mut self, s: &Sorting, active: u32) {
         let layout = self.record_copy_input(s.source, s.target);
         let indices = self.page_input(
-            Scalar::U32, PageSource::Dataset(self.buffers[self.program.buffers.len()]),
+            Scalar::U32, self.buffers[self.program.buffers.len()],
             self.index, Some(4), 0,
         );
         // Branch, one paged u32 index load and the original record copy.
@@ -71,7 +71,7 @@ impl Emitter<'_> {
         shared_pointer: u32,
     ) {
         let source = self.page_input(
-            Scalar::U32, PageSource::Dataset(self.buffers[s.source]), self.index, None, 0,
+            Scalar::U32, self.buffers[s.source], self.index, None, 0,
         );
         let totals = PageAddress { descriptor: self.buffers[self.program.buffers.len()], ..source };
         let target = PageAddress { descriptor: self.buffers[s.target], ..source };

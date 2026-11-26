@@ -68,7 +68,7 @@ impl Emitter<'_> {
             IndexedSource::Data { binding, index } => {
                 let offset = atomic.offset.map_or(0, |reg| self.value(reg));
                 let pointer = self.page_address(
-                    unit, PageSource::Dataset(self.buffers[binding]), self.value(index), atomic.word, offset,
+                    unit, self.buffers[binding], self.value(index), atomic.word, offset,
                 );
                 (pointer, 0)
             }

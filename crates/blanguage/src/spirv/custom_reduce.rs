@@ -341,7 +341,7 @@ impl Emitter<'_> {
         let mut identity = vec![0; words];
         let mut values = vec![0; summary.words(value_words.max(fields))];
         let input = CustomInput {
-            source: self.page_inputs(PageSource::Dataset(self.buffers[r.fields.source]), self.index, None, 0),
+            source: self.page_inputs(self.buffers[r.fields.source], self.index, None, 0),
             summary_descriptor,
             active,
             lane: local,
@@ -486,7 +486,7 @@ impl Emitter<'_> {
         let scope = self.constant(Scalar::U32, 2);
         let semantics = self.constant(Scalar::U32, 0x108);
         let zero = self.constant(Scalar::U32, 0);
-        let target = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[binding]),
+        let target = self.page_input(Scalar::U32, self.buffers[binding],
             self.index, Some(word), 0);
         let input = CustomSummaryRoot {
             target, mode, bool_type: self.types[&Scalar::Bool], zero, lane, active, length,
@@ -529,7 +529,7 @@ impl Emitter<'_> {
         self.custom_tree(r, kernel, local, shared, pointer, remaining, &own, true, summary)?;
         let step = if tail && words > 1 { self.constant(Scalar::U64, 4) } else { 0 };
         let (target, fields) = if tail {
-            let target = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[r.fields.target]),
+            let target = self.page_input(Scalar::U32, self.buffers[r.fields.target],
                 self.index, Some(0), 0);
             (target, Vec::new())
         } else {
@@ -626,7 +626,7 @@ impl Emitter<'_> {
         let step = self.constant(Scalar::U64, 4);
         let summary_descriptor = if single_group { 0 } else { self.buffers[self.program.buffers.len()] };
         let parent = self.page_input(Scalar::U32,
-            PageSource::Dataset(summary_descriptor), group, Some(0), 0);
+            summary_descriptor, group, Some(0), 0);
         let prefix = CustomSegmentPrefix { parent, bool_type, active, step };
         let mut workspace = vec![0; 2 * words];
         let body = self.body.len();
@@ -648,7 +648,7 @@ impl Emitter<'_> {
         let target_word = if r.fields.target_word == 0 { 0 }
             else { self.constant(Scalar::U32, r.fields.target_word) };
         let count_word = self.constant(Scalar::U32, reduction.count.word);
-        let source = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[r.fields.source]),
+        let source = self.page_input(Scalar::U32, self.buffers[r.fields.source],
             self.index, Some(reduction.head_word), 0);
         let output = CustomSegmentOutput {
             source, bool_type, length, from: self.current_label, end: open.end,
@@ -668,7 +668,7 @@ impl Emitter<'_> {
     }
     fn custom_result_target(&mut self, r: &CustomReduction, index: u32) -> (PageAddress, Vec<CollectiveField>) {
         let fields = self.collective_fields(&r.ty, None);
-        let target = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[r.fields.target]),
+        let target = self.page_input(Scalar::U32, self.buffers[r.fields.target],
             index, (r.fields.target_word != 0).then_some(r.fields.target_word), 0);
         (target, fields)
     }
@@ -705,7 +705,7 @@ impl Emitter<'_> {
         let (target, fields) = if root {
             self.custom_result_target(r, self.index)
         } else {
-            let target = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[r.fields.target]),
+            let target = self.page_input(Scalar::U32, self.buffers[r.fields.target],
                 self.index, Some(0), 0);
             (target, Vec::new())
         };

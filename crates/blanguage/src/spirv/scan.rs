@@ -219,7 +219,7 @@ impl Emitter<'_> {
         let source = if tail { self.scan_input_binding(r) } else { r.source };
         let root = !tail && matches!(self.stage.operation, Operation::ScanExclusive(_));
         let bias = (root && r.target_word != 0).then_some(r.target_word);
-        let target = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[r.target]),
+        let target = self.page_input(Scalar::U32, self.buffers[r.target],
             self.index, bias, 0);
         let normalize = !tail && (matches!(self.stage.operation, Operation::Compact(_))
             || self.stage.selection.is_some());
@@ -370,7 +370,7 @@ impl Emitter<'_> {
             Some(offset) => (self.buffers[self.program.buffers.len()], self.constant(Scalar::U32, offset)),
             None => (0, 0),
         };
-        let target = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[r.target]),
+        let target = self.page_input(Scalar::U32, self.buffers[r.target],
             self.index, (target_word != 0).then_some(target_word), 0);
         let input = ScanPrefix {
             target,

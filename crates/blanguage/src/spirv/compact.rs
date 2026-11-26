@@ -30,7 +30,7 @@ impl Emitter<'_> {
     ) -> ScatterInput {
         ScatterInput {
             flag: self.page_input(
-                Scalar::U32, PageSource::Dataset(self.buffers[flag]), self.index, Some(flag_word), 0,
+                Scalar::U32, self.buffers[flag], self.index, Some(flag_word), 0,
             ),
             count,
             active,

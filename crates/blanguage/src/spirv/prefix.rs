@@ -79,7 +79,7 @@ impl Emitter<'_> {
         });
         let input = DispatchArgumentInput {
             layout: self.dispatch_layout(),
-            prefix: self.page_inputs(PageSource::Dataset(descriptor), zero, word, 0),
+            prefix: self.page_inputs(descriptor, zero, word, 0),
             push: self.dispatch_push(zero),
             invocation, operation,
             selected: u32::from(self.stage.selection.is_some()),

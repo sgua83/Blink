@@ -181,7 +181,7 @@ impl Emitter<'_> {
         let width = self.constant(Scalar::U32, 64);
         let length_word = self.constant(Scalar::U32, 2 + r.target as u32);
         let bias = if r.target_word == 0 { 0 } else { self.constant(Scalar::U32, r.target_word) };
-        let target = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[r.target]),
+        let target = self.page_input(Scalar::U32, self.buffers[r.target],
             self.index, None, 0);
         ReductionWriteback {
             target, bool_type: self.types[&Scalar::Bool], push_pointer: self.ptr_push_u32,
