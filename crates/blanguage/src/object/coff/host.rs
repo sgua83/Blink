@@ -243,17 +243,14 @@ impl Groups {
             if physical.is_empty() {
                 continue;
             }
-            let mut associated = vec![Vec::new(); physical.len()];
-            for (local, &index) in physical.iter().enumerate() {
-                let section = raw[index].mapped - 1;
-                if let Some(owner) = self.positions[section].owner.checked_sub(1) {
-                    associated[self.positions[owner].local].push(local);
-                }
-            }
-            let sections = physical.iter().zip(&associated).map(|(&index, children)| {
+            let sections = physical.iter().map(|&index| {
                 let row = &raw[index];
-                CoffSectionView::extra(row_name(row), row_payload(row), row.flags as u32)
-                    .with_relocations(&self.relocations[row.mapped - 1], children)
+                let section = row.mapped - 1;
+                let mut view = CoffSectionView::extra(row_name(row), row_payload(row), row.flags as u32)
+                    .with_relocations(&self.relocations[section], &[]);
+                view.owner = self.positions[section].owner.checked_sub(1)
+                    .map_or(0, |owner| self.positions[owner].local as u64 + 1);
+                view
             });
             let extra_rows = if member == 0 { raw } else { &[] };
             let extra = extra_rows.iter().enumerate()
