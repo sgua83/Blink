@@ -781,6 +781,26 @@ extern "C" usize find_memory_call(WalkSlice calls, usize memory, u32 immediate,
 const u32 NON_MEMORY_USE = 0;
 const u32 CALL_MEMORY_USE = 2;
 
+bool belongs_to_memory_call(MemoryUseFacts use, usize target) on cpu {
+    return use.kind == CALL_MEMORY_USE && use.target == target;
+}
+
+extern "C" u32 any_call_memory_write(
+    WalkSlice uses, usize first, u32 related, address test,
+    cfn<MemoryUseFacts,address,usize> usage, cfn<u32,address,usize> overlaps
+) on cpu requires nonzero(usage) requires nonzero(overlaps)
+{
+    if (overlaps(test,first) != 0) { return 1; }
+    if (related == 0) { return 0; }
+    usize index = first + 1u64;
+    while (index < uses.count) {
+        if (!belongs_to_memory_call(usage(uses.data,index),first)) { break; }
+        if (overlaps(test,index) != 0) { return 1; }
+        index += 1u64;
+    }
+    return 0;
+}
+
 extern "C" usize next_memory_event(WalkSlice uses, WalkSlice calls, address cursor, MemoryEventHost host) on cpu
     requires nonzero(host.usage) requires nonzero(host.call)
 {
@@ -806,7 +826,7 @@ extern "C" usize next_memory_event(WalkSlice uses, WalkSlice calls, address curs
         } else if (event.kind == CALL_MEMORY_USE) {
             while (state.next_use < uses.count) {
                 MemoryUseFacts next = host.usage(uses.data,state.next_use);
-                if (next.kind != CALL_MEMORY_USE || next.target != event.target) { break; }
+                if (!belongs_to_memory_call(next,event.target)) { break; }
                 state.next_use += 1u64;
             }
         }

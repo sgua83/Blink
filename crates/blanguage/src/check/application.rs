@@ -460,16 +460,11 @@ impl ApplicationLoads<'_, '_> {
         }else if same_stride&&self.same(*index,*other_index){(u128::from(read_word),u128::from(offset)+written_word)}else{return true;};
         Self::byte_overlap(&(a..a+size),&(b..b+other_size))
     }
-    fn call_memory_writes(&self,call:&Call,mut writes:impl FnMut(&view::Borrow)->bool)->bool {
-        if let Some(usage)=call.memory_use {
-            // The first use owns additional memory effects. C typed positions
-            // remain in the original use group; Reference ABI writes separately
-            // describe their actual local slots and indexed bytes.
-            return match &self.0.view_model.uses[usage].requirement {
-                view::Requirement::Memory{borrow,access,..}if access.is_some_and(|access|access.writes())=>
-                    writes(&self.0.current_address_borrow(borrow)),
-                _=>false,
-            };
+    fn call_memory_writes(&self, call: &Call, related: bool, mut writes: impl FnMut(&view::Borrow) -> bool) -> bool {
+        if let Some(first) = call.memory_use {
+            return self.0.view_model.call_memory_writes(first, related, |borrow| {
+                writes(&self.0.current_address_borrow(borrow))
+            });
         }
         if call.arguments.iter().any(|arg|matches!(arg,CallArgument::Reference{access,..}if access.writes()))||call.memory.iter().any(|effect|effect.access.writes()){return true;}
         // Private completion and explicit transfers preserve payload values; storage and address lifetimes remain owned by Frame and the transfer checker.
@@ -482,7 +477,7 @@ impl ApplicationLoads<'_, '_> {
     fn writes_local(&self,inst:&Inst,slot:usize)->bool {
         if inst.local_writes().any(|written| written == slot){return true;}
         if let InstKind::Call(call)=&inst.kind {
-            return self.call_memory_writes(call,|borrow|self.0.address_write_positions(borrow).is_none_or(|positions|positions.iter().any(|written|owned_presence::Presence::selected(written,&Position::Local(slot))!=owned_presence::Presence::None)));
+            return self.call_memory_writes(call,false,|borrow|self.0.address_write_positions(borrow).is_none_or(|positions|positions.iter().any(|written|owned_presence::Presence::selected(written,&Position::Local(slot))!=owned_presence::Presence::None)));
         }
         match &inst.kind {
             InstKind::If{yes,no,..}=>yes.iter().chain(no).any(|inst|self.writes_local(inst,slot)),
@@ -511,7 +506,7 @@ impl ApplicationLoads<'_, '_> {
                     _=>false,
                 }){return true;}
                 let allocated=matches!(read,IndexedSource::View{address,..}if self.frame_root(*address).is_some_and(|root|self.allocated(root)));
-                self.call_memory_writes(call,|borrow|{
+                self.call_memory_writes(call,false,|borrow|{
                     if let CallTarget::Defined(name)=&call.target
                         && self.0.functions.writes_only_references(name) {
                         return call.memory.iter().any(|effect|effect.access.writes());
@@ -723,10 +718,7 @@ impl Builder<'_> {
                 InstKind::Call(call)=>{
                     let affected=|borrow:&view::Borrow|borrow.pending()||position.is_none_or(|position|address::MemoryEffect::of(borrow,Access::InOut,None).written_bytes(position,scalar,index)!=0);
                     position.is_some_and(|p|matches!(p,Position::Local(slot)if inst.local_writes().any(|written| written == *slot)))
-                        ||loads.call_memory_writes(call,affected)
-                        ||call.memory_use.is_some_and(|first|loads.0.view_model.uses.iter().skip(first+1)
-                            .take_while(|usage|matches!(&usage.requirement,view::Requirement::Memory{target:address::MemoryTarget::Call(at),..}if *at==first))
-                            .any(|usage|matches!(&usage.requirement,view::Requirement::Memory{borrow,access:Some(access),..}if access.writes()&&affected(&loads.0.current_address_borrow(borrow)))))
+                        ||loads.call_memory_writes(call,true,affected)
                 },
                 InstKind::Store{..}|InstKind::StoreIndexed{..}|InstKind::Atomic(_)|InstKind::Append(_)=>true,
                 _=>position.is_some_and(|p|matches!(p,Position::Local(slot)if inst.local_writes().any(|written| written == *slot))),

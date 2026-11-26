@@ -216,6 +216,11 @@ struct MemoryEventHost {
     cfn<MemoryCallFacts,address,usize> call;
 };
 
+extern "C" u32 any_call_memory_write(
+    WalkSlice uses, usize first, u32 related, address test,
+    cfn<MemoryUseFacts,address,usize> usage, cfn<u32,address,usize> overlaps
+) on cpu requires nonzero(usage) requires nonzero(overlaps);
+
 extern "C" usize next_memory_event(WalkSlice uses, WalkSlice calls, address cursor, MemoryEventHost host) on cpu
     requires nonzero(host.usage) requires nonzero(host.call);
 

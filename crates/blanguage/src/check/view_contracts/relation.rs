@@ -954,6 +954,41 @@ struct MemoryEventHost {
 unsafe extern "C" {
     #[link_name = "bootstrap.relation_order::next_memory_event"]
     fn next_memory_event(uses: WalkSlice, calls: WalkSlice, cursor: Slot, host: MemoryEventHost) -> usize;
+
+    #[link_name = "bootstrap.relation_order::any_call_memory_write"]
+    fn any_call_memory_write(
+        uses: WalkSlice, first: usize, related: u32, test: Slot,
+        usage: unsafe extern "C" fn(Borrowed, usize) -> MemoryUseFacts,
+        overlaps: unsafe extern "C" fn(Slot, usize) -> u32,
+    ) -> u32;
+}
+
+impl Function {
+    pub(in crate::check) fn call_memory_writes<F>(&self, first: usize, related: bool, overlaps: F) -> bool
+    where
+        F: FnMut(&Borrow) -> bool,
+    {
+        struct Query<'a, F> {
+            uses: &'a [Use],
+            overlaps: F,
+        }
+
+        unsafe extern "C" fn overlaps_at<F: FnMut(&Borrow) -> bool>(query: Slot, index: usize) -> u32 {
+            let query = unsafe { &mut *query.cast::<Query<'_, F>>() };
+            let writes = match &query.uses[index].requirement {
+                Requirement::Memory { borrow, access: Some(access), .. } if access.writes() =>
+                    (query.overlaps)(borrow),
+                _ => false,
+            };
+            u32::from(writes)
+        }
+
+        let mut query = Query { uses: &self.uses, overlaps };
+        unsafe {
+            any_call_memory_write(WalkSlice::of(&self.uses), first, u32::from(related),
+                ptr::from_mut(&mut query).cast(), memory_use_facts, overlaps_at::<F>) != 0
+        }
+    }
 }
 
 pub(super) fn memory_events(function: &Function) -> impl Iterator<Item = (usize, Option<&Call>, &[Use])> {
