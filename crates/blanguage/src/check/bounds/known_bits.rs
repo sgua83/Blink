@@ -1,7 +1,6 @@
 //! Numerical values cross synchronously; the original Proof owns every fact.
 use super::facts;
 use super::{Bits, Fact, Facts, IndexDomain, KnownBits, Scalar, ValueIdentity};
-use crate::builtin_types::ScalarEncoding;
 use crate::ir::scalar_ranges::{self, BitRange as Range};
 use std::{collections::btree_set, ffi::c_void, slice};
 
@@ -69,8 +68,8 @@ type Reader = unsafe extern "C" fn(*const c_void, usize) -> Range;
 unsafe extern "C" {
     #[link_name = "bootstrap.scalar_fold::known_cast_path"]
     fn cast_values(
-        source: ScalarEncoding,
-        targets: *const ScalarEncoding,
+        source: *const Scalar,
+        targets: *const Scalar,
         count: usize,
         first_required: usize,
         value: Pattern,
@@ -125,11 +124,10 @@ pub(super) fn cast_path<const N: usize>(
     first_required: usize,
 ) -> Option<KnownBits> {
     let target = targets[N - 1];
-    let encodings = targets.map(ScalarEncoding::from);
     present(target, unsafe {
         cast_values(
-            source.scalar.into(),
-            encodings.as_ptr(),
+            &source.scalar,
+            targets.as_ptr(),
             N,
             first_required,
             source.into(),

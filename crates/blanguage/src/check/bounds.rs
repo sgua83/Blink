@@ -458,77 +458,14 @@ fn map_domain(domain:IndexDomain, identity:&impl Fn(ValueIdentity)->ValueIdentit
         other => other,
     }
 }
-#[allow(dead_code)] // Returned by bootstrap.scalar_fold.
-#[repr(u32)]
-enum CommonRangeTypeDecision {
-    Drop,
-    Keep,
-    Rebind,
-}
-
-#[repr(C)]
-struct CommonRangeTypeResult {
-    decision: CommonRangeTypeDecision,
-    low: u32,
-    extended: u32,
-}
-
-unsafe extern "C" fn common_range_type(input: *const std::ffi::c_void, index: u32) -> crate::builtin_types::ScalarEncoding {
-    let path = unsafe { *input.cast::<&[Scalar]>() };
-    path[index as usize].into()
-}
-
 unsafe extern "C" {
-    #[link_name = "bootstrap.scalar_fold::common_range_cast_types"]
-    fn common_range_cast_types(
-        input: *const std::ffi::c_void,
-        count: u32,
-        get: unsafe extern "C" fn(*const std::ffi::c_void, u32) -> crate::builtin_types::ScalarEncoding,
-        low_width: u32,
-        extended_width: u32,
-    ) -> CommonRangeTypeResult;
+    #[link_name = "bootstrap.scalar_fold::cast_index_domain"]
+    fn cast_index_domain(domain: *mut IndexDomain, path: *const Scalar, count: usize) -> u32;
 }
 
-fn cast_domain<const N: usize>(domain: IndexDomain, path: [Scalar; N]) -> Option<IndexDomain> {
-    if let IndexDomain::CommonRange(id, base, low, extended, _) = domain {
-        let types = path.as_slice();
-        let result = unsafe {
-            common_range_cast_types(
-                std::ptr::from_ref(&types).cast(), N as u32, common_range_type,
-                low.bit_width(), extended.bit_width(),
-            )
-        };
-        return match result.decision {
-            CommonRangeTypeDecision::Drop => None,
-            CommonRangeTypeDecision::Keep => Some(domain),
-            CommonRangeTypeDecision::Rebind => {
-                let low = if result.low == 0 { low } else { path[result.low as usize - 1] };
-                let extended = if result.extended == 0 {
-                    extended
-                } else {
-                    match path[result.extended as usize - 1] {
-                        Scalar::I8 => Scalar::U8,
-                        Scalar::I16 => Scalar::U16,
-                        Scalar::I32 => Scalar::U32,
-                        Scalar::I64 => Scalar::U64,
-                        other => other,
-                    }
-                };
-                Some(IndexDomain::CommonRange(id, base, low, extended, path[N - 1]))
-            }
-        };
-    }
-    if let IndexDomain::KnownBits(scalar, mask, value) = domain {
-        if !path.into_iter().all(Scalar::is_integer) { return None; }
-        // The first target normalizes the incoming representation before the first edge.
-        return known_bits::cast_path(KnownBits { scalar, mask, value }, path, 1).map(KnownBits::domain);
-    }
-    path.windows(2).all(|edge| {
-        let (source, target) = (edge[0], edge[1]);
-        source == target && common_range_domain(domain)
-            || source.is_integer() && target.is_integer() && !source.is_signed() && !target.is_signed()
-                && target.size() > source.size()
-    }).then_some(domain)
+fn cast_domain<const N: usize>(mut domain: IndexDomain, path: [Scalar; N]) -> Option<IndexDomain> {
+    let retained = unsafe { cast_index_domain(&mut domain, path.as_ptr(), N) };
+    (retained != 0).then_some(domain)
 }
 
 fn numeric_domain(domain: &IndexDomain) -> bool {
@@ -3824,18 +3761,6 @@ pub(super) fn proof_scope(path: &Clause, env: &BTreeMap<String, Binding>) -> imp
             }
         }
         proof
-    }
-}
-
-fn common_range_domain(domain: IndexDomain) -> bool {
-    match domain {
-        IndexDomain::Data(_) | IndexDomain::Fixed(_) | IndexDomain::Tile
-        | IndexDomain::View(_) | IndexDomain::ApplicationData(_)
-        | IndexDomain::Upper(..) | IndexDomain::Lower(..) | IndexDomain::Room(_)
-        | IndexDomain::Shifted(..) | IndexDomain::CommonRange(..) | IndexDomain::KnownBits(..) | IndexDomain::Floating(..) => true,
-        IndexDomain::DataLength(_) | IndexDomain::TileLength | IndexDomain::ViewLength(_)
-        | IndexDomain::ApplicationLength(_) | IndexDomain::Sum(..) | IndexDomain::Offset(..)
-        | IndexDomain::Computed(_) => false,
     }
 }
 

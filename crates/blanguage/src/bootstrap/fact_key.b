@@ -130,6 +130,31 @@ extern "C" i32 order_floating(address left, address right) on cpu {
     return bounds != 0 ? bounds : bytes(field(left,72u64),field(right,72u64),2u64);
 }
 
+// The original native key owns the scalar bytes and both fixed-bit words.
+extern "C" DomainCastView inspect_domain_cast(address domain) on cpu {
+    DomainKind kind = unsafe_position<DomainKind>(domain);
+    if (kind == DomainKind::CommonRange) {
+        return DomainCastView(kind, field(domain,41u64), field(domain,42u64), 0u64, 0u64);
+    }
+    if (kind == DomainKind::KnownBits) {
+        return DomainCastView(kind, field(domain,4u64), address(),
+            unsafe_position<u64>(field(domain,8u64)), unsafe_position<u64>(field(domain,16u64)));
+    }
+    return DomainCastView(kind, address(), address(), 0u64, 0u64);
+}
+
+extern "C" void write_common_range_cast(address domain, u8 low, u8 extended, u8 target) on cpu {
+    unsafe_position<u8>(field(domain,41u64)) = low;
+    unsafe_position<u8>(field(domain,42u64)) = extended;
+    unsafe_position<u8>(field(domain,43u64)) = target;
+}
+
+extern "C" void write_known_bits_cast(address domain, u8 target, u64 mask, u64 value) on cpu {
+    unsafe_position<u8>(field(domain,4u64)) = target;
+    unsafe_position<u64>(field(domain,8u64)) = mask;
+    unsafe_position<u64>(field(domain,16u64)) = value;
+}
+
 extern "C" i32 order_domain(address left, address right) on cpu {
     u32 a = unsafe_position<u32>(left);
     u32 b = unsafe_position<u32>(right);

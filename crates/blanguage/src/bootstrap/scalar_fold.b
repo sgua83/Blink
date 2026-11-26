@@ -297,47 +297,91 @@ u64 cast_to_float(ScalarEncoding source, u32 width, u64 bits) on cpu {
     return u64(bitcast_u32(f32(bits)));
 }
 
-extern "C" CommonRangeTypeResult common_range_cast_types(address input,u32 count,
-    cfn<ScalarEncoding,address,u32> get,u32 initial_low_width,u32 initial_extended_width) on cpu requires nonzero(get) {
-    ScalarEncoding source=get(input,0);
-    u32 at=1;
-    if(source.kind==ScalarKind::Float || source.kind==ScalarKind::Boolean){
-        while(at<count){
-            ScalarEncoding target=get(input,at);
-            if(source.kind!=target.kind || source.width!=target.width){
-                return CommonRangeTypeResult(CommonRangeTypeDecision::Drop,0,0);
-            }
-            at+=1;
+address cast_path_scalar(address path, u64 index) on cpu {
+    return unsafe_address(address_bits(path) + index);
+}
+
+u8 unsigned_cast_scalar(address scalar) on cpu {
+    ScalarTag tag = fact_scalar_tag(scalar);
+    if (tag == ScalarTag::I8) { return u8(u32(ScalarTag::U8)); }
+    if (tag == ScalarTag::I16) { return u8(u32(ScalarTag::U16)); }
+    if (tag == ScalarTag::I32) { return u8(u32(ScalarTag::U32)); }
+    if (tag == ScalarTag::I64) { return u8(u32(ScalarTag::U64)); }
+    return unsafe_position<u8>(scalar);
+}
+
+bool cast_common_range(address domain, DomainCastView view, address path, u64 count) on cpu {
+    FactScalarView source = inspect_fact_scalar(path);
+    u64 at = 1u64;
+    if (source.kind > 1) {
+        while (at < count) {
+            if (unsafe_position<u8>(path) != unsafe_position<u8>(cast_path_scalar(path, at))) { return false; }
+            at += 1u64;
         }
-        return CommonRangeTypeResult(CommonRangeTypeDecision::Keep,0,0);
+        return true;
     }
 
-    u32 low_width=initial_low_width;
-    u32 extended_width=initial_extended_width;
-    u32 low=0;
-    u32 extended=0;
-    while(at<count){
-        ScalarEncoding target=get(input,at);
-        if(target.kind==ScalarKind::Float || target.kind==ScalarKind::Boolean){
-            return CommonRangeTypeResult(CommonRangeTypeDecision::Drop,0,0);
+    u32 low_width = inspect_fact_scalar(view.low).width;
+    u32 extended_width = inspect_fact_scalar(view.extended).width;
+    u8 low = unsafe_position<u8>(view.low);
+    u8 extended = unsafe_position<u8>(view.extended);
+    while (at < count) {
+        address target_scalar = cast_path_scalar(path, at);
+        FactScalarView target = inspect_fact_scalar(target_scalar);
+        if (target.kind > 1) { return false; }
+        if (target.width <= low_width) {
+            low = unsafe_position<u8>(target_scalar);
+            low_width = target.width;
+            extended = unsigned_cast_scalar(target_scalar);
+            extended_width = target.width;
+        } else if (target.width < extended_width) {
+            extended = unsigned_cast_scalar(target_scalar);
+            extended_width = target.width;
+        } else if (source.kind == 1 && source.width == extended_width) {
+            if (source.width == low_width) {
+                low = unsafe_position<u8>(cast_path_scalar(path, at - 1u64));
+                low_width = source.width;
+            }
+            extended = unsigned_cast_scalar(target_scalar);
+            extended_width = target.width;
         }
-        if(target.width<=low_width){
-            low=at+1;
-            low_width=target.width;
-            extended=at+1;
-            extended_width=target.width;
-        }else if(target.width<extended_width){
-            extended=at+1;
-            extended_width=target.width;
-        }else if(source.kind==ScalarKind::Signed && source.width==extended_width){
-            if(source.width==low_width){low=at;low_width=source.width;}
-            extended=at+1;
-            extended_width=target.width;
-        }
-        source=target;
-        at+=1;
+        source = target;
+        at += 1u64;
     }
-    return CommonRangeTypeResult(CommonRangeTypeDecision::Rebind,low,extended);
+    write_common_range_cast(domain, low, extended, unsafe_position<u8>(cast_path_scalar(path, count - 1u64)));
+    return true;
+}
+
+bool cast_domain_keeps_identity(DomainKind kind) on cpu {
+    return kind == DomainKind::Data || kind == DomainKind::Fixed || kind == DomainKind::Tile
+        || kind == DomainKind::View || kind == DomainKind::ApplicationData || kind == DomainKind::Upper
+        || kind == DomainKind::Lower || kind == DomainKind::Room || kind == DomainKind::Shifted
+        || kind == DomainKind::Floating;
+}
+
+extern "C" bool cast_index_domain(address domain, address path, u64 count) on cpu {
+    DomainCastView view = inspect_domain_cast(domain);
+    if (view.kind == DomainKind::CommonRange) { return cast_common_range(domain, view, path, count); }
+    if (view.kind == DomainKind::KnownBits) {
+        // The first target normalizes the original bit pattern before the first cast edge.
+        BitPattern pattern = known_cast_path(view.low, path, count, 1u64, BitPattern(view.mask, view.value));
+        if (pattern.mask == 0u64) { return false; }
+        write_known_bits_cast(domain, unsafe_position<u8>(cast_path_scalar(path, count - 1u64)), pattern.mask, pattern.value);
+        return true;
+    }
+
+    bool keep_identity = cast_domain_keeps_identity(view.kind);
+    FactScalarView source = inspect_fact_scalar(path);
+    u64 at = 1u64;
+    while (at < count) {
+        FactScalarView target = inspect_fact_scalar(cast_path_scalar(path, at));
+        bool same = keep_identity && source.kind == target.kind && source.width == target.width;
+        bool widened = source.kind == 0 && target.kind == 0 && target.width > source.width;
+        if (!same && !widened) { return false; }
+        source = target;
+        at += 1u64;
+    }
+    return true;
 }
 
 extern "C" FoldedCast cast(ScalarEncoding source, ScalarEncoding target, u64 bits) on cpu {
@@ -883,23 +927,18 @@ BitPattern known_cast(u64 source_mask,u64 source_sign,u64 target_mask,BitPattern
   else if((value.mask&source_sign)!=0u64){mask|=extra;if((value.value&source_sign)!=0u64){bits|=extra;}}
  }return BitPattern(mask,bits);
 }
-extern "C" BitPattern known_cast_path(ScalarEncoding source,address targets,u64 count,
-    u64 first_required,BitPattern value) on cpu {
-    ScalarEncoding current=source;
-    BitPattern pattern=value;
-    u64 source_mask=truncate(18446744073709551615u64,source.width);
-    u64 at=0u64;
-    while(at<count){
-        address slot=unsafe_address(address_bits(targets)+at*size_of<ScalarEncoding>());
-        ScalarEncoding target=unsafe_position<ScalarEncoding>(slot);
-        u64 target_mask=truncate(18446744073709551615u64,target.width);
-        u64 source_sign=0u64;
-        if(current.kind==ScalarKind::Signed){source_sign=1u64<<u64(current.width-1);}
-        pattern=known_cast(source_mask,source_sign,target_mask,pattern);
-        if(at>=first_required && pattern.mask==0u64){return pattern;}
-        current=target;
-        source_mask=target_mask;
-        at+=1u64;
+extern "C" BitPattern known_cast_path(address source, address targets, u64 count,
+    u64 first_required, BitPattern value) on cpu {
+    FactScalarView current = inspect_fact_scalar(source);
+    BitPattern pattern = value;
+    u64 at = 0u64;
+    while (at < count) {
+        FactScalarView target = inspect_fact_scalar(cast_path_scalar(targets, at));
+        if (target.kind > 1) { return BitPattern(0u64, 0u64); }
+        pattern = known_cast(current.mask, current.bias, target.mask, pattern);
+        if (at >= first_required && pattern.mask == 0u64) { return pattern; }
+        current = target;
+        at += 1u64;
     }
     return pattern;
 }

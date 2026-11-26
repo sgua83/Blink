@@ -28,14 +28,7 @@ struct ScalarEncoding {
     u32 width;
 };
 
-enum CommonRangeTypeDecision:u32 { Drop=0; Keep=1; Rebind=2; };
-struct CommonRangeTypeResult {
-    CommonRangeTypeDecision decision;
-    u32 low;
-    u32 extended;
-};
-extern "C" CommonRangeTypeResult common_range_cast_types(address input,u32 count,
-    cfn<ScalarEncoding,address,u32> get,u32 initial_low_width,u32 initial_extended_width) on cpu requires nonzero(get);
+extern "C" bool cast_index_domain(address domain, address path, u64 count) on cpu;
 
 struct FoldedCast {
     u64 bits;
@@ -101,7 +94,7 @@ enum IntegerBitwise : u32 { And = 0; Or = 1; Xor = 2; };
 // Inputs are the original integer Scalar width/bias and ordered intervals.
 extern "C" BitRange integer_bitwise_range(IntegerBitwise operation,u32 width,u64 order_bias,BitRange left,BitRange right) on cpu;
 
-extern "C" BitPattern known_cast_path(ScalarEncoding source,address targets,u64 count,
+extern "C" BitPattern known_cast_path(address source,address targets,u64 count,
     u64 first_required,BitPattern value) on cpu;
 extern "C" BitPattern known_common(u64 target_mask,BitPattern a,u64 bm,u64 sign_b,BitPattern b) on cpu;
 extern "C" BitPattern known_bitwise(IntegerBitwise operation,BitPattern a,BitPattern b) on cpu;

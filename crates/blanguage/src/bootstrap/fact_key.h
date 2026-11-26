@@ -31,6 +31,11 @@ IdentityKey make_key_identity(NumericIdentity source) on cpu;
 OperandKey make_key_operand(NumericOperand source) on cpu;
 PredicateKey make_key_predicate(NumericPredicate source) on cpu;
 
+struct DomainCastView { DomainKind kind; address low; address extended; u64 mask; u64 value; };
+extern "C" DomainCastView inspect_domain_cast(address domain) on cpu;
+extern "C" void write_common_range_cast(address domain, u8 low, u8 extended, u8 target) on cpu;
+extern "C" void write_known_bits_cast(address domain, u8 target, u64 mask, u64 value) on cpu;
+
 struct FactScalarView { u32 kind; u32 width; u64 mask; u64 bias; };
 extern "C" ScalarTag fact_scalar_tag(address scalar) on cpu;
 extern "C" FactScalarView inspect_fact_scalar(address scalar) on cpu;
