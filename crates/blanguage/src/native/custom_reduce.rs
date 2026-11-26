@@ -327,14 +327,9 @@ pub(super) fn emit(
     if plan.apply != 0 {
         stage.code.truncate(kernel.invariant_end);
     }
-    let arguments: std::collections::BTreeMap<_, _> = kernel.right.iter().copied()
-        .zip(kernel.projected.iter().copied()).collect();
-    crate::optimize::map(&mut combine, crate::ir::rewrite::Remap::Bindings(&arguments));
-    for value in &mut kernel.result {
-        if let Some(&projected) = arguments.get(value) {
-            *value = projected;
-        }
-    }
+    crate::ir::rewrite::bind_reduction_arguments(
+        &mut combine, &mut kernel.result, &kernel.right, &kernel.projected, stage.registers.len(),
+    );
 
     let input = RangeInput {
         pass, has_head, head_word: head_word.unwrap_or_default(), counted: u32::from(counted),

@@ -61,42 +61,32 @@ impl View {
 #[repr(C)]
 pub(crate) struct Host { inspect: unsafe extern "C" fn(Node) -> View }
 pub(crate) const HOST: Host = Host { inspect };
-#[repr(C)]
-struct Mapping {
-    context: *const c_void,
-    reg: *const c_void,
-    slot: *const c_void,
+unsafe extern "C" {
+    #[link_name = "bootstrap.ir_dataflow::bind_reduction_arguments"]
+    fn bind_arguments(
+        code: Span,
+        result: Span,
+        right: super::dataflow::Span,
+        projected: super::dataflow::Span,
+        registers: *mut Reg,
+        host: Host,
+    );
 }
-// These are the actual immutable mapping materials held by the producers.
-// They cannot contain a user callback or an interior-mutable mapping policy.
-pub(crate) enum Remap<'a> {
-    Offset { registers: usize, locals: usize },
-    Compact { registers: &'a [usize], locals: &'a [usize] },
-    Bindings(&'a BTreeMap<Reg, Reg>),
-}
-unsafe extern "C-unwind" {
-    #[link_name = "bootstrap.ir_dataflow::rewrite_code"]
-    fn b_code(code: Span, host: Host, mapping: Mapping);
-}
-unsafe extern "C-unwind" fn register(context: *const c_void, value: usize) -> usize {
-    match unsafe { &*context.cast::<Remap<'_>>() } {
-        Remap::Offset { registers, .. } => value + registers,
-        Remap::Compact { registers, .. } => registers[value] - 1,
-        Remap::Bindings(values) => values.get(&value).copied().unwrap_or(value),
+
+pub(crate) fn bind_reduction_arguments(
+    code: &mut [Inst], result: &mut [Reg], right: &[Reg], projected: &[Reg], register_count: usize,
+) {
+    let mut registers = vec![0; register_count];
+    // B borrows the original roots, writes code and result, and releases all
+    // views before returning. The index has one entry per kernel register.
+    unsafe {
+        bind_arguments(
+            Span::slice(code), Span::slice(result), super::dataflow::Span::slice(right),
+            super::dataflow::Span::slice(projected), registers.as_mut_ptr(), HOST,
+        );
     }
 }
-unsafe extern "C-unwind" fn local(context: *const c_void, value: usize) -> usize {
-    match unsafe { &*context.cast::<Remap<'_>>() } {
-        Remap::Offset { locals, .. } => value + locals,
-        Remap::Compact { locals, .. } => locals[value] - 1,
-        Remap::Bindings(_) => value,
-    }
-}
-pub(crate) fn map(code: &mut [Inst], mapping: Remap<'_>) {
-    unsafe { b_code(Span::slice(code), HOST, Mapping {
-        context: ptr::from_ref(&mapping).cast(), reg: register as *const c_void, slot: local as *const c_void,
-    }); }
-}
+
 fn optional(value: &mut Option<usize>) -> *mut usize {
     value.as_mut().map_or(ptr::null_mut(), ptr::from_mut)
 }

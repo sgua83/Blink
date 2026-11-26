@@ -1,6 +1,6 @@
 //! B owns complete slot compaction; Rust retains the original typed owners.
 use crate::ir::*;
-use std::{collections::{btree_map, BTreeMap}, ffi::c_void, mem::size_of, slice};
+use std::{collections::{btree_map, BTreeMap}, ffi::c_void, mem::size_of};
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -23,13 +23,11 @@ struct Host {
     next: unsafe extern "C" fn(*mut State) -> Declaration,
     whole: unsafe extern "C" fn(*mut State, usize),
     scalar: unsafe extern "C" fn(*mut State, usize, usize),
-    rewrite: unsafe extern "C" fn(*mut State),
+    rewrite: crate::ir::rewrite::Host,
 }
 struct State {
     declarations: btree_map::IntoIter<usize, Ty>, current: Option<(usize, Ty)>,
-    locals: *mut BTreeMap<usize, Ty>, code: *mut Inst, code_count: usize,
-    registers: *const usize, register_count: usize,
-    slots: *const usize, slot_count: usize,
+    locals: *mut BTreeMap<usize, Ty>,
 }
 unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::compact_slots"]
@@ -54,13 +52,6 @@ unsafe extern "C" fn scalar(context: *mut State, index: usize, end: usize) {
     let scalar = ty.components[index].0;
     unsafe { (&mut *state.locals).insert(end, Ty::scalar(scalar)); }
 }
-unsafe extern "C" fn rewrite(context: *mut State) {
-    let state = unsafe { &*context };
-    let registers = unsafe { slice::from_raw_parts(state.registers, state.register_count) };
-    let locals = unsafe { slice::from_raw_parts(state.slots, state.slot_count) };
-    crate::ir::rewrite::map(unsafe { slice::from_raw_parts_mut(state.code, state.code_count) },
-        crate::ir::rewrite::Remap::Compact { registers, locals });
-}
 pub(super) fn run(code: &mut [Inst], registers: &mut Vec<Scalar>,
     locals: &mut BTreeMap<usize, Ty>, inputs: &mut [Reg], outputs: &mut [Reg]) {
     let mut register_map = vec![0; registers.len()];
@@ -69,9 +60,7 @@ pub(super) fn run(code: &mut [Inst], registers: &mut Vec<Scalar>,
     let code = code.as_mut_ptr();
     let mut state = State {
         declarations: std::mem::take(locals).into_iter(), current: None,
-        locals, code, code_count,
-        registers: register_map.as_ptr(), register_count: register_map.len(),
-        slots: local_map.as_ptr(), slot_count: local_map.len(),
+        locals,
     };
     let input = Input {
         code: Span { data: code.cast(), count: code_count, stride: size_of::<Inst>() },
@@ -84,7 +73,7 @@ pub(super) fn run(code: &mut [Inst], registers: &mut Vec<Scalar>,
     // in-place move; the original Vec is resized after the last B consumer.
     let kept = unsafe { compact(input, Host {
         ir: crate::ir::dataflow::HOST, context: &mut state,
-        next, whole, scalar, rewrite,
+        next, whole, scalar, rewrite: crate::ir::rewrite::HOST,
     }) };
     unsafe { registers.set_len(kept); }
 }

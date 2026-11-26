@@ -151,6 +151,15 @@ extern "C" Word next_local(inout Locals state,Host host) on cpu requires nonzero
 // indices. The two zeroed maps have one word per original register/local slot.
 // A declaration is owned by the host iterator until B moves it whole or emits
 // its selected scalar components; next releases the last original declaration.
+// Exclusive, synchronous projections of the same original IR storage.
+struct RewriteNode { address data; u32 kind; };
+struct RewriteSpan { address data; usize count; usize stride; };
+struct RewriteView {
+ u32 tag; address a; address b; address c; address d;
+ RewriteSpan first; RewriteSpan second; RewriteSpan third;
+ RewriteNode left; RewriteNode right; usize length;
+};
+struct RewriteHost { cfn<RewriteView,RewriteNode> ensures memory(read) inspect; };
 struct CompactInput {
  Span code; Span registers; Span inputs; Span outputs;
  address register_map; address local_map; usize local_count;
@@ -161,11 +170,11 @@ struct CompactHost {
  cfn<CompactDecl,address> next;
  cfn<void,address,usize> whole;
  cfn<void,address,usize,usize> scalar;
- cfn<void,address> rewrite;
+ RewriteHost rewrite;
 };
 extern "C" usize compact_slots(CompactInput input,CompactHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.next)
- requires nonzero(host.whole) requires nonzero(host.scalar) requires nonzero(host.rewrite);
+ requires nonzero(host.whole) requires nonzero(host.scalar) requires nonzero(host.rewrite.inspect);
 
 
 // One fresh ReductionKernel, built directly from the three real value bodies.
@@ -176,8 +185,8 @@ struct ReductionHeader { usize registers; usize locals; };
 struct ReductionHost {
  Host ir; address context;
  cfn<ReductionHeader,address> ensures memory(read) header;
- cfn<void,address,usize,Node,usize> clone;
- cfn<void,address,usize,usize,usize> remap;
+ cfn<RewriteSpan,address,usize,Node,usize> clone;
+ RewriteHost rewrite;
  cfn<void,address,usize,usize> push_root;
  cfn<usize,address,usize> part_len;
  cfn<address,usize> alloc_uniform;
@@ -193,7 +202,7 @@ struct ReductionHost {
 
 extern "C" void reduction_prefix_definitions(Span code,Host ir,address definitions) on cpu
  requires nonzero(ir.inspect);
-extern "C" void reduction_kernel(ReductionInput input,ReductionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.header) requires nonzero(host.clone) requires nonzero(host.remap) requires nonzero(host.push_root) requires nonzero(host.part_len) requires nonzero(host.alloc_uniform) requires nonzero(host.release_uniform) requires nonzero(host.open_part) requires nonzero(host.hoist) requires nonzero(host.move_instruction) requires nonzero(host.close_part) requires nonzero(host.value_flow) requires nonzero(host.boundaries) requires nonzero(host.append);
+extern "C" void reduction_kernel(ReductionInput input,ReductionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.header) requires nonzero(host.clone) requires nonzero(host.rewrite.inspect) requires nonzero(host.push_root) requires nonzero(host.part_len) requires nonzero(host.alloc_uniform) requires nonzero(host.release_uniform) requires nonzero(host.open_part) requires nonzero(host.hoist) requires nonzero(host.move_instruction) requires nonzero(host.close_part) requires nonzero(host.value_flow) requires nonzero(host.boundaries) requires nonzero(host.append);
 
 // Complete Select control borrows one original Stage. Scratch is overwritten
 // before every plan; output rows live only until that branch is emitted.
@@ -229,17 +238,8 @@ struct PipelineStage {
  usize domain; PipelineField prefix; PipelineField selection;
  u32 operation; u32 boundary;
 };
-// Exclusive, synchronous projections of the same original IR storage.
-struct RewriteNode { address data; u32 kind; };
-struct RewriteSpan { address data; usize count; usize stride; };
-struct RewriteView {
- u32 tag; address a; address b; address c; address d;
- RewriteSpan first; RewriteSpan second; RewriteSpan third;
- RewriteNode left; RewriteNode right; usize length;
-};
-struct RewriteHost { cfn<RewriteView,RewriteNode> ensures memory(read) inspect; };
-struct FusionOffsets { usize registers; usize locals; };
-struct FusionLayout { RewriteSpan code; FusionOffsets offsets; };
+struct RewriteOffsets { usize registers; usize locals; };
+struct FusionLayout { RewriteSpan code; RewriteOffsets offsets; };
 struct PipelineFusion {
  Host ir; address context;
  cfn<address,address,usize> at;
@@ -313,14 +313,9 @@ extern "C" PipelineAccessCounts optimize_bindings(PipelineMap input,Host ir,Pipe
 
 extern "C" PipelineRootEdit optimize_root(address instruction,u32 preserve_scope,PipelineRead host,RewriteHost rewrite) on cpu
  requires nonzero(host.contains) requires nonzero(host.scalar_bytes) requires nonzero(rewrite.inspect);
-struct RewriteMap {
- address context;
- cfn<usize,address,usize> reg;
- cfn<usize,address,usize> slot;
-};
 struct RewriteInputMap { address context; cfn<usize,address,usize> reg; };
-extern "C" void rewrite_code(RewriteSpan code,RewriteHost host,RewriteMap mapping) on cpu
- requires nonzero(host.inspect) requires nonzero(mapping.reg) requires nonzero(mapping.slot);
+extern "C" void bind_reduction_arguments(RewriteSpan code,RewriteSpan result,Span right,Span projected,
+ address registers,RewriteHost host) on cpu requires nonzero(host.inspect);
 extern "C" void rewrite_operands(RewriteNode source,RewriteHost host,RewriteInputMap mapping) on cpu
  requires nonzero(host.inspect) requires nonzero(mapping.reg);
 

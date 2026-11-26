@@ -666,7 +666,7 @@ usize compact_registers(Span values,address marks) on cpu {
 }
 extern "C" usize compact_slots(CompactInput input,CompactHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.next)
- requires nonzero(host.whole) requires nonzero(host.scalar) requires nonzero(host.rewrite) {
+ requires nonzero(host.whole) requires nonzero(host.scalar) requires nonzero(host.rewrite.inspect) {
  compact_roots(input.inputs,input.register_map,0);compact_roots(input.outputs,input.register_map,0);
  compact_marks(input.code,input.register_map,input.local_map,host.ir);
  number_used_slots(input.register_map,u64(input.registers.count));
@@ -689,7 +689,8 @@ extern "C" usize compact_slots(CompactInput input,CompactHost host) on cpu
   }
  }
  // No read-only instruction view or original local declaration remains live.
- host.rewrite(host.context);
+ rewrite_compact(RewriteSpan(input.code.data,input.code.count,input.code.stride),host.rewrite,
+  input.register_map,input.local_map);
  compact_roots(input.inputs,input.register_map,1);compact_roots(input.outputs,input.register_map,1);
  return kept;
 }
@@ -754,7 +755,7 @@ extern "C" void reduction_prefix_definitions(Span code,Host ir,address definitio
  }
 }
 
-extern "C" void reduction_kernel(ReductionInput input,ReductionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.header) requires nonzero(host.clone) requires nonzero(host.remap) requires nonzero(host.push_root) requires nonzero(host.part_len) requires nonzero(host.alloc_uniform) requires nonzero(host.release_uniform) requires nonzero(host.open_part) requires nonzero(host.hoist) requires nonzero(host.move_instruction) requires nonzero(host.close_part) requires nonzero(host.value_flow) requires nonzero(host.boundaries) requires nonzero(host.append) {
+extern "C" void reduction_kernel(ReductionInput input,ReductionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.header) requires nonzero(host.clone) requires nonzero(host.rewrite.inspect) requires nonzero(host.push_root) requires nonzero(host.part_len) requires nonzero(host.alloc_uniform) requires nonzero(host.release_uniform) requires nonzero(host.open_part) requires nonzero(host.hoist) requires nonzero(host.move_instruction) requires nonzero(host.close_part) requires nonzero(host.value_flow) requires nonzero(host.boundaries) requires nonzero(host.append) {
  View source=host.ir.inspect(input.source);
  if(input.identity!=0){
   host.clone(host.context,1u64,source.left,0u64);
@@ -764,15 +765,15 @@ extern "C" void reduction_kernel(ReductionInput input,ReductionHost host) on cpu
  bool project=input.project!=0&&source.first.count!=0u64;
  if(project){
   Node value=node_at(source.first,0u64,22);ReductionHeader base=host.header(host.context);
-  host.clone(host.context,2u64,value,base.locals);
-  host.remap(host.context,2u64,base.registers,base.locals);
+  RewriteSpan part=host.clone(host.context,2u64,value,base.locals);
+  rewrite_offsets(part,host.rewrite,RewriteOffsets(base.registers,base.locals));
   View code=host.ir.inspect(value);
   reduction_copy_roots(host.ir.inspect(code.left).first,base.registers,0u64,host);
   reduction_copy_roots(host.ir.inspect(code.right).first,base.registers,1u64,host);
  }
  ReductionHeader base=host.header(host.context);
- host.clone(host.context,3u64,source.right,base.locals);
- host.remap(host.context,3u64,base.registers,base.locals);
+ RewriteSpan part=host.clone(host.context,3u64,source.right,base.locals);
+ rewrite_offsets(part,host.rewrite,RewriteOffsets(base.registers,base.locals));
  View combine=host.ir.inspect(source.right);Span inputs=host.ir.inspect(combine.left).first;
  usize index=0u64;
  while(index<inputs.count){
@@ -986,12 +987,6 @@ bool pipeline_fusible(PipelineStage left,PipelineStage right,Host host) on cpu r
   &&pipeline_same_field(left.prefix,right.prefix)&&pipeline_same_field(left.selection,right.selection)
   &&!pipeline_cross(left,right)&&!pipeline_ordered(left.code,host)&&!pipeline_ordered(right.code,host);
 }
-extern "C" usize fusion_register(address offsets,usize value) on cpu {
- return value+unsafe_position<FusionOffsets>(offsets).registers;
-}
-extern "C" usize fusion_local(address offsets,usize value) on cpu {
- return value+unsafe_position<FusionOffsets>(offsets).locals;
-}
 usize pipeline_fuse(usize count,u32 record,PipelineFusion host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.at) requires nonzero(host.stage)
  requires nonzero(host.swap) requires nonzero(host.truncate) requires nonzero(host.rewrite.inspect)
@@ -1009,8 +1004,8 @@ usize pipeline_fuse(usize count,u32 record,PipelineFusion host) on cpu
    if(pipeline_fusible(host.stage(previous),host.stage(current),host.ir)){
     host.origin(previous,current);
     FusionLayout layout=host.layout(previous,current);
-    FusionOffsets offsets=layout.offsets;
-    rewrite_code(layout.code,host.rewrite,RewriteMap(address_of(offsets),c_function(fusion_register),c_function(fusion_local)));
+    RewriteOffsets offsets=layout.offsets;
+    rewrite_offsets(layout.code,host.rewrite,offsets);
     host.retain(previous,current);
     host.commit(host.context,target,index,offsets.locals);
     if(record!=0&&last_join!=kept){
@@ -1263,6 +1258,12 @@ void rewrite_indexed_operands(RewriteView value,RewriteHost host,RewriteInputMap
  }
  rewrite_word(value.a,mapping.context,mapping.reg);
 }
+struct RewriteMap {
+ address context;
+ cfn<usize,address,usize> reg;
+ cfn<usize,address,usize> slot;
+};
+
 void rewrite_alias(RewriteNode source,RewriteHost host,RewriteMap mapping) on cpu
  requires nonzero(host.inspect) requires nonzero(mapping.slot) {
  RewriteView value=host.inspect(source);
@@ -1407,8 +1408,47 @@ void rewrite_block(RewriteSpan code,RewriteHost host,RewriteMap mapping) on cpu
   entry+=1u64;
  }
 }
-extern "C" void rewrite_code(RewriteSpan code,RewriteHost host,RewriteMap mapping) on cpu
- requires nonzero(host.inspect) requires nonzero(mapping.reg) requires nonzero(mapping.slot) {rewrite_block(code,host,mapping);}
+extern "C" usize offset_register(address context,usize value) on cpu {
+ return value+unsafe_position<RewriteOffsets>(context).registers;
+}
+extern "C" usize offset_local(address context,usize value) on cpu {
+ return value+unsafe_position<RewriteOffsets>(context).locals;
+}
+void rewrite_offsets(RewriteSpan code,RewriteHost host,RewriteOffsets offsets) on cpu requires nonzero(host.inspect) {
+ rewrite_block(code,host,RewriteMap(address_of(offsets),c_function(offset_register),c_function(offset_local)));
+}
+
+struct CompactNumbers { address registers; address locals; };
+extern "C" usize compact_register_number(address context,usize value) on cpu {
+ return compact_index(unsafe_position<CompactNumbers>(context).registers,value)-1u64;
+}
+extern "C" usize compact_local_number(address context,usize value) on cpu {
+ return compact_index(unsafe_position<CompactNumbers>(context).locals,value)-1u64;
+}
+void rewrite_compact(RewriteSpan code,RewriteHost host,address registers,address locals) on cpu requires nonzero(host.inspect) {
+ CompactNumbers numbers=CompactNumbers(registers,locals);
+ rewrite_block(code,host,RewriteMap(address_of(numbers),c_function(compact_register_number),c_function(compact_local_number)));
+}
+
+extern "C" usize bound_register(address registers,usize value) on cpu {
+ usize bound=compact_index(registers,value);
+ return bound==0u64 ? value : bound-1u64;
+}
+extern "C" usize binding_local(address context,usize value) on cpu { return value; }
+extern "C" void bind_reduction_arguments(RewriteSpan code,RewriteSpan result,Span right,Span projected,
+ address registers,RewriteHost host) on cpu requires nonzero(host.inspect) {
+ usize count=right.count<projected.count ? right.count : projected.count;
+ usize index=0u64;
+ while(index<count){
+  // The last pair for a right-hand input owns that binding. Zero is unbound.
+  address slot=unsafe_address(address_bits(registers)+word_at(right,index)*size_of<usize>());
+  unsafe_position<usize>(slot)=word_at(projected,index)+1u64;
+  index+=1u64;
+ }
+ rewrite_block(code,host,RewriteMap(registers,c_function(bound_register),c_function(binding_local)));
+ rewrite_words(result,registers,c_function(bound_register));
+}
+
 extern "C" void rewrite_operands(RewriteNode source,RewriteHost host,RewriteInputMap mapping) on cpu
  requires nonzero(host.inspect) requires nonzero(mapping.reg) {rewrite_inputs(host.inspect(source),host,mapping);}
 

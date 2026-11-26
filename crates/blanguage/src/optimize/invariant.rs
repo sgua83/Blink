@@ -14,8 +14,8 @@ struct Header { registers: usize, locals: usize }
 struct Host {
     ir: crate::ir::dataflow::Host, context: *mut c_void,
     header: unsafe extern "C" fn(*mut c_void) -> Header,
-    clone: unsafe extern "C" fn(*mut c_void, usize, Node, usize),
-    remap: unsafe extern "C" fn(*mut c_void, usize, usize, usize),
+    clone: unsafe extern "C" fn(*mut c_void, usize, Node, usize) -> crate::ir::rewrite::Span,
+    rewrite: crate::ir::rewrite::Host,
     push_root: unsafe extern "C" fn(*mut c_void, usize, Reg),
     part_len: unsafe extern "C" fn(*const c_void, usize) -> usize,
     alloc_uniform: extern "C" fn(usize) -> *mut u8,
@@ -38,7 +38,7 @@ struct State {
 impl State {
     fn host(&mut self) -> Host {
         Host { ir: crate::ir::dataflow::HOST, context: ptr::from_mut(self).cast(),
-            header, clone, remap, push_root, part_len, alloc_uniform, release_uniform,
+            header, clone, rewrite: crate::ir::rewrite::HOST, push_root, part_len, alloc_uniform, release_uniform,
             open_part, hoist, move_instruction, close_part, value_flow,
             boundaries, append }
     }
@@ -69,16 +69,13 @@ unsafe extern "C" fn header(context: *mut c_void) -> Header {
     let stage = unsafe { &(*context.cast::<State>()).kernel.stage };
     Header { registers: stage.registers.len(), locals: stage.locals.last_key_value().map_or(0, |(end, _)| *end) }
 }
-unsafe extern "C" fn clone(context: *mut c_void, part: usize, source: Node, local: usize) {
+unsafe extern "C" fn clone(context: *mut c_void, part: usize, source: Node, local: usize) -> crate::ir::rewrite::Span {
     let state = unsafe { &mut *context.cast::<State>() };
     let value = unsafe { &*source.data.cast::<ValueCode>() };
     state.parts[part - 1] = value.code.clone();
     state.kernel.stage.registers.extend(&value.registers);
     state.kernel.stage.locals.extend(value.locals.iter().map(|(end, ty)| (end + local, ty.clone())));
-}
-unsafe extern "C" fn remap(context: *mut c_void, part: usize, registers: usize, locals: usize) {
-    let code = unsafe { &mut (*context.cast::<State>()).parts[part - 1] };
-    map(code, crate::ir::rewrite::Remap::Offset { registers, locals });
+    crate::ir::rewrite::Span::slice(&mut state.parts[part - 1])
 }
 fn root_values(kernel: &mut ReductionKernel, root: usize) -> &mut Vec<Reg> {
     match root {

@@ -231,7 +231,4 @@ pub(crate) fn visit(code: &[Inst], f: &mut impl FnMut(&Inst)) {
         }
     }
 }
-pub(crate) fn map(code: &mut [Inst], mapping: crate::ir::rewrite::Remap<'_>) {
-    crate::ir::rewrite::map(code, mapping);
-}
 
