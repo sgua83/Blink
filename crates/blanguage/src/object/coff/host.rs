@@ -13,10 +13,29 @@ pub(super) fn needs_groups(symbols: &[ObjectSymbol<'_>]) -> bool {
     })
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct HostSection {
+    owner: usize,
+    member: usize,
+    local: usize,
+}
+
+#[repr(C)]
+struct HostGroupResult {
+    count: usize,
+    error: ObjectReadError,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.object_read::host_groups"]
+    fn host_groups(rows: ObjectRows, definitions: *const SectionDefinition,
+        output: *mut HostSection, count: usize) -> HostGroupResult;
+}
+
 pub(super) struct Groups {
     members: Vec<Vec<usize>>,
-    positions: Vec<(usize, usize)>,
-    owners: Vec<Option<usize>>,
+    positions: Vec<HostSection>,
     relocations: Vec<Vec<BindingRelocation>>,
 }
 
@@ -24,38 +43,24 @@ impl Groups {
     pub(super) fn new(
         raw: &[ObjectSection], definitions: &[SectionDefinition], needs_body: bool,
     ) -> Result<Option<Self>> {
-        let mut owners = Vec::new();
-        let mut physical = Vec::new();
-        let rows = ObjectRows::new(raw);
-        for (index, row) in raw.iter().enumerate().filter(|(_, row)| row.mapped != 0) {
-            let owner = if row.flags & 0x1000 != 0 {
-                let association = unsafe { object_association(rows, definitions.as_ptr(), index) };
-                association.error.check()?;
-                (association.present != 0).then_some(association.owner)
-            } else {
-                None
-            };
-            owners.push(owner);
-            physical.push(index);
-        }
-        let roots = group_roots(&owners)?;
-        let mut members: Vec<Vec<usize>> = Vec::new();
-        let mut member_of_root = vec![usize::MAX; physical.len()];
-        let mut positions = Vec::with_capacity(physical.len());
-        for (index, root) in roots.into_iter().enumerate() {
-            let member = &mut member_of_root[root];
-            if *member == usize::MAX {
-                *member = members.len();
-                members.push(Vec::new());
-            }
-            positions.push((*member, members[*member].len()));
-            members[*member].push(physical[index]);
-        }
-        if members.len() < 2 && !needs_body {
+        let count = raw.iter().rev().find(|row| row.mapped != 0).map_or(0, |row| row.mapped);
+        let mut positions = Vec::<HostSection>::with_capacity(count);
+        let plan = unsafe { host_groups(ObjectRows::new(raw), definitions.as_ptr(), positions.as_mut_ptr(), count) };
+        plan.error.check()?;
+        if plan.count < 2 && !needs_body {
             return Ok(None);
         }
-        let relocations = (0..physical.len()).map(|_| Vec::new()).collect();
-        Ok(Some(Self { members, positions, owners, relocations }))
+        // The B reader writes each mapped slot before returning a complete plan.
+        unsafe { positions.set_len(count) };
+        let mut members: Vec<Vec<usize>> = (0..plan.count).map(|_| Vec::new()).collect();
+        for (index, row) in raw.iter().enumerate().filter(|(_, row)| row.mapped != 0) {
+            let position = &mut positions[row.mapped - 1];
+            let member = &mut members[position.member];
+            position.local = member.len();
+            member.push(index);
+        }
+        let relocations = (0..count).map(|_| Vec::new()).collect();
+        Ok(Some(Self { members, positions, relocations }))
     }
 
     pub(super) fn relocation(&mut self, section: usize, offset: usize, kind: u16, target: ObjectTarget<'_>) {
@@ -76,11 +81,11 @@ impl Groups {
         let mut dependents = vec![Vec::new(); self.members.len()];
         let mut pending = Vec::new();
         for (section, relocations) in self.relocations.iter().enumerate() {
-            let member = self.positions[section].0;
+            let member = self.positions[section].member;
             for relocation in relocations {
                 let external = match relocation.target {
                     BindingTarget::Section => {
-                        let destination = self.positions[relocation.section as usize].0;
+                        let destination = self.positions[relocation.section as usize].member;
                         if destination != member {
                             dependents[destination].push(member);
                         }
@@ -115,7 +120,9 @@ impl Groups {
         }
         self.members[first].sort_unstable();
         for (index, &section) in self.members[first].iter().enumerate() {
-            self.positions[raw[section].mapped - 1] = (first, index);
+            let position = &mut self.positions[raw[section].mapped - 1];
+            position.member = first;
+            position.local = index;
         }
         Some(first)
     }
@@ -134,9 +141,9 @@ impl Groups {
                     continue;
                 }
                 let target = relocation.section as usize;
-                let (member, local) = self.positions[target];
-                if self.positions[source].0 == member {
-                    relocation.section = local as u64;
+                let position = self.positions[target];
+                if self.positions[source].member == position.member {
+                    relocation.section = position.local as u64;
                 } else {
                     let value = relocation.value;
                     let name = anchors.entry((target, value)).or_insert_with(||
@@ -151,7 +158,7 @@ impl Groups {
         for symbol in symbols.iter().filter(|symbol| symbol.external != 0 && symbol.section > 0) {
             let index = object_index(raw, symbol.section as usize - 1)
                 .ok_or("导出符号引用不可装载的节")?;
-            let (member, section) = self.positions[index];
+            let HostSection { member, local: section, .. } = self.positions[index];
             let name = unsafe { symbol.validated_name() };
             definitions[member].push(BindingDefinition {
                 name: BindingBytes::new(name.as_bytes()), section: section as u64,
@@ -160,7 +167,7 @@ impl Groups {
             names[member].push(Cow::Borrowed(name));
         }
         for ((index, value), name) in anchors {
-            let (member, section) = self.positions[index];
+            let HostSection { member, local: section, .. } = self.positions[index];
             definitions[member].push(BindingDefinition {
                 name: BindingBytes::new(name.as_bytes()), section: section as u64, value: u64::from(value), function: 0,
             });
@@ -176,8 +183,8 @@ impl Groups {
             let mut associated = vec![Vec::new(); physical.len()];
             for (local, &index) in physical.iter().enumerate() {
                 let section = raw[index].mapped - 1;
-                if let Some(owner) = self.owners[section] {
-                    associated[self.positions[owner].1].push(local);
+                if let Some(owner) = self.positions[section].owner.checked_sub(1) {
+                    associated[self.positions[owner].local].push(local);
                 }
             }
             let sections = physical.iter().zip(&associated).map(|(&index, children)| {
@@ -226,33 +233,6 @@ fn row_payload(row: &ObjectSection) -> CoffPayload<'_> {
     } else {
         CoffPayload::ZeroFill(row.zero_fill)
     }
-}
-
-fn group_roots(owners: &[Option<usize>]) -> Result<Vec<usize>> {
-    let visiting = owners.len();
-    let mut roots = vec![usize::MAX; visiting];
-    let mut path = Vec::new();
-    for section in 0..visiting {
-        let mut current = section;
-        while roots[current] == usize::MAX {
-            match owners[current] {
-                Some(owner) => {
-                    roots[current] = visiting;
-                    path.push(current);
-                    current = owner;
-                }
-                None => roots[current] = current,
-            }
-        }
-        let root = roots[current];
-        if root == visiting {
-            return Err("COFF关联节形成循环".into());
-        }
-        for section in path.drain(..) {
-            roots[section] = root;
-        }
-    }
-    Ok(roots)
 }
 
 fn member_identity(bytes: &[u8], raw: &[ObjectSection], build: Option<&HostBuildSection>) -> String {

@@ -248,6 +248,7 @@ enum ObjectReadError {
     DllLengthMissing, DllLengthEmpty, DllLengthDigit, DllLengthOverflow, DllLength,
     StackSection, StackPosition, StackNoLocation, StackRelocation, RelocationSymbol,
     MissingSectionDefinition, RelocationBounds, MetadataMissing, ExportContract, ExportSection, ImportContract,
+    AssociationCycle,
 }
 impl ObjectReadError {
     fn check(self) -> Result<()> {
@@ -274,6 +275,7 @@ impl ObjectReadError {
             Self::ExportContract => Err("导出符号缺少模块接口合同".into()),
             Self::ExportSection => Err("导出符号引用不可装载的节".into()),
             Self::ImportContract => Err("未定义符号缺少模块接口合同".into()),
+            Self::AssociationCycle => Err("COFF关联节形成循环".into()),
         }
     }
 }
@@ -313,8 +315,6 @@ struct ObjectSymbols<'a> { values: *const ObjectSymbol<'a>, count: usize }
 #[derive(Clone, Copy, Default)]
 struct SectionDefinition { owner: u16, selection: u8, present: u8 }
 
-#[repr(C)]
-struct ObjectAssociation { present: u64, owner: usize, error: ObjectReadError }
 #[repr(u64)]
 enum ObjectTargetKind { Section, Import, Symbol }
 #[repr(C)]
@@ -350,9 +350,6 @@ unsafe extern "C" {
     fn object_symbols<'a>(input: ReadBytes, table: ReadSymbols, rows: *mut ObjectSymbol<'a>,
         definitions: *mut SectionDefinition, definition_count: usize, context: *mut c_void,
         consume: ValidateSymbolName) -> ObjectScanStatus;
-    #[link_name = "bootstrap.object_read::association"]
-    fn object_association(rows: ObjectRows, definitions: *const SectionDefinition,
-        index: usize) -> ObjectAssociation;
     #[link_name = "bootstrap.object_read::object_relocations"]
     fn object_relocations<'a>(input: ReadBytes, rows: ObjectRows, symbols: ObjectSymbols<'a>,
         section: &ObjectSection, context: *mut c_void,

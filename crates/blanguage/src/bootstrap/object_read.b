@@ -147,7 +147,8 @@ extern "C" ObjectScanStatus object_symbols(ReadBytes input, ReadSymbols table, a
     return ObjectScanStatus(0, 1);
 }
 
-extern "C" ObjectAssociation association(ObjectRows rows,address definitions,u64 index) on cpu {
+struct ObjectAssociation {u64 present;u64 owner;u32 error;};
+ObjectAssociation association(ObjectRows rows,address definitions,u64 index) on cpu {
     SectionDefinition definition=unsafe_position<SectionDefinition>(definition_address(definitions,index));
     if(definition.present==u8(0)){return ObjectAssociation(0u64,0u64,16);}
     u64 selection=u64(definition.selection);
@@ -161,6 +162,71 @@ extern "C" ObjectAssociation association(ObjectRows rows,address definitions,u64
     if((value.flags&4096u64)==0u64){return ObjectAssociation(0u64,0u64,3);}
     return ObjectAssociation(1u64,value.mapped-1u64,0);
 }
+address host_section(address output,u64 index) on cpu {
+    return unsafe_address(address_bits(output)+index*size_of<HostSection>());
+}
+
+extern "C" HostGroupResult host_groups(ObjectRows rows,address definitions,address output,u64 count) on cpu {
+    u64 unassigned=18446744073709551615u64;
+    u64 index=0u64;
+    while(index<rows.count){
+        ObjectSection row=row_at(rows,index);
+        if(row.mapped!=0u64){
+            u64 owner=0u64;
+            if((row.flags&4096u64)!=0u64){
+                ObjectAssociation edge=association(rows,definitions,index);
+                if(edge.error!=0){return HostGroupResult(0u64,edge.error);}
+                if(edge.present!=0u64){owner=edge.owner+1u64;}
+            }
+            unsafe_position<HostSection>(host_section(output,row.mapped-1u64))=HostSection(owner,unassigned,0u64);
+        }
+        index+=1u64;
+    }
+
+    // Close the original owner chain in the final row. The count is outside
+    // the logical index range and marks entries on the current walk.
+    index=0u64;
+    while(index<count){
+        u64 current=index;
+        address at=host_section(output,current);
+        while(unsafe_position<HostSection>(at).member==unassigned){
+            u64 owner=unsafe_position<HostSection>(at).owner;
+            if(owner==0u64){
+                unsafe_position<HostSection>(at).member=current;
+                break;
+            }
+            unsafe_position<HostSection>(at).member=count;
+            current=owner-1u64;
+            at=host_section(output,current);
+        }
+        u64 root=unsafe_position<HostSection>(at).member;
+        if(root==count){return HostGroupResult(0u64,22);}
+        at=host_section(output,index);
+        while(unsafe_position<HostSection>(at).member==count){
+            unsafe_position<HostSection>(at).member=root;
+            at=host_section(output,unsafe_position<HostSection>(at).owner-1u64);
+        }
+        index+=1u64;
+    }
+
+    // Until projection into members, local holds the root's group number plus one.
+    u64 groups=0u64;
+    index=0u64;
+    while(index<count){
+        address at=host_section(output,index);
+        address root=host_section(output,unsafe_position<HostSection>(at).member);
+        u64 member=unsafe_position<HostSection>(root).local;
+        if(member==0u64){
+            groups+=1u64;
+            member=groups;
+            unsafe_position<HostSection>(root).local=member;
+        }
+        unsafe_position<HostSection>(at).member=member-1u64;
+        index+=1u64;
+    }
+    return HostGroupResult(groups,0);
+}
+
 ObjectTarget failure(u32 error) on cpu {
     return ObjectTarget(0u64,0u64,0u64,empty_bytes(),empty_bytes(),error);
 }

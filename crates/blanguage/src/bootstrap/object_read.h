@@ -15,7 +15,8 @@ struct ObjectRows {address values;u64 count;};
 struct ObjectSymbol {ReadBytes name;u32 value;i16 section;u8 external;u8 role;};
 struct ObjectSymbols {address values;u64 count;};
 struct SectionDefinition {u16 owner;u8 selection;u8 present;};
-struct ObjectAssociation {u64 present;u64 owner;u32 error;};
+struct HostSection {u64 owner;u64 member;u64 local;};
+struct HostGroupResult {u64 count;u32 error;};
 struct ObjectTarget {
     u64 kind;u64 section;u64 value;ReadBytes dll;ReadBytes name;u32 error;
 };
@@ -35,7 +36,8 @@ extern "C" ObjectScanStatus object_metadata_sections(ReadBytes input, ReadBytes 
 extern "C" ObjectScanStatus object_symbols(ReadBytes input, ReadSymbols table, address rows,
     address definitions, u64 definition_count, address context,
     cfn<u32,address,ReadBytes,u64> consume) on cpu requires nonzero(consume);
-extern "C" ObjectAssociation association(ObjectRows rows,address definitions,u64 index) on cpu;
+// One output row per mapped section, in its original logical order.
+extern "C" HostGroupResult host_groups(ObjectRows rows,address definitions,address output,u64 count) on cpu;
 struct ObjectRelocationStatus { u32 format; u32 object; };
 // The accepted record borrows the original bytes only through the synchronous consumer.
 extern "C" ObjectRelocationStatus object_relocations(
