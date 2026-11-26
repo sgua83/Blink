@@ -24,8 +24,6 @@ mod segmented;
 mod selection;
 #[path = "sort.rs"]
 mod sort;
-#[path = "subgroup.rs"]
-mod subgroup;
 #[path = "texture.rs"]
 mod texture;
 #[path = "tile.rs"]
@@ -719,6 +717,13 @@ struct BlockPaging {
     pointer_type: unsafe extern "C" fn(*mut std::ffi::c_void, ScalarCode) -> u32,
     finish_body: unsafe extern "C" fn(*mut std::ffi::c_void, u64),
     current_label: unsafe extern "C" fn(*mut std::ffi::c_void) -> u32,
+}
+
+#[repr(C)]
+struct BlockSubgroup {
+    lane: u32,
+    size: u32,
+    id: u32,
     ballot_type: u32,
 }
 
@@ -756,16 +761,17 @@ struct BlockHost {
     paging: BlockPaging,
     locals: BlockLocals,
     tile: tile::TileStorage,
+    subgroup: BlockSubgroup,
     reject: unsafe extern "C" fn(StructuredContext, BlockRejection) -> BlockFlow,
     texture_sample: unsafe extern "C" fn(StructuredContext, *const [Reg; 4], *const TextureSource, Span, Reg),
     ray: unsafe extern "C" fn(StructuredContext, *const Inst),
-    subgroup: unsafe extern "C" fn(StructuredContext, Reg, SubgroupOp, Span, Span),
     barrier: unsafe extern "C" fn(StructuredContext),
     publish: unsafe extern "C" fn(StructuredContext, *const Publication),
     collective: unsafe extern "C" fn(StructuredContext, *const TileCollective),
 }
 
 fn block_host(emitter: &mut Emitter<'_>) -> BlockHost {
+    let [lane, size, id] = emitter.subgroup_inputs;
     BlockHost {
         ir: dataflow::HOST,
         values: BlockValues {
@@ -785,17 +791,16 @@ fn block_host(emitter: &mut Emitter<'_>) -> BlockHost {
             pointer_type: memory_pointer_type,
             finish_body: memory_finish_body,
             current_label: block_current_label,
-            ballot_type: emitter.ballot_type,
         },
         locals: BlockLocals {
             slots: emitter.locals.as_ptr(),
             array: private_array_field,
         },
         tile: emitter.tile_storage(),
+        subgroup: BlockSubgroup { lane, size, id, ballot_type: emitter.ballot_type },
         reject: block_reject,
         texture_sample: block_texture_sample,
         ray: block_ray,
-        subgroup: block_subgroup,
         barrier: block_barrier,
         publish: block_publish,
         collective: block_collective,
@@ -835,12 +840,6 @@ unsafe extern "C" fn block_ray(context: StructuredContext, instruction: *const I
     unsafe { block_emitter(context) }.ray(*scene, origin, direction, *minimum, *maximum, *cull_back_faces, result);
 }
 
-unsafe extern "C" fn block_subgroup(context: StructuredContext, dst: Reg, op: SubgroupOp, value: Span, argument: Span) {
-    let value = unsafe { value.as_slice::<Reg>() }.first().copied();
-    let argument = unsafe { argument.as_slice::<Reg>() }.first().copied();
-    unsafe { block_emitter(context) }.subgroup(dst, op, value, argument);
-}
-
 unsafe extern "C" fn block_barrier(context: StructuredContext) {
     unsafe { block_emitter(context) }.tile_barrier();
 }
@@ -851,25 +850,6 @@ unsafe extern "C" fn block_publish(context: StructuredContext, publication: *con
 
 unsafe extern "C" fn block_collective(context: StructuredContext, collective: *const TileCollective) {
     unsafe { block_emitter(context).tile_collective(&*collective) };
-}
-
-#[repr(C)]
-struct SubgroupEmission {
-    operation: SubgroupOp,
-    scalar: ScalarCode,
-    result_type: u32,
-    result: u32,
-    scope_or_pointer: u32,
-    value: u32,
-    argument: u32,
-    ballot_type: u32,
-    next: u32,
-}
-
-#[repr(C)]
-struct SubgroupWords {
-    words: u64,
-    next: u32,
 }
 
 #[repr(u32)]
@@ -1124,8 +1104,6 @@ unsafe extern "C" {
     fn emit_instruction_block(code: Span, targets: ControlTargets, host: StructuredHost, emit: BlockHost) -> BlockFlow;
     #[link_name = "bootstrap.spirv_envelope::lower_return_loop"]
     fn lower_return_loop(edges: *const returns::ReturnEdge, count: u32, bool_type: u32, host: StructuredHost);
-    #[link_name = "bootstrap.spirv_envelope::encode_subgroup"]
-    fn encode_subgroup(input: SubgroupEmission, body: *mut u32) -> SubgroupWords;
     #[link_name = "bootstrap.spirv_envelope::shader_scalars"]
     fn shader_scalars(next: u32, float64: u32, integer8: u32, integer16: u32,
         definitions: *mut u32, types: *mut u32, pointers: *mut u32) -> ScalarDeclarations;

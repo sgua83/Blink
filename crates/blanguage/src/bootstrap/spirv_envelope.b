@@ -1844,7 +1844,8 @@ void block_physical_access(PageInputs page, usize reg, bool write, BlockValues v
     }
 }
 
-void block_append(View instruction, BlockValues values, BlockPaging paging, MemoryHost memory, StructuredHost control) on cpu
+void block_append(View instruction, BlockValues values, BlockPaging paging, u32 ballot_type,
+    MemoryHost memory, StructuredHost control) on cpu
     requires nonzero(values.scalar) requires nonzero(paging.current_label)
     requires nonzero(control.reserve_words) requires nonzero(control.finish_words)
     requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
@@ -1865,7 +1866,7 @@ void block_append(View instruction, BlockValues values, BlockPaging paging, Memo
     u32 outer = paging.current_label(context);
     u32 next = scalars.ids(context, 0);
     AppendEmission input = AppendEmission(scalars.type_id(context, BuiltinScalar::U32),
-        scalars.type_id(context, BuiltinScalar::Bool), paging.ballot_type,
+        scalars.type_id(context, BuiltinScalar::Bool), ballot_type,
         device, relaxed, subgroup, active, counter, values.push_pointer, values.push_block,
         capacity, outer, block_register(values.registers, instruction.a), next);
     AppendWords result = encode_append_reservation(input, scalars.reserve(context, 173u64, 0u64).body);
@@ -1958,7 +1959,7 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     StructuredHost host, BlockHost emit) on cpu
     requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
     requires nonzero(emit.texture_sample) requires nonzero(emit.ray)
-    requires nonzero(emit.subgroup) requires nonzero(emit.barrier)
+    requires nonzero(emit.barrier)
     requires nonzero(emit.publish) requires nonzero(emit.collective)
     requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
     requires nonzero(emit.paging.pointer_type) requires nonzero(emit.paging.finish_body)
@@ -1992,7 +1993,7 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
         } else if (kind == OP_EXIT_VALUE) {
             return lower_function_exit(host) != 0 ? BlockFlow::Next : BlockFlow::Stop;
         } else if (kind == OP_APPEND) {
-            block_append(value, emit.values, emit.paging, memory, host);
+            block_append(value, emit.values, emit.paging, emit.subgroup.ballot_type, memory, host);
         } else if (kind == OP_ATOMIC) {
             View target = emit.ir.inspect(value.left);
             if (target.tag != INDEXED_DATA && target.tag != INDEXED_TILE) {
@@ -2017,7 +2018,7 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
             u32 index = block_register(emit.values.registers, value.c);
             block_tile_read(emit.values, emit.tile, key, index, 0, value.a, memory);
         } else if (kind == OP_SUBGROUP) {
-            emit.subgroup(context, value.a, SubgroupOperation(u32(value.c)), value.first, value.second);
+            block_subgroup(value, emit.values, emit.subgroup, memory);
         } else if (kind == OP_VIEW_LOAD) {
             PageInputs page = block_view_page(emit.paging.base, emit.values.registers, value.first,
                 emit.ir.inspect(value.left), emit.values.scalars);
@@ -2153,37 +2154,51 @@ SubgroupArithmetic subgroup_arithmetic(SubgroupOperation operation, BuiltinScala
     return SubgroupArithmetic(361, 2);
 }
 
-extern "C" SubgroupWords encode_subgroup(SubgroupEmission input, address body) on cpu {
-    SubgroupOperation operation = input.operation;
-    u32 type = input.result_type;
-    u32 result = input.result;
-    u32 scope = input.scope_or_pointer;
-    if (operation == SubgroupOperation::Lane || operation == SubgroupOperation::Size || operation == SubgroupOperation::Id) {
-        return SubgroupWords(words_three(body, 0u64, 61, type, result, input.scope_or_pointer), input.next);
+void block_subgroup(View instruction, BlockValues values, BlockSubgroup group, MemoryHost memory) on cpu
+    requires nonzero(values.scalar)
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
+    ScalarHost stream = memory.scalars;
+    address context = stream.context;
+    BuiltinScalar scalar = values.scalar(context, instruction.a);
+    u32 type = stream.type_id(context, scalar);
+    u32 result = block_register(values.registers, instruction.a);
+    u32 code = u32(instruction.c);
+    if (code < 3) {
+        u32 pointer = code == 0 ? group.lane : (code == 1 ? group.size : group.id);
+        address body = stream.reserve(context, 4u64, 0u64).body;
+        memory.finish_body(context, words_three(body, 0u64, 61, type, result, pointer));
+        return;
     }
+
+    SubgroupOperation operation = SubgroupOperation(code);
+    u32 scope = stream.constant(context, BuiltinScalar::U32, 3u64);
+    address body = stream.reserve(context, 11u64, 0u64).body;
     if (operation == SubgroupOperation::Elect) {
-        return SubgroupWords(words_three(body, 0u64, 333, type, result, scope), input.next);
+        memory.finish_body(context, words_three(body, 0u64, 333, type, result, scope));
+        return;
     }
+
+    u32 value = block_register(values.registers, unsafe_position<usize>(instruction.first.data));
+    u64 words;
     if (operation == SubgroupOperation::Any || operation == SubgroupOperation::All || operation == SubgroupOperation::BroadcastFirst) {
         u32 opcode = operation == SubgroupOperation::Any ? 335 : (operation == SubgroupOperation::All ? 334 : 338);
-        return SubgroupWords(words_four(body, 0u64, opcode, type, result, scope, input.value), input.next);
-    }
-    if (operation == SubgroupOperation::Count || operation == SubgroupOperation::PrefixCount) {
-        u32 ballot = input.next;
-        u32 group = operation == SubgroupOperation::PrefixCount ? 2 : 0;
-        u64 at = words_four(body, 0u64, 339, input.ballot_type, ballot, scope, input.value);
-        at = words_five(body, at, 342, type, result, scope, group, ballot);
-        return SubgroupWords(at, ballot + 1);
-    }
-    if (operation == SubgroupOperation::Shuffle || operation == SubgroupOperation::ShuffleXor ||
+        words = words_four(body, 0u64, opcode, type, result, scope, value);
+    } else if (operation == SubgroupOperation::Count || operation == SubgroupOperation::PrefixCount) {
+        u32 ballot = stream.ids(context, 1);
+        u32 mode = operation == SubgroupOperation::PrefixCount ? 2 : 0;
+        u64 at = words_four(body, 0u64, 339, group.ballot_type, ballot, scope, value);
+        words = words_five(body, at, 342, type, result, scope, mode, ballot);
+    } else if (operation == SubgroupOperation::Shuffle || operation == SubgroupOperation::ShuffleXor ||
         operation == SubgroupOperation::ShuffleUp || operation == SubgroupOperation::ShuffleDown) {
-        u32 opcode = 345 + u32(operation) - u32(SubgroupOperation::Shuffle);
-        u64 at = words_five(body, 0u64, opcode, type, result, scope, input.value, input.argument);
-        return SubgroupWords(at, input.next);
+        u32 opcode = 345 + code - u32(SubgroupOperation::Shuffle);
+        u32 argument = block_register(values.registers, unsafe_position<usize>(instruction.second.data));
+        words = words_five(body, 0u64, opcode, type, result, scope, value, argument);
+    } else {
+        SubgroupArithmetic arithmetic = subgroup_arithmetic(operation, scalar);
+        words = words_five(body, 0u64, arithmetic.opcode, type, result, scope, arithmetic.group, value);
     }
-    SubgroupArithmetic arithmetic = subgroup_arithmetic(operation, input.scalar);
-    u64 at = words_five(body, 0u64, arithmetic.opcode, type, result, scope, arithmetic.group, input.value);
-    return SubgroupWords(at, input.next);
+    memory.finish_body(context, words);
 }
 
 extern "C" TextureWords encode_texture_sample(TextureSampleEmission input, address results, address body, address decorations) on cpu {

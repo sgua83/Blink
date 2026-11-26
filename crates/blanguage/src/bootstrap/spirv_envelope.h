@@ -435,8 +435,8 @@ struct BlockPaging {
     cfn<u32,address,BuiltinScalar> pointer_type;
     cfn<void,address,u64> finish_body;
     cfn<u32,address> current_label;
-    u32 ballot_type;
 };
+struct BlockSubgroup { u32 lane; u32 size; u32 id; u32 ballot_type; };
 struct PrivateField { u32 variable; u32 pointer_type; BuiltinScalar unit; u32 offset; };
 struct BlockLocals { address slots; cfn<PrivateField,address,usize> array; };
 enum TileKeyKind : u32 { Input = 0; Published = 1; };
@@ -490,10 +490,10 @@ struct BlockHost {
     BlockPaging paging;
     BlockLocals locals;
     TileStorage tile;
+    BlockSubgroup subgroup;
     cfn<BlockFlow,address,BlockRejection> reject;
     cfn<void,address,address,address,Span,usize> texture_sample;
     cfn<void,address,address> ray;
-    cfn<void,address,usize,SubgroupOperation,Span,Span> subgroup;
     cfn<void,address> barrier;
     cfn<void,address,address> publish;
     cfn<void,address,address> collective;
@@ -502,7 +502,7 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     StructuredHost host, BlockHost emit) on cpu
     requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
     requires nonzero(emit.texture_sample) requires nonzero(emit.ray)
-    requires nonzero(emit.subgroup) requires nonzero(emit.barrier)
+    requires nonzero(emit.barrier)
     requires nonzero(emit.publish) requires nonzero(emit.collective)
     requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
     requires nonzero(emit.paging.pointer_type) requires nonzero(emit.paging.finish_body)
@@ -542,22 +542,6 @@ extern "C" void lower_return_loop(address edges, u32 count, u32 bool_type, Struc
     requires nonzero(host.labels) requires nonzero(host.constant) requires nonzero(host.exit_targets)
     requires nonzero(host.record_return) requires nonzero(host.reserve_words) requires nonzero(host.finish_words);
 
-
-struct SubgroupEmission {
-    SubgroupOperation operation;
-    BuiltinScalar scalar;
-    u32 result_type;
-    u32 result;
-    u32 scope_or_pointer;
-    u32 value;
-    u32 argument;
-    u32 ballot_type;
-    u32 next;
-};
-struct SubgroupWords { u64 words; u32 next; };
-// The input carries the resolved built-in pointer or Subgroup scope constant.
-// The emitter supplies up to eleven words. Ballot count consumes one temporary ID.
-extern "C" SubgroupWords encode_subgroup(SubgroupEmission input, address body) on cpu;
 
 struct TextureSampleEmission {
     u32 variable;
