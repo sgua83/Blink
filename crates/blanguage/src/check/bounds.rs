@@ -2762,12 +2762,17 @@ impl<'a> IntegerQuery<'a> {
         })
     }
     fn source_plan(&mut self,left:ValueIdentity,right:ValueIdentity,scalar:Scalar)->Option<(ValueIdentity,Vec<ValueIdentity>)> {integer_relations::source_plan(self,left,right,scalar)}
-    fn below_in(&mut self,left:ValueIdentity,right:ValueIdentity,scalar:Scalar,source:ValueIdentity,bounds:(Bits,Bits),order:&[ValueIdentity])->Option<bool> {integer_relations::below_in(self,left,right,scalar,source,bounds,order)}
+    fn ordered_bounds(&self, root: ValueIdentity, scalar: Scalar) -> BitRange {
+        let key = (root, scalar);
+        BitRange {
+            lower: self.lower.get(&key).copied().unwrap_or(0),
+            upper: self.upper.get(&key).copied().unwrap_or(scalar.bit_mask()),
+        }
+    }
     fn bounds(&self, id: ValueIdentity, scalar: Scalar) -> (i128, i128) {
-        let key = (self.root(id), scalar);
-        let lower = self.lower.get(&key).copied().unwrap_or(0);
-        let upper = self.upper.get(&key).copied().unwrap_or(scalar.bit_mask());
-        (Self::number(scalar, lower ^ scalar.order_bias()), Self::number(scalar, upper ^ scalar.order_bias()))
+        let range = self.ordered_bounds(self.root(id), scalar);
+        let bias = scalar.order_bias();
+        (Self::number(scalar, range.lower ^ bias), Self::number(scalar, range.upper ^ bias))
     }
     fn interval(&self,value:IntegerAffine,scalar:Scalar)->Option<(i128,i128)> {integer_relations::interval(self,value,scalar)}
     fn operand(&mut self,operand:Operand,scalar:Scalar)->IntegerAffine {integer_relations::operand(self,operand,scalar)}
@@ -2988,30 +2993,34 @@ impl Builder<'_> {
         if query.bounds(left, scalar).1 < query.bounds(right, scalar).0 { return true; }
         let Some((source, order)) = query.source_plan(left, right, scalar) else { return false; };
         let mut ranges: Option<ScalarRanges> = None;
-        let mut collect = |proof: &Proof, ty: &Ty| {
-            for (component, &(actual, _)) in ty.components.iter().enumerate() {
-                if actual == scalar && proof.origins.get(component).is_some_and(|origins|
-                    origins.iter().any(|id| query.root(*id) == source))
-                {
-                    let current = proof.element_range(component, scalar);
-                    ranges = Some(match ranges.take() {
-                        Some(previous) => previous.intersection(&current),
-                        None => current,
-                    });
-                }
-            }
-        };
         for binding in self.env.values() {
-            match binding {
-                Binding::Value(value) => collect(&Proof::capture(value), &value.ty),
-                Binding::OwnedValue(owner) => collect(&Proof::capture(&owner.value), &owner.value.ty),
-                Binding::Owned(owner) | Binding::ViewElement { element: owner, .. } => collect(&owner.proof, owner.place.ty()),
-                _ => {}
+            let (proof, ty, value) = match binding {
+                Binding::Value(value) => (&value.proof, &value.ty, Some(value)),
+                Binding::OwnedValue(owner) => (&owner.value.proof, &owner.value.ty, Some(&owner.value)),
+                Binding::Owned(owner) | Binding::ViewElement { element: owner, .. } => (&owner.proof, owner.place.ty(), None),
+                _ => continue,
+            };
+            let component_count = value.map_or(ty.components.len(), |value| value.regs.len());
+            for (component, &(actual, _)) in ty.components.iter().take(component_count).enumerate() {
+                if actual != scalar { continue; }
+                let matches = match proof.origins.get(component) {
+                    Some(origins) if !origins.is_empty() => origins.iter().any(|id| query.root(*id) == source),
+                    _ => value.is_some_and(|value| query.root(value.component_identity(component)) == source),
+                };
+                if !matches { continue; }
+
+                let incoming = match value {
+                    Some(value) => value.component_ranges(component),
+                    None => proof.element_range(component, scalar),
+                };
+                ranges = Some(match ranges.take() {
+                    Some(previous) => previous.intersection(&incoming),
+                    None => incoming,
+                });
             }
         }
         let Some(ranges) = ranges else { return false; };
-        ranges.0.iter().all(|&range| IntegerQuery::new(&facts, &roots)
-            .below_in(left, right, scalar, source, range.into(), &order) == Some(true))
+        integer_relations::below_in(&query, left, right, scalar, source, ranges.0.as_slice(), &order)
     }
     pub(super) fn observe_bounds(&mut self, value: &Value) {
         self.path = Clause::observed(&self.path,proof_facts::value(value));

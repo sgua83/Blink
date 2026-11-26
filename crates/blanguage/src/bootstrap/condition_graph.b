@@ -1638,28 +1638,45 @@ RelationRange source_operand_range(address context,InternalOperand operand,addre
  RelationRange value=bounds(context,operand.identity);
  return RelationRange(1,IntegerWide((value.lower.low&info.mask)^info.bias,0u64),IntegerWide((value.upper.low&info.mask)^info.bias,0u64));
 }
-extern "C" u32 relation_source_below(address context,address left,address right,address source,u64 lower,u64 upper,address scalar,InternalScalar info,RelationSourceBelowHost host) on cpu
- requires nonzero(host.seed) requires nonzero(host.next) requires nonzero(host.bounds) requires nonzero(host.computed) requires nonzero(host.same_scalar) requires nonzero(host.store) {
- host.seed(context,source,lower,upper);
- ComputedIntegerType encoding=ComputedIntegerType(info.width,info.kind==1 ? 1 : 0,0,info.mask,info.bias);
+bool source_below_at(address context, address left, address right, address scalar,
+    InternalScalar info, ComputedIntegerType encoding, RelationSourceBelowHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.bounds) requires nonzero(host.computed)
+    requires nonzero(host.same_scalar) requires nonzero(host.store) {
+ u64 index=0u64;
  while(true){
-  address id=host.next(context);if(id==address()){break;}
+  address id=host.next(context,index);if(id==address()){break;}
+  index+=1u64;
   RelationRange bounds=host.bounds(context,id);
-  if(range_less(bounds.upper,bounds.lower)){return 2;}
+  if(range_less(bounds.upper,bounds.lower)){return true;}
   if(relation_wide_equal(bounds.lower,bounds.upper)){continue;}
-  RelationExpression expression=host.computed(context,id);if(expression.present==0){return 0;}
+  RelationExpression expression=host.computed(context,id);if(expression.present==0){return false;}
   RelationRange a=source_operand_range(context,expression.left,scalar,info,host.bounds,host.same_scalar);
-  if(a.present==0){return 0;}
+  if(a.present==0){return false;}
   RelationRange b=source_operand_range(context,expression.right,scalar,info,host.bounds,host.same_scalar);
-  if(b.present==0){return 0;}
-  if((expression.operation==3||expression.operation==4)&&b.lower.low<=info.bias&&info.bias<=b.upper.low){return 0;}
+  if(b.present==0){return false;}
+  if((expression.operation==3||expression.operation==4)&&b.lower.low<=info.bias&&info.bias<=b.upper.low){return false;}
   BitRange value=computed_range_hull(expression.operation,encoding,BitRange(a.lower.low,a.upper.low),
    BitRange(b.lower.low,b.upper.low),BitRange((bounds.lower.low&info.mask)^info.bias,(bounds.upper.low&info.mask)^info.bias));
-  if(value.lower>value.upper){return 2;}
+  if(value.lower>value.upper){return true;}
   host.store(context,id,value.lower,value.upper);
  }
  RelationRange a=host.bounds(context,left);RelationRange b=host.bounds(context,right);
- return range_less(a.upper,a.lower)||range_less(b.upper,b.lower)||range_less(a.upper,b.lower) ? 2 : 1;
+ return range_less(a.upper,a.lower)||range_less(b.upper,b.lower)||range_less(a.upper,b.lower);
+}
+
+extern "C" bool relation_source_below(address context, address left, address right, address source,
+    RangeInput intervals, address scalar, InternalScalar info, RelationSourceBelowHost host) on cpu
+    requires nonzero(intervals.get) requires nonzero(host.seed) requires nonzero(host.next)
+    requires nonzero(host.bounds) requires nonzero(host.computed) requires nonzero(host.same_scalar)
+    requires nonzero(host.store) {
+ ComputedIntegerType encoding=ComputedIntegerType(info.width,info.kind==1 ? 1 : 0,0,info.mask,info.bias);
+ u64 index=0u64;
+ while(index<intervals.count){
+  host.seed(context,source,intervals.get(intervals.values,index));
+  if(!source_below_at(context,left,right,scalar,info,encoding,host)){return false;}
+  index+=1u64;
+ }
+ return true;
 }
 
 struct IndexProjection {u32 present;IndexOutput output;IndexFields fields;};

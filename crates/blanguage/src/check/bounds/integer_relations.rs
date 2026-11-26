@@ -859,35 +859,34 @@ pub(super) fn source_plan(
 }
 
 struct SourceBelow<'a, 'b> {
-    query: *mut IntegerQuery<'a>,
+    query: &'b IntegerQuery<'a>,
     scalar: Scalar,
-    order: std::slice::Iter<'b, ValueIdentity>,
+    order: &'b [ValueIdentity],
+    piece: BTreeMap<ValueIdentity, BitRange>,
     expression: *mut IntegerExpression,
 }
-unsafe extern "C" fn source_seed(s: Slot, id: Borrowed, lower: u64, upper: u64) {
+unsafe extern "C" fn source_seed(s: Slot, id: Borrowed, interval: BitRange) {
     let id = unsafe { *id.cast::<ValueIdentity>() };
     let c = unsafe { frame::<SourceBelow<'_, '_>>(s) };
-    let q = unsafe { &mut *c.query };
-    let key = (id, c.scalar);
-    q.lower
-        .entry(key)
-        .and_modify(|value| *value = (*value).max(lower))
-        .or_insert(lower);
-    q.upper
-        .entry(key)
-        .and_modify(|value| *value = (*value).min(upper))
-        .or_insert(upper);
+    let base = c.query.ordered_bounds(id, c.scalar);
+    c.piece.clear();
+    c.piece.insert(id, BitRange {
+        lower: base.lower.max(interval.lower),
+        upper: base.upper.min(interval.upper),
+    });
 }
-unsafe extern "C" fn source_next(s: Slot) -> Borrowed {
-    unsafe { frame::<SourceBelow<'_, '_>>(s) }
-        .order
-        .next()
-        .map(borrow)
-        .unwrap_or(ptr::null())
+unsafe extern "C" fn source_next(s: Slot, index: usize) -> Borrowed {
+    unsafe { frame::<SourceBelow<'_, '_>>(s) }.order.get(index).map(borrow).unwrap_or(ptr::null())
 }
 unsafe extern "C" fn below_bounds(s: Slot, id: Borrowed) -> Range {
     let c = unsafe { frame::<SourceBelow<'_, '_>>(s) };
-    unsafe { bounds(c.query, c.scalar, id) }
+    let id = c.query.root(unsafe { *id.cast::<ValueIdentity>() });
+    let bits = c.piece.get(&id).copied().unwrap_or_else(|| c.query.ordered_bounds(id, c.scalar));
+    let bias = c.scalar.order_bias();
+    (
+        IntegerQuery::number(c.scalar, bits.lower ^ bias),
+        IntegerQuery::number(c.scalar, bits.upper ^ bias),
+    ).into()
 }
 unsafe extern "C" fn below_computed(s: Slot, id: Borrowed) -> fact_fields::ExpressionView {
     let c = unsafe { frame::<SourceBelow<'_, '_>>(s) };
@@ -896,15 +895,12 @@ unsafe extern "C" fn below_computed(s: Slot, id: Borrowed) -> fact_fields::Expre
 unsafe extern "C" fn source_store(s: Slot, id: Borrowed, lower: u64, upper: u64) {
     let id = unsafe { *id.cast::<ValueIdentity>() };
     let c = unsafe { frame::<SourceBelow<'_, '_>>(s) };
-    let q = unsafe { &mut *c.query };
-    let key = (q.root(id), c.scalar);
-    q.lower.insert(key, lower);
-    q.upper.insert(key, upper);
+    c.piece.insert(c.query.root(id), BitRange { lower, upper });
 }
 #[repr(C)]
 struct SourceBelowHost {
-    seed: unsafe extern "C" fn(Slot, Borrowed, u64, u64),
-    next: unsafe extern "C" fn(Slot) -> Borrowed,
+    seed: unsafe extern "C" fn(Slot, Borrowed, BitRange),
+    next: unsafe extern "C" fn(Slot, usize) -> Borrowed,
     bounds: unsafe extern "C" fn(Slot, Borrowed) -> Range,
     computed: unsafe extern "C" fn(Slot, Borrowed) -> fact_fields::ExpressionView,
     same_scalar: unsafe extern "C" fn(Borrowed, Borrowed) -> u32,
@@ -917,37 +913,36 @@ unsafe extern "C" {
         left: Borrowed,
         right: Borrowed,
         source: Borrowed,
-        lower: u64,
-        upper: u64,
+        intervals: crate::ir::scalar_ranges::RangeInput,
         scalar: Borrowed,
         info: fact_fields::ScalarView,
         host: SourceBelowHost,
     ) -> u32;
 }
 pub(super) fn below_in(
-    query: &mut IntegerQuery<'_>,
+    query: &IntegerQuery<'_>,
     left: ValueIdentity,
     right: ValueIdentity,
     scalar: Scalar,
     source: ValueIdentity,
-    (lower, upper): (Bits, Bits),
+    ranges: &[BitRange],
     order: &[ValueIdentity],
-) -> Option<bool> {
+) -> bool {
     let mut expression = MaybeUninit::<IntegerExpression>::uninit();
     let mut c = SourceBelow {
         query,
         scalar,
-        order: order.iter(),
+        order,
+        piece: BTreeMap::new(),
         expression: expression.as_mut_ptr(),
     };
-    let result = unsafe {
+    unsafe {
         b_source_below(
-            (&mut c as *mut SourceBelow<'_, '_>).cast(),
+            ptr::from_mut(&mut c).cast(),
             borrow(&left),
             borrow(&right),
             borrow(&source),
-            lower,
-            upper,
+            crate::ir::scalar_ranges::RangeInput::records(ranges, range_sets::read_record),
             borrow(&scalar),
             fact_fields::scalar(borrow(&scalar)),
             SourceBelowHost {
@@ -958,7 +953,6 @@ pub(super) fn below_in(
                 same_scalar: fact_fields::same_scalar,
                 store: source_store,
             },
-        )
-    };
-    if result == 0 { None } else { Some(result == 2) }
+        ) != 0
+    }
 }
