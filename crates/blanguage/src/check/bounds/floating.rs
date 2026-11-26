@@ -6,8 +6,11 @@ mod scalar;
 pub(super) use scalar::{order,bits,comparison_possible,interval,bitcast,cast,math,sum,negate};
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.scalar_fold::float_upper_maximum"]
-    fn float_upper_maximum(inputs: BitRange, scale: f64, offset: f64, reciprocal: f64) -> f64;
+    #[link_name = "bootstrap.scalar_fold::float_bound_at_call"]
+    fn float_bound_at_call(
+        input: RangeInput, maximum: u64, source: BitRange,
+        scale: f64, offset: f64, reciprocal: f64, include_numeric: u32,
+    ) -> FloatBoundProjection;
     #[link_name = "bootstrap.scalar_fold::float_ranges_require_preserve"]
     fn ranges_require_preserve(width: u32, values: RangeInput, clip: BitRange) -> bool;
 }
@@ -68,34 +71,44 @@ impl Proof {
     }
 }
 
+#[repr(C)]
+struct FloatBoundProjection {
+    source: BitRange,
+    range: scalar::NumericalRange,
+}
+
 impl FloatingBound {
     fn coefficients(self) -> [f64; 3] { self.terms.map(f64::from_bits) }
-    fn maximum(self) -> f64 {
-        let inputs = BitRange { lower: self.lower, upper: self.upper };
+
+    fn project(self, input: CallInput<'_>, include_numeric: bool) -> Option<(Self, scalar::NumericalRange)> {
         let [scale, offset, reciprocal] = self.coefficients();
-        unsafe { float_upper_maximum(inputs, scale, offset, reciprocal) }
+        let projection = unsafe {
+            float_bound_at_call(
+                RangeInput::records(input.intervals(), range_sets::read_record),
+                self.scalar.bit_mask(), BitRange { lower: self.lower, upper: self.upper },
+                scale, offset, reciprocal, u32::from(include_numeric),
+            )
+        };
+        let BitRange { lower, upper } = projection.source;
+        (lower <= upper).then_some((Self { lower, upper, ..self }, projection.range))
     }
-    fn restricted(self, input: CallInput<'_>) -> Option<Self> {
-        let (lower,upper) = range_sets::restricted_hull(input.intervals(), (0, self.scalar.bit_mask()), None);
-        let bound = Self { lower: self.lower.max(lower), upper: self.upper.min(upper), ..self };
-        (bound.lower <= bound.upper).then_some(bound)
-    }
+
     pub(super) fn at_call(self, bindings: &impl CallBindings) -> Option<Self> {
         let input = bindings.input(self.source)?;
-        Some(Self { source: input.identity()?, ..self.restricted(input)? })
+        let source = input.identity()?;
+        let (bound, _) = self.project(input, false)?;
+        Some(Self { source, ..bound })
     }
+
     pub(super) fn project_at_call(
         self, bindings: &impl CallBindings,
     ) -> Option<(Option<Self>, Option<ScalarRanges>)> {
         let input = bindings.input(self.source)?;
-        let bound = self.restricted(input)?;
+        let include_numeric = self.form == FloatingForm::Upper;
+        let (bound, range) = self.project(input, include_numeric)?;
         let mapped = input.identity().map(|source| Self { source, ..bound });
-        let range = (bound.form == FloatingForm::Upper).then(|| upper_range(bound.maximum()));
-        Some((mapped, range))
+        Some((mapped, include_numeric.then(|| scalar::decoded(range))))
     }
-}
-fn upper_range(upper: f64) -> ScalarRanges {
-    interval(Scalar::F32,-(f32::MAX as f64),upper)
 }
 type ArithmeticSlot = *mut std::ffi::c_void;
 type ArithmeticBorrow = *const std::ffi::c_void;

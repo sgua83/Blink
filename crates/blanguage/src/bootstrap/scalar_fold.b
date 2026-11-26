@@ -675,7 +675,7 @@ f64 evaluate_float_upper(f64 input, f64 scale, f64 offset, f64 reciprocal) on cp
     return float_add_up(linear, quotient);
 }
 
-extern "C" f64 float_upper_maximum(BitRange inputs, f64 scale, f64 offset, f64 reciprocal) on cpu {
+f64 float_upper_maximum(BitRange inputs, f64 scale, f64 offset, f64 reciprocal) on cpu {
     // For positive d, a*d+b+c/d is convex when c>=0 and increasing when c<0 and a>=0.
     ScalarEncoding encoding = ScalarEncoding(ScalarKind::Unsigned, 64);
     f64 first = evaluate_float_upper(fp_integer_endpoint(encoding, 64, inputs.lower, 1), scale, offset, reciprocal);
@@ -685,6 +685,27 @@ extern "C" f64 float_upper_maximum(BitRange inputs, f64 scale, f64 offset, f64 r
     if (last > maximum) { maximum = last; }
     return maximum;
 }
+extern "C" FloatBoundProjection float_bound_at_call(RangeInput input, u64 maximum, BitRange source,
+    f64 scale, f64 offset, f64 reciprocal, bool include_numeric) on cpu requires nonzero(input.get) {
+    BitRange hull = BitRange(1u64, 0u64);
+    u64 index = 0u64;
+    while (index < input.count) {
+        BitRange interval = input.get(input.values, index);
+        if (interval.lower > maximum) { break; }
+        if (index == 0u64) { hull.lower = interval.lower; }
+        hull.upper = min(interval.upper, maximum);
+        if (hull.upper == maximum) { break; }
+        index += 1u64;
+    }
+    BitRange projected = BitRange(max(source.lower, hull.lower), min(source.upper, hull.upper));
+    FloatRange range = fp_unknown();
+    if (include_numeric && projected.lower <= projected.upper) {
+        f64 upper = float_upper_maximum(projected, scale, offset, reciprocal);
+        range = float_interval(32, -fp_maximum(32), upper);
+    }
+    return FloatBoundProjection(projected, range);
+}
+
 f64 float_conversion_error(u64 upper) on cpu {return upper<=16777216u64 ? 0.0f64 : fp_power(-23);}
 
 // Form and bounds here describe the original domain's integer source.

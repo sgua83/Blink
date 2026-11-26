@@ -71,7 +71,9 @@ extern "C" FloatRange float_sum_range(u32 width,BitRange range,u64 maximum) on c
 struct TextureSampleBounds { BitRange x; BitRange y; BitRange z; BitRange lod; u32 has_z; };
 extern "C" FloatRange texture_sample_range(SourceTexelFormat format, TextureSampleBounds input) on cpu;
 extern "C" FloatRange float_negate(u32 width,BitRange range) on cpu;
-extern "C" f64 float_upper_maximum(BitRange inputs, f64 scale, f64 offset, f64 reciprocal) on cpu;
+struct FloatBoundProjection { BitRange source; FloatRange range; };
+extern "C" FloatBoundProjection float_bound_at_call(RangeInput input, u64 maximum, BitRange source,
+    f64 scale, f64 offset, f64 reciprocal, bool include_numeric) on cpu requires nonzero(input.get);
 
 enum FloatArithmeticForm : u32 { End = 0; Cast = 1; Upper = 2; };
 struct FloatArithmeticBound {
