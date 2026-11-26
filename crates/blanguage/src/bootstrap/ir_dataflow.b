@@ -8,8 +8,7 @@ const u32 N_DATASET_BORROW=4;const u32 N_REFERENCE=5;const u32 N_STORAGE=6;
 const u32 N_INDEXED=7;const u32 N_STRIDE=8;const u32 N_TEXTURE=9;const u32 N_ATOMIC_OP=10;
 const u32 N_DIVISION=13;
 const u32 N_DIVISOR=14;const u32 N_WORDS3=15;
-const u32 N_COMPONENT=16;
-const u32 N_STAGE=17;const u32 N_RAY_RANGE=18;const u32 N_TILE=25;
+const u32 N_STAGE=17;const u32 N_RAY_RANGE=18;
 
 Span empty_span() on cpu {return Span(unsafe_address(0u64),0u64,0u64);}
 Node empty_node() on cpu {return Node(unsafe_address(0u64),0);}

@@ -694,17 +694,6 @@ impl TileGroup {
         let first = offset / 4;
         Self { storage, owner, first, end: first + count }
     }
-
-    pub(super) fn words(self) -> impl Iterator<Item = SharedWord> {
-        (self.first..self.end).map(move |index| {
-            let word = index * 4;
-            if self.storage == 0 {
-                SharedWord::Input { binding: self.owner, word }
-            } else {
-                SharedWord::Published { tile: self.owner, word }
-            }
-        })
-    }
 }
 
 unsafe extern "C" {

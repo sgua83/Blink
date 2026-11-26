@@ -9,22 +9,32 @@ struct BindingSpan {
 // The returned index starts the sorted union in that same output buffer.
 extern "C" u64 merge_bindings(address output, u64 left_count, BindingSpan right) on cpu;
 
-struct TilePlacement {
-    i64 begin;
-    i64 end;
-    u64 first;
-    u64 count;
-    u64 width;
-    u64 plane;
-};
-struct TileMember { u64 storage; u64 owner; u64 byte; u64 slot; };
-struct TilePlanes { address narrow; address wide; };
-
-// Each interval owns its original ordered members. Return the actual narrow
-// extents and write slots into those same member rows.
+struct TileKey { u64 storage; u64 owner; u32 byte; };
+struct TileUse { TileKey key; i64 end; };
+struct TileCell { u32 byte; u32 bytes; };
+enum TileScratch:u32 { Rows=0; Members=1; Narrow=2; Wide=3; };
 struct TileExtents { u64 narrow; u64 wide; };
-extern "C" TileExtents place_tile(address rows, u64 count, address members, address context,
-    cfn<TilePlanes,address,u64,u64> reserve) on cpu requires nonzero(reserve);
+struct TileLayoutInput {
+    Span tiles;
+    Span groups;
+    address uses;
+    u64 use_count;
+    u32 wide;
+    u32 publish;
+};
+struct TileLayoutHost {
+    Host ir;
+    address context;
+    cfn<address,address,TileScratch,u64> reserve;
+    cfn<void,address,TileKey,TileCell> describe;
+    cfn<TileCell,address,TileKey> ensures memory(read) cell;
+    cfn<i64,address,u64> ensures memory(read) birth;
+    cfn<void,address,TileKey,u32,u64,u32> publish;
+};
+extern "C" TileExtents place_tile(TileLayoutInput input, TileLayoutHost host) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.reserve) requires nonzero(host.describe)
+    requires nonzero(host.cell) requires nonzero(host.birth) requires nonzero(host.publish);
+
 
 struct WriteEnd { u32 end; u32 present; };
 struct StageGuarantee {
