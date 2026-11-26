@@ -407,6 +407,49 @@ extern "C" address merge_initialization(address exits, usize count, usize condit
     return common;
 }
 
+extern "C" void loop_field_initialization(address context, address output, usize rows, usize states,
+    PositionIndex selected, Host host, LoopFieldHost exit) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.child)
+    requires nonzero(host.equal)
+    requires nonzero(host.identity_equal)
+    requires nonzero(host.presence_kind)
+    requires nonzero(host.presence_equal)
+    requires nonzero(host.contains)
+    requires nonzero(host.contains_parameter)
+    requires nonzero(host.contains_element)
+    requires nonzero(host.contains_input)
+    requires nonzero(host.iterate)
+    requires nonzero(host.next)
+    requires nonzero(host.drop_iterator)
+    requires nonzero(host.fresh_vector)
+    requires nonzero(host.push_vector)
+    requires nonzero(host.make_position)
+    requires nonzero(host.clone_position)
+    requires nonzero(exit.row)
+    requires nonzero(exit.known)
+    requires nonzero(exit.publish) {
+    PositionIndex whole = absent_index();
+    usize row_index = 0u64;
+    while (row_index < rows) {
+        LoopFieldRow row = exit.row(context, row_index);
+        usize field = 0u64;
+        while (field < row.count) {
+            u32 offset = unsafe_position<u32>(unsafe_address(address_bits(row.words) + field * 4u64));
+            Projection element = Projection(row.position, 2, selected, offset);
+            usize edge = 0u64;
+            while (edge < states && initialized(element, exit.known(context, edge), host)) {
+                edge += 1u64;
+            }
+            if (edge == states) {
+                exit.publish(output, materialize(Projection(row.position, 2, whole, offset), host));
+            }
+            field += 1u64;
+        }
+        row_index += 1u64;
+    }
+}
+
 extern "C" void array_initialization(address context, address output, usize count, ArrayRange range,
     PositionIndex selected, Host host, ArrayExitHost exits) on cpu
     requires nonzero(host.inspect)

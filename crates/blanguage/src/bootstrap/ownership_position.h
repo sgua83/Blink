@@ -126,6 +126,35 @@ extern "C" address merge_initialization(address exits, usize count, usize condit
     requires nonzero(initialization.append_conditional)
     requires nonzero(initialization.drop_positions);
 
+struct LoopFieldRow { address position; address words; usize count; };
+struct LoopFieldHost {
+    cfn<LoopFieldRow,address,usize> ensures memory(read) row;
+    cfn<address,address,usize> ensures memory(read) known;
+    cfn<void,address,address> publish;
+};
+extern "C" void loop_field_initialization(address context, address output, usize rows, usize states,
+    PositionIndex selected, Host host, LoopFieldHost exit) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.child)
+    requires nonzero(host.equal)
+    requires nonzero(host.identity_equal)
+    requires nonzero(host.presence_kind)
+    requires nonzero(host.presence_equal)
+    requires nonzero(host.contains)
+    requires nonzero(host.contains_parameter)
+    requires nonzero(host.contains_element)
+    requires nonzero(host.contains_input)
+    requires nonzero(host.iterate)
+    requires nonzero(host.next)
+    requires nonzero(host.drop_iterator)
+    requires nonzero(host.fresh_vector)
+    requires nonzero(host.push_vector)
+    requires nonzero(host.make_position)
+    requires nonzero(host.clone_position)
+    requires nonzero(exit.row)
+    requires nonzero(exit.known)
+    requires nonzero(exit.publish);
+
 struct ArrayRange { u32 begin; u32 limit; u32 nonempty; };
 struct ArrayState { address known; u32 ready; };
 struct ArrayExitHost {

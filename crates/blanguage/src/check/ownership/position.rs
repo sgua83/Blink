@@ -218,6 +218,47 @@ pub(in crate::check) fn merge_initialization<T>(
 }
 
 #[repr(C)]
+struct LoopFieldRow { position: Address, words: *const u32, count: usize }
+
+#[repr(C)]
+struct LoopFieldHost {
+    row: unsafe extern "C" fn(Address, usize) -> LoopFieldRow,
+    known: unsafe extern "C" fn(Address, usize) -> Address,
+    publish: unsafe extern "C" fn(Address, Address),
+}
+
+struct LoopFieldExit<'a, R, T> {
+    rows: &'a [R],
+    fields: fn(&R) -> (&Position, &[u32]),
+    states: &'a [T],
+    known: fn(&T) -> &BTreeSet<Position>,
+}
+
+unsafe extern "C" fn loop_field_row<R, T>(context: Address, at: usize) -> LoopFieldRow {
+    let context = unsafe { &*context.cast::<LoopFieldExit<'_, R, T>>() };
+    let (position, words) = (context.fields)(&context.rows[at]);
+    LoopFieldRow { position: pointer(position), words: words.as_ptr(), count: words.len() }
+}
+
+unsafe extern "C" fn loop_field_state<R, T>(context: Address, at: usize) -> Address {
+    let context = unsafe { &*context.cast::<LoopFieldExit<'_, R, T>>() };
+    pointer((context.known)(&context.states[at]))
+}
+
+unsafe extern "C" fn publish_loop_field(output: Address, value: Address) {
+    let position = *unsafe { Box::from_raw(value.cast::<Position>()) };
+    unsafe { &mut *output.cast::<BTreeSet<Position>>() }.insert(position);
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ownership_position::loop_field_initialization"]
+    fn source_loop_fields(
+        context: Address, output: Address, rows: usize, states: usize,
+        selected: Index, host: Host, exit: LoopFieldHost,
+    );
+}
+
+#[repr(C)]
 struct ArrayRange { begin: u32, limit: u32, nonempty: u32 }
 
 #[repr(C)]
@@ -268,6 +309,28 @@ unsafe extern "C" {
 }
 
 impl Position {
+    pub(in crate::check) fn initialize_loop_fields<R, T>(
+        rows: &[R],
+        fields: fn(&R) -> (&Self, &[u32]),
+        states: &[T],
+        known: fn(&T) -> &BTreeSet<Self>,
+        output: &mut BTreeSet<Self>,
+        at: ApplicationIndex,
+    ) {
+        let context = LoopFieldExit { rows, fields, states, known };
+        let exit = LoopFieldHost {
+            row: loop_field_row::<R, T>,
+            known: loop_field_state::<R, T>,
+            publish: publish_loop_field,
+        };
+        unsafe {
+            source_loop_fields(
+                pointer(&context), std::ptr::from_mut(output).cast(),
+                rows.len(), states.len(), index(Some(&at)), HOST, exit,
+            );
+        }
+    }
+
     pub(in crate::check) fn initialize_array_exits<T>(
         states: &[T],
         positions: fn(&T) -> &BTreeSet<Self>,

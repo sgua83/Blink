@@ -335,28 +335,6 @@ impl Builder<'_> {
         std::mem::swap(&mut self.path, &mut exit.path);
         Ok(())
     }
-    pub(super) fn initialize_iteration_exit(
-        &self,
-        exit: &mut LoopState,
-        outputs: &[(application::Data, Vec<u32>)],
-        index: ownership::ApplicationIndex,
-        initial: bool,
-    ) {
-        let continues = &self.loop_contexts.last().unwrap().continues;
-        for (data, words) in outputs {
-            let scope = data.initialization.as_ref().unwrap();
-            for word in words {
-                if initial
-                    || continues.iter().all(|state| {
-                        scope.application_word_initialized(Some(index), *word, &state.initialized)
-                    })
-                {
-                    exit.initialized
-                        .insert(scope.application_word(None,*word));
-                }
-            }
-        }
-    }
     fn initialize_array_iteration_exit(
         &self,
         exit: &mut LoopState,
@@ -1615,13 +1593,10 @@ where
 
 pub(super) fn iteration_positions(iteration:&address::Iteration,states:&[BTreeSet<Position>])->BTreeSet<Position> {
     let mut result=BTreeSet::new();
-    for(scope,words)in &iteration.outputs {
-        for word in words {
-            if states.iter().all(|state|scope.application_word_initialized(Some(iteration.index),*word,state)){
-                result.insert(scope.application_word(None,*word));
-            }
-        }
-    }
+    Position::initialize_loop_fields(
+        &iteration.outputs, |(scope, words)| (scope, words),
+        states, |state| state, &mut result, iteration.index,
+    );
     Position::initialize_array_exits(
         states, |state| state, None, &mut result,
         iteration.index, iteration.range, iteration.nonempty,
@@ -1803,7 +1778,11 @@ impl Builder<'_> {
     },
     ForNeed::ExitInitialization=>{
      code=Some(std::mem::take(&mut self.code));let natural=natural.as_mut().unwrap();let iteration=iteration.unwrap();let limit=limit.as_ref().unwrap();
-     self.initialize_iteration_exit(natural, &initialization, iteration, initial);
+     let states = if initial { &[] } else { self.loop_contexts.last().unwrap().continues.as_slice() };
+     Position::initialize_loop_fields(
+        &initialization, |(data, words)| (data.initialization.as_ref().unwrap(), words),
+        states, |state| &state.initialized, &mut natural.initialized, iteration,
+     );
      if !initial && facts.seeks == 0 {
       self.initialize_array_iteration_exit(natural, &begin, limit, iteration);
       self.defer_iteration_exit(natural, &begin, limit, &initialization, iteration);
