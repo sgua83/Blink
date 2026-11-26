@@ -883,7 +883,7 @@ u64 words_five(address body, u64 at, u32 opcode, u32 a, u32 b, u32 c, u32 d, u32
     return at + 6u64;
 }
 
-extern "C" u64 select_words(address body, u64 at, u32 result_type, u32 result,
+u64 select_words(address body, u64 at, u32 result_type, u32 result,
                             u32 condition, u32 yes, u32 no) on cpu {
     return words_five(body, at, 169, result_type, result, condition, yes, no);
 }
@@ -1958,7 +1958,7 @@ void block_private_storage(View instruction, BlockValues values, BlockLocals loc
 extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     StructuredHost host, BlockHost emit) on cpu
     requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
-    requires nonzero(emit.textures.declaration) requires nonzero(emit.ray)
+    requires nonzero(emit.textures.declaration) requires nonzero(emit.rays.query) requires nonzero(emit.rays.declare_type)
     requires nonzero(emit.barrier)
     requires nonzero(emit.publish) requires nonzero(emit.collective)
     requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
@@ -2027,7 +2027,7 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
             page.has_word = 1;
             block_physical_access(page, value.a, false, emit.values, memory);
         } else if (kind == OP_RAY_QUERY) {
-            emit.ray(context, instruction);
+            block_ray_query(value, emit.ir.inspect(value.left).first, emit.values, emit.rays, host);
         } else if (kind == OP_POSITION_ADDRESS || kind == OP_BUFFER_STRIDE) {
             return emit.reject(context, BlockRejection::CpuAddress);
         } else if (kind == OP_LOAD_INDEXED || kind == OP_STORE_INDEXED) {
@@ -2201,7 +2201,7 @@ void block_subgroup(View instruction, BlockValues values, BlockSubgroup group, M
     memory.finish_body(context, words);
 }
 
-u32 texture_register(address registers, Span values, usize index) on cpu {
+u32 block_span_register(address registers, Span values, usize index) on cpu {
     address at = unsafe_address(address_bits(values.data) + index * values.stride);
     return block_register(registers, unsafe_position<usize>(at));
 }
@@ -2223,7 +2223,7 @@ void block_texture_sample(View sample, View texture, BlockValues values, Texture
     u64 annotated = 0u64;
     ScalarStreams words = stream.reserve(context, 46u64, arrayed ? 9u64 : 0u64);
     if (arrayed) {
-        u32 element = texture_register(registers, texture.second, 0u64);
+        u32 element = block_span_register(registers, texture.second, 0u64);
         u32 index = sampled;
         pointer = sampled + 1;
         sampled += 2;
@@ -2237,10 +2237,10 @@ void block_texture_sample(View sample, View texture, BlockValues values, Texture
     u32 coordinate = sampled + 1;
     u32 result = sampled + 2;
     at = words_three(words.body, at, 61, type.sampled, sampled, pointer);
-    u32 x = texture_register(registers, sample.second, 0u64);
-    u32 y = texture_register(registers, sample.second, 1u64);
+    u32 x = block_span_register(registers, sample.second, 0u64);
+    u32 y = block_span_register(registers, sample.second, 1u64);
     if (volume) {
-        u32 z = texture_register(registers, sample.second, 2u64);
+        u32 z = block_span_register(registers, sample.second, 2u64);
         at = words_five(words.body, at, 80, coordinate_type, coordinate, x, y, z);
     } else {
         at = words_four(words.body, at, 80, coordinate_type, coordinate, x, y);
@@ -2255,7 +2255,7 @@ void block_texture_sample(View sample, View texture, BlockValues values, Texture
     at += 7u64;
     u32 component_type = stream.type_id(context, BuiltinScalar::F32);
     for (component in 0..4) {
-        u32 dst = texture_register(registers, sample.first, u64(component));
+        u32 dst = block_span_register(registers, sample.first, u64(component));
         at = words_four(words.body, at, 81, component_type, dst, result, component);
     }
     values.finish(context, ScalarWords(at, annotated));
@@ -3384,8 +3384,26 @@ PrivateAddressWords private_address(PrivateAddress input, address parts, address
     return PrivateAddressWords(at, next);
 }
 
-RayWords ray_closest(RayEmission input, address results, address body, u64 start, u32 first) on cpu {
+struct RayIntersection {
+    u32 query;
+    u32 u32_type;
+    u32 f32_type;
+    u32 vec2_type;
+    u32 maximum;
+    u32 committed;
+    u32 zero;
+    u32 float_zero;
+    u32 position_type;
+    u32 object_to_world;
+    u32 world_to_object;
+};
+
+ControlWords ray_closest(RayIntersection input, Span results, BlockValues values, address body, u64 start) on cpu
+    requires nonzero(values.scalars.ids) {
     u64 at = start;
+    ScalarHost stream = values.scalars;
+    address registers = values.registers;
+    u32 first = stream.ids(stream.context, 9);
     u32 yes = first;
     u32 no = first + 1;
     u32 merge = first + 2;
@@ -3395,11 +3413,10 @@ RayWords ray_closest(RayEmission input, address results, address body, u64 start
     u32 v = first + 6;
     u32 instance = first + 7;
     u32 primitive = first + 8;
-    u32 next = first + 9;
     u32 f = input.f32_type;
     u32 q = input.query;
     u32 committed = input.committed;
-    at += open_selection(merge, read_word(results, 0), yes, no, word_at(body, at)).words;
+    at += open_selection(merge, block_span_register(registers, results, 0u64), yes, no, word_at(body, at)).words;
     at = words_four(body, at, 6018, f, distance, q, committed);
     at = words_four(body, at, 6024, input.vec2_type, barycentric, q, committed);
     at = words_four(body, at, 81, f, u, barycentric, 0);
@@ -3409,9 +3426,8 @@ RayWords ray_closest(RayEmission input, address results, address body, u64 start
 
     u32 positions = 0;
     if (input.position_type != 0) {
-        u32 points = next;
-        positions = next + 1;
-        next += 10;
+        u32 points = stream.ids(stream.context, 10);
+        positions = points + 1;
         at = words_four(body, at, 5340, input.position_type, points, q, committed);
         for (part in 0..9) {
             at = words_five(body, at, 81, f, positions + part, points, part / 3, part % 3);
@@ -3422,9 +3438,8 @@ RayWords ray_closest(RayEmission input, address results, address body, u64 start
     array<u32,2> matrices = array<u32,2>(0, 0);
     for (slot in 0..2) {
         if (types[slot] != 0) {
-            u32 matrix = next;
-            matrices[slot] = next + 1;
-            next += 13;
+            u32 matrix = stream.ids(stream.context, 13);
+            matrices[slot] = matrix + 1;
             at = words_four(body, at, 6031 + slot, types[slot], matrix, q, committed);
             // SPIR-V uses columns, while the B value has rows.
             for (part in 0..12) {
@@ -3436,29 +3451,80 @@ RayWords ray_closest(RayEmission input, address results, address body, u64 start
     at += next_control_block(merge, no, 1, word_at(body, at)).words;
     at += close_selection(merge, 1, 1, word_at(body, at)).words;
     u32 z = input.float_zero;
-    at = phi_two(body, at, f, read_word(results, 1), distance, yes, input.maximum, no);
-    at = phi_two(body, at, f, read_word(results, 2), u, yes, z, no);
-    at = phi_two(body, at, f, read_word(results, 3), v, yes, z, no);
-    at = phi_two(body, at, input.u32_type, read_word(results, 4), instance, yes, input.zero, no);
-    at = phi_two(body, at, input.u32_type, read_word(results, 5), primitive, yes, input.zero, no);
+    at = phi_two(body, at, f, block_span_register(registers, results, 1u64), distance, yes, input.maximum, no);
+    at = phi_two(body, at, f, block_span_register(registers, results, 2u64), u, yes, z, no);
+    at = phi_two(body, at, f, block_span_register(registers, results, 3u64), v, yes, z, no);
+    at = phi_two(body, at, input.u32_type, block_span_register(registers, results, 4u64), instance, yes, input.zero, no);
+    at = phi_two(body, at, input.u32_type, block_span_register(registers, results, 5u64), primitive, yes, input.zero, no);
     if (positions != 0) {
         for (part in 0..9) {
-            at = phi_two(body, at, f, read_word(results, 6 + part), positions + part, yes, z, no);
+            u32 dst = block_span_register(registers, results, 6u64 + u64(part));
+            at = phi_two(body, at, f, dst, positions + part, yes, z, no);
         }
     }
     for (slot in 0..2) {
         if (matrices[slot] != 0) {
             for (part in 0..12) {
-                at = phi_two(body, at, f, read_word(results, 15 + 12 * slot + part),
-                             matrices[slot] + part, yes, z, no);
+                u32 dst = block_span_register(registers, results, 15u64 + 12u64 * u64(slot) + u64(part));
+                at = phi_two(body, at, f, dst, matrices[slot] + part, yes, z, no);
             }
         }
     }
-    return RayWords(at, next, merge);
+    return ControlWords(at, merge, 1);
 }
 
-extern "C" RayWords encode_ray(RayEmission input, address results, address body) on cpu {
-    u32 first = input.next;
+void block_ray_query(View source, Span direction_values, BlockValues values, RayBindings bindings, StructuredHost host) on cpu
+    requires nonzero(bindings.query) requires nonzero(bindings.declare_type)
+    requires nonzero(host.reserve_words) requires nonzero(host.finish_words)
+    requires nonzero(values.scalars.constant) requires nonzero(values.scalars.type_id) requires nonzero(values.scalars.ids) {
+    Span results = source.first;
+    RayDeclaration declared = bindings.query(host.context, unsafe_position<usize>(results.data));
+    ScalarHost stream = values.scalars;
+    address context = stream.context;
+    address registers = values.registers;
+    bool closest = results.count == 39u64;
+
+    u32 position_type = 0;
+    if (declared.positions != 0) {
+        position_type = read_word(bindings.types, 0);
+        if (position_type == 0) {
+            u32 length = stream.constant(context, BuiltinScalar::U32, 3u64);
+            position_type = bindings.declare_type(context, TypeShape::Array, bindings.vec3, length);
+            put(bindings.types, 0u64, position_type);
+        }
+    }
+    u32 transform_type = 0;
+    if (declared.object_to_world != 0 || declared.world_to_object != 0) {
+        transform_type = read_word(bindings.types, 1);
+        if (transform_type == 0) {
+            transform_type = bindings.declare_type(context, TypeShape::Matrix, bindings.vec3, 4);
+            put(bindings.types, 1u64, transform_type);
+        }
+    }
+
+    bool culling = source.d != 0u64;
+    u64 base_flags = closest ? 1u64 : 5u64;
+    u32 flags = stream.constant(context, BuiltinScalar::U32, base_flags);
+    u32 cull_flags = 0;
+    u32 selected = 0;
+    if (culling) {
+        cull_flags = stream.constant(context, BuiltinScalar::U32, base_flags | 16u64);
+        selected = stream.ids(context, 1);
+    }
+    u32 mask = stream.constant(context, BuiltinScalar::U32, 255u64);
+    u32 committed = stream.constant(context, BuiltinScalar::U32, 1u64);
+    u32 zero = stream.constant(context, BuiltinScalar::U32, 0u64);
+    u32 float_zero = closest ? stream.constant(context, BuiltinScalar::F32, 0u64) : 0;
+    u32 u32_type = stream.type_id(context, BuiltinScalar::U32);
+    u32 bool_type = stream.type_id(context, BuiltinScalar::Bool);
+    u32 first = stream.ids(context, 9);
+    address body = host.reserve_words(host.context, (closest ? 587u64 : 61u64) + (culling ? 6u64 : 0u64));
+    u64 at = 0u64;
+    if (culling) {
+        u32 condition = block_register(registers, source.d - 1u64);
+        at = select_words(body, at, u32_type, selected, condition, cull_flags, flags);
+        flags = selected;
+    }
     u32 acceleration = first;
     u32 origin = first + 1;
     u32 direction = first + 2;
@@ -3468,34 +3534,44 @@ extern "C" RayWords encode_ray(RayEmission input, address results, address body)
     u32 end = first + 6;
     u32 more = first + 7;
     u32 kind = first + 8;
-    u32 next = first + 9;
-    u32 query = input.query;
-    u64 at = words_three(body, 0u64, 61, input.acceleration_type, acceleration, input.acceleration);
-    at = words_five(body, at, 80, input.vec3_type, origin, input.origin[0], input.origin[1], input.origin[2]);
-    at = words_five(body, at, 80, input.vec3_type, direction, input.direction[0], input.direction[1], input.direction[2]);
+    u32 query = declared.id;
+    at = words_three(body, at, 61, bindings.acceleration_type, acceleration,
+                     block_register(bindings.accelerations, source.c));
+    at = words_five(body, at, 80, bindings.vec3, origin,
+        block_span_register(registers, source.second, 0u64), block_span_register(registers, source.second, 1u64),
+        block_span_register(registers, source.second, 2u64));
+    at = words_five(body, at, 80, bindings.vec3, direction,
+        block_span_register(registers, direction_values, 0u64), block_span_register(registers, direction_values, 1u64),
+        block_span_register(registers, direction_values, 2u64));
+    u32 maximum = block_register(registers, source.b);
     put(body, at, instruction(4473, 9));
     put(body, at + 1u64, query);
     put(body, at + 2u64, acceleration);
-    put(body, at + 3u64, input.flags);
-    put(body, at + 4u64, input.mask);
+    put(body, at + 3u64, flags);
+    put(body, at + 4u64, mask);
     put(body, at + 5u64, origin);
-    put(body, at + 6u64, input.minimum);
+    put(body, at + 6u64, block_register(registers, source.a));
     put(body, at + 7u64, direction);
-    put(body, at + 8u64, input.maximum);
+    put(body, at + 8u64, maximum);
     at += 9u64;
 
     LoopLabels loop = LoopLabels(header, test, again, again, end);
     at += open_loop(loop, word_at(body, at)).words;
-    at = words_three(body, at, 4477, input.bool_type, more, query);
+    at = words_three(body, at, 4477, bool_type, more, query);
     at += test_loop(loop, more, word_at(body, at)).words;
     at = words_one(body, at, 249, header);
     at = words_one(body, at, 248, end);
-    at = words_four(body, at, 4479, input.u32_type, kind, query, input.committed);
-    at = words_four(body, at, 171, input.bool_type, read_word(results, 0), kind, input.zero);
-    if (input.closest != 0) {
-        return ray_closest(input, results, body, at, next);
+    at = words_four(body, at, 4479, u32_type, kind, query, committed);
+    at = words_four(body, at, 171, bool_type, block_span_register(registers, results, 0u64), kind, zero);
+    if (closest) {
+        u32 f32_type = stream.type_id(context, BuiltinScalar::F32);
+        RayIntersection intersection = RayIntersection(query, u32_type, f32_type, bindings.vec2, maximum, committed,
+            zero, float_zero, position_type, declared.object_to_world != 0 ? transform_type : 0,
+            declared.world_to_object != 0 ? transform_type : 0);
+        host.finish_words(host.context, ray_closest(intersection, results, values, body, at));
+    } else {
+        host.finish_words(host.context, ControlWords(at, end, 1));
     }
-    return RayWords(at, next, end);
 }
 
 struct TileLocation { u32 pointer; u32 byte; };

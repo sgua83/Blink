@@ -765,6 +765,25 @@ struct TextureSampling {
 }
 
 #[repr(C)]
+struct RayDeclaration {
+    id: u32,
+    positions: u32,
+    object_to_world: u32,
+    world_to_object: u32,
+}
+
+#[repr(C)]
+struct RayBindings {
+    accelerations: *const u32,
+    acceleration_type: u32,
+    vec2: u32,
+    vec3: u32,
+    types: *mut u32,
+    query: unsafe extern "C" fn(StructuredContext, Reg) -> RayDeclaration,
+    declare_type: unsafe extern "C" fn(*mut std::ffi::c_void, TypeShape, u32, u32) -> u32,
+}
+
+#[repr(C)]
 struct BlockHost {
     ir: dataflow::Host,
     values: BlockValues,
@@ -773,8 +792,8 @@ struct BlockHost {
     tile: tile::TileStorage,
     subgroup: BlockSubgroup,
     textures: TextureSampling,
+    rays: RayBindings,
     reject: unsafe extern "C" fn(StructuredContext, BlockRejection) -> BlockFlow,
-    ray: unsafe extern "C" fn(StructuredContext, *const Inst),
     barrier: unsafe extern "C" fn(StructuredContext),
     publish: unsafe extern "C" fn(StructuredContext, *const Publication),
     collective: unsafe extern "C" fn(StructuredContext, *const TileCollective),
@@ -819,7 +838,15 @@ fn block_host(emitter: &mut Emitter<'_>) -> BlockHost {
             vec3: emitter.vec3_type,
             vec4: emitter.vec4_type,
         },
-        ray: block_ray,
+        rays: RayBindings {
+            accelerations: emitter.accelerations.as_ptr(),
+            acceleration_type: emitter.acceleration_type,
+            vec2: emitter.vec2_type,
+            vec3: emitter.vec3_type,
+            types: emitter.ray_types.as_mut_ptr(),
+            query: block_ray_declaration,
+            declare_type: block_declare_type,
+        },
         barrier: block_barrier,
         publish: block_publish,
         collective: block_collective,
@@ -847,10 +874,21 @@ unsafe extern "C" fn block_reject(context: StructuredContext, rejection: BlockRe
     BlockFlow::Error
 }
 
-unsafe extern "C" fn block_ray(context: StructuredContext, instruction: *const Inst) {
-    let InstKind::RayQuery { scene, origin, direction, minimum, maximum, cull_back_faces, result } =
-        &unsafe { &*instruction }.kind else { unreachable!() };
-    unsafe { block_emitter(context) }.ray(*scene, origin, direction, *minimum, *maximum, *cull_back_faces, result);
+unsafe extern "C" fn block_ray_declaration(context: StructuredContext, hit: Reg) -> RayDeclaration {
+    let emission = unsafe { &*context.cast::<StructuredEmission<'_, '_>>() };
+    let (id, fields) = emission.emitter.ray_variables[&hit];
+    RayDeclaration {
+        id,
+        positions: u32::from(fields.positions),
+        object_to_world: u32::from(fields.object_to_world),
+        world_to_object: u32::from(fields.world_to_object),
+    }
+}
+
+unsafe extern "C" fn block_declare_type(
+    context: *mut std::ffi::c_void, shape: TypeShape, first: u32, second: u32,
+) -> u32 {
+    unsafe { &mut *context.cast::<Emitter<'_>>() }.declare_type(shape, first, second)
 }
 
 unsafe extern "C" fn block_barrier(context: StructuredContext) {
@@ -959,42 +997,7 @@ struct PrefixIndexWords {
     groups_y: u32,
 }
 
-#[repr(C)]
-struct RayEmission {
-    acceleration_type: u32,
-    acceleration: u32,
-    query: u32,
-    u32_type: u32,
-    f32_type: u32,
-    bool_type: u32,
-    vec2_type: u32,
-    vec3_type: u32,
-    origin: [u32; 3],
-    direction: [u32; 3],
-    minimum: u32,
-    maximum: u32,
-    flags: u32,
-    mask: u32,
-    committed: u32,
-    zero: u32,
-    float_zero: u32,
-    position_type: u32,
-    object_to_world: u32,
-    world_to_object: u32,
-    closest: u32,
-    next: u32,
-}
-
-#[repr(C)]
-struct RayWords {
-    words: u64,
-    next: u32,
-    label: u32,
-}
-
 unsafe extern "C" {
-    #[link_name = "bootstrap.spirv_envelope::encode_ray"]
-    fn encode_ray(input: RayEmission, results: *const u32, body: *mut u32) -> RayWords;
     #[link_name = "bootstrap.spirv_envelope::workgroup_barrier"]
     fn encode_workgroup_barrier(body: *mut u32, at: u64, scope: u32, semantics: u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::encode_sort_rank"]
@@ -1021,9 +1024,6 @@ unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::function_storage"]
     fn function_storage(input: FunctionStorageInput, host: FunctionStorageHost, constants: ShaderConstants,
         locals: *mut u32, definitions: *mut u32, body: *mut u32) -> FunctionStorageWords;
-    #[link_name = "bootstrap.spirv_envelope::select_words"]
-    fn select_words(body: *mut u32, at: u64, result_type: u32, result: u32,
-                    condition: u32, yes: u32, no: u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::prepare_page"]
     fn prepare_page(input: PageInputs, result_pointer: u32, host: ScalarHost) -> PageAddress;
     #[link_name = "bootstrap.spirv_envelope::physical_scalar_read"]
@@ -1214,8 +1214,7 @@ struct Emitter<'a> {
     vec4_type: u32,
     acceleration_type: u32,
     ray_variables: BTreeMap<Reg, (u32, crate::ir::dataflow::RayFields)>,
-    ray_position_type: u32,
-    ray_transform_type: u32,
+    ray_types: [u32; 2],
     vec3_type: u32,
     vec2_type: u32,
     push: u32,
@@ -1499,14 +1498,6 @@ impl Emitter<'_> {
             self.body.set_len(end as usize);
         }
     }
-    fn select(&mut self, result_type: u32, result: u32, condition: u32, yes: u32, no: u32) {
-        let at = self.body.len();
-        self.body.reserve(6);
-        unsafe {
-            let words = select_words(self.body.as_mut_ptr().add(at), 0, result_type, result, condition, yes, no);
-            self.body.set_len(at + words as usize);
-        }
-    }
     fn value(&self, r: Reg) -> u32 {
         self.regs[r]
     }
@@ -1741,74 +1732,6 @@ impl Emitter<'_> {
     }
     fn physical_unit(scalar: Scalar) -> Scalar {
         Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 })
-    }
-
-    fn ray(
-        &mut self,
-        scene: usize,
-        origin: &[Reg; 3],
-        direction: &[Reg; 3],
-        minimum: Reg,
-        maximum: Reg,
-        cull_back_faces: Option<Reg>,
-        result: &RayResult,
-    ) {
-        let mut results = [0; 39];
-        for (id, reg) in results.iter_mut().zip(result.registers()) {
-            *id = self.value(*reg);
-        }
-        let hit = result.registers()[0];
-        let closest = matches!(result, RayResult::Closest(_));
-        let (query, fields) = self.ray_variables[&hit];
-        let crate::ir::dataflow::RayFields { positions, object_to_world, world_to_object } = fields;
-        if positions && self.ray_position_type == 0 {
-            let length = self.constant(Scalar::U32, 3);
-            self.ray_position_type = self.declare_type(TypeShape::Array, self.vec3_type, length);
-        }
-        if (object_to_world || world_to_object) && self.ray_transform_type == 0 {
-            self.ray_transform_type = self.declare_type(TypeShape::Matrix, self.vec3_type, 4);
-        }
-        let base_flags = if closest { 1 } else { 5 };
-        let mut flags = self.constant(Scalar::U32, base_flags);
-        if let Some(cull) = cull_back_faces {
-            const CULL_BACK_FACING_TRIANGLES: u32 = 0x10;
-            let cull_flags = self.constant(Scalar::U32, base_flags | CULL_BACK_FACING_TRIANGLES);
-            let selected = self.id();
-            self.select(self.types[&Scalar::U32], selected, self.value(cull), cull_flags, flags);
-            flags = selected;
-        }
-        let input = RayEmission {
-            acceleration_type: self.acceleration_type,
-            acceleration: self.accelerations[scene],
-            query,
-            u32_type: self.types[&Scalar::U32],
-            f32_type: self.types[&Scalar::F32],
-            bool_type: self.types[&Scalar::Bool],
-            vec2_type: self.vec2_type,
-            vec3_type: self.vec3_type,
-            origin: origin.map(|reg| self.value(reg)),
-            direction: direction.map(|reg| self.value(reg)),
-            minimum: self.value(minimum),
-            maximum: self.value(maximum),
-            flags,
-            mask: self.constant(Scalar::U32, 255),
-            committed: self.constant(Scalar::U32, 1),
-            zero: self.constant(Scalar::U32, 0),
-            float_zero: if closest { self.constant(Scalar::F32, 0) } else { 0 },
-            position_type: if positions { self.ray_position_type } else { 0 },
-            object_to_world: if object_to_world { self.ray_transform_type } else { 0 },
-            world_to_object: if world_to_object { self.ray_transform_type } else { 0 },
-            closest: u32::from(closest),
-            next: self.next,
-        };
-        let at = self.body.len();
-        self.body.reserve(if closest { 587 } else { 61 });
-        unsafe {
-            let emitted = encode_ray(input, results.as_ptr(), self.body.as_mut_ptr().add(at));
-            self.body.set_len(at + emitted.words as usize);
-            self.next = emitted.next;
-            self.current_label = emitted.label;
-        }
     }
 }
 pub fn emit(program: &Program, stage_index: usize) -> Result<Vec<u32>, &'static str> {
@@ -2185,8 +2108,7 @@ fn emit_shader(
         vec4_type: 0,
         acceleration_type: 0,
         ray_variables: BTreeMap::new(),
-        ray_position_type: 0,
-        ray_transform_type: 0,
+        ray_types: [0; 2],
         vec3_type: 0,
         vec2_type: 0,
         push: 0,

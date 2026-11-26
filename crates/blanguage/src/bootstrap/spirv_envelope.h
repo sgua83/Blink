@@ -169,8 +169,6 @@ struct CastEmission {
     u32 value;
 };
 
-extern "C" u64 select_words(address body, u64 at, u32 result_type, u32 result,
-                            u32 condition, u32 yes, u32 no) on cpu;
 
 enum CollectiveOperation:u32 { Sum=0; Min=1; Max=2; BitAnd=3; BitOr=4; BitXor=5; };
 struct CollectivePair {
@@ -495,6 +493,17 @@ struct TextureSampling {
     u32 vec4;
 };
 
+struct RayDeclaration { u32 id; u32 positions; u32 object_to_world; u32 world_to_object; };
+struct RayBindings {
+    address accelerations;
+    u32 acceleration_type;
+    u32 vec2;
+    u32 vec3;
+    address types;
+    cfn<RayDeclaration,address,usize> ensures memory(read) query;
+    cfn<u32,address,TypeShape,u32,u32> declare_type;
+};
+
 struct BlockHost {
     Host ir;
     BlockValues values;
@@ -503,8 +512,8 @@ struct BlockHost {
     TileStorage tile;
     BlockSubgroup subgroup;
     TextureSampling textures;
+    RayBindings rays;
     cfn<BlockFlow,address,BlockRejection> reject;
-    cfn<void,address,address> ray;
     cfn<void,address> barrier;
     cfn<void,address,address> publish;
     cfn<void,address,address> collective;
@@ -512,7 +521,7 @@ struct BlockHost {
 extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     StructuredHost host, BlockHost emit) on cpu
     requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
-    requires nonzero(emit.textures.declaration) requires nonzero(emit.ray)
+    requires nonzero(emit.textures.declaration) requires nonzero(emit.rays.query) requires nonzero(emit.rays.declare_type)
     requires nonzero(emit.barrier)
     requires nonzero(emit.publish) requires nonzero(emit.collective)
     requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
@@ -970,36 +979,6 @@ struct PrivateAddressWords { u64 words; u32 next; };
 // holds the relative element IDs after the first one. Zero offset or width
 // omits the corresponding arithmetic. The caller owns count pointer slots
 // and 10*count+5 body words.
-
-struct RayEmission {
-    u32 acceleration_type;
-    u32 acceleration;
-    u32 query;
-    u32 u32_type;
-    u32 f32_type;
-    u32 bool_type;
-    u32 vec2_type;
-    u32 vec3_type;
-    array<u32,3> origin;
-    array<u32,3> direction;
-    u32 minimum;
-    u32 maximum;
-    u32 flags;
-    u32 mask;
-    u32 committed;
-    u32 zero;
-    u32 float_zero;
-    u32 position_type;
-    u32 object_to_world;
-    u32 world_to_object;
-    u32 closest;
-    u32 next;
-};
-struct RayWords { u64 words; u32 next; u32 label; };
-// Results contains the original RayResult IDs (one for Any, 39 for Closest).
-// Optional aggregate type IDs are zero when the field group is unused.
-// The body has room for 61 words for Any or 587 for full Closest.
-extern "C" RayWords encode_ray(RayEmission input, address results, address body) on cpu;
 
 struct DispatchLayout {
     u32 table_pointer;

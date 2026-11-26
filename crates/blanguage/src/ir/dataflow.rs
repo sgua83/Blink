@@ -500,10 +500,11 @@ fn instruction(value: &Inst) -> View {
         InstKind::ViewLoad { dst, address, index, stride, word } => {
             view.tag = 21; view.a = *dst; view.b = *index; view.c = *word as usize; view.first = Span::slice(address); view.left = Node::of(stride, Kind::Stride);
         }
-        InstKind::RayQuery { origin, direction, minimum, maximum, cull_back_faces, result, .. } => {
+        InstKind::RayQuery { scene, origin, direction, minimum, maximum, cull_back_faces, result } => {
             view.tag = 22; view.first = Span::slice(match result { RayResult::Any(reg) => std::slice::from_ref(reg), RayResult::Closest(regs) => regs });
             view.second = Span::slice(origin); view.left = Node::of(direction, Kind::Words3); view.a = *minimum; view.b = *maximum;
-            if let Some(reg) = cull_back_faces { view.c = 1; view.d = *reg; }
+            // The optional cull operand stores register + 1. Zero denotes no operand.
+            view.c = *scene; view.d = cull_back_faces.map_or(0, |register| register + 1);
         }
         InstKind::Constant(dst, scalar, bits) => { view.tag = 23; view.a = *dst; view.b = *bits as usize; view.c = *scalar as usize; }
         InstKind::FunctionAddress(dst, target) => { view.tag = 24; view.a = *dst; view.left = Node::of(target, Kind::Target); }

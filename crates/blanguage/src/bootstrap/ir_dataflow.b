@@ -383,7 +383,7 @@ u32 visit_instruction(View value,Host host,address context,cfn<u32,address,usize
   if(continued!=0){View direction=host.inspect(value.left);continued=visit_span(direction.first,context,visit);}
   if(continued!=0){continued=visit(context,value.a);}
   if(continued!=0){continued=visit(context,value.b);}
-  if(continued!=0&&value.c!=0u64){continued=visit(context,value.d);}
+  if(continued!=0&&value.d!=0u64){continued=visit(context,value.d-1u64);}
  }else if(kind==OP_LOAD_INDEXED||kind==OP_STORE_INDEXED){
   continued=visit_indexed(value.left,host,context,visit);
   if(continued!=0){continued=visit(context,kind==OP_LOAD_INDEXED ? value.b : value.a);}
