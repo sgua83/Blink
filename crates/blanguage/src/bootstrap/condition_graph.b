@@ -1,6 +1,84 @@
 module bootstrap.condition_graph;
 import codec.scalar_ranges;
 
+extern "C" handle GetProcessHeap() on cpu from "KERNEL32.dll";
+extern "C" address HeapAlloc(handle heap,u32 flags,u64 bytes) on cpu from "KERNEL32.dll";
+extern "C" address HeapReAlloc(handle heap,u32 flags,address data,u64 bytes) on cpu from "KERNEL32.dll";
+extern "C" i32 HeapFree(handle heap,u32 flags,address data) on cpu from "KERNEL32.dll";
+extern "C" void abort() on cpu from "ucrtbase.dll";
+
+struct PostorderFrame { address source; u32 expanded; };
+
+address postorder_at(address records,u64 index) on cpu {
+    return unsafe_address(address_bits(records)+index*size_of<PostorderFrame>());
+}
+
+void postorder_push(address owner,PostorderFrame frame) on cpu {
+    ClausePostorder stack=unsafe_position<ClausePostorder>(owner);
+    if(stack.length==stack.capacity){
+        u64 stride=size_of<PostorderFrame>();
+        u64 limit=9223372036854775807u64/stride;
+        if(stack.length==limit){abort();return;}
+        u64 capacity=stack.capacity==0u64?4u64:stack.length+min(stack.length,limit-stack.length);
+        address records=stack.capacity==0u64
+            ? HeapAlloc(GetProcessHeap(),0,capacity*stride)
+            : HeapReAlloc(GetProcessHeap(),0,stack.records,capacity*stride);
+        if(records==address()){abort();return;}
+        stack.records=records;
+        stack.capacity=capacity;
+    }
+    unsafe_position<PostorderFrame>(postorder_at(stack.records,stack.length))=frame;
+    stack.length+=1u64;
+    unsafe_position<ClausePostorder>(owner)=stack;
+}
+
+extern "C" void clause_postorder_start(address owner,address context,cfn<address,address> next) on cpu
+    requires nonzero(next) {
+    address root=next(context);
+    while(root!=address()){
+        postorder_push(owner,PostorderFrame(root,0));
+        root=next(context);
+    }
+    ClausePostorder stack=unsafe_position<ClausePostorder>(owner);
+    u64 left=0u64;
+    u64 right=stack.length;
+    while(left<right){
+        right-=1u64;
+        if(left==right){break;}
+        address first=postorder_at(stack.records,left);
+        address last=postorder_at(stack.records,right);
+        PostorderFrame saved=unsafe_position<PostorderFrame>(first);
+        unsafe_position<PostorderFrame>(first)=unsafe_position<PostorderFrame>(last);
+        unsafe_position<PostorderFrame>(last)=saved;
+        left+=1u64;
+    }
+}
+
+extern "C" address clause_postorder_next(address owner,address context,
+    cfn<PostorderChildren,address,address,u32> inspect) on cpu requires nonzero(inspect) {
+    u64 length=unsafe_position<ClausePostorder>(owner).length;
+    while(length!=0u64){
+        length-=1u64;
+        address records=unsafe_position<ClausePostorder>(owner).records;
+        PostorderFrame frame=unsafe_position<PostorderFrame>(postorder_at(records,length));
+        unsafe_position<ClausePostorder>(owner).length=length;
+        PostorderChildren children=inspect(context,frame.source,frame.expanded);
+        if(children.visited==0){
+            if(children.first==address()){return frame.source;}
+            postorder_push(owner,PostorderFrame(frame.source,1));
+            postorder_push(owner,PostorderFrame(children.second,0));
+            postorder_push(owner,PostorderFrame(children.first,0));
+            length=unsafe_position<ClausePostorder>(owner).length;
+        }
+    }
+    return address();
+}
+
+extern "C" void clause_postorder_drop(address owner) on cpu {
+    address records=unsafe_position<ClausePostorder>(owner).records;
+    if(records!=address()){HeapFree(GetProcessHeap(),0,records);}
+}
+
 extern "C" address next_fact_block(address walk,FactWalkHost host) on cpu
  requires nonzero(host.inspect) requires nonzero(host.push) requires nonzero(host.pop) {
  while(true){

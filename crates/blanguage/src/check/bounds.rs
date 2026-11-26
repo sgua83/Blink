@@ -1965,29 +1965,66 @@ impl Drop for Clause {
         }
     }
 }
+#[repr(C)]
 struct ClausePostorder<'a> {
-    pending: Vec<(&'a Clause, bool)>,
+    records: *mut std::ffi::c_void,
+    length: usize,
+    capacity: usize,
+    roots: std::marker::PhantomData<&'a Clause>,
+}
+
+#[repr(C)]
+struct PostorderChildren {
+    first: *const std::ffi::c_void,
+    second: *const std::ffi::c_void,
+    visited: u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.condition_graph::clause_postorder_start"]
+    fn postorder_start(stack: &mut ClausePostorder<'_>, context: *mut std::ffi::c_void,
+                       next: unsafe extern "C" fn(*mut std::ffi::c_void) -> *const std::ffi::c_void);
+    #[link_name = "bootstrap.condition_graph::clause_postorder_next"]
+    fn postorder_next(stack: &mut ClausePostorder<'_>, context: *const std::ffi::c_void,
+                      inspect: unsafe extern "C" fn(*const std::ffi::c_void, *const std::ffi::c_void, u32) -> PostorderChildren)
+                      -> *const std::ffi::c_void;
+    #[link_name = "bootstrap.condition_graph::clause_postorder_drop"]
+    fn postorder_drop(stack: &mut ClausePostorder<'_>);
 }
 
 impl<'a> ClausePostorder<'a> {
-    fn new(roots: impl IntoIterator<Item = &'a Clause>) -> Self {
-        let mut pending: Vec<_> = roots.into_iter().map(|root| (root, false)).collect();
-        pending.reverse();
-        Self { pending }
+    fn new<I: IntoIterator<Item = &'a Clause>>(roots: I) -> Self {
+        unsafe extern "C" fn next_root<'a, I: Iterator<Item = &'a Clause>>(context: *mut std::ffi::c_void) -> *const std::ffi::c_void {
+            unsafe { &mut *context.cast::<I>() }.next().map_or(std::ptr::null(), |clause| std::ptr::from_ref(clause).cast())
+        }
+        let mut stack = Self {
+            records: std::ptr::null_mut(), length: 0, capacity: 0, roots: std::marker::PhantomData,
+        };
+        let mut roots = roots.into_iter();
+        unsafe { postorder_start(&mut stack, std::ptr::from_mut(&mut roots).cast(), next_root::<I::IntoIter>) };
+        stack
     }
 
-    fn next(&mut self, completed: impl Fn(usize) -> bool) -> Option<&'a Clause> {
-        while let Some((clause, ready)) = self.pending.pop() {
-            if completed(clause.key()) {
-                continue;
+    fn next<F: Fn(usize) -> bool>(&mut self, completed: F) -> Option<&'a Clause> {
+        unsafe extern "C" fn inspect<F: Fn(usize) -> bool>(context: *const std::ffi::c_void, clause: *const std::ffi::c_void,
+                                                           expanded: u32) -> PostorderChildren {
+            let clause = unsafe { &*clause.cast::<Clause>() };
+            let completed = unsafe { &*context.cast::<F>() };
+            let visited = completed(clause.key());
+            if !visited && expanded == 0 && let Some((first, second, _)) = clause.query_inputs() {
+                return PostorderChildren { first: std::ptr::from_ref(first).cast(), second: std::ptr::from_ref(second).cast(), visited: 0 };
             }
-            if !ready && let Some((left, right, _)) = clause.query_inputs() {
-                self.pending.extend([(clause, true), (right, false), (left, false)]);
-            } else {
-                return Some(clause);
-            }
+            PostorderChildren { first: std::ptr::null(), second: std::ptr::null(), visited: u32::from(visited) }
         }
-        None
+        // Every stored and returned pointer borrows one of the original roots
+        // or its immutable children for the complete stack lifetime.
+        unsafe { postorder_next(self, std::ptr::from_ref(&completed).cast(), inspect::<F>).cast::<Clause>().as_ref() }
+    }
+}
+
+impl Drop for ClausePostorder<'_> {
+    fn drop(&mut self) {
+        unsafe { postorder_drop(self) };
     }
 }
 

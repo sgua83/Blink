@@ -6,6 +6,15 @@ import bootstrap.fact_key;
 // These descriptors borrow the original Clause query and its physical buffers.
 // They are private native fields, not a stored condition or public graph format.
 struct Span { address data; usize count; };
+struct ClausePostorder { address records; u64 length; u64 capacity; };
+struct PostorderChildren { address first; address second; u32 visited; };
+
+extern "C" void clause_postorder_start(address owner,address context,cfn<address,address> next) on cpu
+    requires nonzero(next);
+extern "C" address clause_postorder_next(address owner,address context,
+    cfn<PostorderChildren,address,address,u32> inspect) on cpu requires nonzero(inspect);
+extern "C" void clause_postorder_drop(address owner) on cpu;
+
 struct SourceNode { u32 kind; address left; address right; address no; u32 truth; u32 empty; address condition; };
 struct FactWalkHost {
  cfn<SourceNode,address,address> inspect;
