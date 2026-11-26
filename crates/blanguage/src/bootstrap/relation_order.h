@@ -258,6 +258,17 @@ struct ExitEvent {
 extern "C" void visit_exit_writes(WalkSlice events, usize memory, address context,
     cfn<void,address,usize,usize,usize> visit) on cpu requires nonzero(visit);
 
+enum CaptureIndex : u32 { Ineligible=0; Whole=1; Concrete=2; Element=3; };
+
+struct CaptureHost {
+    cfn<CaptureIndex,address,usize> candidate;
+    cfn<u32,address,usize> same_index;
+    cfn<void,address,usize> accept;
+};
+
+extern "C" void collect_address_captures(usize count, u32 indexed, address context, CaptureHost host) on cpu
+    requires nonzero(host.candidate) requires nonzero(host.same_index) requires nonzero(host.accept);
+
 struct PrefixBoundary {
     usize memory;
     usize frame;

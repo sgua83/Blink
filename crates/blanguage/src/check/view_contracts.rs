@@ -1069,47 +1069,10 @@ impl BorrowEvaluation<'_>{
     fn content_before(&mut self,origin:&address::Origin,word:u32,memory:usize,snapshots:Option<&[ValueSnapshot]>)->Borrow{
 
         let position=content_position(origin,word);
-        if let Some(snapshots)=snapshots{
-            let index = match &origin.root {
-                address::Root::Resource { index, .. } | address::Root::Dataset { index, .. } => *index,
-                _ => None,
-            };
-            let captured_position = match &origin.root {
-                address::Root::Resource { .. } | address::Root::Dataset { .. } => origin
-                    .memory_regions(&self.function.uses[memory].path)
-                    .and_then(|regions| regions.into_iter().find(|region| region.word == word
-                        && region.offset == 0 && region.size == Scalar::U64.size()))
-                    .map(|region| region.position),
-                _ => position.clone(),
-            };
-            let mut captured=None;
-            for snapshot in snapshots.iter(){
-                if snapshot.scalar!=Scalar::U64 {continue;}
-                let snapshot_position=match &snapshot.position {
-                    Position::Borrowed(borrow,layout,word)=>Position::Borrowed(
-                        Arc::new(self.evaluate(borrow)),layout.clone(),*word,
-                    ),
-                    position=>position.clone(),
-                };
-                if captured_position.as_ref()==Some(&snapshot_position){
-                    let mut bindings = BTreeMap::new();
-                    match (snapshot.index, index) {
-                        (Some(bounds::Operand::Value(id @ ValueIdentity::ElementIndex(_))), Some(index)) => {
-                            bindings.insert(id, bounds::Proof::element_operand(index, (0, u32::MAX)));
-                        }
-                        (Some(bounds::Operand::Value(id @ ValueIdentity::ElementIndex(_))), None) => {
-                            bindings.insert(id,bounds::Proof::default());
-                        }
-                        (Some(selected), Some(index)) if bounds::Condition::index_equal(selected, index)
-                            .truth_in(&self.function.uses[memory].path) != Some(true) => continue,
-                        (Some(_), None)=>continue,
-                        _ => {}
-                    }
-                    let value=self.evaluate(&snapshot.proof.view_borrow(0)).substitute_values(&bindings);
-                    if let Some(old)=&mut captured{Borrow::union(old,&value);}else{captured=Some(value);}
-                }
-            }
-            if let Some(value)=captured{return value;}
+        if let Some(snapshots) = snapshots
+            && let Some(value) = self.captured_address(origin, word, position.as_ref(), memory, snapshots)
+        {
+            return value;
         }
         let mut result=ContentAtRead::default();
         let function = self.function;

@@ -952,6 +952,21 @@ extern "C" void visit_exit_writes(WalkSlice events, usize memory, address contex
     }
 }
 
+extern "C" void collect_address_captures(usize count, u32 indexed, address context, CaptureHost host) on cpu
+    requires nonzero(host.candidate) requires nonzero(host.same_index) requires nonzero(host.accept)
+{
+    usize at = 0u64;
+    while (at < count) {
+        CaptureIndex candidate = host.candidate(context,at);
+        if (candidate == CaptureIndex::Whole || candidate == CaptureIndex::Element
+            || (candidate == CaptureIndex::Concrete && indexed != 0 && host.same_index(context,at) != 0))
+        {
+            host.accept(context,at);
+        }
+        at += 1u64;
+    }
+}
+
 PrefixBoundary prefix_boundary(WalkSlice runs, usize index) on cpu {
     return unsafe_position<PrefixBoundary>(cell(runs.data,index,16u64));
 }

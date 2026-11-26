@@ -1198,6 +1198,105 @@ impl ExitContents {
     }
 }
 
+#[repr(u32)]
+enum CaptureIndex { Ineligible, Whole, Concrete, Element }
+
+#[repr(C)]
+struct CaptureHost {
+    candidate: unsafe extern "C" fn(Slot, usize) -> CaptureIndex,
+    same_index: unsafe extern "C" fn(Slot, usize) -> u32,
+    accept: unsafe extern "C" fn(Slot, usize),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.relation_order::collect_address_captures"]
+    fn collect_address_captures(count: usize, indexed: u32, context: Slot, host: CaptureHost);
+}
+
+struct AddressCaptures<'a, 'env> {
+    evaluation: &'a mut BorrowEvaluation<'env>,
+    snapshots: &'a [ValueSnapshot],
+    position: &'a Position,
+    path: &'a bounds::Clause,
+    index: Option<bounds::Operand>,
+    value: Option<Borrow>,
+}
+
+impl AddressCaptures<'_, '_> {
+    unsafe extern "C" fn candidate(context: Slot, at: usize) -> CaptureIndex {
+        let read = unsafe { &mut *context.cast::<Self>() };
+        let snapshot = &read.snapshots[at];
+        if snapshot.scalar != Scalar::U64 {
+            return CaptureIndex::Ineligible;
+        }
+        let same = match (&snapshot.position, read.position) {
+            (Position::Borrowed(borrow, base, word), Position::Borrowed(expected, layout, offset)) =>
+                word == offset && base == layout && read.evaluation.evaluate(borrow) == **expected,
+            (Position::Borrowed(..), _) => false,
+            (position, expected) => position == expected,
+        };
+        if !same {
+            return CaptureIndex::Ineligible;
+        }
+        match snapshot.index {
+            None => CaptureIndex::Whole,
+            Some(bounds::Operand::Value(ValueIdentity::ElementIndex(_))) => CaptureIndex::Element,
+            Some(_) => CaptureIndex::Concrete,
+        }
+    }
+
+    unsafe extern "C" fn same_index(context: Slot, at: usize) -> u32 {
+        let read = unsafe { &*context.cast::<Self>() };
+        u32::from(read.snapshots[at].index.zip(read.index).is_some_and(|(selected, index)|
+            bounds::Condition::index_equal(selected, index).truth_in(read.path) == Some(true)))
+    }
+
+    unsafe extern "C" fn accept(context: Slot, at: usize) {
+        let read = unsafe { &mut *context.cast::<Self>() };
+        let snapshot = &read.snapshots[at];
+        let mut bindings = BTreeMap::new();
+        if let Some(bounds::Operand::Value(id @ ValueIdentity::ElementIndex(_))) = snapshot.index {
+            let proof = read.index.map_or_else(bounds::Proof::default,
+                |index| bounds::Proof::element_operand(index, (0, u32::MAX)));
+            bindings.insert(id, proof);
+        }
+        let value = read.evaluation.evaluate(&snapshot.proof.view_borrow(0)).substitute_values(&bindings);
+        if let Some(captured) = &mut read.value {
+            captured.union(&value);
+        } else {
+            read.value = Some(value);
+        }
+    }
+}
+
+impl BorrowEvaluation<'_> {
+    pub(super) fn captured_address(&mut self, origin: &address::Origin, word: u32,
+        position: Option<&Position>, memory: usize, snapshots: &[ValueSnapshot],
+    ) -> Option<Borrow> {
+        if snapshots.is_empty() {
+            return None;
+        }
+        let (position, index) = match &origin.root {
+            address::Root::Resource { borrow, index } | address::Root::Dataset { borrow, index } => {
+                let (_, offset) = content_word(origin, word)?;
+                (Cow::Owned(Position::Borrowed(Arc::new(borrow.clone()), origin.base.clone(), offset)), *index)
+            }
+            _ => (Cow::Borrowed(position?), None),
+        };
+        let path = &self.function.uses[memory].path;
+        let mut read = AddressCaptures { evaluation: self, snapshots, position: &position, path, index, value: None };
+        let host = CaptureHost {
+            candidate: AddressCaptures::candidate,
+            same_index: AddressCaptures::same_index,
+            accept: AddressCaptures::accept,
+        };
+        unsafe {
+            collect_address_captures(snapshots.len(), u32::from(index.is_some()), ptr::from_mut(&mut read).cast(), host);
+        }
+        read.value
+    }
+}
+
 struct Builder<'a> { function:&'a Function,state:LoopScope<'a>,known:&'a States<'a>,keys:BTreeMap<Key,usize>,prefix:FramePrefix,graph:Graph,parameters:BTreeMap<ValueIdentity,usize> }
 impl Builder<'_> {
     fn empty(&mut self)->usize{let id=self.graph.nodes.len();self.graph.nodes.push(Node::default());id}
