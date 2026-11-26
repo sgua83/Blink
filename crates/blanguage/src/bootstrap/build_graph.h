@@ -24,6 +24,15 @@ extern "C" void release_plan(address ids) on cpu;
 
 // Entry keys borrow canonical paths and the planner's existing provider rows.
 struct EntryKey { NameBytes path; NameBytes root; GraphRange providers; u64 unit; };
-enum CaptureKind:u64 { Unique=0u64; Shared=1u64; Borrowed=2u64; };
-struct CaptureSlot { u64 index; CaptureKind kind; };
-extern "C" u64 capture_slots(address entries,address order,u64 entry_count,address ids,address slots,u64 unit_count) on cpu;
+struct CaptureSource {
+    address context;
+    u64 unit_count;
+    u64 entry_count;
+    address ids;
+    cfn<bool,address,u64,address> key;
+    cfn<void,address,u64,bool> capture;
+};
+
+// Indices start at unit_count and finish as indices into the captured inputs.
+extern "C" i32 capture_sources(CaptureSource source,address indices) on cpu
+    requires nonzero(source.key) requires nonzero(source.capture);

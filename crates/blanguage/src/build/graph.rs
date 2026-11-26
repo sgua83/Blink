@@ -1,5 +1,5 @@
 //! 调用方持有的一次编译图；只调度本次真实依赖，不保留后台消费者。
-use super::{ByteField, Compilation, ObjectCompilation, ObjectKind, Result, inputs::{Capture, ProviderInterface}};
+use super::{ByteField, Compilation, ObjectCompilation, ObjectKind, Result, inputs::{Capture, CapturedUnit, ProviderInterface}};
 use crate::{Compiler, ast::Target, object::Object, source_path};
 use std::{collections::BTreeMap, ffi::{OsStr, c_void}, marker::PhantomData, os::windows::ffi::OsStrExt, path::{Path, PathBuf}, ptr, sync::{Arc, Condvar, Mutex, MutexGuard}, thread};
 #[derive(Clone, Copy)]
@@ -39,7 +39,6 @@ struct Prepared<'a> {
     artifact: PathBuf,
     replace_existing: bool,
     kind: UnitKind<'a>,
-    capture: usize,
 }
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -56,12 +55,15 @@ impl GraphRange {
 
 #[repr(C)]
 struct EntryKey { path: ByteField, root: ByteField, providers: GraphRange, unit: usize }
-#[repr(u64)]
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-enum CaptureKind { #[default] Unique, Shared, Borrowed }
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
-struct CaptureSlot { index: usize, kind: CaptureKind }
+struct CaptureSource {
+    context: *mut c_void,
+    unit_count: usize,
+    entry_count: usize,
+    ids: *const usize,
+    key: unsafe extern "C" fn(*mut c_void, usize, *mut EntryKey) -> bool,
+    capture: unsafe extern "C" fn(*mut c_void, usize, bool),
+}
 
 #[repr(C)]
 struct GraphRow {
@@ -128,9 +130,8 @@ unsafe extern "C" {
     fn build_dependency_plan<'object>(source: GraphSource<'object>, output: GraphOutput) -> GraphPlan<'object>;
     #[link_name = "bootstrap.build_graph::release_plan"]
     fn release_dependency_plan(ids: *const usize);
-    #[link_name = "bootstrap.build_graph::capture_slots"]
-    fn capture_slots(entries: *const EntryKey, order: *mut usize, entry_count: usize, ids: *const usize,
-        slots: *mut CaptureSlot, unit_count: usize) -> usize;
+    #[link_name = "bootstrap.build_graph::capture_sources"]
+    fn capture_sources(source: CaptureSource, indices: *mut usize) -> i32;
     #[link_name = "bootstrap.build_schedule::initialize_ready"]
     fn initialize_ready(ready: *mut usize, waiting: *const usize, length: usize) -> usize;
     #[link_name = "bootstrap.build_schedule::run_worker"]
@@ -290,6 +291,7 @@ struct GraphExecution<'graph, 'source> {
     compiler: &'graph Compiler,
     prepared: &'graph [Prepared<'source>],
     inputs: &'graph [super::Inputs],
+    capture_indices: &'graph [usize],
     provider_rows: &'graph [GraphRange],
     plan: &'graph GraphPlan<'source>,
     state: Mutex<State>,
@@ -306,7 +308,7 @@ impl GraphExecution<'_, '_> {
 
     fn compile(&self, index: usize, providers: &[Provider<'_>]) -> Result<Output> {
         let unit = &self.prepared[index];
-        let inputs = &self.inputs[unit.capture];
+        let inputs = &self.inputs[self.capture_indices[index]];
         let artifact = super::Artifact { path: &unit.artifact, replace_existing: unit.replace_existing };
         self.compiler.execute(|worker| match unit.kind {
             UnitKind::Object(kind) => super::object::compile(worker, &unit.path, &unit.root,
@@ -399,16 +401,60 @@ unsafe extern "C" fn release_graph(context: *mut c_void) {
     worker.execution.changed.notify_all();
     drop(worker.guard.take());
 }
+struct GraphCapture<'graph, 'source> {
+    prepared: &'graph [Prepared<'source>],
+    dependencies: &'graph DependencyPlan<'source>,
+    headers: &'graph [Arc<crate::syntax::Module>],
+    capture: Capture,
+    captured: Vec<CapturedUnit>,
+}
+
+unsafe extern "C" fn capture_key(context: *mut c_void, index: usize, key: *mut EntryKey) -> bool {
+    let state = unsafe { &*context.cast::<GraphCapture<'_, '_>>() };
+    let unit = &state.prepared[index];
+    if !matches!(unit.kind, UnitKind::Entry { .. }) { return false; }
+    unsafe { key.write(EntryKey {
+        path: unit.path.as_os_str().as_encoded_bytes().into(),
+        root: unit.root.as_os_str().as_encoded_bytes().into(),
+        providers: state.dependencies.provider_rows[index],
+        unit: index,
+    }); }
+    true
+}
+
+unsafe extern "C" fn capture_unit(context: *mut c_void, index: usize, shared: bool) {
+    let state = unsafe { &mut *context.cast::<GraphCapture<'_, '_>>() };
+    let unit = &state.prepared[index];
+    let row = state.dependencies.provider_rows[index];
+    let mut providers = BTreeMap::new();
+    for dependency in state.dependencies.plan.dependencies(row, state.prepared.len()) {
+        let (name, interface) = match dependency {
+            Dependency::Unit(id) => {
+                let header = &state.headers[id];
+                (header.name(), ProviderInterface::Unit(header))
+            }
+            Dependency::Object(object) => (object.name(), ProviderInterface::Object(object)),
+        };
+        providers.entry(name).or_insert(interface);
+    }
+    let requests = match unit.kind {
+        UnitKind::Object(ObjectKind::Module(requests)) => requests,
+        _ => &[],
+    };
+    state.captured.push(state.capture.capture(&unit.path, &unit.root, &providers, requests, shared));
+}
+
 pub fn compile_graph(units: &[Unit<'_>]) -> Result<Vec<Output>> {
     Compiler::available()?.build_graph(units)
 }
 impl Compiler {
     pub fn build_graph(&self, units: &[Unit<'_>]) -> Result<Vec<Output>> {
         if units.is_empty() { return Ok(Vec::new()); }
-        let (prepared, inputs, dependency_plan) = self.execute(|_| {
+        let (prepared, inputs, capture_indices, dependency_plan) = self.execute(|_| {
         let dependency_plan = dependency_plan(units)?;
         let mut destinations = BTreeMap::new();
-        let mut prepared = units.iter().enumerate().map(|(index, unit)| {
+        let mut entry_count = 0;
+        let prepared = units.iter().enumerate().map(|(index, unit)| {
             let header = source_path::canonicalize(&source_path::with_extension(unit.path, u16::from(b'h')))?;
             let extension: Vec<_> = unit.path.extension().unwrap_or_else(|| OsStr::new("b")).encode_wide().collect();
             let path = source_path::with_extension_units(&header, &extension);
@@ -417,6 +463,7 @@ impl Compiler {
             let artifact = match unit.kind {
                 UnitKind::Object(_) => output,
                 UnitKind::Entry { entry, target } => {
+                    entry_count += 1;
                     super::entry_artifact(&path, &root, entry, super::entry_backend(target)?, &output)
                 }
             };
@@ -429,58 +476,34 @@ impl Compiler {
             } else {
                 true
             };
-            Ok(Prepared { path, root, artifact, replace_existing, kind: unit.kind, capture: 0 })
+            Ok(Prepared { path, root, artifact, replace_existing, kind: unit.kind })
         }).collect::<Result<Vec<_>>>()?;
         drop(destinations);
         let mut capture = Capture::default();
         let headers = prepared.iter().map(|unit| capture.header(&unit.path))
             .collect::<crate::ast::Result<Vec<_>>>()?;
-        let ids = dependency_plan.plan.ids();
-        let entries: Vec<_> = prepared.iter().enumerate()
-            .filter(|(_, unit)| matches!(unit.kind, UnitKind::Entry { .. }))
-            .map(|(index, unit)| EntryKey { path: unit.path.as_os_str().as_encoded_bytes().into(),
-                root: unit.root.as_os_str().as_encoded_bytes().into(),
-                providers: dependency_plan.provider_rows[index], unit: index })
-            .collect();
-        let mut order: Vec<_> = (0..entries.len()).collect();
-        let mut slots = vec![CaptureSlot::default(); prepared.len()];
-        // The synchronous planner only borrows Windows canonical paths and
-        // the same ordered provider rows that the original workers consume.
-        let count = unsafe { capture_slots(entries.as_ptr(), order.as_mut_ptr(), entries.len(), ids.as_ptr(),
-            slots.as_mut_ptr(), slots.len()) };
-        drop(order);
-        drop(entries);
-        let mut captured = Vec::with_capacity(count);
-        for ((unit, slot), row) in prepared.iter_mut().zip(slots).zip(&dependency_plan.provider_rows) {
-            unit.capture = slot.index;
-            if slot.kind == CaptureKind::Borrowed { continue; }
-            let mut providers = BTreeMap::new();
-            for dependency in dependency_plan.plan.dependencies(*row, units.len()) {
-                let (name, interface) = match dependency {
-                    Dependency::Unit(id) => {
-                        let header = &headers[id];
-                        (header.name(), ProviderInterface::Unit(header))
-                    }
-                    Dependency::Object(object) => (object.name(), ProviderInterface::Object(object)),
-                };
-                providers.entry(name).or_insert(interface);
-            }
-            let requests = match unit.kind {
-                UnitKind::Object(ObjectKind::Module(requests)) => requests,
-                _ => &[],
-            };
-            captured.push(capture.capture(&unit.path, &unit.root, &providers, requests,
-                slot.kind == CaptureKind::Shared));
-        }
-        let inputs = capture.finish(captured);
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>((prepared, inputs, dependency_plan))
+        let mut state = GraphCapture {
+            prepared: &prepared, dependencies: &dependency_plan, headers: &headers,
+            capture, captured: Vec::new(),
+        };
+        let mut capture_indices = vec![prepared.len(); prepared.len()];
+        // The planner borrows the original paths and provider rows during
+        // the synchronous capture. It writes the final worker indices here.
+        let status = unsafe { capture_sources(CaptureSource {
+            context: ptr::from_mut(&mut state).cast(),
+            unit_count: prepared.len(), entry_count, ids: dependency_plan.plan.ids().as_ptr(),
+            key: capture_key, capture: capture_unit,
+        }, capture_indices.as_mut_ptr()) };
+        if status != 0 { return Err(std::io::Error::from_raw_os_error(status).into()); }
+        let inputs = state.capture.finish(state.captured);
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>((prepared, inputs, capture_indices, dependency_plan))
         }).map_err(|error| match error {
             crate::parallel::Error::Work(error) => error,
             crate::parallel::Error::Resource(error) => Box::new(error) as Box<dyn std::error::Error + Send + Sync>,
         })?;
         let DependencyPlan { plan, provider_rows, schedule } = dependency_plan;
         let graph = GraphExecution {
-            compiler: self, prepared: &prepared, inputs: &inputs, provider_rows: &provider_rows,
+            compiler: self, prepared: &prepared, inputs: &inputs, capture_indices: &capture_indices, provider_rows: &provider_rows,
             plan: &plan,
             state: Mutex::new(State {
                 schedule, outputs: (0..units.len()).map(|_| None).collect(), failure: None,
