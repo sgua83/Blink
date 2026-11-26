@@ -109,9 +109,9 @@ struct RelationSelection {
     usize root;
 };
 
-struct SelectionOutput {
-    cfn<address,address,usize,usize> node;
-    cfn<void,address,address,usize,usize,usize> edge;
+struct RelationOutput {
+    cfn<address,address,usize,usize,usize> node;
+    cfn<void,address,address,usize,usize,usize,address> edge;
     cfn<address,address,usize,usize> frame;
     cfn<address,address,address,usize,usize> write;
     cfn<void,address,address,usize,usize> field;
@@ -119,7 +119,7 @@ struct SelectionOutput {
 
 extern "C" usize compact_index(RelationSelection selection, usize id) on cpu;
 
-extern "C" void compact(address graph, address destination, RelationSelection selection, RelationSource source, SelectionOutput output) on cpu
+extern "C" void compact(address graph, address destination, RelationSelection selection, RelationSource source, RelationOutput output) on cpu
     requires nonzero(source.edges) requires nonzero(source.edge)
     requires nonzero(source.frame) requires nonzero(source.write) requires nonzero(source.field)
     requires nonzero(output.node) requires nonzero(output.edge)
@@ -162,3 +162,17 @@ extern "C" usize lexical_frame(address context, usize memory, PrefixHost host) o
     requires nonzero(host.state) requires nonzero(host.emit) requires nonzero(host.publish);
 
 extern "C" void label_lexical_frames(WalkSlice runs, address frames, usize count) on cpu;
+
+struct RelationOffsets {
+    usize nodes;
+    usize frames;
+    usize prefix;
+};
+
+extern "C" usize import_relation(address graph, address destination, usize root, usize nodes, usize frames,
+    RelationOffsets offsets, address entry, RelationSource source, RelationOutput output, cfn<void,address,usize> bind_inputs) on cpu
+    requires nonzero(source.edges) requires nonzero(source.edge)
+    requires nonzero(source.frame) requires nonzero(source.write) requires nonzero(source.field)
+    requires nonzero(output.node) requires nonzero(output.edge)
+    requires nonzero(output.frame) requires nonzero(output.write) requires nonzero(output.field)
+    requires nonzero(bind_inputs);

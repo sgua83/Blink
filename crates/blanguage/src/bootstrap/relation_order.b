@@ -473,53 +473,102 @@ extern "C" usize compact_index(RelationSelection selection, usize id) on cpu {
     return id < selection.root ? rank + 1u64 : rank;
 }
 
-void compact_node(address graph, address destination, RelationSelection selection, usize id, RelationSource source, SelectionOutput output) on cpu
+
+struct RelationIndices {
+    RelationSelection selection;
+    RelationOffsets offsets;
+    bool compacted;
+};
+
+usize relation_node_index(RelationIndices map, usize id) on cpu {
+    return map.compacted ? compact_index(map.selection,id) : map.offsets.nodes + id;
+}
+
+usize relation_frame_index(RelationIndices map, usize id) on cpu {
+    if (id == WALK_END) { return map.offsets.prefix; }
+    return map.compacted ? rank_of(map.selection.frames,id) : map.offsets.frames + id;
+}
+
+void transfer_node(address graph, address destination, RelationIndices map, usize id,
+    address entry, RelationSource source, RelationOutput output) on cpu
     requires nonzero(source.edges) requires nonzero(source.edge)
     requires nonzero(output.node) requires nonzero(output.edge)
 {
     WalkSlice edges = source.edges(graph,id);
-    address node = output.node(destination,id,edges.count);
+    address node = output.node(destination,id,relation_node_index(map,id),edges.count);
     usize index = 0u64;
     while (index < edges.count) {
         WalkEdge edge = source.edge(edges.data,index);
-        output.edge(node,edges.data,index,
-            compact_index(selection,edge.source),rank_of(selection.frames,edge.frame));
+        output.edge(node,edges.data,index,relation_node_index(map,edge.source),relation_frame_index(map,edge.frame),entry);
         index += 1u64;
     }
 }
 
-extern "C" void compact(address graph, address destination, RelationSelection selection, RelationSource source, SelectionOutput output) on cpu
+void transfer_frame(address graph, address destination, RelationIndices map, usize id, RelationSource source, RelationOutput output) on cpu
+    requires nonzero(source.frame) requires nonzero(source.write) requires nonzero(source.field)
+    requires nonzero(output.frame) requires nonzero(output.write) requires nonzero(output.field)
+{
+    WalkFrame frame = source.frame(graph,id);
+    address next_frame = output.frame(destination,relation_frame_index(map,frame.parent),frame.writes.count);
+    usize item = 0u64;
+    while (item < frame.writes.count) {
+        WalkWrite write = source.write(frame.writes.data,item);
+        address fields = output.write(next_frame,frame.writes.data,item,relation_node_index(map,write.target));
+        usize field = 0u64;
+        while (field < write.fields.count) {
+            usize target = source.field(write.fields.data,field);
+            output.field(fields,write.fields.data,field,relation_node_index(map,target));
+            field += 1u64;
+        }
+        item += 1u64;
+    }
+}
+
+extern "C" void compact(address graph, address destination, RelationSelection selection, RelationSource source, RelationOutput output) on cpu
     requires nonzero(source.edges) requires nonzero(source.edge)
     requires nonzero(source.frame) requires nonzero(source.write) requires nonzero(source.field)
     requires nonzero(output.node) requires nonzero(output.edge)
     requires nonzero(output.frame) requires nonzero(output.write) requires nonzero(output.field)
 {
-    compact_node(graph,destination,selection,selection.root,source,output);
+    RelationIndices map = RelationIndices(selection,RelationOffsets(0u64,0u64,WALK_END),true);
+    address entry = unsafe_address(0u64);
+    transfer_node(graph,destination,map,selection.root,entry,source,output);
     usize index = 0u64;
     while (index < selection.nodes.count) {
         usize id = old_id(selection.nodes,index);
-        if (id != selection.root) { compact_node(graph,destination,selection,id,source,output); }
+        if (id != selection.root) { transfer_node(graph,destination,map,id,entry,source,output); }
         index += 1u64;
     }
 
     index = 0u64;
     while (index < selection.frames.count) {
-        WalkFrame frame = source.frame(graph,old_id(selection.frames,index));
-        address next_frame = output.frame(destination,rank_of(selection.frames,frame.parent),frame.writes.count);
-        usize item = 0u64;
-        while (item < frame.writes.count) {
-            WalkWrite write = source.write(frame.writes.data,item);
-            address fields = output.write(next_frame,frame.writes.data,item,compact_index(selection,write.target));
-            usize field = 0u64;
-            while (field < write.fields.count) {
-                usize id = source.field(write.fields.data,field);
-                output.field(fields,write.fields.data,field,compact_index(selection,id));
-                field += 1u64;
-            }
-            item += 1u64;
-        }
+        transfer_frame(graph,destination,map,old_id(selection.frames,index),source,output);
         index += 1u64;
     }
+}
+
+extern "C" usize import_relation(address graph, address destination, usize root, usize nodes, usize frames,
+    RelationOffsets offsets, address entry, RelationSource source, RelationOutput output, cfn<void,address,usize> bind_inputs) on cpu
+    requires nonzero(source.edges) requires nonzero(source.edge)
+    requires nonzero(source.frame) requires nonzero(source.write) requires nonzero(source.field)
+    requires nonzero(output.node) requires nonzero(output.edge)
+    requires nonzero(output.frame) requires nonzero(output.write) requires nonzero(output.field)
+    requires nonzero(bind_inputs)
+{
+    WalkSlice empty = WalkSlice(unsafe_address(0u64),0u64);
+    RelationIndices map = RelationIndices(RelationSelection(empty,empty,0u64),offsets,false);
+    usize index = 0u64;
+    while (index < frames) {
+        transfer_frame(graph,destination,map,index,source,output);
+        index += 1u64;
+    }
+    if (address_bits(entry) == 0u64) { bind_inputs(destination,offsets.nodes); }
+    index = 0u64;
+    while (index < nodes) {
+        transfer_node(graph,destination,map,index,entry,source,output);
+        index += 1u64;
+    }
+    return relation_node_index(map,root);
 }
 
 const u32 RESOLVED_NODE = 1;

@@ -251,9 +251,9 @@ struct RelationSelection {
 }
 
 #[repr(C)]
-struct SelectionOutput {
-    node: unsafe extern "C" fn(Slot, usize, usize) -> Slot,
-    edge: unsafe extern "C" fn(Slot, Borrowed, usize, usize, usize),
+struct RelationOutput {
+    node: unsafe extern "C" fn(Slot, usize, usize, usize) -> Slot,
+    edge: unsafe extern "C" fn(Slot, Borrowed, usize, usize, usize, Borrowed),
     frame: unsafe extern "C" fn(Slot, usize, usize) -> Slot,
     write: unsafe extern "C" fn(Slot, Borrowed, usize, usize) -> Slot,
     field: unsafe extern "C" fn(Slot, Borrowed, usize, usize),
@@ -263,7 +263,7 @@ unsafe extern "C" {
     #[link_name = "bootstrap.relation_order::compact"]
     fn compact_relation(
         source: Borrowed, destination: Slot, selection: RelationSelection,
-        graph: RelationSource, output: SelectionOutput,
+        graph: RelationSource, output: RelationOutput,
     );
     #[link_name = "bootstrap.relation_order::compact_index"]
     fn compact_relation_index(selection: RelationSelection, original: usize) -> usize;
@@ -275,14 +275,14 @@ struct SelectedRelation<'g> {
 }
 
 impl SelectedRelation<'_> {
-    const OUTPUT: SelectionOutput = SelectionOutput {
-        node: Self::node, edge: Self::edge, frame: Self::frame, write: Self::write, field: Self::field,
+    const OUTPUT: RelationOutput = RelationOutput {
+        node: Self::node, edge: emit_relation_edge, frame: Self::frame,
+        write: emit_relation_write, field: emit_relation_field,
     };
 
-    unsafe extern "C" fn node(destination: Slot, id: usize, count: usize) -> Slot {
+    unsafe extern "C" fn node(destination: Slot, id: usize, index: usize, count: usize) -> Slot {
         let selected = unsafe { &mut *destination.cast::<Self>() };
         let graph = &mut selected.result;
-        let index = graph.nodes.len();
         if selected.source.base.variables.contains(&id) {
             graph.variables.insert(index);
         }
@@ -293,44 +293,108 @@ impl SelectedRelation<'_> {
         ptr::from_mut(&mut graph.nodes[index]).cast()
     }
 
-    unsafe extern "C" fn edge(destination: Slot, edges: Borrowed, index: usize, from: usize, frame: usize) {
-        let node = unsafe { &mut *destination.cast::<Node>() };
-        let old = unsafe { &*edges.cast::<Edge>().add(index) };
-        let mut op = old.op.clone();
-        if let Op::Initial { frame: original, .. } | Op::Read { frame: original, .. } = &mut op {
-            *original = (frame != usize::MAX).then_some(frame);
-        }
-        node.edges.push(Edge { from, op, when: old.when.clone() });
-    }
-
     unsafe extern "C" fn frame(destination: Slot, parent: usize, count: usize) -> Slot {
         let selected = unsafe { &mut *destination.cast::<Self>() };
-        let frames = &mut selected.result.frames;
-        let index = frames.len();
-        frames.push(Frame {
-            parent: (parent != usize::MAX).then_some(parent),
-            writes: Vec::with_capacity(count),
-        });
-        ptr::from_mut(&mut frames[index]).cast()
+        append_relation_frame(&mut selected.result.frames, parent, count)
+    }
+}
+
+fn append_relation_frame(frames: &mut Vec<Frame>, parent: usize, count: usize) -> Slot {
+    let index = frames.len();
+    frames.push(Frame {
+        parent: (parent != usize::MAX).then_some(parent),
+        writes: Vec::with_capacity(count),
+    });
+    ptr::from_mut(&mut frames[index]).cast()
+}
+
+unsafe extern "C" fn emit_relation_edge(
+    destination: Slot, edges: Borrowed, index: usize, from: usize, frame: usize, entry: Borrowed,
+) {
+    let node = unsafe { &mut *destination.cast::<Node>() };
+    let old = unsafe { &*edges.cast::<Edge>().add(index) };
+    let mut op = old.op.clone();
+    let parent = (frame != usize::MAX).then_some(frame);
+    match &mut op {
+        Op::Read { frame, epoch, .. } => {
+            *frame = parent;
+            if let Some(local) = unsafe { entry.cast::<Epoch>().as_ref() } {
+                *epoch = local.clone();
+            }
+        }
+        Op::Initial { frame, .. } => *frame = parent,
+        _ => {}
+    }
+    node.edges.push(Edge { from, op, when: old.when.clone() });
+}
+
+unsafe extern "C" fn emit_relation_write(destination: Slot, writes: Borrowed, index: usize, target: usize) -> Slot {
+    let frame = unsafe { &mut *destination.cast::<Frame>() };
+    let old = unsafe { &*writes.cast::<Write>().add(index) };
+    let index = frame.writes.len();
+    frame.writes.push(Write {
+        target,
+        fields: old.fields.as_ref().map(|fields| Vec::with_capacity(fields.len())),
+        when: old.when.clone(),
+    });
+    frame.writes[index].fields.as_mut()
+        .map_or(ptr::null_mut(), |fields| ptr::from_mut(fields).cast())
+}
+
+unsafe extern "C" fn emit_relation_field(destination: Slot, fields: Borrowed, index: usize, target: usize) {
+    let output = unsafe { &mut *destination.cast::<Vec<(u32, usize)>>() };
+    let (word, _) = unsafe { *fields.cast::<(u32, usize)>().add(index) };
+    output.push((word, target));
+}
+
+#[repr(C)]
+struct RelationOffsets {
+    nodes: usize,
+    frames: usize,
+    prefix: usize,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.relation_order::import_relation"]
+    fn import_relation_graph(
+        graph: Borrowed, destination: Slot, root: usize, nodes: usize, frames: usize,
+        offsets: RelationOffsets, entry: Borrowed, source: RelationSource, output: RelationOutput,
+        bind_inputs: unsafe extern "C" fn(Slot, usize),
+    ) -> usize;
+}
+
+struct RelationImport<'work, 'source> {
+    builder: &'work mut Builder<'source>,
+    graph: &'work Graph,
+}
+
+impl RelationImport<'_, '_> {
+    const OUTPUT: RelationOutput = RelationOutput {
+        node: Self::node, edge: emit_relation_edge, frame: Self::frame,
+        write: emit_relation_write, field: emit_relation_field,
+    };
+
+    unsafe extern "C" fn node(context: Slot, id: usize, node: usize, count: usize) -> Slot {
+        let import = unsafe { &mut *context.cast::<Self>() };
+        if import.graph.variables.contains(&id) {
+            import.builder.graph.variables.insert(node);
+        }
+        import.builder.fill(node, &import.graph.nodes[id].seeds, &Epoch::Input);
+        let output = &mut import.builder.graph.nodes[node];
+        output.edges.reserve(count);
+        ptr::from_mut(output).cast()
     }
 
-    unsafe extern "C" fn write(destination: Slot, writes: Borrowed, index: usize, target: usize) -> Slot {
-        let frame = unsafe { &mut *destination.cast::<Frame>() };
-        let old = unsafe { &*writes.cast::<Write>().add(index) };
-        let index = frame.writes.len();
-        frame.writes.push(Write {
-            target,
-            fields: old.fields.as_ref().map(|fields| Vec::with_capacity(fields.len())),
-            when: old.when.clone(),
-        });
-        frame.writes[index].fields.as_mut()
-            .map_or(ptr::null_mut(), |fields| ptr::from_mut(fields).cast())
+    unsafe extern "C" fn frame(context: Slot, parent: usize, count: usize) -> Slot {
+        let import = unsafe { &mut *context.cast::<Self>() };
+        append_relation_frame(&mut import.builder.graph.frames, parent, count)
     }
 
-    unsafe extern "C" fn field(destination: Slot, fields: Borrowed, index: usize, target: usize) {
-        let output = unsafe { &mut *destination.cast::<Vec<(u32, usize)>>() };
-        let (word, _) = unsafe { *fields.cast::<(u32, usize)>().add(index) };
-        output.push((word, target));
+    unsafe extern "C" fn bind_inputs(context: Slot, offset: usize) {
+        let import = unsafe { &mut *context.cast::<Self>() };
+        for (input, id) in &import.graph.inputs {
+            import.builder.graph.inputs.entry(*input).or_insert(offset + id);
+        }
     }
 }
 
@@ -730,33 +794,23 @@ impl Builder<'_> {
         }id
     }
     fn import(&mut self, graph: &Graph, root: usize, prefix: Option<usize>, entry: &Epoch) -> usize {
-        let offset=self.graph.nodes.len();self.graph.nodes.resize_with(offset+graph.nodes.len(),Node::default);let frame_offset=self.graph.frames.len();
-        self.graph.frames.extend(graph.frames.iter().map(|f|Frame{parent:f.parent.map(|p|frame_offset+p).or(prefix),writes:f.writes.iter().map(|w|Write{target:offset+w.target,fields:w.fields.as_ref().map(|fields|fields.iter().map(|(word,id)|(*word,offset+id)).collect()),when:w.when.clone()}).collect()}));
-        if matches!(entry, Epoch::Input) {
-            for (input, id) in &graph.inputs {
-                self.graph.inputs.entry(*input).or_insert(offset + id);
-            }
+        let offsets = RelationOffsets {
+            nodes: self.graph.nodes.len(),
+            frames: self.graph.frames.len(),
+            prefix: prefix.unwrap_or(usize::MAX),
+        };
+        self.graph.nodes.resize_with(offsets.nodes + graph.nodes.len(), Node::default);
+        let source = RelationView { base: graph, tail: &[], residual: None };
+        let entry: Borrowed = match entry {
+            Epoch::Input => ptr::null(),
+            Epoch::Local { .. } => ptr::from_ref(entry).cast(),
+        };
+        let mut import = RelationImport { builder: self, graph };
+        unsafe {
+            import_relation_graph(ptr::from_ref(&source).cast(), ptr::from_mut(&mut import).cast(),
+                root, graph.nodes.len(), graph.frames.len(), offsets, entry, RelationSource::GRAPH,
+                RelationImport::OUTPUT, RelationImport::bind_inputs)
         }
-        for(i,node)in graph.nodes.iter().enumerate(){
-            if graph.variables.contains(&i){self.graph.variables.insert(offset+i);}
-            self.fill(offset+i,&node.seeds,&Epoch::Input);
-            self.graph.nodes[offset + i].edges.extend(node.edges.iter().map(|edge| {
-                let mut op = edge.op.clone();
-                match &mut op {
-                    Op::Read { epoch, frame, .. } => {
-                        *frame = frame.map(|f| frame_offset + f).or(prefix);
-                        if let Epoch::Local { .. } = entry {
-                            *epoch = entry.clone();
-                        }
-                    }
-                    Op::Initial { frame, .. } => {
-                        *frame = frame.map(|f| frame_offset + f).or(prefix);
-                    }
-                    _ => {}
-                }
-                Edge { from: offset + edge.from, op, when: edge.when.clone() }
-            }));
-        }offset+root
     }
 }
 impl Graph {
