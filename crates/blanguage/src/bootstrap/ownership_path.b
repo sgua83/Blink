@@ -134,6 +134,58 @@ extern "C" u32 compare_projected_residency(address context,ResidencyPair pair,Re
     return host.leaf(context,pair);
 }
 
+extern "C" ResidencyVisitResult check_residency(address context,ResidencyVisit visit,ResidencyCheckHost host) on cpu
+    requires nonzero(host.possible) requires nonzero(host.inspect)
+    requires nonzero(host.branch) requires nonzero(host.origins) {
+    if(visit.mode!=ResidencyCheckMode::Query && host.possible(visit.path)==0){
+        return ResidencyVisitResult(1,visit.deferred);
+    }
+    let shape=host.inspect(visit.value);
+    if(address_bits(shape.branch.condition)!=0u64){
+        ResidencyVisit branch=visit;
+        branch.value=shape.branch.yes;
+        let yes=host.branch(context,branch,shape.branch.condition,1);
+        if(yes.accepted==0){return yes;}
+        branch.value=shape.branch.no;
+        branch.deferred=yes.deferred;
+        return host.branch(context,branch,shape.branch.condition,0);
+    }
+    if(address_bits(shape.origins)==0u64){return ResidencyVisitResult(1,visit.deferred);}
+    return host.origins(context,visit,shape.origins);
+}
+
+extern "C" ResidencyVisitResult check_residency_origins(address context,ResidencyVisit visit,address iterator,ResidencyOriginsHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.overlaps)
+    requires nonzero(host.same_input) requires nonzero(host.insert) {
+    u32 deferred=visit.deferred;
+    bool query=visit.mode==ResidencyCheckMode::Query;
+    ResidencyOriginItem origin=host.next(iterator);
+    if(origin.kind==ResidencyOriginKind::End){
+        return ResidencyVisitResult(u32(query && host.overlaps(visit.path)==0),deferred);
+    }
+    while(origin.kind!=ResidencyOriginKind::End){
+        u32 accepted=1;
+        if(origin.kind==ResidencyOriginKind::Cpu || origin.kind==ResidencyOriginKind::Gpu){
+            u32 target=origin.kind==ResidencyOriginKind::Cpu ? 0 : 1;
+            accepted=u32(visit.target==target || (query && host.overlaps(visit.path)==0));
+        }else if(origin.kind==ResidencyOriginKind::Output){
+            accepted=u32(visit.mode==ResidencyCheckMode::Known || (query && host.overlaps(visit.path)==0));
+        }else if(visit.mode==ResidencyCheckMode::Require){
+            accepted=host.insert(context,origin.input,visit.target,visit.path);
+        }else if(query){
+            bool wanted=address_bits(visit.wanted)!=0u64;
+            bool matches=wanted && host.same_input(visit.wanted,origin.input)!=0;
+            if((deferred==0 || matches) && (wanted || host.overlaps(visit.path)!=0)){
+                deferred=1;
+                if(matches){accepted=host.insert(context,origin.input,visit.target,visit.path);}
+            }
+        }
+        if(accepted==0){return ResidencyVisitResult(0,deferred);}
+        origin=host.next(iterator);
+    }
+    return ResidencyVisitResult(1,deferred);
+}
+
 extern "C" void bind_argument(address context,u64 prefix,ArgumentBindingHost host) on cpu
     requires nonzero(host.bind_root)
     requires nonzero(host.next_descendant)

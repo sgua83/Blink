@@ -409,13 +409,9 @@ impl Inputs{
         self.uses.push(Use::Same{before:a.clone(),after:b.clone(),path:path.clone(),source:source.clone(),span});
     }
 }
-fn known(value:&Residency,target:Target,path:&bounds::Clause)->bool{
-    if !path.possible(){return true;}
-    match value{
-        Residency::Absent=>true,
-        Residency::Selected(when,a,b)=>known(a,target,&when.assume(path,true))&&known(b,target,&when.assume(path,false)),
-        Residency::Origins(origins)=>!origins.is_empty()&&origins.iter().all(|origin|match origin{Origin::Cpu|Origin::TaskTransfer=>target==Target::Cpu,Origin::Gpu=>target==Target::Gpu,_=>true}),
-    }
+fn known(value: &Residency, target: Target, path: &bounds::Clause) -> bool {
+    let visit = ResidencyVisit::new(value, target, path, ResidencyCheckMode::Known);
+    unsafe { visit.run(ptr::null_mut()) }.accepted != 0
 }
 fn insert(required:&mut Requirements,input:Input,target:Target,when:bounds::Condition)->bool{
     if !when.active(){return true;}
@@ -423,17 +419,9 @@ fn insert(required:&mut Requirements,input:Input,target:Target,when:bounds::Cond
     required.entry((input,target)).or_default().insert(when);true
 }
 
-fn consume(required:&mut Requirements,value:&Residency,target:Target,path:&bounds::Clause)->bool{
-    if !path.possible(){return true;}
-    match value{
-        Residency::Absent=>true,
-        Residency::Selected(when,a,b)=>consume(required,a,target,&when.assume(path,true))&&consume(required,b,target,&when.assume(path,false)),
-        Residency::Origins(origins)=>!origins.is_empty()&&origins.iter().all(|origin|match origin{
-            Origin::Cpu|Origin::TaskTransfer=>target==Target::Cpu,Origin::Gpu=>target==Target::Gpu,
-            Origin::Input(input)=>insert(required,input.clone(),target,bounds::Condition::guard(path.clone())),
-            Origin::Output(_)=>false,
-        }),
-    }
+fn consume(required: &mut Requirements, value: &Residency, target: Target, path: &bounds::Clause) -> bool {
+    let visit = ResidencyVisit::new(value, target, path, ResidencyCheckMode::Require);
+    unsafe { visit.run(ptr::from_mut(required).cast()) }.accepted != 0
 }
 pub(super) fn input_parameters(parameters:&BTreeMap<ValueIdentity,ValueIdentity>,width:usize)->BTreeMap<ValueIdentity,bounds::Proof>{
     parameters.iter().filter(|(_,target)|match target{ValueIdentity::Register(n)=>*n<width,ValueIdentity::ParameterContent(..)|ValueIdentity::ResourceParameter(..)=>true,_=>false}).map(|(source,target)|(*source,bounds::Proof::default().with_identity(*target))).collect()
@@ -526,24 +514,16 @@ fn query_key(call:&Call,wanted:Option<&Input>,outputs:&Outputs)->Vec<u8>{
     for(input,value)in &call.arguments{input.encode(&mut w);query_value(value,wanted,outputs,&mut w);}
     w.0
 }
-fn query_consume(required:&mut Requirements,deferred:&mut bool,wanted:Option<&Input>,value:&Residency,target:Target,path:&bounds::Clause)->bool{
-    match value{
-        Residency::Absent=>true,
-        Residency::Selected(when,a,b)=>query_consume(required,deferred,wanted,a,target,&when.assume(path,true))&&query_consume(required,deferred,wanted,b,target,&when.assume(path,false)),
-        Residency::Origins(origins)=>{
-            if origins.is_empty(){return !path.overlaps(&bounds::Clause::default());}
-            origins.iter().all(|origin|match origin{
-                Origin::Cpu|Origin::TaskTransfer=>target==Target::Cpu||!path.overlaps(&bounds::Clause::default()),
-                Origin::Gpu=>target==Target::Gpu||!path.overlaps(&bounds::Clause::default()),
-                Origin::Input(input)=>{
-                    if (*deferred && wanted!=Some(input))||(wanted.is_none()&&!path.overlaps(&bounds::Clause::default())){return true;}
-                    *deferred=true;
-                    wanted!=Some(input)||insert(required,input.clone(),target,bounds::Condition::guard(path.clone()))
-                },
-                Origin::Output(_)=>!path.overlaps(&bounds::Clause::default()),
-            })
-        },
-    }
+fn query_consume(
+    required: &mut Requirements, deferred: &mut bool, wanted: Option<&Input>,
+    value: &Residency, target: Target, path: &bounds::Clause,
+) -> bool {
+    let mut visit = ResidencyVisit::new(value, target, path, ResidencyCheckMode::Query);
+    visit.wanted = wanted.map_or(ptr::null(), |input| ptr::from_ref(input).cast());
+    visit.deferred = u32::from(*deferred);
+    let result = unsafe { visit.run(ptr::from_mut(required).cast()) };
+    *deferred = result.deferred != 0;
+    result.accepted != 0
 }
 // 声明中的Input映射还引用实参已有的后代模型，不把父位置当作完整子树。
 fn visit_inputs(value: &Residency, visit: &mut impl FnMut(&Input)) {
@@ -860,6 +840,135 @@ fn physical_target(value: &Residency) -> Option<Target> {
 }
 type Borrowed = *const c_void;
 type Context = *mut c_void;
+
+#[repr(u32)]
+#[derive(Clone, Copy)]
+enum ResidencyCheckMode { Known, Require, Query }
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ResidencyVisit {
+    value: Borrowed,
+    path: Borrowed,
+    wanted: Borrowed,
+    target: u32,
+    mode: ResidencyCheckMode,
+    deferred: u32,
+}
+
+#[repr(C)]
+struct ResidencyVisitResult { accepted: u32, deferred: u32 }
+
+#[repr(C)]
+struct ResidencyCheckNode { branch: ResidencyBranch, origins: Borrowed }
+
+#[repr(u32)]
+enum ResidencyOriginKind { End, Cpu, Gpu, Input, Output }
+
+#[repr(C)]
+struct ResidencyOriginItem { kind: ResidencyOriginKind, input: Borrowed }
+
+#[repr(C)]
+struct ResidencyCheckHost {
+    possible: unsafe extern "C" fn(Borrowed) -> u32,
+    inspect: unsafe extern "C" fn(Borrowed) -> ResidencyCheckNode,
+    branch: unsafe extern "C" fn(Context, ResidencyVisit, Borrowed, u32) -> ResidencyVisitResult,
+    origins: unsafe extern "C" fn(Context, ResidencyVisit, Borrowed) -> ResidencyVisitResult,
+}
+
+#[repr(C)]
+struct ResidencyOriginsHost {
+    next: unsafe extern "C" fn(Context) -> ResidencyOriginItem,
+    overlaps: unsafe extern "C" fn(Borrowed) -> u32,
+    same_input: unsafe extern "C" fn(Borrowed, Borrowed) -> u32,
+    insert: unsafe extern "C" fn(Context, Borrowed, u32, Borrowed) -> u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ownership_path::check_residency"]
+    fn check_residency(context: Context, visit: ResidencyVisit, host: ResidencyCheckHost) -> ResidencyVisitResult;
+    #[link_name = "bootstrap.ownership_path::check_residency_origins"]
+    fn check_residency_origins(context: Context, visit: ResidencyVisit, iterator: Context, host: ResidencyOriginsHost) -> ResidencyVisitResult;
+}
+
+unsafe extern "C" fn inspect_residency_visit(value: Borrowed) -> ResidencyCheckNode {
+    let origins = match unsafe { &*value.cast::<Residency>() } {
+        Residency::Origins(origins) => ptr::from_ref(origins).cast(),
+        _ => ptr::null(),
+    };
+    ResidencyCheckNode { branch: unsafe { compare_selected(value) }, origins }
+}
+
+unsafe extern "C" fn visit_residency_branch(context: Context, mut visit: ResidencyVisit, condition: Borrowed, truth: u32) -> ResidencyVisitResult {
+    let path = unsafe { &*condition.cast::<bounds::Condition>() }
+        .assume(unsafe { &*visit.path.cast::<bounds::Clause>() }, truth != 0);
+    visit.path = ptr::from_ref(&path).cast();
+    unsafe { check_residency(context, visit, residency_check_host()) }
+}
+
+unsafe extern "C" fn visit_next_origin(iterator: Context) -> ResidencyOriginItem {
+    use ResidencyOriginKind::{Cpu, End, Gpu, Input, Output};
+    let iterator = unsafe { &mut *iterator.cast::<std::collections::btree_set::Iter<'_, Origin>>() };
+    let (kind, input) = match iterator.next() {
+        Some(Origin::Cpu | Origin::TaskTransfer) => (Cpu, ptr::null()),
+        Some(Origin::Gpu) => (Gpu, ptr::null()),
+        Some(Origin::Input(input)) => (Input, ptr::from_ref(input).cast()),
+        Some(Origin::Output(_)) => (Output, ptr::null()),
+        None => (End, ptr::null()),
+    };
+    ResidencyOriginItem { kind, input }
+}
+
+unsafe extern "C" fn visit_path_overlaps(path: Borrowed) -> u32 {
+    u32::from(unsafe { &*path.cast::<bounds::Clause>() }.overlaps(&bounds::Clause::default()))
+}
+
+unsafe extern "C" fn visit_same_input(left: Borrowed, right: Borrowed) -> u32 {
+    u32::from(unsafe { &*left.cast::<Input>() == &*right.cast::<Input>() })
+}
+
+unsafe extern "C" fn visit_insert_requirement(context: Context, input: Borrowed, target: u32, path: Borrowed) -> u32 {
+    let required = unsafe { &mut *context.cast::<Requirements>() };
+    let input = unsafe { &*input.cast::<Input>() };
+    let target = match target { 0 => Target::Cpu, 1 => Target::Gpu, _ => Target::Compute };
+    let path = unsafe { &*path.cast::<bounds::Clause>() };
+    u32::from(insert(required, input.clone(), target, bounds::Condition::guard(path.clone())))
+}
+
+unsafe extern "C" fn visit_residency_origins(context: Context, visit: ResidencyVisit, origins: Borrowed) -> ResidencyVisitResult {
+    let mut iterator = unsafe { &*origins.cast::<BTreeSet<Origin>>() }.iter();
+    let host = ResidencyOriginsHost {
+        next: visit_next_origin, overlaps: visit_path_overlaps,
+        same_input: visit_same_input, insert: visit_insert_requirement,
+    };
+    unsafe { check_residency_origins(context, visit, ptr::from_mut(&mut iterator).cast(), host) }
+}
+
+fn residency_check_host() -> ResidencyCheckHost {
+    ResidencyCheckHost {
+        possible: compare_possible,
+        inspect: inspect_residency_visit,
+        branch: visit_residency_branch,
+        origins: visit_residency_origins,
+    }
+}
+
+impl ResidencyVisit {
+    fn new(value: &Residency, target: Target, path: &bounds::Clause, mode: ResidencyCheckMode) -> Self {
+        Self {
+            value: ptr::from_ref(value).cast(),
+            path: ptr::from_ref(path).cast(),
+            wanted: ptr::null(),
+            target: match target { Target::Cpu => 0, Target::Gpu => 1, Target::Compute => 2 },
+            mode,
+            deferred: 0,
+        }
+    }
+
+    unsafe fn run(self, context: Context) -> ResidencyVisitResult {
+        unsafe { check_residency(context, self, residency_check_host()) }
+    }
+}
 
 #[derive(Clone, Copy)]
 #[repr(C)]

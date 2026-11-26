@@ -42,6 +42,38 @@ extern "C" u32 compare_projected_residency(address context,ResidencyPair pair,Re
     requires nonzero(host.branch)
     requires nonzero(host.leaf);
 
+enum ResidencyCheckMode:u32 { Known=0; Require=1; Query=2; };
+struct ResidencyVisit {
+    address value;
+    address path;
+    address wanted;
+    u32 target;
+    ResidencyCheckMode mode;
+    u32 deferred;
+};
+struct ResidencyVisitResult { u32 accepted; u32 deferred; };
+struct ResidencyCheckNode { ResidencyBranch branch; address origins; };
+enum ResidencyOriginKind:u32 { End=0; Cpu=1; Gpu=2; Input=3; Output=4; };
+struct ResidencyOriginItem { ResidencyOriginKind kind; address input; };
+struct ResidencyCheckHost {
+    cfn<u32,address> possible;
+    cfn<ResidencyCheckNode,address> inspect;
+    cfn<ResidencyVisitResult,address,ResidencyVisit,address,u32> branch;
+    cfn<ResidencyVisitResult,address,ResidencyVisit,address> origins;
+};
+struct ResidencyOriginsHost {
+    cfn<ResidencyOriginItem,address> next;
+    cfn<u32,address> overlaps;
+    cfn<u32,address,address> same_input;
+    cfn<u32,address,address,u32,address> insert;
+};
+extern "C" ResidencyVisitResult check_residency(address context,ResidencyVisit visit,ResidencyCheckHost host) on cpu
+    requires nonzero(host.possible) requires nonzero(host.inspect)
+    requires nonzero(host.branch) requires nonzero(host.origins);
+extern "C" ResidencyVisitResult check_residency_origins(address context,ResidencyVisit visit,address iterator,ResidencyOriginsHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.overlaps)
+    requires nonzero(host.same_input) requires nonzero(host.insert);
+
 struct ArgumentDescendant { u64 fields; u32 bound; };
 struct ArgumentBindingHost {
     cfn<void,address> bind_root;
