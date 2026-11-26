@@ -23,12 +23,13 @@ struct FrameEncoding {
     u64 probe_field;
 };
 
-struct TailLiteral {
+struct LiteralUse {
     u64 bits;
-    address references;
-    u64 reference_count;
+    u64 field;
+    u64 ordinal;
     u64 wide;
 };
+struct TailLayout { u64 bytes; u64 literal_count; };
 enum TailRegionKind:u32 { StackProbe=0; Alignment=1; Literal=2; };
 struct TailRegion { u64 end; TailRegionKind kind; };
 struct CodeTail { u64 end; u64 region_count; };
@@ -73,13 +74,12 @@ extern "C" u64 abi_value(u32 slot, u64 count, AbiMemoryMode mode, address contex
 // The caller owns sixteen bytes for computing and writing a frame address.
 extern "C" u64 abi_stack_pointer(u32 offset, u32 slot, address output) on cpu;
 
-// The caller preserves the existing bytes and supplies this tail's maximum length.
-extern "C" u64 tail_capacity(u64 probe,u64 literal_count) on cpu;
-// Each callback receives the literal's final offset in emission order. The returned
-// reference list stays readable until write_tail returns. Regions holds the probe,
-// optional initial padding and each literal.
-extern "C" CodeTail write_tail(address image,u64 end,u64 probe,u64 literal_count,address regions,
-    address context,cfn<TailLiteral,address,u64> next_literal) on cpu requires nonzero(next_literal);
+// The caller lends the complete use list to order in place before reserving the tail.
+extern "C" TailLayout prepare_tail(u64 probe,address uses,u64 use_count) on cpu;
+// Regions holds the probe, optional initial padding and each literal. The observer
+// receives the final target and the original ordered uses for that literal.
+extern "C" CodeTail write_tail(address image,u64 end,u64 probe,address uses,u64 use_count,address regions,
+    address context,cfn<void,address,u64,address,u64> publish) on cpu requires nonzero(publish);
 // The field address refers to the four-byte displacement at offset in the image.
 extern "C" void patch_relative(address field, u64 offset, u64 target) on cpu;
 // Known-target jump: output has five bytes and offset is its function-relative start.

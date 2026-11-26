@@ -337,8 +337,9 @@ impl Emitter<'_> {
     pub(super) fn write_value_address(&mut self, src: Location, memory: Memory, size: u32) {
         self.emit_bytes(24, |output| unsafe { write_scalar_move(memory.into(), src.into(), size, output) });
     }
-    pub(super) fn record_literal_at(&mut self, at: usize, literal: (Bits, bool)) {
-        self.literals.entry(literal).or_default().push(at);
+    pub(super) fn record_literal_at(&mut self, at: usize, (bits, wide): (Bits, bool)) {
+        let ordinal = self.literals.len();
+        self.literals.push(LiteralUse { bits, field: at, ordinal, wide: u64::from(wide) });
     }
 
     pub(super) fn record_literal(&mut self, start: usize, literal: (Bits, bool), field: usize) {

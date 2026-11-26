@@ -241,7 +241,7 @@ fn emit_value(
         function_abi: Some(FunctionAbi {
             definition: definition.cloned(), instance: instance.map(str::to_owned), ranges: Vec::new(),
         }),
-        literals: std::collections::BTreeMap::new(),
+        literals: Vec::new(),
         registers: &registers,
         tiles: &[],
         range_origin: OperationOrigin::default(),

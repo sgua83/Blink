@@ -81,30 +81,28 @@ struct RangeFrameHost {
 }
 
 #[repr(C)]
-struct TailLiteral {
+struct LiteralUse {
     bits: Bits,
-    references: *const usize,
-    reference_count: usize,
+    field: usize,
+    ordinal: usize,
     wide: u64,
 }
 
-struct TailSource<'a> {
-    literals: std::collections::btree_map::IntoIter<(Bits, bool), Vec<usize>>,
-    references: &'a mut Vec<super::TailReference>,
+#[repr(C)]
+struct TailLayout {
+    bytes: usize,
+    literal_count: usize,
 }
 
-unsafe extern "C" fn next_tail_literal(context: *mut std::ffi::c_void, target: usize) -> TailLiteral {
-    let source = unsafe { &mut *context.cast::<TailSource<'_>>() };
-    // B calls once per entry using the original iterator's length.
-    let ((bits, wide), rel32_fields) = unsafe { source.literals.next().unwrap_unchecked() };
-    let literal = TailLiteral {
-        bits,
-        references: rel32_fields.as_ptr(),
-        reference_count: rel32_fields.len(),
-        wide: u64::from(wide),
-    };
-    source.references.push(super::TailReference { target, rel32_fields });
-    literal
+unsafe extern "C" fn publish_literal_references(
+    context: *mut std::ffi::c_void,
+    target: usize,
+    uses: *const LiteralUse,
+    count: usize,
+) {
+    let references = unsafe { &mut *context.cast::<Vec<super::TailReference>>() };
+    let uses = unsafe { std::slice::from_raw_parts(uses, count) };
+    references.push(super::TailReference { target, rel32_fields: uses.iter().map(|item| item.field).collect() });
 }
 
 #[repr(C)]
@@ -114,12 +112,12 @@ struct CodeTail {
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.x64_instruction::tail_capacity"]
-    fn tail_capacity(probe: usize, literal_count: usize) -> usize;
+    #[link_name = "bootstrap.x64_instruction::prepare_tail"]
+    fn prepare_tail(probe: usize, uses: *mut LiteralUse, use_count: usize) -> TailLayout;
     #[link_name = "bootstrap.x64_instruction::write_tail"]
-    fn write_tail(image: *mut u8, end: usize, probe: usize, literal_count: usize,
+    fn write_tail(image: *mut u8, end: usize, probe: usize, uses: *const LiteralUse, use_count: usize,
         regions: *mut super::Region, context: *mut std::ffi::c_void,
-        next_literal: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> TailLiteral) -> CodeTail;
+        publish: unsafe extern "C" fn(*mut std::ffi::c_void, usize, *const LiteralUse, usize)) -> CodeTail;
     #[link_name = "bootstrap.x64_instruction::emit_map_range"]
     fn emit_map_range(input: MapRangeInput, host: MapRangeHost) -> u32;
 
@@ -219,7 +217,7 @@ struct Emitter<'a> {
     calls: Vec<Option<usize>>,
     operation_ranges: Vec<super::OperationRange>,
     function_abi: Option<super::FunctionAbi>,
-    literals: std::collections::BTreeMap<(Bits, bool), Vec<usize>>,
+    literals: Vec<LiteralUse>,
     registers: &'a [Scalar],
     tiles: &'a [Tile],
     range_origin: OperationOrigin,
@@ -236,20 +234,20 @@ impl Emitter<'_> {
         let function_end = self.code.len();
         let unwind = unwind::encode(self.prolog, &self.unwind);
         let probe = self.probe.unwrap_or(0);
-        let count = self.literals.len();
+        let layout = unsafe { prepare_tail(probe, self.literals.as_mut_ptr(), self.literals.len()) };
+        let count = layout.literal_count;
         let has_probe = usize::from(self.probe.is_some());
         let mut tail_regions = Vec::with_capacity(count + usize::from(count != 0) + has_probe);
         let mut tail_references = Vec::with_capacity(count + has_probe);
         if let Some(at) = self.probe {
             tail_references.push(super::TailReference { target: function_end, rel32_fields: vec![at] });
         }
-        self.code.reserve(unsafe { tail_capacity(probe, count) });
-        // The observation owner keeps the original reference storage live while B patches the image.
+        self.code.reserve(layout.bytes);
         unsafe {
-            let mut source = TailSource { literals: self.literals.into_iter(), references: &mut tail_references };
             let tail = write_tail(
-                self.code.as_mut_ptr(), function_end, probe, count, tail_regions.as_mut_ptr(),
-                std::ptr::from_mut(&mut source).cast(), next_tail_literal,
+                self.code.as_mut_ptr(), function_end, probe, self.literals.as_ptr(), self.literals.len(),
+                tail_regions.as_mut_ptr(), std::ptr::from_mut(&mut tail_references).cast(),
+                publish_literal_references,
             );
             self.code.set_len(tail.end);
             tail_regions.set_len(tail.region_count);
@@ -589,7 +587,7 @@ fn emit_map(
         calls: Vec::new(),
         operation_ranges: Vec::new(),
         function_abi: Some(super::FunctionAbi { definition: None, instance: None, ranges: Vec::new() }),
-        literals: std::collections::BTreeMap::new(),
+        literals: Vec::new(),
         registers: &registers,
         tiles: &stage.tiles,
         range_origin: OperationOrigin {

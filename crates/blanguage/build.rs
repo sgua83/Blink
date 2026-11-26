@@ -169,6 +169,8 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
                         "sort_rows<u32>",
                         "--instance",
                         "sort_rows<array<u64,3>>",
+                        "--instance",
+                        "sort_rows<array<u64,4>>",
                     ]
                     .map(OsString::from),
                 );

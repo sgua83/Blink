@@ -1,6 +1,7 @@
 module bootstrap.x64_instruction;
 import bootstrap.unwind;
 import bootstrap.ir_dataflow;
+import bootstrap.names;
 
 struct BinaryEncoding {
     u64 length;
@@ -187,10 +188,40 @@ u64 append_stack_probe(address image, u64 end, u64 call_field) on cpu {
     return end + u64(STACK_PROBE_LENGTH);
 }
 
-extern "C" u64 tail_capacity(u64 probe,u64 literal_count) on cpu {
-    u64 extra=probe!=0u64 ? u64(STACK_PROBE_LENGTH) : 0u64;
-    if(literal_count!=0u64){extra+=literal_count*8u64+3u64;}
-    return extra;
+address literal_use_at(address uses,u64 index) on cpu {
+    return unsafe_address(address_bits(uses)+index*size_of<LiteralUse>());
+}
+
+extern "C" bool literal_use_before(address left,address right,address context) on cpu {
+    LiteralUse a=unsafe_position<LiteralUse>(left);
+    LiteralUse b=unsafe_position<LiteralUse>(right);
+    if(a.bits!=b.bits){return a.bits<b.bits;}
+    if(a.wide!=b.wide){return a.wide<b.wide;}
+    return a.ordinal<b.ordinal;
+}
+
+bool same_literal(LiteralUse left,LiteralUse right) on cpu {
+    return left.bits==right.bits && left.wide==right.wide;
+}
+
+extern "C" TailLayout prepare_tail(u64 probe,address uses,u64 use_count) on cpu {
+    // LiteralUse is four consecutive u64 words. The sorter moves each complete row.
+    sort_rows<array<u64,4>>(uses,use_count,address(),c_function(literal_use_before));
+    u64 bytes=probe!=0u64 ? u64(STACK_PROBE_LENGTH) : 0u64;
+    if(use_count!=0u64){bytes+=3u64;}
+    u64 literal_count=0u64;
+    u64 index=0u64;
+    LiteralUse previous=LiteralUse(0u64,0u64,0u64,0u64);
+    while(index<use_count){
+        LiteralUse item=unsafe_position<LiteralUse>(literal_use_at(uses,index));
+        if(index==0u64 || !same_literal(item,previous)){
+            bytes+=4u64+item.wide*4u64;
+            literal_count+=1u64;
+            previous=item;
+        }
+        index+=1u64;
+    }
+    return TailLayout(bytes,literal_count);
 }
 
 void tail_region(address regions,u64 ordinal,u64 end,TailRegionKind kind) on cpu {
@@ -208,8 +239,8 @@ u64 align_literal(u64 base, u64 from) on cpu {
     return start;
 }
 
-extern "C" CodeTail write_tail(address image,u64 end,u64 probe,u64 literal_count,address regions,
-    address context,cfn<TailLiteral,address,u64> next_literal) on cpu requires nonzero(next_literal) {
+extern "C" CodeTail write_tail(address image,u64 end,u64 probe,address uses,u64 use_count,address regions,
+    address context,cfn<void,address,u64,address,u64> publish) on cpu requires nonzero(publish) {
     u64 cursor=end;
     u64 count=0u64;
     if(probe!=0u64){
@@ -218,7 +249,7 @@ extern "C" CodeTail write_tail(address image,u64 end,u64 probe,u64 literal_count
         count+=1u64;
     }
     u64 base=address_bits(image);
-    if(literal_count!=0u64){
+    if(use_count!=0u64){
         u64 start = align_literal(base, cursor);
         if (start != cursor) {
             cursor = start;
@@ -226,20 +257,27 @@ extern "C" CodeTail write_tail(address image,u64 end,u64 probe,u64 literal_count
             count+=1u64;
         }
     }
-    u64 remaining=literal_count;
-    while(remaining!=0u64){
+    u64 index=0u64;
+    while(index<use_count){
+        u64 first=index;
+        address group=literal_use_at(uses,first);
+        LiteralUse literal=unsafe_position<LiteralUse>(group);
         u64 start=cursor;
-        TailLiteral literal=next_literal(context,start);
         write_word(base+cursor,u32(literal.bits));
         cursor+=4u64;
         if(literal.wide!=0u64){
             write_word(base+cursor,u32(literal.bits>>32));
             cursor+=4u64;
         }
-        patch_branches(image, start, literal.references, literal.reference_count);
+        while(index<use_count){
+            LiteralUse item=unsafe_position<LiteralUse>(literal_use_at(uses,index));
+            if(!same_literal(literal,item)){break;}
+            patch_relative(unsafe_address(base+item.field),item.field,start);
+            index+=1u64;
+        }
+        publish(context,start,group,index-first);
         tail_region(regions,count,cursor,TailRegionKind::Literal);
         count+=1u64;
-        remaining-=1u64;
     }
     return CodeTail(cursor,count);
 }

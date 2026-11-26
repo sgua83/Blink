@@ -366,7 +366,7 @@ pub(super) fn emit(
         calls: Vec::new(),
         operation_ranges: Vec::new(),
         function_abi: None,
-        literals: std::collections::BTreeMap::new(),
+        literals: Vec::new(),
         registers: &lowered.registers,
         tiles: &[],
         range_origin: OperationOrigin::default(),
