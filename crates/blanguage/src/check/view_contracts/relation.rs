@@ -46,13 +46,13 @@ struct PlanWorkspace {
 struct PlanOutput {
     ordered: *mut usize,
     ordered_count: usize,
-    fixed_inputs: *mut u8,
+    schedule_flags: *mut u8,
 }
 
 struct EvaluationPlan {
     ordered: Vec<usize>,
     stable: usize,
-    fixed_inputs: Vec<u8>,
+    schedule_flags: Vec<u8>,
     completed: usize,
 }
 
@@ -1454,13 +1454,13 @@ impl Graph {
         let mut users = Vec::<usize>::with_capacity(dependencies.len());
         let mut ready = Vec::<usize>::with_capacity(ordinary_nodes);
         let mut ordered = Vec::new();
-        let mut fixed_inputs = Vec::new();
+        let mut schedule_flags = Vec::new();
         let output = if materialize {
             ordered.reserve(ordinary_nodes);
-            fixed_inputs.resize(rows.len(), 0);
-            PlanOutput { ordered: ordered.as_mut_ptr(), ordered_count: ordinary_nodes, fixed_inputs: fixed_inputs.as_mut_ptr() }
+            schedule_flags.resize(rows.len(), 0);
+            PlanOutput { ordered: ordered.as_mut_ptr(), ordered_count: ordinary_nodes, schedule_flags: schedule_flags.as_mut_ptr() }
         } else {
-            PlanOutput { ordered: std::ptr::null_mut(), ordered_count: 0, fixed_inputs: std::ptr::null_mut() }
+            PlanOutput { ordered: std::ptr::null_mut(), ordered_count: 0, schedule_flags: std::ptr::null_mut() }
         };
         // Each dependency can have one reverse entry, and each ordinary node is
         // queued and emitted at most once. Only the emitted order is read here.
@@ -1474,7 +1474,7 @@ impl Graph {
         if materialize {
             unsafe { ordered.set_len(completed) };
         }
-        EvaluationPlan { ordered, stable, fixed_inputs, completed }
+        EvaluationPlan { ordered, stable, schedule_flags, completed }
     }
     pub(in crate::check) fn selected(&self, root: usize) -> Self {
         RelationView { base: self, tail: &[], residual: None }.selected(root)
@@ -1619,7 +1619,7 @@ impl Graph {
     fn private(&self, source: &Origin) -> bool {
         !self.references(source) && Borrow::source_has_local(source)
     }
-    fn residual(&self, query: &Query<'_>) -> ResidualRelation {
+    fn residual(&self, query: &Query<'_>, plan: &EvaluationPlan) -> ResidualRelation {
         let mut history = RelationWalk::new(self, |_| false);
         history.historical_frames(query.values.keys().chain(query.variables.keys()).copied());
         let [frames, _] = history.frames;
@@ -1629,7 +1629,7 @@ impl Graph {
         unsafe {
             project_relation_return(
                 ptr::from_ref(&graph).cast(), ptr::from_mut(&mut projection).cast(),
-                self.nodes.len(), WalkSlice::of(&frames), RelationSource::GRAPH,
+                self.nodes.len(), WalkSlice::of(&frames), plan.schedule_flags.as_ptr(), RelationSource::GRAPH,
                 ResidualProjection::OUTPUT,
             );
         }
@@ -1691,7 +1691,7 @@ impl Graph {
             if converged {
                 let value = query.node(root);
                 let residual = std::cell::OnceCell::new();
-                return self.rebind(value, &|| residual.get_or_init(|| self.residual(&query)));
+                return self.rebind(value, &|| residual.get_or_init(|| self.residual(&query, &plan)));
             }
             values = query.values;
             variables.extend(next);
@@ -1704,7 +1704,7 @@ struct RoundSchedule {
     ordered: *const usize,
     count: usize,
     stable: usize,
-    fixed_inputs: *const u8,
+    schedule_flags: *const u8,
 }
 
 #[repr(C)]
@@ -1734,7 +1734,7 @@ impl RelationRound<'_, '_, '_> {
     fn run(&mut self, plan: &EvaluationPlan, initial: bool) -> bool {
         let schedule = RoundSchedule {
             ordered: plan.ordered.as_ptr(), count: plan.ordered.len(),
-            stable: plan.stable, fixed_inputs: plan.fixed_inputs.as_ptr(),
+            stable: plan.stable, schedule_flags: plan.schedule_flags.as_ptr(),
         };
         let host = RoundHost {
             evaluate: Self::evaluate, next_variable: Self::next_variable, observe: Self::observe,
@@ -1836,7 +1836,7 @@ struct ResidualOutput {
 unsafe extern "C" {
     #[link_name = "bootstrap.relation_order::project_return"]
     fn project_relation_return(
-        graph: Borrowed, output: Slot, nodes: usize, frames: WalkSlice,
+        graph: Borrowed, output: Slot, nodes: usize, frames: WalkSlice, schedule_flags: *const u8,
         source: RelationSource, host: ResidualOutput,
     );
 }
@@ -1854,12 +1854,9 @@ impl ResidualProjection<'_, '_> {
 
     unsafe extern "C" fn node_facts(context: Slot, id: usize) -> u32 {
         let query = unsafe { &*context.cast::<Self>() }.query;
-        let graph = query.graph;
         let resolved = u32::from(query.values.contains_key(&id));
         let bound = u32::from(query.variables.contains_key(&id));
-        let variable = graph.variables.contains(&id);
-        let reads = !variable && graph.nodes[id].edges.iter().any(|edge| matches!(edge.op, Op::Read { .. }));
-        resolved | (bound << 1) | (u32::from(variable) << 2) | (u32::from(reads) << 3)
+        resolved | (bound << 1)
     }
 
     unsafe extern "C" fn node(context: Slot, id: usize, expand: u32, publish: u32) {

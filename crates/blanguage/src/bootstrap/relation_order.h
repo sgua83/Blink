@@ -15,7 +15,7 @@ struct Workspace {
 struct Output {
     address ordered;
     usize ordered_count;
-    address fixed_inputs;
+    address schedule_flags;
 };
 
 
@@ -99,7 +99,7 @@ struct RoundSchedule {
     address ordered;
     usize count;
     usize stable;
-    address fixed_inputs;
+    address schedule_flags;
 };
 
 struct RoundHost {
@@ -144,7 +144,8 @@ struct ResidualOutput {
     cfn<void,address,usize> field;
 };
 
-extern "C" void project_return(address graph, address context, usize nodes, WalkSlice frames, RelationSource source, ResidualOutput output) on cpu
+extern "C" void project_return(address graph, address context, usize nodes, WalkSlice frames,
+    address schedule_flags, RelationSource source, ResidualOutput output) on cpu
     requires nonzero(source.frame) requires nonzero(source.write) requires nonzero(source.field)
     requires nonzero(output.node_facts) requires nonzero(output.node) requires nonzero(output.keep)
     requires nonzero(output.write) requires nonzero(output.field);

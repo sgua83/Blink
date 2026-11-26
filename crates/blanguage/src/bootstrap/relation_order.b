@@ -218,13 +218,20 @@ usize connect(Input input, Workspace work) on cpu {
     return ready;
 }
 
-void choose_fixed(Input input, Workspace work, address output) on cpu {
+const u8 FIXED_INPUT = u8(1);
+const u8 DIRECT_READ = u8(2);
+
+void prepare_schedule_flags(Input input, Workspace work, address output) on cpu {
     usize index = 0u64;
     while (index < input.count) {
         usize id = index;
         index += 1u64;
         Dependencies source = input_row(input, id);
-        if ((source.flags & (REACHABLE | VARIABLE | READS)) != (REACHABLE | VARIABLE)) { continue; }
+        u64 kind = source.flags & (REACHABLE | VARIABLE | READS);
+        if (kind == (REACHABLE | READS)) {
+            unsafe_position<u8>(cell(output, id, 1u64)) = DIRECT_READ;
+        }
+        if (kind != (REACHABLE | VARIABLE)) { continue; }
         usize edge = source.first;
         while (edge < source.end) {
             usize producer = dependency(input, edge);
@@ -235,7 +242,7 @@ void choose_fixed(Input input, Workspace work, address output) on cpu {
             edge += 1u64;
         }
         if (edge == source.end) {
-            unsafe_position<u8>(cell(output, id, 1u64)) = u8(1);
+            unsafe_position<u8>(cell(output, id, 1u64)) = FIXED_INPUT;
         }
     }
 }
@@ -299,7 +306,7 @@ extern "C" OrderCount plan(Input input, Workspace work, Output output) on cpu {
     }
     if (materialize) {
         finish_order(output, stable, feedback);
-        choose_fixed(input, work, output.fixed_inputs);
+        prepare_schedule_flags(input, work, output.schedule_flags);
     }
     return OrderCount(completed, stable);
 }
@@ -454,7 +461,7 @@ extern "C" u32 solve_round(address context, RoundSchedule schedule, u32 initial,
     usize active = 0u64;
     usize variable = host.next_variable(context);
     while (variable != WALK_END) {
-        if (initial != 0 || unsafe_position<u8>(cell(schedule.fixed_inputs,variable,1u64)) == u8(0)) {
+        if (initial != 0 || (unsafe_position<u8>(cell(schedule.schedule_flags,variable,1u64)) & FIXED_INPUT) == u8(0)) {
             host.evaluate(context,variable,1);
             active += 1u64;
         }
@@ -599,10 +606,9 @@ extern "C" usize import_relation(address graph, address destination, usize root,
 
 const u32 RESOLVED_NODE = 1;
 const u32 BOUND_NODE = 2;
-const u32 VARIABLE_NODE = 4;
-const u32 READ_NODE = 8;
 
-extern "C" void project_return(address graph, address context, usize nodes, WalkSlice frames, RelationSource source, ResidualOutput output) on cpu
+extern "C" void project_return(address graph, address context, usize nodes, WalkSlice frames,
+    address schedule_flags, RelationSource source, ResidualOutput output) on cpu
     requires nonzero(source.frame) requires nonzero(source.write) requires nonzero(source.field)
     requires nonzero(output.node_facts) requires nonzero(output.node) requires nonzero(output.keep)
     requires nonzero(output.write) requires nonzero(output.field)
@@ -610,9 +616,10 @@ extern "C" void project_return(address graph, address context, usize nodes, Walk
     usize id = 0u64;
     while (id < nodes) {
         u32 facts = output.node_facts(context,id);
-        bool solved = (facts & (RESOLVED_NODE | BOUND_NODE)) != 0;
-        bool publishes = (facts & (VARIABLE_NODE | READ_NODE)) != 0;
-        output.node(context,id,facts & RESOLVED_NODE,solved && publishes ? 1 : 0);
+        u32 resolved = facts & RESOLVED_NODE;
+        bool publishes = (facts & BOUND_NODE) != 0
+            || (resolved != 0 && (unsafe_position<u8>(cell(schedule_flags,id,1u64)) & DIRECT_READ) != u8(0));
+        output.node(context,id,resolved,publishes ? 1 : 0);
         id += 1u64;
     }
 
