@@ -11,7 +11,7 @@ pub(super) enum Location {
     Stack(u32),
 }
 #[repr(C)]
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub(super) struct ColorLayout {
     end: u64,
     gpr: u32,
@@ -34,11 +34,19 @@ pub(super) struct PacketAllocation {
     layout: ColorLayout,
 }
 #[repr(C)]
-#[derive(Clone, Copy)]
-pub(super) struct SavedRegister {
-    pub offset: u32,
-    pub register: u16,
-    pub bank: u16,
+#[derive(Clone, Copy, Default)]
+pub(super) struct SavedLayout {
+    gpr_base: u64,
+    xmm_base: u64,
+    gpr: u32,
+    xmm: u32,
+}
+
+#[repr(C)]
+struct FrameSaveLayout {
+    saved: SavedLayout,
+    count: usize,
+    end: u64,
 }
 
 #[repr(u32)]
@@ -101,15 +109,16 @@ unsafe extern "C" fn place_tile_frame_slot(
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.frame_layout::saved_registers"]
-    fn saved_registers(data_end: u64, gpr: u32, xmm: u32, saves: *mut SavedRegister) -> u64;
+    #[link_name = "bootstrap.frame_layout::frame_save_layout"]
+    fn frame_save_layout(scalar: ColorLayout, packet: ColorLayout) -> FrameSaveLayout;
     #[link_name = "bootstrap.frame_layout::tile_frame"]
     fn tile_frame(data_end: u64, width: u64, steps: u32, context: *mut c_void, host: TileFrameHost) -> u64;
 }
 
 #[derive(Default)]
 pub(super) struct Frame {
-    pub saved: Vec<SavedRegister>,
+    pub saved: SavedLayout,
+    pub saved_count: usize,
     pub end: u64,
     pub tile_shared: std::collections::BTreeMap<SharedWord, u32>,
     pub tile_private: std::collections::BTreeMap<PrivateSlot, u32>,
@@ -277,22 +286,11 @@ impl Frame {
     }
 
     pub fn new(scalar: &Allocation, packet: Option<&PacketAllocation>) -> Self {
-        let ColorLayout { end: mut data_end, mut gpr, mut xmm } = scalar.layout;
-        if let Some(packet) = packet {
-            data_end = data_end.max(packet.layout.end);
-            gpr |= packet.layout.gpr;
-            xmm |= packet.layout.xmm;
-        }
-        let count = (gpr.count_ones() + xmm.count_ones()) as usize;
-        let mut saved = Vec::with_capacity(count);
-        // B writes one row for each bit in these same masks.
-        let end = unsafe {
-            let end = saved_registers(data_end, gpr, xmm, saved.as_mut_ptr());
-            saved.set_len(count);
-            end
-        };
+        let packet_layout = packet.map_or(ColorLayout::default(), |allocation| allocation.layout);
+        let FrameSaveLayout { saved, count, end } = unsafe { frame_save_layout(scalar.layout, packet_layout) };
         Self {
             saved,
+            saved_count: count,
             end,
             tile_shared: std::collections::BTreeMap::new(),
             tile_private: std::collections::BTreeMap::new(),

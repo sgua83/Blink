@@ -376,7 +376,7 @@ pub(super) fn emit(
         allocation,
         frame: layout,
     };
-    let saved = e.frame.saved.len();
+    let saved = e.frame.saved_count;
     let emitter = std::ptr::from_mut(&mut e);
     let summary = RangeSummary {
         emitter, first_slot: carry, fields: &r.ty.components, payload_words: k,

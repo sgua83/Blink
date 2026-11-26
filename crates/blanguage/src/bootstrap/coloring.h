@@ -4,8 +4,8 @@ import bootstrap.stage_fusion;
 import bootstrap.scalar_fold;
 import bootstrap.call_layout;
 import bootstrap.x64_instruction;
+import bootstrap.frame_layout;
 
-struct ColorLayout { u64 end; u32 gpr; u32 xmm; };
 
 // The graph owns its scalar rows until the allocation is handed to emission.
 extern "C" void graph_release(address graph) on cpu;

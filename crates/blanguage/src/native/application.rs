@@ -70,8 +70,7 @@ struct FunctionCodeInput {
 #[repr(C)]
 struct FunctionExitBuffer {
     code: NativeCodeBuffer,
-    saved: *const allocation::SavedRegister,
-    saved_count: usize,
+    saved: allocation::SavedLayout,
 }
 
 #[repr(C)]
@@ -192,10 +191,7 @@ unsafe extern "C" fn exit_buffer(context: *mut c_void, count: usize) -> Function
     let state = unsafe { &mut *context.cast::<FunctionEmission<'_, '_>>() };
     let e = &mut *state.emitter;
     let code = NativeCodeBuffer::reserve(&mut e.code, count);
-    let saved = &e.frame.saved;
-    FunctionExitBuffer {
-        code, saved: saved.as_ptr(), saved_count: saved.len(),
-    }
+    FunctionExitBuffer { code, saved: e.frame.saved }
 }
 
 const FUNCTION_CODE_HOST: FunctionCodeHost = FunctionCodeHost {
@@ -265,7 +261,7 @@ fn emit_value(
         inputs: body.inputs.len(),
         result_fields: fields.len(),
         outputs: body.outputs.len(),
-        saved: e.frame.saved.len(),
+        saved: e.frame.saved_count,
     };
     let mut emission = FunctionEmission {
         emitter: &mut e, parameters, inputs: &body.inputs,

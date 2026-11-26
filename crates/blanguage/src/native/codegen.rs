@@ -62,7 +62,7 @@ const BUFFER_STRIDE: u32 = std::mem::offset_of!(BufferAddress, stride) as u32;
 struct FrameOutput {
     code: *mut u8,
     operations: *mut UnwindOperation,
-    saved: *const allocation::SavedRegister,
+    saved: allocation::SavedLayout,
     count: usize,
 }
 
@@ -274,7 +274,7 @@ impl Emitter<'_> {
         self.unwind.reserve(operations);
         FrameOutput {
             code: self.code.as_mut_ptr(), operations: self.unwind.as_mut_ptr(),
-            saved: self.frame.saved.as_ptr(), count: self.frame.saved.len(),
+            saved: self.frame.saved, count: self.frame.saved_count,
         }
     }
     unsafe fn publish_frame(&mut self, entry: FrameEntry) {
@@ -611,7 +611,7 @@ fn emit_map(
         packet: packet.as_ref().map_or(std::ptr::null(), |packet| std::ptr::from_ref(packet).cast()),
         binding, word, selected, frame, slots: e.frame.end as u32,
         buffer_bytes: BUFFER_BYTES, stride_field: BUFFER_STRIDE,
-        tile_scope: u32::from(tile_scope), workgroup, saved: e.frame.saved.len(),
+        tile_scope: u32::from(tile_scope), workgroup, saved: e.frame.saved_count,
     };
     let mut range = MapRange {
         emitter: &mut e,

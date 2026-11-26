@@ -3,6 +3,7 @@ import bootstrap.names;
 import bootstrap.ir_dataflow;
 import bootstrap.stage_fusion;
 import bootstrap.x64_instruction;
+import bootstrap.frame_layout;
 import bootstrap.call_layout;
 
 extern "C" handle GetProcessHeap() on cpu from "KERNEL32.dll";

@@ -348,7 +348,7 @@ extern "C" FunctionCode emit_function_code(address context, FunctionCodeInput in
 
     FunctionExitBuffer exiting = host.exit_buffer(context, 10u64 + 9u64 * input.saved);
     FunctionEpilogue tail = function_epilogue(u32(frame.bytes), (input.flags & 2) >> 1,
-        exiting.saved, exiting.saved_count, exiting.code.image, exiting.code.end, exits);
+        exiting.saved, exiting.code.image, exiting.code.end, exits);
     host.commit(context, tail.end);
     host.abi.publish(context, FunctionRange(exiting.code.end, tail.saved_end, 0u64, 0u64, FunctionRangeKind::NonvolatileRestore));
     if (tail.frame_end != tail.saved_end) {

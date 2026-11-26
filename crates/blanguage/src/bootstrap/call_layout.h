@@ -65,8 +65,7 @@ struct FunctionCodeInput {
 };
 struct FunctionExitBuffer {
     NativeCodeBuffer code;
-    address saved;
-    u64 saved_count;
+    SavedLayout saved;
 };
 struct FunctionCodeHost {
     FunctionHost abi;
