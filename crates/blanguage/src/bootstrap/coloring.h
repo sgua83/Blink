@@ -31,8 +31,6 @@ struct GraphHost {
     cfn<ScalarEncoding,address> ensures memory(read) scalar;
     cfn<Span,address> next_local;
     cfn<PrivateDeclaration,address> next_private;
-    cfn<CallAbi,address> ensures memory(read) call_abi;
-    cfn<AbiType,address,u64> call_argument;
     cfn<u32,address,usize> register_operand;
 };
 // Borrow the original IR and native live sets for the synchronous graph walk.
@@ -44,7 +42,6 @@ struct GraphBuilt {address state;u32 uses_r15;};
 extern "C" GraphBuilt graph_create(address request,GraphHost host) on cpu
     requires nonzero(host.core.visit_set) requires nonzero(host.live.ir.inspect) requires nonzero(host.scalar)
     requires nonzero(host.next_local) requires nonzero(host.next_private)
-    requires nonzero(host.call_abi) requires nonzero(host.call_argument)
     requires nonzero(host.live.clone_set) requires nonzero(host.live.drop_set) requires nonzero(host.live.change)
     requires nonzero(host.live.insert_register) requires nonzero(host.register_operand);
 extern "C" void graph_together(address graph,address live,GraphCore core) on cpu

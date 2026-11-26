@@ -3,7 +3,6 @@ use super::*;
 use crate::builtin_types::ScalarEncoding;
 use crate::ir::dataflow::Span;
 use crate::ir::{PRIVATE_LIVE_HOST, PrivateLiveHost};
-use super::super::external;
 
 type Slots = BTreeSet<PrivateSlot>;
 #[repr(u32)]
@@ -24,8 +23,6 @@ struct Host {
     scalar: unsafe extern "C" fn(*const Scalar) -> ScalarEncoding,
     next_local: unsafe extern "C" fn(*mut c_void) -> Span,
     next_private: unsafe extern "C" fn(*mut c_void) -> PrivateDeclaration,
-    call_abi: unsafe extern "C" fn(*const Call) -> external::CallAbi,
-    call_argument: external::ArgumentType,
     register_operand: unsafe extern "C" fn(*mut c_void, Reg) -> u32,
 }
 #[repr(C)]
@@ -105,5 +102,5 @@ unsafe extern "C" fn register_operand(context: *mut c_void, register: Reg) -> u3
 const CORE: Core = Core { visit_set };
 const HOST: Host = Host {
     core: CORE, live: PRIVATE_LIVE_HOST, scalar, next_local, next_private: next_private_declaration,
-    call_abi: external::call_abi, call_argument: external::argument_type, register_operand,
+    register_operand,
 };

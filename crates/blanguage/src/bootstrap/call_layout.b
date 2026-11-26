@@ -2,6 +2,36 @@ module bootstrap.call_layout;
 import bootstrap.x64_instruction;
 import bootstrap.ir_dataflow;
 import bootstrap.scalar_fold;
+import codec.builtin_type;
+
+const u32 TARGET_INDIRECT = 2;
+
+struct AbiType {
+    u32 size;
+    u32 alignment;
+    bool value;
+    Span name;
+    Span components;
+};
+
+AbiType abi_type(Node source, Host ir) on cpu requires nonzero(ir.inspect) {
+    if (address_bits(source.data) == 0u64) {
+        Span empty = Span(address(), 0u64, 0u64);
+        return AbiType(0, 1, false, empty, empty);
+    }
+    View ty = ir.inspect(source);
+    return AbiType(u32(ty.a), u32(ty.b), true, ty.first, ty.second);
+}
+
+u32 float_width(Span name) on cpu {
+    // Intrinsic floating types in the checked IR have the canonical names f32 and f64.
+    if (name.count != 3) { return 0; }
+    BuiltinType builtin = recognize(name.data, u64(name.count));
+    if (builtin.kind != BuiltinKind::Numeric) { return 0; }
+    if (builtin.scalar == BuiltinScalar::F32) { return 4; }
+    if (builtin.scalar == BuiltinScalar::F64) { return 8; }
+    return 0;
+}
 
 enum ResultLocation:u32 { None=0; Integer=1; Float=2; Indirect=3; };
 // Offsets are relative to RSP after the prologue. Indirect results use the saved address slot.
@@ -16,23 +46,23 @@ bool indirect(u32 size, u32 alignment) on cpu {
     return bytes != 0 && bytes != 1 && bytes != 2 && bytes != 4 && bytes != 8;
 }
 bool has_slot(AbiType value) on cpu {
-    return value.value == 0 || value.size != 0;
+    return !value.value || value.size != 0;
 }
 
 u64 slot_home(u64 first_slot, u64 position) on cpu {
     return (first_slot + position) * 8u64;
 }
 
-ResultLocation result_location(AbiType result, u32 flags) on cpu {
+ResultLocation result_location(AbiType result, bool fallible) on cpu {
     if (result.size == 0) { return ResultLocation::None; }
-    if ((flags & 1) != 0 || indirect(result.size, result.alignment)) {
+    if (fallible || indirect(result.size, result.alignment)) {
         return ResultLocation::Indirect;
     }
-    return result.float_size != 0 ? ResultLocation::Float : ResultLocation::Integer;
+    return float_width(result.name) != 0 ? ResultLocation::Float : ResultLocation::Integer;
 }
 
 FunctionFrame function_frame(u64 data_end, AbiType result, u32 flags) on cpu {
-    ResultLocation location = result_location(result, flags);
+    ResultLocation location = result_location(result, (flags & 1) != 0);
     bool hidden = location == ResultLocation::Indirect;
     bool scratch = (flags & 2) != 0;
     u64 result_at = 0u64;
@@ -48,16 +78,17 @@ struct CallStack { u64 homes; u64 target; u64 bytes; };
 
 u64 copy_start(u64 end) on cpu { return (end + 15u64) & ~15u64; }
 
-CallStack call_stack(address context, u64 count, AbiType result, u64 first_slot, u32 flags,
-    cfn<AbiType,address,u64> argument, bool count_payloads) on cpu requires nonzero(argument) {
+CallStack call_stack(Span arguments, AbiType result, u64 first_slot, bool indirect_target,
+    bool count_payloads, Host ir) on cpu requires nonzero(ir.inspect) {
     u64 slot = first_slot;
     u64 end = first_slot != 0u64 ? u64(padded(result.size, result.alignment)) : 0u64;
     u64 index = 0u64;
-    while (index < count) {
-        AbiType value = argument(context, index);
+    while (index < u64(arguments.count)) {
+        View argument = ir.inspect(call_argument(arguments, index));
+        AbiType value = abi_type(argument.right, ir);
         if (has_slot(value)) {
             slot += 1u64;
-            if (count_payloads && value.value != 0 && indirect(value.size, value.alignment)) {
+            if (count_payloads && value.value && indirect(value.size, value.alignment)) {
                 end = copy_start(end) + u64(padded(value.size, value.alignment));
             }
         }
@@ -67,17 +98,18 @@ CallStack call_stack(address context, u64 count, AbiType result, u64 first_slot,
     u64 homes = copy_start(max(4u64, slot) * 8u64);
     end += homes;
     u64 target = 0u64;
-    if ((flags & 2) != 0) {
+    if (indirect_target) {
         target = (end + 7u64) & ~7u64;
         end = target + 8u64;
     }
     return CallStack(homes, target, copy_start(end));
 }
 
-u64 outgoing_bytes(address context, u64 count, CallAbi abi,
-    cfn<AbiType,address,u64> argument) on cpu requires nonzero(argument) {
-    u64 first_slot = result_location(abi.result, abi.flags) == ResultLocation::Indirect ? 1u64 : 0u64;
-    return call_stack(context, count, abi.result, first_slot, abi.flags, argument, true).bytes;
+u64 outgoing_bytes(View call, Host ir) on cpu requires nonzero(ir.inspect) {
+    AbiType result = abi_type(call.right, ir);
+    View target = ir.inspect(call.left);
+    u64 first_slot = result_location(result, call.b != 0) == ResultLocation::Indirect ? 1u64 : 0u64;
+    return call_stack(call.first, result, first_slot, target.tag == TARGET_INDIRECT, true, ir).bytes;
 }
 
 Node call_argument(Span arguments, u64 index) on cpu {
@@ -100,18 +132,20 @@ extern "C" u64 emit_call(address context, CallInput input, CallHost host) on cpu
     requires nonzero(host.addresses.values.ir.inspect)
     requires nonzero(host.addresses.values.location) requires nonzero(host.addresses.values.scalar)
     requires nonzero(host.addresses.tile_stream) requires nonzero(host.local)
-    requires nonzero(host.argument) requires nonzero(host.operand)
     requires nonzero(host.component) requires nonzero(host.reserve) requires nonzero(host.commit) {
     ScalarValueHost values = host.addresses.values;
     View call = values.ir.inspect(input.source);
     u64 count = u64(call.first.count);
-    ResultLocation location = result_location(input.result, input.flags);
+    AbiType result = abi_type(call.right, values.ir);
+    View target = values.ir.inspect(call.left);
+    bool fallible = call.b != 0;
+    ResultLocation location = result_location(result, fallible);
     bool hidden = location == ResultLocation::Indirect;
-    bool indirect_target = (input.flags & 2) != 0;
+    bool indirect_target = target.tag == TARGET_INDIRECT;
     u64 first_slot = hidden ? 1u64 : 0u64;
     CallStack frame = CallStack(32u64, 0u64, 32u64);
     if (indirect_target || first_slot + count > 4u64) {
-        frame = call_stack(context, count, input.result, first_slot, input.flags, host.argument, indirect_target);
+        frame = call_stack(call.first, result, first_slot, indirect_target, indirect_target, values.ir);
     }
 
     MoveLocation rax = MoveLocation(0u64, u8(0), u8(0), u8(255), u8(0));
@@ -120,7 +154,6 @@ extern "C" u64 emit_call(address context, CallInput input, CallHost host) on cpu
         u64 start = address_bits(prefix.image) + prefix.end;
         u64 cursor = start;
         if (indirect_target) {
-            View target = values.ir.inspect(call.left);
             MoveEncoding saved = copy_scalar_move(call_home(frame.target), values.location(values.context, target.a),
                 8, false, unsafe_address(cursor));
             cursor += saved.length;
@@ -131,40 +164,42 @@ extern "C" u64 emit_call(address context, CallInput input, CallHost host) on cpu
 
     array<u32,4> register_widths = array<u32,4>(0, 0, 0, 0);
     u64 slot = first_slot;
-    u64 end = frame.homes + (hidden ? u64(padded(input.result.size, input.result.alignment)) : 0u64);
+    u64 end = frame.homes + (hidden ? u64(padded(result.size, result.alignment)) : 0u64);
     u64 index = 0u64;
     while (index < count) {
-        CallOperand operand = host.operand(context, index);
-        AbiType value = operand.abi;
+        View argument = values.ir.inspect(call_argument(call.first, index));
+        AbiType value = abi_type(argument.right, values.ir);
         if (has_slot(value)) {
             u64 home = slot_home(0u64, slot);
             // A reference uses at most 168 address bytes and a 24-byte move.
             // A value needs at most two prefixes and 24 bytes per component.
-            u64 capacity = value.value == 0 ? 192u64 : 32u64 + 24u64 * u64(operand.value.values.count);
+            u64 capacity = value.value ? 32u64 + 24u64 * u64(argument.first.count) : 192u64;
             NativeCodeBuffer buffer = host.reserve(context, capacity);
             u64 start = address_bits(buffer.image) + buffer.end;
             u64 cursor = start;
-            if (value.value == 0) {
-                View arg = values.ir.inspect(call_argument(call.first, index));
-                cursor += emit_reference_address(arg.left, host.addresses, host.local, unsafe_address(cursor));
+            if (!value.value) {
+                cursor += emit_reference_address(argument.left, host.addresses, host.local, unsafe_address(cursor));
                 MoveEncoding stored = copy_scalar_move(call_home(home), rax, 8, false, unsafe_address(cursor));
                 cursor += stored.length;
-            } else if (indirect(value.size, value.alignment)) {
-                u64 payload = copy_start(end);
-                end = payload + u64(padded(value.size, value.alignment));
-                cursor = call_value_at(cursor, u32(payload), operand.value, AbiMemoryMode::StackStore, host.component);
-                cursor += abi_stack_pointer(u32(payload), u32(home), unsafe_address(cursor));
             } else {
-                cursor = call_value_at(cursor, u32(home), operand.value, AbiMemoryMode::StackStore, host.component);
+                CallValueLoan loan = CallValueLoan(value.components, argument.first, input.allocation, input.registers);
+                if (indirect(value.size, value.alignment)) {
+                    u64 payload = copy_start(end);
+                    end = payload + u64(padded(value.size, value.alignment));
+                    cursor = call_value_at(cursor, u32(payload), loan, AbiMemoryMode::StackStore, host.component);
+                    cursor += abi_stack_pointer(u32(payload), u32(home), unsafe_address(cursor));
+                } else {
+                    cursor = call_value_at(cursor, u32(home), loan, AbiMemoryMode::StackStore, host.component);
+                }
             }
             host.commit(context, buffer.end + cursor - start);
-            if (slot < 4u64) { register_widths[u32(slot)] = value.float_size; }
+            if (slot < 4u64) { register_widths[u32(slot)] = float_width(value.name); }
             slot += 1u64;
         }
         index += 1u64;
     }
 
-    NativeCodeBuffer terminal = host.reserve(context, 192u64 + 48u64 * u64(input.values.values.count));
+    NativeCodeBuffer terminal = host.reserve(context, 192u64 + 48u64 * u64(input.results.count));
     u64 start = address_bits(terminal.image) + terminal.end;
     u64 cursor = start;
     for (reg in 0..4) {
@@ -181,49 +216,53 @@ extern "C" u64 emit_call(address context, CallInput input, CallHost host) on cpu
         cursor += symbol.length;
     }
 
-    bool fallible = (input.flags & 1) != 0;
     u64 failed = 0u64;
     if (fallible) {
-        ScalarEncoding scalar = values.scalar(values.context, input.error);
-        MoveEncoding stored = copy_scalar_move(values.location(values.context, input.error), rax,
+        ScalarEncoding scalar = values.scalar(values.context, call.a);
+        MoveEncoding stored = copy_scalar_move(values.location(values.context, call.a), rax,
             scalar.width / 8, scalar.kind == ScalarKind::Signed, unsafe_address(cursor));
         cursor += stored.length;
         cursor += encode_branch(u8(0x85), 64, unsafe_address(cursor));
         failed = cursor - 4u64;
     }
+    CallValueLoan returned_values = CallValueLoan(result.components, input.results, input.allocation, input.registers);
     if (location == ResultLocation::Indirect) {
-        cursor = call_value_at(cursor, u32(frame.homes), input.values, AbiMemoryMode::StackLoad, host.component);
+        cursor = call_value_at(cursor, u32(frame.homes), returned_values, AbiMemoryMode::StackLoad, host.component);
     } else if (location == ResultLocation::Float) {
-        usize reg = unsafe_position<usize>(input.values.values.data);
+        usize reg = unsafe_position<usize>(input.results.data);
         ScalarEncoding scalar = values.scalar(values.context, reg);
         MoveLocation xmm0 = MoveLocation(0u64, u8(1), u8(0), u8(255), u8(0));
         MoveEncoding returned = copy_scalar_move(values.location(values.context, reg), xmm0,
             scalar.width / 8, scalar.kind == ScalarKind::Signed, unsafe_address(cursor));
         cursor += returned.length;
     } else if (location == ResultLocation::Integer) {
-        cursor = call_value_at(cursor, u32(frame.homes), input.values, AbiMemoryMode::UnpackIntegerResult, host.component);
+        cursor = call_value_at(cursor, u32(frame.homes), returned_values, AbiMemoryMode::UnpackIntegerResult, host.component);
     }
     if (fallible) { patch_relative(unsafe_address(failed), failed - start, cursor - start); }
     host.commit(context, terminal.end + cursor - start);
     return relocation;
 }
 
-u64 move_function_parameter(address context, u64 index, u64 slot, u64 home, inout u64 first,
-    FunctionParameter parameter, FunctionHost host, u64 image, u64 start) on cpu
-    requires nonzero(host.loan) requires nonzero(host.component) requires nonzero(host.publish) {
-    AbiType abi = parameter.abi;
-    AbiMemoryMode mode = abi.value != 0 && indirect(abi.size, abi.alignment)
+struct HomeParameter { u64 index; u64 values; AbiMemoryMode mode; };
+
+AbiMemoryMode parameter_mode(AbiType abi) on cpu {
+    return abi.value && indirect(abi.size, abi.alignment)
         ? AbiMemoryMode::IndirectParameter : AbiMemoryMode::StackLoad;
-    CallValueLoan value = host.loan(context, index, first, parameter.values);
+}
+
+u64 move_function_parameter(address context, u64 index, u64 slot, u64 home, inout u64 first,
+    u64 count, AbiMemoryMode mode, FunctionHost host, u64 image, u64 start) on cpu
+    requires nonzero(host.loan) requires nonzero(host.component) requires nonzero(host.publish) {
+    CallValueLoan value = host.loan(context, index, first, count);
     u64 cursor = call_value_at(image + start, u32(home + slot_home(0u64, slot)), value, mode, host.component) - image;
     host.publish(context, FunctionRange(start, cursor, index, slot, FunctionRangeKind::Input));
-    first += parameter.values;
+    first += count;
     return cursor;
 }
 
 FrameEntry function_prologue(address context, u64 count, FunctionFrame frame,
     u32 flags, FrameOutput output, FunctionHost host) on cpu
-    requires nonzero(host.parameter) requires nonzero(host.loan)
+    requires nonzero(host.ir.inspect) requires nonzero(host.parameter) requires nonzero(host.loan)
     requires nonzero(host.component) requires nonzero(host.publish) {
     u64 image = address_bits(output.code);
     u64 cursor = 0u64;
@@ -233,15 +272,16 @@ FrameEntry function_prologue(address context, u64 count, FunctionFrame frame,
         host.publish(context, FunctionRange(0u64, cursor, 0u64, 0u64, FunctionRangeKind::HiddenHome));
     }
     u64 first_slot = hidden ? 1u64 : 0u64;
-    HomeParameter empty = HomeParameter(0u64, FunctionParameter(AbiType(0,1,0,0),0u64));
+    HomeParameter empty = HomeParameter(0u64, 0u64, AbiMemoryMode::StackLoad);
     array<HomeParameter,4> homes = array<HomeParameter,4>(empty,empty,empty,empty);
     u64 slot = first_slot;
     u64 index = 0u64;
     while (index < count && slot < 4u64) {
         FunctionParameter parameter = host.parameter(context,index);
-        if (has_slot(parameter.abi)) {
-            homes[u32(slot)] = HomeParameter(index,parameter);
-            u64 end = cursor + argument_register(u8(slot), parameter.abi.float_size, true, unsafe_address(image + cursor));
+        AbiType abi = abi_type(parameter.ty, host.ir);
+        if (has_slot(abi)) {
+            homes[u32(slot)] = HomeParameter(index,parameter.values,parameter_mode(abi));
+            u64 end = cursor + argument_register(u8(slot), float_width(abi.name), true, unsafe_address(image + cursor));
             host.publish(context, FunctionRange(cursor, end, index, slot, FunctionRangeKind::Home));
             cursor = end;
             slot += 1u64;
@@ -266,12 +306,13 @@ FrameEntry function_prologue(address context, u64 count, FunctionFrame frame,
     for (home_slot in u32(first_slot)..4) {
         if (u64(home_slot) == slot) { break; }
         HomeParameter row = homes[home_slot];
-        cursor = move_function_parameter(context,row.index,u64(home_slot),frame.home,value,row.parameter,host,image,cursor);
+        cursor = move_function_parameter(context,row.index,u64(home_slot),frame.home,value,row.values,row.mode,host,image,cursor);
     }
     while (index < count) {
         FunctionParameter parameter = host.parameter(context,index);
-        if (has_slot(parameter.abi)) {
-            cursor = move_function_parameter(context,index,slot,frame.home,value,parameter,host,image,cursor);
+        AbiType abi = abi_type(parameter.ty, host.ir);
+        if (has_slot(abi)) {
+            cursor = move_function_parameter(context,index,slot,frame.home,value,parameter.values,parameter_mode(abi),host,image,cursor);
             slot += 1u64;
         }
         index += 1u64;
@@ -311,12 +352,13 @@ FunctionReturn function_result(FunctionFrame frame, u32 flags, CallValueLoan val
 }
 
 extern "C" FunctionCode emit_function_code(address context, FunctionCodeInput input, FunctionCodeHost host) on cpu
-    requires nonzero(host.abi.parameter) requires nonzero(host.abi.loan)
+    requires nonzero(host.abi.ir.inspect) requires nonzero(host.abi.parameter) requires nonzero(host.abi.loan)
     requires nonzero(host.abi.component) requires nonzero(host.abi.publish)
     requires nonzero(host.entry) requires nonzero(host.body) requires nonzero(host.reserve)
     requires nonzero(host.result) requires nonzero(host.commit) requires nonzero(host.literal)
     requires nonzero(host.exit_buffer) {
-    FunctionFrame frame = function_frame(input.data_end, input.result, input.flags);
+    AbiType result_type = abi_type(input.result, host.abi.ir);
+    FunctionFrame frame = function_frame(input.data_end, result_type, input.flags);
     if (frame.bytes > 2147483647u64) { return FunctionCode(0u64, 1); }
 
     u64 entry_bytes = 2u64 + 17u64 + 9u64 * input.saved + 4u64 * 9u64 + 24u64
@@ -327,7 +369,7 @@ extern "C" FunctionCode emit_function_code(address context, FunctionCodeInput in
     ControlTargets targets = ControlTargets(address_of(exits), address_of(exits), address(), 0u64);
     if (host.body(context, prologue, targets) == 0) { return FunctionCode(0u64, 0); }
 
-    u64 result_fields = input.result_fields < input.outputs ? input.result_fields : input.outputs;
+    u64 result_fields = min(u64(result_type.components.count), input.outputs);
     NativeCodeBuffer buffer = host.reserve(context, 26u64 + 48u64 * result_fields);
     FunctionReturn result = function_result(frame, input.flags, host.result(context), host.abi.component,
         unsafe_address(address_bits(buffer.image) + buffer.end));

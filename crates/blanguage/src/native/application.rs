@@ -14,12 +14,13 @@ pub(crate) fn emit_function(function: &FunctionBody) -> Result<NativeCode, &'sta
         Some(&function.name),
     )
 }
-use super::external::{abi_component, AbiComponent, AbiType, CallValueLoan};
+use super::external::{abi_component, AbiComponent, CallValueLoan};
+use crate::ir::dataflow::{self, Node};
 use std::ffi::c_void;
 
 #[repr(C)]
 struct FunctionParameter {
-    abi: AbiType,
+    ty: Node,
     values: usize,
 }
 
@@ -42,6 +43,7 @@ struct FunctionRange {
 
 #[repr(C)]
 struct FunctionHost {
+    ir: dataflow::Host,
     parameter: unsafe extern "C" fn(*const c_void, usize) -> FunctionParameter,
     loan: unsafe extern "C" fn(*const c_void, usize, usize, usize) -> CallValueLoan,
     component: AbiComponent,
@@ -49,6 +51,7 @@ struct FunctionHost {
 }
 
 const FUNCTION_HOST: FunctionHost = FunctionHost {
+    ir: dataflow::HOST,
     parameter: function_parameter,
     loan: function_loan,
     component: abi_component,
@@ -58,11 +61,10 @@ const FUNCTION_HOST: FunctionHost = FunctionHost {
 #[repr(C)]
 struct FunctionCodeInput {
     data_end: u64,
-    result: AbiType,
+    result: Node,
     flags: u32,
     parameters: usize,
     inputs: usize,
-    result_fields: usize,
     outputs: usize,
     saved: usize,
 }
@@ -109,8 +111,8 @@ const REFERENCE_FIELDS: [(Scalar, u32); 2] = [(Scalar::U32, 0), (Scalar::U32, 4)
 unsafe extern "C" fn function_parameter(context: *const c_void, index: usize) -> FunctionParameter {
     let state = unsafe { &*context.cast::<FunctionEmission<'_, '_>>() };
     match &state.parameters[index].kind {
-        CallParameterKind::Value(ty) => FunctionParameter { abi: AbiType::value(ty), values: ty.components.len() },
-        CallParameterKind::Reference { .. } => FunctionParameter { abi: AbiType::reference(), values: REFERENCE_FIELDS.len() },
+        CallParameterKind::Value(ty) => FunctionParameter { ty: Node::ty(ty), values: ty.components.len() },
+        CallParameterKind::Reference { .. } => FunctionParameter { ty: Node::EMPTY, values: REFERENCE_FIELDS.len() },
     }
 }
 
@@ -255,11 +257,10 @@ fn emit_value(
     let fields = result.map_or(&[][..], |ty| ty.components.as_slice());
     let input = FunctionCodeInput {
         data_end: e.frame.end,
-        result: AbiType::result(result),
+        result: result.map_or(Node::EMPTY, Node::ty),
         flags,
         parameters: parameters.len(),
         inputs: body.inputs.len(),
-        result_fields: fields.len(),
         outputs: body.outputs.len(),
         saved: e.frame.saved_count,
     };

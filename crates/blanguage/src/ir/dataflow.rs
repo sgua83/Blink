@@ -11,7 +11,7 @@ enum Kind {
     Indexed, Stride, Texture, AtomicOp, Alias, Effect, Division, Divisor, Words3,
     Component, Stage, RayRange, Operation, Buffer, Uniform, ValueCode, CustomReduction, Scalar, Tile, Registers,
     FirstComponentScalar, PageBuffer, PageType, PageVariant, PageField, Comparison, BinaryOperation,
-    TilePublication, TileCollective,
+    TilePublication, TileCollective, Type,
 }
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -20,6 +20,7 @@ impl Node {
     pub(crate) fn instruction(value: &Inst) -> Self { Self::of(value, Kind::Instruction) }
     fn of<T>(value: &T, kind: Kind) -> Self { Self { data: ptr::from_ref(value).cast(), kind } }
     pub(crate) fn call(value: &Call) -> Self { Self::of(value, Kind::Call) }
+    pub(crate) fn ty(value: &Ty) -> Self { Self::of(value, Kind::Type) }
     pub(crate) const EMPTY: Self = Self { data: ptr::null(), kind: Kind::Instruction };
 }
 #[derive(Clone, Copy)]
@@ -197,7 +198,10 @@ unsafe extern "C" fn inspect(node: Node) -> View {
             let call = unsafe { &*node.data.cast::<Call>() };
             let mut view = View::tag(0);
             view.first = Span::slice(&call.arguments); view.second = Span::slice(&call.memory);
-            view.left = Node::of(&call.target, Kind::Target); view
+            view.left = Node::of(&call.target, Kind::Target);
+            view.right = call.result.as_ref().map_or(Node::EMPTY, Node::ty);
+            if let Some(error) = call.error { view.a = error; view.b = 1; }
+            view
         }
         Kind::Target => match unsafe { &*node.data.cast::<CallTarget>() } {
             CallTarget::External(name) => {
@@ -210,9 +214,11 @@ unsafe extern "C" fn inspect(node: Node) -> View {
             CallTarget::Indirect(reg) => { let mut view = View::tag(2); view.a = *reg; view }
         },
         Kind::Argument => match unsafe { &*node.data.cast::<CallArgument>() } {
-            CallArgument::Value { values, dataset_borrow, .. } => {
+            CallArgument::Value { ty, values, dataset_borrow, .. } => {
                 let mut view = View::tag(0); view.first = Span::slice(values);
-                view.left = dataset_borrow.as_deref().map_or(Node::EMPTY, |value| Node::of(value, Kind::DatasetBorrow)); view
+                view.left = dataset_borrow.as_deref().map_or(Node::EMPTY, |value| Node::of(value, Kind::DatasetBorrow));
+                view.right = Node::ty(ty);
+                view
             }
             CallArgument::Reference { address, access, ty, .. } => {
                 let mut view = View::tag(1); view.a = *access as usize;
@@ -220,6 +226,15 @@ unsafe extern "C" fn inspect(node: Node) -> View {
                 view.left = Node::of(address, Kind::Reference); view
             }
         },
+        Kind::Type => {
+            let ty = unsafe { &*node.data.cast::<Ty>() };
+            let mut view = View::tag(0);
+            view.a = ty.size as usize;
+            view.b = ty.align as usize;
+            view.first = Span::slice(ty.name.as_bytes());
+            view.second = Span::slice(&ty.components);
+            view
+        }
         Kind::DatasetBorrow => {
             let value = unsafe { &*node.data.cast::<DatasetBorrow>() };
             let mut view = View::tag(0); view.first = Span::slice(&value.frame);
