@@ -69,6 +69,18 @@ extern "C" void dependency_digest(u64 declaration_count, u32 imported, Reference
     requires nonzero(host.record) requires nonzero(host.type_set) requires nonzero(host.contract)
     requires nonzero(host.query);
 
+struct ObjectReuse {
+    address imports;
+    address runtime;
+    address context;
+    cfn<u32,address,address> load_runtime;
+};
+extern "C" u32 matches_object_reuse(u64 declarations, u32 imported, ReferenceHost host, ObjectReuse reuse) on cpu
+    requires nonzero(host.next_symbol) requires nonzero(host.next_declaration) requires nonzero(host.name)
+    requires nonzero(host.symbol) requires nonzero(host.requirement) requires nonzero(host.function)
+    requires nonzero(host.record) requires nonzero(host.type_set) requires nonzero(host.contract)
+    requires nonzero(host.query) requires nonzero(reuse.load_runtime);
+
 struct SourceExtent { u64 preamble_end; u32 include_signatures; };
 struct SourceSignature { DigestField name; DigestField signature; };
 struct SignatureSpan { address signatures; u64 count; };

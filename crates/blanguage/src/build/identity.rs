@@ -248,20 +248,17 @@ unsafe extern "C" fn reference_query(context: *const c_void, digest: *mut hash::
     unsafe { digest_name_resolution(digest, resolution, name) }
 }
 
-pub(super) fn references<'symbol, 'declaration, S, D>(
-    declarations: &crate::Declarations, imported: Option<&crate::module::Imports>, symbols: S, mut used: D,
-) -> [u8; 32]
+fn reference_host<'symbol, 'declaration, S, D>(sources: &ReferenceSources<'_>, symbols: &mut S, used: &mut D)
+    -> ReferenceHost
 where
-    S: IntoIterator<Item = &'symbol str>,
-    D: ExactSizeIterator<Item = &'declaration Declaration>,
+    S: Iterator<Item = &'symbol str>,
+    D: Iterator<Item = &'declaration Declaration>,
 {
-    let sources = ReferenceSources { declarations, imported };
-    let mut symbols = symbols.into_iter();
-    let host = ReferenceHost {
-        symbol_stream: ptr::from_mut(&mut symbols).cast(),
-        declaration_stream: ptr::from_mut(&mut used).cast(),
-        context: ptr::from_ref(&sources).cast(),
-        next_symbol: next_symbol::<S::IntoIter>,
+    ReferenceHost {
+        symbol_stream: ptr::from_mut(symbols).cast(),
+        declaration_stream: ptr::from_mut(used).cast(),
+        context: ptr::from_ref(sources).cast(),
+        next_symbol: next_symbol::<S>,
         next_declaration: next_declaration::<D>,
         name: name_field,
         symbol: reference_symbol,
@@ -271,10 +268,75 @@ where
         type_set: reference_type_set,
         contract: reference_contract,
         query: reference_query,
-    };
+    }
+}
+
+pub(super) fn references<'symbol, 'declaration, S, D>(
+    declarations: &crate::Declarations, imported: Option<&crate::module::Imports>, symbols: S, mut used: D,
+) -> [u8; 32]
+where
+    S: IntoIterator<Item = &'symbol str>,
+    D: ExactSizeIterator<Item = &'declaration Declaration>,
+{
+    let sources = ReferenceSources { declarations, imported };
+    let mut symbols = symbols.into_iter();
+    let host = reference_host(&sources, &mut symbols, &mut used);
     let mut digest = [0; 32];
     unsafe { dependency_digest(used.len(), u32::from(imported.is_some()), host, &mut digest) };
     digest
+}
+
+#[repr(C)]
+struct ObjectReuse {
+    imports: *const [u8; 32],
+    runtime: *const [u8; 32],
+    context: *mut c_void,
+    load_runtime: unsafe extern "C" fn(*mut c_void, &mut [u8; 32]) -> u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.build_digest::matches_object_reuse"]
+    fn matches_object_reuse(declarations: usize, imported: u32, host: ReferenceHost, reuse: ObjectReuse) -> u32;
+}
+
+struct RuntimeDigest<'a> {
+    load: &'a mut dyn FnMut() -> Result<[u8; 32]>,
+    error: Option<Box<dyn std::error::Error + Send + Sync>>,
+}
+
+unsafe extern "C" fn load_runtime_digest(context: *mut c_void, digest: &mut [u8; 32]) -> u32 {
+    let runtime = unsafe { &mut *context.cast::<RuntimeDigest<'_>>() };
+    match (runtime.load)() {
+        Ok(value) => {
+            *digest = value;
+            1
+        }
+        Err(error) => {
+            runtime.error = Some(error);
+            0
+        }
+    }
+}
+
+impl ReuseInputs<'_> {
+    pub(super) fn matches_object<'symbol>(
+        &self, declarations: &crate::Declarations, imported: Option<&crate::module::Imports>,
+        symbols: impl IntoIterator<Item = &'symbol str>, mut load_runtime: impl FnMut() -> Result<[u8; 32]>,
+    ) -> Result<bool> {
+        let sources = ReferenceSources { declarations, imported };
+        let mut symbols = symbols.into_iter();
+        let mut used = self.declarations.iter();
+        let host = reference_host(&sources, &mut symbols, &mut used);
+        let mut runtime = RuntimeDigest { load: &mut load_runtime, error: None };
+        let reuse = ObjectReuse {
+            imports: self.imports,
+            runtime: self.native.map_or(ptr::null(), ptr::from_ref),
+            context: ptr::from_mut(&mut runtime).cast(),
+            load_runtime: load_runtime_digest,
+        };
+        let matches = unsafe { matches_object_reuse(used.len(), u32::from(imported.is_some()), host, reuse) };
+        runtime.error.map_or(Ok(matches != 0), Err)
+    }
 }
 
 #[repr(C)]
@@ -740,13 +802,13 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Option<Inputs>> {
     }))
 }
 
-pub(super) struct ReuseInputs {
-    pub(super) imports: [u8; 32],
-    pub(super) native: Option<[u8; 32]>,
+pub(super) struct ReuseInputs<'a> {
+    pub(super) imports: &'a [u8; 32],
+    native: Option<&'a [u8; 32]>,
     pub(super) declarations: Vec<Declaration>,
 }
 
-pub(super) fn match_source(bytes: &[u8], source: &SourceInputs) -> Result<Option<ReuseInputs>> {
+pub(super) fn match_source<'a>(bytes: &'a [u8], source: &SourceInputs) -> Result<Option<ReuseInputs<'a>>> {
     let rows = ManifestRows { source, declarations: &[] };
     let expected = ManifestExpected {
         identity: ManifestIdentity::borrow(source),
@@ -760,8 +822,8 @@ pub(super) fn match_source(bytes: &[u8], source: &SourceInputs) -> Result<Option
         .filter(|manifest| manifest.same_source != 0)
     else { return Ok(None); };
     Ok(Some(ReuseInputs {
-        imports: unsafe { *manifest.imports_digest.cast::<[u8; 32]>() },
-        native: unsafe { manifest.native_digest.cast::<[u8; 32]>().as_ref() }.copied(),
+        imports: unsafe { &*manifest.imports_digest.cast::<[u8; 32]>() },
+        native: unsafe { manifest.native_digest.cast::<[u8; 32]>().as_ref() },
         declarations: projection.declarations,
     }))
 }

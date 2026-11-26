@@ -105,17 +105,13 @@ fn compile_importing(
             if let Some(bytes) = reader.build_inputs().map_err(error)? {
                 if let Some(stored) = identity::match_source(bytes, &source)? {
                     let inputs = reader.reuse_inputs().map_err(error)?;
-                    if stored.imports == identity::references(definitions, imported, inputs.imports.iter().copied(), stored.declarations.iter()) {
-                        if stored.native.is_some() {
-                            libraries = Some(crate::object::runtime_libraries(worker).map_err(error)?);
-                        }
-                        let native = libraries.as_deref().map(crate::object::runtime_fingerprint);
-                        if stored.native == native
-                            && let Some(object) = inputs.restore().map_err(error)?
-                        {
-                            // The matched producer already wrote the contract identity used on a cold build.
-                            return Ok(ObjectCompilation { object, artifact, reused: true });
-                        }
+                    if stored.matches_object(definitions, imported, inputs.imports.iter().copied(), || {
+                        let actual = crate::object::runtime_libraries(worker).map_err(error)?;
+                        let digest = crate::object::runtime_fingerprint(&actual);
+                        libraries = Some(actual);
+                        Ok(digest)
+                    })? && let Some(object) = inputs.restore().map_err(error)? {
+                        return Ok(ObjectCompilation { object, artifact, reused: true });
                     }
                 }
             }

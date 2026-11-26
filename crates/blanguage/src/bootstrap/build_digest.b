@@ -312,6 +312,31 @@ extern "C" void dependency_digest(u64 declaration_count, u32 imported, Reference
     sha256_finish(state, output);
 }
 
+bool digest_matches(address left, address right) on cpu {
+    u64 index = 0u64;
+    while (index < 32u64) {
+        u8 a = unsafe_position<u8>(at(left, index));
+        u8 b = unsafe_position<u8>(at(right, index));
+        if (a != b) { return false; }
+        index += 1u64;
+    }
+    return true;
+}
+
+extern "C" u32 matches_object_reuse(u64 declarations, u32 imported, ReferenceHost host, ObjectReuse reuse) on cpu
+    requires nonzero(host.next_symbol) requires nonzero(host.next_declaration) requires nonzero(host.name)
+    requires nonzero(host.symbol) requires nonzero(host.requirement) requires nonzero(host.function)
+    requires nonzero(host.record) requires nonzero(host.type_set) requires nonzero(host.contract)
+    requires nonzero(host.query) requires nonzero(reuse.load_runtime) {
+    array<u8,32> digest = array<u8,32>(u8(0));
+    address bytes = address_of(digest[0]);
+    dependency_digest(declarations, imported, host, bytes);
+    if (!digest_matches(bytes, reuse.imports)) { return 0; }
+    if (address_bits(reuse.runtime) == 0u64) { return 1; }
+    if (reuse.load_runtime(reuse.context, bytes) == 0) { return 0; }
+    return digest_matches(bytes, reuse.runtime) ? 1 : 0;
+}
+
 SourceScope source_scope(SourceFile file) on cpu {
     if (file.implementation != 0) { return SourceScope::Signatures; }
     if (file.root == 0) { return SourceScope::Preamble; }

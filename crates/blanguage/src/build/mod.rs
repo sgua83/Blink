@@ -123,7 +123,7 @@ fn compile_in<'object>(
                 let mut image = unsafe { resource::from_compiler_output(stored_image) }
                     .map_err(|e| std::io::Error::other(e.to_string()))?;
                 let link = entry_link(&mut image);
-                if inputs.imports == references(&world.declarations, imported, link.as_ref(), inputs.declarations.iter()) {
+                if *inputs.imports == references(&world.declarations, imported, link.as_ref(), inputs.declarations.iter()) {
                     if imported.is_some() && let Some(link) = link
                         && link_entry(link, dependencies, borrowed, &world.declarations)?
                     {
