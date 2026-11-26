@@ -200,9 +200,7 @@ impl ControlInput {
                 .map(|(ty, proof)| proof.project(&[*component], ty.components.len())),
             Self::Value { name, contents: Some(path), component } => lookup(name)
                 .and_then(|binding| view::data_at(binding, path))
-                .and_then(|data| data.elements.known())
-                .and_then(returns::Returned::view_value)
-                .map(|value| bounds::Proof::capture_selected(value, &[*component], value.ty.components.len())),
+                .and_then(|data| data.elements.scalar_component(*component)),
             Self::Length { name, path } => lookup(name)
                 .and_then(|binding| view::data_at(binding, path))
                 .map(|data| bounds::Proof::capture(&data.length)),

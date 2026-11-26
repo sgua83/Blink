@@ -37,6 +37,27 @@ pub(super) enum ElementFacts {
     Selected(Box<bounds::Condition>,Box<ElementFacts>,Box<ElementFacts>),
 }
 impl ElementFacts {
+    pub(super) fn scalar_component(&self, component: usize) -> Option<bounds::Proof> {
+        match self {
+            Self::Known(model) => model.view_value().map(|value| {
+                bounds::Proof::capture_selected(value, &[component], value.ty.components.len())
+            }),
+            Self::Unknown | Self::Input(_) | Self::Cleanup(_) => Some(bounds::Proof::default()),
+            Self::Common(left, right) => Self::join_scalar_component(left, right, component, None),
+            Self::Selected(when, left, right) => {
+                Self::join_scalar_component(left, right, component, Some(when))
+            }
+        }
+    }
+
+    fn join_scalar_component(
+        left: &Self, right: &Self, component: usize, when: Option<&bounds::Condition>,
+    ) -> Option<bounds::Proof> {
+        let mut proof = left.scalar_component(component)?;
+        proof.join_condition(&right.scalar_component(component)?, 1, when);
+        Some(proof)
+    }
+
     pub(super) fn known(&self)->Option<&returns::Returned>{match self{Self::Known(value)=>Some(value),Self::Unknown|Self::Input(_)|Self::Cleanup(_)|Self::Common(..)|Self::Selected(..)=>None}}
     pub(super) fn known_mut(&mut self)->Option<&mut returns::Returned>{match self{Self::Known(value)=>Some(value),Self::Unknown|Self::Input(_)|Self::Cleanup(_)|Self::Common(..)|Self::Selected(..)=>None}}
     pub(super) fn common(self,other:Self)->Self {match(self,other){
