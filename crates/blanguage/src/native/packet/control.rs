@@ -6,11 +6,6 @@ use std::ffi::c_void;
 struct Header { registers: usize, slots: usize, writes: usize, tile: u32, selected: u32 }
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct State { owner: *mut Vec<u8>, bytes: *mut u8, count: usize }
-#[repr(C)]
-struct Product { plan: *mut c_void, uses: State }
-#[repr(C)]
-#[derive(Clone, Copy)]
 pub(super) struct Decision {
     operation: u32,
     uniform_count: u32,
@@ -25,8 +20,7 @@ struct Host {
     written: unsafe extern "C" fn(*const Context<'_>, usize) -> u32,
     scalar: unsafe extern "C" fn(*const Context<'_>, Reg) -> ScalarEncoding,
     widths: unsafe extern "C" fn(*const Context<'_>, unsafe extern "C" fn(usize) -> u32) -> u32,
-    state_new: unsafe extern "C" fn(usize, *const u8) -> State,
-    state_drop: unsafe extern "C" fn(State),
+    uses_storage: unsafe extern "C" fn(*mut Vec<u8>, usize) -> *mut u8,
     plan_new: unsafe extern "C" fn() -> *mut c_void,
     plan_drop: unsafe extern "C" fn(*mut c_void),
     append: unsafe extern "C" fn(*mut c_void, *const Inst, Decision, *mut c_void, *mut c_void),
@@ -40,7 +34,7 @@ struct Context<'a> {
 type Steps = Vec<Step<'static>>;
 unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::packet_plan"]
-    fn packet_plan(context: *const Context<'_>, code: Span, header: Header, host: Host) -> Product;
+    fn packet_plan(context: *const Context<'_>, code: Span, header: Header, uses: *mut Vec<u8>, host: Host) -> *mut c_void;
 }
 pub(super) fn run<'a>(
     program: &Program, stage: &Stage, code: &'a [Inst], registers: &'a [Scalar], tile_scope: bool,
@@ -49,11 +43,10 @@ pub(super) fn run<'a>(
     let header = Header { registers: registers.len(),
         slots: registers.len() + stage.locals.last_key_value().map_or(0, |(end, _)| *end),
         writes: stage.writes.len(), tile: u32::from(tile_scope), selected: u32::from(stage.selection.is_some()) };
-    let product = unsafe { packet_plan(&context, Span::slice(code), header, PLAN_HOST) };
-    if product.plan.is_null() { return None; }
-    // Only a completed plan transfers its step vector and the original uses buffer.
-    let code = unsafe { *Box::from_raw(product.plan.cast::<Vec<Step<'a>>>()) };
-    let uses = unsafe { *Box::from_raw(product.uses.owner) };
+    let mut uses = Vec::new();
+    let plan = unsafe { packet_plan(&context, Span::slice(code), header, &mut uses, PLAN_HOST) };
+    if plan.is_null() { return None; }
+    let code = unsafe { *Box::from_raw(plan.cast::<Vec<Step<'a>>>()) };
     Some((Plan { code }, uses))
 }
 unsafe extern "C" fn stride(context: *const Context<'_>, binding: usize) -> u32 {
@@ -75,12 +68,11 @@ unsafe extern "C" fn widths(context: *const Context<'_>, visit: unsafe extern "C
         .all(|scalar| unsafe { visit(scalar.size() as usize) != 0 }))
 }
 
-unsafe extern "C" fn state_new(count: usize, source: *const u8) -> State {
-    let data = if source.is_null() { vec![0; count] } else { unsafe { std::slice::from_raw_parts(source, count) }.to_vec() };
-    let mut data = Box::new(data); let result = State { owner: data.as_mut(), bytes: data.as_mut_ptr(), count };
-    let _ = Box::into_raw(data); result
+unsafe extern "C" fn uses_storage(output: *mut Vec<u8>, count: usize) -> *mut u8 {
+    let uses = unsafe { &mut *output };
+    uses.resize(count, 0);
+    uses.as_mut_ptr()
 }
-unsafe extern "C" fn state_drop(state: State) { drop(unsafe { Box::from_raw(state.owner) }); }
 unsafe extern "C" fn plan_new() -> *mut c_void { Box::into_raw(Box::new(Steps::new())).cast() }
 unsafe extern "C" fn plan_drop(plan: *mut c_void) { drop(unsafe { Box::from_raw(plan.cast::<Steps>()) }); }
 unsafe fn take_plan(plan: *mut c_void) -> Steps {
@@ -96,4 +88,4 @@ unsafe extern "C" fn append(plan: *mut c_void, instruction: *const Inst, decisio
     unsafe { &mut *plan.cast::<Steps>() }.push(step);
 }
 const PLAN_HOST: Host = Host { ir: crate::ir::dataflow::HOST, stride, written, scalar, widths,
-    state_new, state_drop, plan_new, plan_drop, append };
+    uses_storage, plan_new, plan_drop, append };

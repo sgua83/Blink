@@ -623,8 +623,7 @@ struct PrintEncoding {
 extern "C" PrintEncoding print_helper(ScalarEncoding scalar, address output, address unwind) on cpu;
 
 struct PacketPlanHeader {u64 registers;u64 slots;u64 writes;u32 tile;u32 selected;};
-struct PacketPlanState {address owner;address bytes;u64 count;};
-struct PacketPlanProduct { address plan; PacketPlanState uses; };
+struct PacketPlanState {address bytes;u64 count;};
 struct PacketPlanFlow {PacketPlanState next;PacketPlanState breaks;PacketPlanState continues;PacketPlanState exits;};
 struct PacketPlanHost {
     Host ir;
@@ -632,18 +631,17 @@ struct PacketPlanHost {
     cfn<u32,address,usize> written;
     cfn<ScalarEncoding,address,usize> scalar;
     cfn<u32,address,cfn<u32,usize>> widths;
-    cfn<PacketPlanState,u64,address> state_new;
-    cfn<void,PacketPlanState> state_drop;
+    cfn<address,address,usize> uses_storage;
     cfn<address> plan_new;
     cfn<void,address> plan_drop;
     cfn<void,address,address,PacketPlanDecision,address,address> append;
 };
 // A successful plan transfers both the final Step vector and the original uses
 // buffer. The latter is consumed by packet coloring before emission.
-extern "C" PacketPlanProduct packet_plan(address context,Span code,PacketPlanHeader header,PacketPlanHost host) on cpu 
+extern "C" address packet_plan(address context, Span code, PacketPlanHeader header, address output, PacketPlanHost host) on cpu 
     requires nonzero(host.ir.inspect) requires nonzero(host.stride) requires nonzero(host.written) requires nonzero(host.scalar)
     requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append)
-    requires nonzero(host.widths) requires nonzero(host.state_new) requires nonzero(host.state_drop);
+    requires nonzero(host.widths) requires nonzero(host.uses_storage);
 extern "C" u32 packet_plan_uniform_operand(address bytes,u64 reg) on cpu;
 extern "C" u32 packet_plan_mark_operand(address bytes,u64 reg) on cpu;
 extern "C" u32 packet_plan_width(usize bytes) on cpu;
