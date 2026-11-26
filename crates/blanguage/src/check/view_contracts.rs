@@ -516,6 +516,12 @@ impl Function {
         for component in components(ty) {self.outputs.insert(output(component),proof.view_borrow(component));}
     }
     fn input(&self,id:ValueIdentity)->bool {match id{ValueIdentity::Register(n)=>n<self.input_width,ValueIdentity::ParameterContent(..)|ValueIdentity::ResourceParameter(..)|ValueIdentity::ParameterStorage(..)|ValueIdentity::DatasetContent(..)=>true,_=>false}}
+    fn forwards_recursive_output(&self, name: &str, output: &Output, definition: &Borrow) -> bool {
+        matches!(output, Output::Returned(_)) && definition.calls.iter().any(|result| {
+            self.calls[result.call].function == name && result.output == *output
+        })
+    }
+
     fn address_borrows(&self,parameters:&BTreeMap<ValueIdentity,bounds::Proof>,borrow:Borrow)->Option<Borrow> {
         let selected=borrow.map_sources(|source|match source {
             Origin::Parameter(id,indices)=>self.parameters.get(&id).copied().filter(|id|self.input(*id))
@@ -2270,22 +2276,12 @@ fn converge(
             let state = &known[name];
             let loops = relation::Graph::loops(&loop_inputs[name], function, state.name, known);
             let scope = LoopScope { name: state.name, loops: loops.as_ref() };
-            let entries = relation::Graph::recursive_inputs(name, function, scope, known);
+            let recursive = relation::Graph::recursive_inputs(name, function, scope, known);
+            let entry_bindings = recursive.as_ref().and_then(|inputs| inputs.forwarding.as_ref());
             let mut evaluation=BorrowEvaluation{function,state:scope,known,expand_loops:true,deferred_reads:false,loop_bindings:None,values:BTreeMap::new(),stored: None, exit_writes: None,stored_paths:Default::default()};
-            let forwards=|output:&Output,definition:&Borrow|matches!(output,Output::Returned(_))&&definition.calls.iter().any(|result|function.calls[result.call].function==*name&&result.output==*output);
-            let entry_bindings=entries.as_ref().filter(|_|function.outputs.iter().any(|(output,definition)|forwards(output,definition))).map(|entries|{
-                let mut inverse=BTreeMap::new();for(&local,&formal)in &function.parameters{inverse.entry(formal).or_insert_with(||{let mut component_proof=bounds::Proof::default().with_identity(local);component_proof.set_view_borrow(0,Borrow::source(Origin::Parameter(local,Vec::new())));component_proof});}
-                let parameters=residency::input_parameters(&function.parameters,function.input_width);
-                function.parameters.iter().filter_map(|(&local,&formal)|{
-                    let entry=entries.get(&formal)?.substitute_values(&inverse);
-                    let unchanged=function.calls.iter().filter(|call|call.function==*name).all(|call|call.arguments.get(&formal).is_some_and(|value|value.at_call(&parameters).known_identity(0)==Some(formal)));
-                    let proof=if unchanged{bounds::Proof::default().with_identity(local)}else{bounds::Proof::default()};
-                    Some((local,{let mut component_proof=proof;component_proof.set_view_borrow(0,entry);component_proof}))
-                }).collect::<BTreeMap<_,_>>()
-            });
             let physical=function.outputs.iter().map(|(output,definition)|{
-                let basis=match &entry_bindings{
-                    Some(bindings)if forwards(output,definition)=>{
+                let basis=match entry_bindings{
+                    Some(bindings)if function.forwards_recursive_output(name,output,definition)=>{
                         let mut basis=definition.clone();let calls=basis.calls.iter().filter(|result|function.calls[result.call].function==*name&&result.output==*output).cloned().collect::<Vec<_>>();
                         for call in calls{basis.calls.remove(&call);}
                         std::borrow::Cow::Owned(basis.substitute_values(bindings))
@@ -2317,6 +2313,7 @@ fn converge(
                     || !value.sources.same_sources(&old.sources)
                     || !value.sources.equivalent_paths(&old.sources)
             });
+            let entries = recursive.map(|inputs| inputs.entries);
             Ok((interface_changed || loops != state.loops || entries != state.entries)
                 .then_some(ConvergenceUpdate { name, loops, entries, outputs, stored: access, interface_changed }))
 

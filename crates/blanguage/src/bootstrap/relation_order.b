@@ -754,7 +754,7 @@ extern "C" void expand_component_ports(address context, cfn<usize,address> count
     }
 }
 
-extern "C" void expand_component_calls(address context, usize count, cfn<void,address,usize> visit) on cpu
+extern "C" void visit_relation_calls(address context, usize count, cfn<void,address,usize> visit) on cpu
     requires nonzero(visit)
 {
     usize index = 0u64;

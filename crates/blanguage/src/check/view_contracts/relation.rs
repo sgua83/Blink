@@ -1029,8 +1029,8 @@ unsafe extern "C" {
         context: Slot, count: unsafe extern "C" fn(Borrowed) -> usize,
         visit: unsafe extern "C" fn(Slot, usize),
     );
-    #[link_name = "bootstrap.relation_order::expand_component_calls"]
-    fn expand_component_calls(
+    #[link_name = "bootstrap.relation_order::visit_relation_calls"]
+    fn visit_relation_calls(
         context: Slot, count: usize, visit: unsafe extern "C" fn(Slot, usize),
     );
 }
@@ -1081,7 +1081,7 @@ struct ComponentCallInputs<'work, 'name, 'state, 'bindings, F> {
 
 impl<F> ComponentCallInputs<'_, '_, '_, '_, F> {
     fn expand(&mut self, count: usize) {
-        unsafe { expand_component_calls(ptr::from_mut(self).cast(), count, Self::call) };
+        unsafe { visit_relation_calls(ptr::from_mut(self).cast(), count, Self::call) };
     }
 
     unsafe extern "C" fn call(context: Slot, index: usize) {
@@ -1153,39 +1153,125 @@ impl<F> ComponentCallInputs<'_, '_, '_, '_, F> {
     }
 }
 
-impl Graph {
-    fn builder<'a>(function:&'a Function,state:LoopScope<'a>,known:&'a States<'a>)->Builder<'a>{Builder{function,state,known,keys:BTreeMap::new(),prefix:FramePrefix::default(),graph:Self::default(),parameters:BTreeMap::new()}}
-    pub(super) fn recursive_inputs(name:&str,function:&Function,state:LoopScope<'_>,known:&States)->Option<BTreeMap<ValueIdentity,Borrow>>{
-        if !function.calls.iter().any(|call|call.function==name){return None;}
-        let mut b=Self::builder(function,state,known);let mut roots=BTreeMap::new();
-        for(&local,&formal)in &function.parameters{if function.input(formal){
-            let id=*roots.entry(formal).or_insert_with(||{let id=b.empty();b.graph.variables.insert(id);b.graph.nodes[id].seeds=Borrow::source(Origin::Parameter(local,Vec::new()));id});
-            b.parameters.insert(local,id);
-        }}
-        // Feedback depends only on edges and writes. Merge the seeds once
-        // the graph has a reader, in the original argument order.
-        let mut pending_seeds = Vec::new();
-        for call in function.calls.iter().filter(|call| call.function == name) {
-            for (input, value) in &call.arguments {
-                if let Some(&id) = roots.get(input) {
-                    let value = value.view_borrow(0).restricted(&call.path);
-                    let epoch = Epoch::Local { memory: call.memory, snapshots: call.snapshots.clone() };
-                    b.fill_with_seeds(id, &value, &epoch, |_, source, when| {
-                        pending_seeds.push((id, source.clone(), when));
+pub(super) struct SelfRecursiveInputs {
+    pub(super) entries: BTreeMap<ValueIdentity, Borrow>,
+    pub(super) forwarding: Option<BTreeMap<ValueIdentity, bounds::Proof>>,
+}
+
+struct SelfCallRoots {
+    nodes: BTreeMap<ValueIdentity, usize>,
+    forwarding_calls: Option<Vec<usize>>,
+}
+
+struct SelfCallInputs<'name, 'state> {
+    name: &'name str,
+    builder: Builder<'state>,
+    roots: Option<SelfCallRoots>,
+    seeds: Vec<(usize, Origin, bounds::Clause)>,
+}
+
+impl SelfCallInputs<'_, '_> {
+    unsafe extern "C" fn call(context: Slot, index: usize) {
+        let inputs = unsafe { &mut *context.cast::<Self>() };
+        let Self { name, builder, roots, seeds } = inputs;
+        let function = builder.function;
+        let call = &function.calls[index];
+        if call.function != *name { return; }
+
+        let roots = roots.get_or_insert_with(|| {
+            let mut nodes = BTreeMap::new();
+            for (&local, &formal) in &function.parameters {
+                if function.input(formal) {
+                    let id = *nodes.entry(formal).or_insert_with(|| {
+                        let id = builder.empty();
+                        builder.graph.variables.insert(id);
+                        builder.graph.nodes[id].seeds = Borrow::source(Origin::Parameter(local, Vec::new()));
+                        id
                     });
+                    builder.parameters.insert(local, id);
                 }
             }
+            let forwarding_calls = function.outputs.iter().any(|(output, definition)| {
+                function.forwards_recursive_output(name, output, definition)
+            }).then(Vec::new);
+            SelfCallRoots { nodes, forwarding_calls }
+        });
+        if let Some(calls) = &mut roots.forwarding_calls {
+            calls.push(index);
         }
-        if !roots.values().any(|root| b.graph.read_feedback(*root)) {
+        let epoch = std::cell::LazyCell::new(|| Epoch::Local {
+            memory: call.memory, snapshots: call.snapshots.clone(),
+        });
+        for (input, value) in &call.arguments {
+            if let Some(&id) = roots.nodes.get(input) {
+                let value = value.view_borrow(0).restricted(&call.path);
+                builder.fill_with_seeds(id, &value, &epoch, |_, source, when| {
+                    seeds.push((id, source.clone(), when));
+                });
+            }
+        }
+    }
+}
+
+impl Graph {
+    fn builder<'a>(function:&'a Function,state:LoopScope<'a>,known:&'a States<'a>)->Builder<'a>{Builder{function,state,known,keys:BTreeMap::new(),prefix:FramePrefix::default(),graph:Self::default(),parameters:BTreeMap::new()}}
+    pub(super) fn recursive_inputs(
+        name: &str, function: &Function, state: LoopScope<'_>, known: &States,
+    ) -> Option<SelfRecursiveInputs> {
+        let mut inputs = SelfCallInputs {
+            name, builder: Self::builder(function, state, known), roots: None, seeds: Vec::new(),
+        };
+        unsafe {
+            visit_relation_calls(ptr::from_mut(&mut inputs).cast(), function.calls.len(), SelfCallInputs::call);
+        }
+        let SelfCallInputs { mut builder, roots, seeds, .. } = inputs;
+        let SelfCallRoots { nodes, forwarding_calls } = roots?;
+        if !nodes.values().any(|root| builder.graph.read_feedback(*root)) {
             return None;
         }
-        for (id, source, when) in pending_seeds {
-            b.graph.nodes[id].seeds.sources.insert_when(source, when);
+        // Read feedback depends on graph edges and writes. Merge the seeds in argument order.
+        for (id, source, when) in seeds {
+            builder.graph.nodes[id].seeds.sources.insert_when(source, when);
         }
-        let graph=Arc::new(b.graph);let mut evaluation=BorrowEvaluation{function,state,known,expand_loops:true,deferred_reads:false,loop_bindings:None,values:BTreeMap::new(),stored: None, exit_writes: None,stored_paths:Default::default()};
-        let parameters=residency::input_parameters(&function.parameters,function.input_width);
-        Some(roots.into_iter().map(|(input,root)|{let value=graph.solve(root,&mut evaluation);(input,function.address_borrows(&parameters,value).unwrap_or_default())}).collect())
+        let graph = Arc::new(builder.graph);
+        let mut evaluation = BorrowEvaluation {
+            function, state, known, expand_loops: true, deferred_reads: false,
+            loop_bindings: None, values: BTreeMap::new(), stored: None, exit_writes: None,
+            stored_paths: Default::default(),
+        };
+        let parameters = residency::input_parameters(&function.parameters, function.input_width);
+        let entries = nodes.into_iter().map(|(input, root)| {
+            let value = graph.solve(root, &mut evaluation);
+            (input, function.address_borrows(&parameters, value).unwrap_or_default())
+        }).collect::<BTreeMap<_,_>>();
+        let forwarding = forwarding_calls.map(|calls| {
+            let unchanged = entries.keys().copied().filter(|formal| calls.iter().all(|&index| {
+                function.calls[index].arguments.get(formal).is_some_and(|value| {
+                    value.numeric_at_call(&parameters).known_identity(0) == Some(*formal)
+                })
+            })).collect::<BTreeSet<_>>();
+            let mut inverse = BTreeMap::new();
+            for (&local, &formal) in &function.parameters {
+                inverse.entry(formal).or_insert_with(|| {
+                    let mut proof = bounds::Proof::default().with_identity(local);
+                    proof.set_view_borrow(0, Borrow::source(Origin::Parameter(local, Vec::new())));
+                    proof
+                });
+            }
+            function.parameters.iter().filter_map(|(&local, &formal)| {
+                let entry = entries.get(&formal)?.substitute_values(&inverse);
+                let mut proof = if unchanged.contains(&formal) {
+                    bounds::Proof::default().with_identity(local)
+                } else {
+                    bounds::Proof::default()
+                };
+                proof.set_view_borrow(0, entry);
+                Some((local, proof))
+            }).collect()
+        });
+        Some(SelfRecursiveInputs { entries, forwarding })
     }
+
     pub(super) fn component_inputs<'name, 'state, 'bindings>(
         entry: &'name str,
         members: &[&'name str],

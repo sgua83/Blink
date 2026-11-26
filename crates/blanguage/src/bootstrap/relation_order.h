@@ -201,5 +201,5 @@ extern "C" void expand_component_ports(address context, cfn<usize,address> count
     cfn<void,address,usize> visit) on cpu
     requires nonzero(count) requires nonzero(visit);
 
-extern "C" void expand_component_calls(address context, usize count, cfn<void,address,usize> visit) on cpu
+extern "C" void visit_relation_calls(address context, usize count, cfn<void,address,usize> visit) on cpu
     requires nonzero(visit);
