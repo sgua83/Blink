@@ -87,17 +87,20 @@ extern "C" void compile_source_instance(SourceRoute route,u32 cpu_signature,Sour
     requires nonzero(host.build_program) requires nonzero(host.application);
 
 enum WorldCheck:u32 { Constant=0; Interface=1; External=2; Types=3; };
-struct WorldDeclaration { SignatureNode source; u32 present; u32 paired; };
+struct WorldFunction { address name; address definition; };
+struct WorldDeclaration { SignatureNode source; WorldFunction function; u32 present; u32 paired; };
 struct WorldPreparation {
     address context;
+    u64 declarations;
     cfn<WorldDeclaration,address> next;
-    cfn<bool,address> signature;
-    cfn<void,address,WorldCheck> enqueue;
-    cfn<bool,address,WorldCheck> run;
+    cfn<u32,address,WorldFunction> signature;
+    cfn<void,address,u32> track;
+    cfn<void,address> finish_interface;
+    cfn<u32,address,WorldCheck,WorldFunction> run;
 };
-extern "C" void prepare_world(WorldPreparation host) on cpu
+extern "C" u64 prepare_world(WorldPreparation host) on cpu
     requires nonzero(host.next) requires nonzero(host.signature)
-    requires nonzero(host.enqueue) requires nonzero(host.run);
+    requires nonzero(host.track) requires nonzero(host.finish_interface) requires nonzero(host.run);
 
 struct ExportRange { Slice arguments; u64 remaining; };
 struct ExportTypeHost {

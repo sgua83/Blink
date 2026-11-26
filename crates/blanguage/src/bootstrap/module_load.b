@@ -314,25 +314,78 @@ extern "C" void compile_source_instance(SourceRoute route,u32 cpu_signature,Sour
     else { host.build_program(host.context,route == SourceRoute::Program ? 1 : 0); }
 }
 
-extern "C" void prepare_world(WorldPreparation host) on cpu
+extern "C" handle GetProcessHeap() on cpu from "KERNEL32.dll";
+extern "C" address HeapAlloc(handle heap,u32 flags,usize bytes) on cpu from "KERNEL32.dll";
+extern "C" i32 HeapFree(handle heap,u32 flags,address rows) on cpu from "KERNEL32.dll";
+
+const u32 CHECK_CONSTANT=1;
+const u32 CHECK_INTERFACE=2;
+const u32 CHECK_EXTERNAL=4;
+
+struct PendingCheck { WorldFunction function; u32 kinds; };
+
+address pending_at(address rows,u64 index) on cpu {
+    return at(rows,index*size_of<PendingCheck>());
+}
+
+u32 required_checks(WorldDeclaration candidate) on cpu {
+    let source=candidate.source;
+    let declaration=unsafe_position<FunctionNode>(at(source.storage.nodes,source.offset));
+    u32 kinds=0;
+    if (declaration.kind==2) { kinds|=CHECK_CONSTANT; }
+    if (declaration.types.count==0u64 && declaration.values.count==0u64) {
+        if (candidate.paired!=0) { kinds|=CHECK_INTERFACE; }
+        if (declaration.c_abi!=0) { kinds|=CHECK_EXTERNAL; }
+    }
+    return kinds;
+}
+
+bool run_pending(WorldPreparation host,address rows,u64 count,u32 mask,WorldCheck check) on cpu
+    requires nonzero(host.run) {
+    u64 index=0u64;
+    while (index<count) {
+        PendingCheck item=unsafe_position<PendingCheck>(pending_at(rows,index));
+        if ((item.kinds&mask)!=0 && host.run(host.context,check,item.function)==0) { return false; }
+        index+=1u64;
+    }
+    return true;
+}
+
+void run_world_checks(WorldPreparation host,address rows,u64 count) on cpu
+    requires nonzero(host.track) requires nonzero(host.finish_interface) requires nonzero(host.run) {
+    host.track(host.context,1);
+    if (!run_pending(host,rows,count,CHECK_CONSTANT,WorldCheck::Constant)) { return; }
+    host.track(host.context,0);
+    bool interfaces=run_pending(host,rows,count,CHECK_INTERFACE,WorldCheck::Interface);
+    host.finish_interface(host.context);
+    if (!interfaces) { return; }
+    if (host.run(host.context,WorldCheck::Types,WorldFunction(address(),address()))==0) { return; }
+    run_pending(host,rows,count,CHECK_EXTERNAL,WorldCheck::External);
+}
+
+extern "C" u64 prepare_world(WorldPreparation host) on cpu
     requires nonzero(host.next) requires nonzero(host.signature)
-    requires nonzero(host.enqueue) requires nonzero(host.run) {
+    requires nonzero(host.track) requires nonzero(host.finish_interface) requires nonzero(host.run) {
+    address rows=address();
+    u64 count=0u64;
+    bool valid=true;
     while (true) {
         let candidate=host.next(host.context);
         if (candidate.present==0) { break; }
-        if (!host.signature(host.context)) { return; }
-        let source=candidate.source;
-        let declaration=unsafe_position<FunctionNode>(at(source.storage.nodes,source.offset));
-        if (declaration.kind==2) { host.enqueue(host.context,WorldCheck::Constant); }
-        if (declaration.types.count==0u64 && declaration.values.count==0u64) {
-            if (candidate.paired!=0) { host.enqueue(host.context,WorldCheck::Interface); }
-            if (declaration.c_abi!=0) { host.enqueue(host.context,WorldCheck::External); }
+        if (host.signature(host.context,candidate.function)==0) { valid=false; break; }
+        u32 kinds=required_checks(candidate);
+        if (kinds==0) { continue; }
+        if (address_bits(rows)==0u64) {
+            u64 bytes=host.declarations*size_of<PendingCheck>();
+            rows=HeapAlloc(GetProcessHeap(),0,bytes);
+            if (address_bits(rows)==0u64) { return bytes; }
         }
+        unsafe_position<PendingCheck>(pending_at(rows,count))=PendingCheck(candidate.function,kinds);
+        count+=1u64;
     }
-    if (!host.run(host.context,WorldCheck::Constant)) { return; }
-    if (!host.run(host.context,WorldCheck::Interface)) { return; }
-    if (!host.run(host.context,WorldCheck::Types)) { return; }
-    host.run(host.context,WorldCheck::External);
+    if (valid) { run_world_checks(host,rows,count); }
+    if (address_bits(rows)!=0u64) { HeapFree(GetProcessHeap(),0,rows); }
+    return 0u64;
 }
 
 extern "C" u32 load_export_types(StorageView storage,Slice arguments,ExportTypeHost host) on cpu
