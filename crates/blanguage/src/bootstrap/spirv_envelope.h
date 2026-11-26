@@ -469,16 +469,9 @@ struct TileStorage {
     u32 lane;
     u32 length;
 };
-struct TilePublication { usize tile; usize words; Span fields; Span registers; address ids; };
-// The emitter lends the placed cells, actual field spans and one workspace for field and packed IDs.
 extern "C" u32 tile_storage_read(TileStorage storage, TileKey key, u32 index, u32 offset,
     BuiltinScalar scalar, MemoryHost memory) on cpu
     requires nonzero(storage.cell)
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
-    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body);
-extern "C" void emit_tile_publication(TilePublication input, TileStorage storage, address workspace,
-    cfn<BuiltinScalar,address,usize> scalar, MemoryHost memory) on cpu
-    requires nonzero(storage.cell) requires nonzero(scalar)
     requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body);
 
@@ -514,16 +507,13 @@ struct BlockHost {
     TextureSampling textures;
     RayBindings rays;
     cfn<BlockFlow,address,BlockRejection> reject;
-    cfn<void,address> barrier;
-    cfn<void,address,address> publish;
     cfn<void,address,address> collective;
 };
 extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     StructuredHost host, BlockHost emit) on cpu
     requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
     requires nonzero(emit.textures.declaration) requires nonzero(emit.rays.query) requires nonzero(emit.rays.declare_type)
-    requires nonzero(emit.barrier)
-    requires nonzero(emit.publish) requires nonzero(emit.collective)
+    requires nonzero(emit.collective)
     requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
     requires nonzero(emit.paging.pointer_type) requires nonzero(emit.paging.finish_body)
     requires nonzero(emit.paging.current_label)
@@ -537,26 +527,21 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     requires nonzero(host.constant) requires nonzero(host.open_function) requires nonzero(host.close_function)
     requires nonzero(host.exit_targets) requires nonzero(host.record_return);
 
-enum TilePhaseKind:u32 { End=0; Plain=1; Publish=2; Barrier=3; Collective=4; };
-struct TilePhaseView { Span code; address step; TilePhaseKind kind; };
+struct TilePhaseView { Span code; Node step; u32 present; };
 struct TilePhaseValue { usize register; u32 value; u32 value_type; u32 module_constant; };
 struct TilePhaseHost {
     address cursor;
     cfn<TilePhaseView,address> next_phase;
     cfn<TilePhaseValue,address,address> next_value;
-    cfn<u32,address> label;
-    cfn<void,address,address> publish;
-    cfn<void,address> barrier;
-    cfn<void,address,address> collective;
-    cfn<u32,address,usize> zero;
-    cfn<void,address,usize,u32> bind;
 };
-extern "C" void emit_tile_phases(u32 active, StructuredHost control, TilePhaseHost host) on cpu
+extern "C" void emit_tile_phases(u32 active, StructuredHost control, TilePhaseHost host, BlockHost emit) on cpu
     requires nonzero(control.labels) requires nonzero(control.reserve_words)
     requires nonzero(control.finish_words) requires nonzero(control.block)
-    requires nonzero(host.next_phase) requires nonzero(host.next_value) requires nonzero(host.label)
-    requires nonzero(host.publish) requires nonzero(host.barrier) requires nonzero(host.collective)
-    requires nonzero(host.zero) requires nonzero(host.bind);
+    requires nonzero(host.next_phase) requires nonzero(host.next_value)
+    requires nonzero(emit.ir.inspect) requires nonzero(emit.collective) requires nonzero(emit.tile.cell)
+    requires nonzero(emit.paging.current_label) requires nonzero(emit.paging.finish_body) requires nonzero(emit.values.scalar)
+    requires nonzero(emit.values.scalars.constant) requires nonzero(emit.values.scalars.type_id)
+    requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve);
 
 extern "C" void lower_return_loop(address edges, u32 count, u32 bool_type, StructuredHost host) on cpu
     requires nonzero(host.labels) requires nonzero(host.constant) requires nonzero(host.exit_targets)

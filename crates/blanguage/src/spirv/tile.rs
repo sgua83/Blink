@@ -4,14 +4,11 @@ use crate::ir::dataflow::InputFragments;
 use std::collections::{btree_map, btree_set};
 use std::ffi::c_void;
 
-#[repr(u32)]
-enum TilePhaseKind { End, Plain, Publish, Barrier, Collective }
-
 #[repr(C)]
 struct TilePhaseView {
     code: Span,
-    step: *const c_void,
-    kind: TilePhaseKind,
+    step: dataflow::Node,
+    present: u32,
 }
 
 #[derive(Default)]
@@ -33,32 +30,21 @@ struct TilePhaseHost {
     cursor: *mut c_void,
     next_phase: unsafe extern "C" fn(*mut c_void) -> TilePhaseView,
     next_value: unsafe extern "C" fn(*mut c_void, StructuredContext) -> TilePhaseValue,
-    label: unsafe extern "C" fn(StructuredContext) -> u32,
-    publish: unsafe extern "C" fn(StructuredContext, *const c_void),
-    barrier: unsafe extern "C" fn(StructuredContext),
-    collective: unsafe extern "C" fn(StructuredContext, *const c_void),
-    zero: unsafe extern "C" fn(StructuredContext, Reg) -> u32,
-    bind: unsafe extern "C" fn(StructuredContext, Reg, u32),
 }
 
 unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::emit_tile_phases"]
-    fn emit_tile_phases(active: u32, control: StructuredHost, host: TilePhaseHost);
+    fn emit_tile_phases(active: u32, control: StructuredHost, host: TilePhaseHost, emit: BlockHost);
 }
 
 unsafe extern "C" fn next_tile_phase(cursor: *mut c_void) -> TilePhaseView {
     let cursor = unsafe { &mut *cursor.cast::<TilePhaseCursor<'_>>() };
     let Some(phase) = cursor.phases.next() else {
-        return TilePhaseView { code: Span::EMPTY, step: std::ptr::null(), kind: TilePhaseKind::End };
+        return TilePhaseView { code: Span::EMPTY, step: dataflow::Node::EMPTY, present: 0 };
     };
     cursor.saved = phase.saved.iter();
-    let (kind, step) = match phase.step.map(|inst| &inst.kind) {
-        Some(InstKind::TilePublish(value)) => (TilePhaseKind::Publish, std::ptr::from_ref(value).cast()),
-        Some(InstKind::TileCollective(value)) => (TilePhaseKind::Collective, std::ptr::from_ref(value).cast()),
-        Some(InstKind::TileBarrier) => (TilePhaseKind::Barrier, std::ptr::null()),
-        _ => (TilePhaseKind::Plain, std::ptr::null()),
-    };
-    TilePhaseView { code: Span::slice(phase.code), step, kind }
+    let step = phase.step.map_or(dataflow::Node::EMPTY, dataflow::Node::instruction);
+    TilePhaseView { code: Span::slice(phase.code), step, present: 1 }
 }
 
 unsafe extern "C" fn next_tile_value(cursor: *mut c_void, context: StructuredContext) -> TilePhaseValue {
@@ -76,33 +62,6 @@ unsafe extern "C" fn next_tile_value(cursor: *mut c_void, context: StructuredCon
         }
     }
     TilePhaseValue::default()
-}
-
-unsafe extern "C" fn tile_phase_label(context: StructuredContext) -> u32 {
-    unsafe { &*context.cast::<StructuredEmission<'_, '_>>() }.emitter.current_label
-}
-
-unsafe extern "C" fn tile_phase_publish(context: StructuredContext, step: *const c_void) {
-    let emitter = &mut unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() }.emitter;
-    emitter.publish_values(unsafe { &*step.cast::<Publication>() });
-}
-
-unsafe extern "C" fn tile_phase_barrier(context: StructuredContext) {
-    unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() }.emitter.tile_barrier();
-}
-
-unsafe extern "C" fn tile_phase_collective(context: StructuredContext, step: *const c_void) {
-    let emitter = &mut unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() }.emitter;
-    emitter.tile_collective(unsafe { &*step.cast::<crate::ir::TileCollective>() });
-}
-
-unsafe extern "C" fn tile_phase_zero(context: StructuredContext, register: Reg) -> u32 {
-    let emitter = &mut unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() }.emitter;
-    emitter.constant(emitter.stage.registers[register], 0)
-}
-
-unsafe extern "C" fn tile_phase_bind(context: StructuredContext, register: Reg, value: u32) {
-    unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() }.emitter.regs[register] = value;
 }
 
 #[repr(u32)]
@@ -140,15 +99,6 @@ pub(super) struct TileStorage {
     width: u32,
     lane: u32,
     length: u32,
-}
-
-#[repr(C)]
-struct TilePublication {
-    tile: usize,
-    words: usize,
-    fields: Span,
-    registers: Span,
-    ids: *const u32,
 }
 
 unsafe extern "C" fn tile_cell(context: *mut c_void, key: TileKey) -> TileCell {
@@ -241,9 +191,6 @@ unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::tile_storage_read"]
     fn tile_storage_read(storage: TileStorage, key: TileKey, index: u32, offset: u32,
         scalar: ScalarCode, memory: MemoryHost) -> u32;
-    #[link_name = "bootstrap.spirv_envelope::emit_tile_publication"]
-    fn emit_tile_publication(input: TilePublication, storage: TileStorage, workspace: *mut u32,
-        scalar: unsafe extern "C" fn(*mut c_void, Reg) -> ScalarCode, memory: MemoryHost);
 }
 
 impl Emitter<'_> {
@@ -288,37 +235,18 @@ impl Emitter<'_> {
         unsafe { tile_storage_read(self.tile_storage(), key, index, offset.unwrap_or(0), scalar.into(), self.memory_host()) }
     }
 
-    pub(super) fn tile_barrier(&mut self) {
-        self.workgroup_barrier(0x148);
-    }
-    pub(super) fn publish_values(&mut self, publication: &Publication) {
-        let words = self.stage.tiles[publication.tile].ty.size.div_ceil(4) as usize;
-        let input = TilePublication {
-            tile: publication.tile, words, ids: self.regs.as_ptr(),
-            fields: Span::field(&publication.values, |field| &field.0),
-            registers: Span::field(&publication.values, |field| &field.1),
-        };
-        let mut workspace = vec![0; publication.values.len() + words];
-        unsafe {
-            emit_tile_publication(input, self.tile_storage(), workspace.as_mut_ptr(), value_scalar, self.memory_host());
-        }
-    }
     pub(super) fn tile_phases(&mut self, active: u32, phases: Vec<TilePhase<'_>>) -> Result<(), &'static str> {
         let empty = std::collections::BTreeSet::new();
         let mut cursor = TilePhaseCursor { phases: phases.iter(), saved: empty.iter() };
         let mut emission = StructuredEmission { emitter: self, error: None };
+        let control = emission.host();
+        let emit = block_host(emission.emitter);
         let host = TilePhaseHost {
             cursor: std::ptr::from_mut(&mut cursor).cast(),
             next_phase: next_tile_phase,
             next_value: next_tile_value,
-            label: tile_phase_label,
-            publish: tile_phase_publish,
-            barrier: tile_phase_barrier,
-            collective: tile_phase_collective,
-            zero: tile_phase_zero,
-            bind: tile_phase_bind,
         };
-        unsafe { emit_tile_phases(active, emission.host(), host); }
+        unsafe { emit_tile_phases(active, control, host, emit); }
         emission.error.map_or(Ok(()), Err)
     }
 }

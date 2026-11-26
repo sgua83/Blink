@@ -425,6 +425,7 @@ fn tile_publication(value: &Publication) -> View {
     let mut view = View::tag(13);
     view.a = value.tile;
     view.first = Span::pairs(&value.values);
+    view.second = Span::field(&value.values, |field| &field.0);
     view.left = Node::of(value, Kind::TilePublication);
     view
 }

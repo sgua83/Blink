@@ -794,8 +794,6 @@ struct BlockHost {
     textures: TextureSampling,
     rays: RayBindings,
     reject: unsafe extern "C" fn(StructuredContext, BlockRejection) -> BlockFlow,
-    barrier: unsafe extern "C" fn(StructuredContext),
-    publish: unsafe extern "C" fn(StructuredContext, *const Publication),
     collective: unsafe extern "C" fn(StructuredContext, *const TileCollective),
 }
 
@@ -847,8 +845,6 @@ fn block_host(emitter: &mut Emitter<'_>) -> BlockHost {
             query: block_ray_declaration,
             declare_type: block_declare_type,
         },
-        barrier: block_barrier,
-        publish: block_publish,
         collective: block_collective,
     }
 }
@@ -889,14 +885,6 @@ unsafe extern "C" fn block_declare_type(
     context: *mut std::ffi::c_void, shape: TypeShape, first: u32, second: u32,
 ) -> u32 {
     unsafe { &mut *context.cast::<Emitter<'_>>() }.declare_type(shape, first, second)
-}
-
-unsafe extern "C" fn block_barrier(context: StructuredContext) {
-    unsafe { block_emitter(context) }.tile_barrier();
-}
-
-unsafe extern "C" fn block_publish(context: StructuredContext, publication: *const Publication) {
-    unsafe { block_emitter(context).publish_values(&*publication) };
 }
 
 unsafe extern "C" fn block_collective(context: StructuredContext, collective: *const TileCollective) {
