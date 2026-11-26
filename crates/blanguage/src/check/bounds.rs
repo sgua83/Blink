@@ -1960,7 +1960,7 @@ impl<'a> PublicGuards<'a> {
         if let Some(projected) = &result.projected {
             return projected.clone();
         }
-        let projected = source.project_guard_in(&Clause::ordered([source]), self.bindings, |root| {
+        let projected = source.project_guard_in(self.bindings, |root| {
             if result.possible == Some(false) {
                 None
             } else {
@@ -2054,12 +2054,11 @@ impl<'a> ClausePostorder<'a> {
 impl Clause {
     fn at_calls(
         roots: &[&Self],
-        ordered: &[&Self],
         bindings: &impl CallBindings,
-        numeric_context: impl FnOnce(&[&Self]) -> bool,
+        numeric_context: impl FnOnce() -> bool,
         mut required: impl FnMut(&Self) -> Option<Facts>,
     ) -> Vec<Self> {
-        let mut clauses = condition_graph::project_call(ordered, bindings);
+        let mut clauses = condition_graph::project_call(roots.iter().copied(), bindings);
         let private_numeric = roots.iter().any(|root| clauses[&root.key()].1);
         // An impossible result has no consumer for supplementary bounds.
         let mut outputs = roots.iter().copied()
@@ -2069,7 +2068,7 @@ impl Clause {
             })
             .peekable();
         // The other case can trigger numeric projection without itself being projected.
-        if outputs.peek().is_some() && (private_numeric || numeric_context(ordered)) {
+        if outputs.peek().is_some() && (private_numeric || numeric_context()) {
             let mut roots: Vec<_> = outputs.collect();
             // Consume the original numeric condition before private snapshots leave scope.
             roots.sort_by_key(|root| root.key());
@@ -2121,14 +2120,14 @@ impl Clause {
     }
 
     pub(super) fn project_guard(&self, bindings: &BTreeMap<ValueIdentity, Proof>) -> Self {
-        self.project_guard_in(&Self::ordered([self]), bindings, Self::required)
+        self.project_guard_in(bindings, Self::required)
     }
 
     fn project_guard_in(
-        &self, ordered: &[&Self], bindings: &impl CallBindings,
+        &self, bindings: &impl CallBindings,
         required: impl FnMut(&Self) -> Option<Facts>,
     ) -> Self {
-        Self::at_calls(&[self], ordered, bindings, |_| self.guard_needs_numeric(bindings), required)
+        Self::at_calls(&[self], bindings, || self.guard_needs_numeric(bindings), required)
             .pop().unwrap()
     }
 
@@ -2145,7 +2144,7 @@ impl Clause {
         bindings: &BTreeMap<ValueIdentity, Proof>,
     ) -> Vec<Self> {
         let roots = roots.into_iter().collect::<Vec<_>>();
-        let mut clauses = condition_graph::project_call(&Self::ordered(roots.iter().copied()), bindings);
+        let mut clauses = condition_graph::project_call(roots.iter().copied(), bindings);
         let mut distinct = roots.clone();
         distinct.sort_unstable_by_key(|root| root.key());
         distinct.dedup_by_key(|root| root.key());
@@ -2208,7 +2207,7 @@ impl Clause {
     }
     pub(super) fn substitute_values(&self, values: &BTreeMap<ValueIdentity, Proof>) -> Self {
         self.project_guard_in(
-            &Self::ordered([self]), &Substitution(&|id| values.get(&id)), Self::required,
+            &Substitution(&|id| values.get(&id)), Self::required,
         )
     }
 
@@ -2603,9 +2602,8 @@ impl Condition {
         let index = usize::from(truth);
         Clause::at_calls(
             &[&self.cases[index]],
-            &Clause::ordered([&self.cases[index]]),
             bindings,
-            |_| self.cases[1 - index].has_private_numeric(bindings),
+            || self.cases[1 - index].has_private_numeric(bindings),
             Clause::required,
         ).pop().unwrap()
     }
@@ -2633,7 +2631,7 @@ impl Condition {
     pub(super) fn unconstrained(&self)->bool{self.cases.iter().all(|case|matches!(&**case.0,ClauseNode::Facts(facts)if facts.is_empty()))}
     pub(super) fn exclusive(&self)->bool{!Clause::both(&self.cases[0],&self.cases[1]).possible()}
     pub(super) fn at_call(&self,bindings:&impl CallBindings)->Self{
-        let mut cases=Clause::at_calls(&self.cases.each_ref(), &Clause::ordered(&self.cases), bindings, |_| false, Clause::required).into_iter();
+        let mut cases=Clause::at_calls(&self.cases.each_ref(), bindings, || false, Clause::required).into_iter();
         Self{cases:[cases.next().unwrap(),cases.next().unwrap()]}
     }
     pub(super) fn output_bound(&self,bindings:&OutputBindings)->Self{

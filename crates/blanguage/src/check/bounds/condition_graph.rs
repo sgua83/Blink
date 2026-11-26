@@ -1,7 +1,7 @@
 //! B owns shared-Clause overlap and equivalence, including equivalence planning. The original query owns
 //! its physical containers and borrows immutable Clause/Fact fields until return.
 use super::{
-    CallBindings, Clause, ClauseNode, Condition, EncodedClause, Fact, Facts, IndexDomain, OutputBindings, Proof, Value, ValueIdentity,
+    CallBindings, Clause, ClauseNode, ClausePostorder, Condition, EncodedClause, Fact, Facts, IndexDomain, OutputBindings, Proof, Value, ValueIdentity,
     internal_conflicts, map_domain, output_identity,
 };
 use std::{
@@ -648,17 +648,19 @@ struct CallProjectionNode {
 }
 
 struct CallProjection<'a, P> {
-    ordered: std::slice::Iter<'a, &'a Clause>,
+    pending: ClausePostorder<'a>,
     bindings: &'a P,
-    results: BTreeMap<usize, (Clause, bool)>,
+    results: HashMap<usize, (Clause, bool)>,
 }
 
 unsafe extern "C" fn call_next<P>(slot: Slot) -> CallProjectionNode {
     let ctx = unsafe { &mut *slot.cast::<CallProjection<'_, P>>() };
-    ctx.ordered.next().map_or_else(CallProjectionNode::default, |&clause| CallProjectionNode {
-        original: std::ptr::from_ref(clause).cast(),
-        node: source_node(clause),
-    })
+    let results = &ctx.results;
+    ctx.pending.next(|key| results.contains_key(&key))
+        .map_or_else(CallProjectionNode::default, |clause| CallProjectionNode {
+            original: std::ptr::from_ref(clause).cast(),
+            node: source_node(clause),
+        })
 }
 
 unsafe fn call_key(source: Borrowed) -> usize {
@@ -698,10 +700,14 @@ unsafe extern "C" {
     fn project_call_graph(slot: Slot, host: CallProjectionHost);
 }
 
-pub(super) fn project_call<P: CallBindings>(
-    ordered: &[&Clause], bindings: &P,
-) -> BTreeMap<usize, (Clause, bool)> {
-    let mut ctx = CallProjection { ordered: ordered.iter(), bindings, results: BTreeMap::new() };
+pub(super) fn project_call<'a, P: CallBindings>(
+    roots: impl IntoIterator<Item = &'a Clause>, bindings: &'a P,
+) -> HashMap<usize, (Clause, bool)> {
+    let mut ctx = CallProjection {
+        pending: ClausePostorder::new(roots),
+        bindings,
+        results: HashMap::new(),
+    };
     unsafe {
         project_call_graph(std::ptr::from_mut(&mut ctx).cast(), CallProjectionHost {
             next: call_next::<P>,

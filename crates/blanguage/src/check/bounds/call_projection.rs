@@ -391,7 +391,7 @@ pub(super) fn project_proof<P: CallBindings>(
     let conditions = (0..widths.conditions).map(|i| proof.component_condition(source(i)));
     let roots: Vec<_> = conditions.clone().flatten().flat_map(|condition| condition.cases.iter()).collect();
     let mut rewritten = if roots.is_empty() { Vec::new() } else {
-        Clause::at_calls(&roots, &Clause::ordered(roots.iter().copied()), bindings, |_| false, Clause::required)
+        Clause::at_calls(&roots, bindings, || false, Clause::required)
     }.into_iter();
     let conditions = conditions.map(|condition| condition.map(|_| {
         Box::new(Condition { cases: [rewritten.next().unwrap(), rewritten.next().unwrap()] })
