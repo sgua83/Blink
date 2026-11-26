@@ -609,6 +609,16 @@ extern "C" u64 value_root(address values,u64 reg) on cpu {
     return result;
 }
 
+extern "C" void value_rebind_roots(address registers,RewriteSpan roots) on cpu {
+    if(unsafe_position<VfRegisters>(registers).aliases.count==0u64){return;}
+    u64 index=0u64;
+    while(index<roots.count){
+        address field=unsafe_address(address_bits(roots.data)+index*roots.stride);
+        unsafe_position<usize>(field)=value_root(registers,unsafe_position<usize>(field));
+        index+=1u64;
+    }
+}
+
 VfPath vf_no_path() on cpu { return VfPath(vf_empty_rows(),0); }
 
 VfPath vf_snapshot(address values,cfn<address,address,u64,u64> resize) on cpu
@@ -1181,7 +1191,7 @@ VfExpression value_expression(View node,Span registers,RegisterHost host) on cpu
 VfAction value_instruction(address instruction,address retained_at,address values,address expressions,
     inout VfRows divisions,inout VfFlow flow,address context,Span registers,VfHost host) on cpu
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.scalar) requires nonzero(host.storage)
-    requires nonzero(host.remap) requires nonzero(host.resize_rows) requires nonzero(host.scratch)
+    requires nonzero(host.rewrite.inspect) requires nonzero(host.resize_rows) requires nonzero(host.scratch)
     requires nonzero(host.rewrite_division) requires nonzero(host.pair)
     requires nonzero(host.origin.capture) requires nonzero(host.origin.resize)
     requires nonzero(host.memory.resize) requires nonzero(host.memory.move_rows)
@@ -1189,7 +1199,10 @@ VfAction value_instruction(address instruction,address retained_at,address value
     requires nonzero(host.instruction_span) requires nonzero(host.swap_instructions) requires nonzero(host.truncate)
     {
     address register_state=vf_registers(values);
-    host.remap(instruction,register_state);
+    if(unsafe_position<VfRegisters>(register_state).aliases.count!=0u64){
+        rewrite_operands(RewriteNode(instruction,N_INSTRUCTION),host.rewrite,
+            RewriteInputMap(register_state,c_function(value_root)));
+    }
     View node=host.values.ir.inspect(Node(instruction,N_INSTRUCTION));
     u32 kind=node.tag;
     address none=unsafe_address(0u64);
@@ -1342,7 +1355,7 @@ VfAction value_instruction(address instruction,address retained_at,address value
 extern "C" VfFlow value_block(address block,address values,address expressions,address context,
     Span registers,VfHost host,bool keep_expressions) on cpu
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.scalar) requires nonzero(host.storage)
-    requires nonzero(host.remap) requires nonzero(host.resize_rows) requires nonzero(host.scratch)
+    requires nonzero(host.rewrite.inspect) requires nonzero(host.resize_rows) requires nonzero(host.scratch)
     requires nonzero(host.rewrite_division) requires nonzero(host.pair)
     requires nonzero(host.origin.capture) requires nonzero(host.origin.resize)
     requires nonzero(host.memory.resize) requires nonzero(host.memory.move_rows)

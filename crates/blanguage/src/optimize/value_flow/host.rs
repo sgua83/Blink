@@ -154,7 +154,7 @@ struct MemoryHost {
 struct Host {
     values: RegisterHost,
     storage: unsafe extern "C" fn(*mut Inst) -> InstructionStorage,
-    remap: unsafe extern "C" fn(*mut Inst, *const Registers),
+    rewrite: rewrite::Host,
     instruction_span: unsafe extern "C" fn(*mut Vec<Inst>) -> BlockSpan,
     swap_instructions: unsafe extern "C" fn(*mut Inst, *mut Inst),
     truncate: unsafe extern "C" fn(*mut Vec<Inst>, usize),
@@ -183,8 +183,8 @@ unsafe extern "C" {
     fn value_release_expressions(expressions: *mut Expressions, resize: ResizeRows);
     #[link_name = "bootstrap.stage_fusion::value_discard_flow"]
     fn value_discard_flow(flow: Flow, resize: ResizeRows);
-    #[link_name = "bootstrap.stage_fusion::value_root"]
-    fn value_root(values: *const Registers, reg: Reg) -> Reg;
+    #[link_name = "bootstrap.stage_fusion::value_rebind_roots"]
+    pub(in crate::optimize) fn value_rebind_roots(registers: *const c_void, roots: rewrite::Span);
     #[link_name = "bootstrap.stage_fusion::value_copy_registers"]
     fn value_copy_registers(target: *mut Registers, source: *const Registers, locals: u32, resize: ResizeRows);
     #[link_name = "bootstrap.stage_fusion::value_release_registers"]
@@ -196,9 +196,13 @@ unsafe extern "C" {
     #[link_name = "bootstrap.stage_fusion::value_release_memory"]
     fn value_release_memory(values: *mut Rows, memory: MemoryHost);
 }
-extern "C" fn register_root(registers: &Registers, reg: Reg) -> Reg { unsafe { value_root(registers, reg) } }
+pub(super) fn alias_address(values: &Values) -> *const c_void {
+    ptr::from_ref(&values.registers).cast()
+}
 
-pub(super) fn root(values: &Values, reg: Reg) -> Reg { register_root(&values.registers, reg) }
+pub(super) fn rebind_roots(values: &Values, outputs: &mut [Reg]) {
+    unsafe { value_rebind_roots(alias_address(values), rewrite::Span::slice(outputs)); }
+}
 pub(super) fn run(code: &mut Vec<Inst>, values: &mut Values, expressions: &mut Expressions,
     registers: &[Scalar], reuses: &mut Reuses, keep_expressions: bool,
 ) {
@@ -239,9 +243,6 @@ unsafe extern "C" fn resize_rows<T>(rows: *mut c_void, old: usize, new: usize) -
 
 unsafe extern "C" fn truncate(code: *mut Vec<Inst>, kept: usize) {
     unsafe { &mut *code }.truncate(kept);
-}
-unsafe extern "C" fn remap(instruction: *mut Inst, registers: *const Registers) {
-    unsafe { crate::ir::rewrite::operands(&mut *instruction, &*registers, register_root); }
 }
 unsafe extern "C" fn rewrite_division(result: *mut IntegerDivisionResult, choice: DivisionChoice, quotient: Reg, remainder: Reg) {
     unsafe { *result = match choice { DivisionChoice::Quotient => IntegerDivisionResult::Quotient(quotient),
@@ -311,6 +312,6 @@ const MEMORY_HOST: MemoryHost = MemoryHost {
     drop_origin: drop_memory_origin,
 };
 const HOST: Host = Host {
-    values: REGISTER_HOST, storage: instruction_storage, remap, instruction_span, swap_instructions, truncate,
+    values: REGISTER_HOST, storage: instruction_storage, rewrite: rewrite::HOST, instruction_span, swap_instructions, truncate,
     resize_rows: resize_rows::<LocalValue>, scratch: resize_rows::<u64>, rewrite_division, pair, origin: ORIGIN_HOST, memory: MEMORY_HOST,
 };

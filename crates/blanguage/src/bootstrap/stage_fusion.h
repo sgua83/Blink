@@ -145,7 +145,7 @@ struct VfMemoryHost {
 struct VfHost {
     RegisterHost values;
     cfn<InstructionStorage,address> storage;
-    cfn<void,address,address> remap;
+    RewriteHost rewrite;
     cfn<Span,address> instruction_span;
     cfn<void,address,address> swap_instructions;
     cfn<void,address,u64> truncate;
@@ -158,6 +158,7 @@ struct VfHost {
 };
 // All pointers borrow this invocation's actual nodes or native owning containers.
 extern "C" u64 value_root(address values,u64 reg) on cpu;
+extern "C" void value_rebind_roots(address registers,RewriteSpan roots) on cpu;
 extern "C" void value_copy_registers(address target,address source,u32 locals,
     cfn<address,address,u64,u64> resize) on cpu requires nonzero(resize);
 extern "C" void value_release_registers(address values,cfn<address,address,u64,u64> resize) on cpu
@@ -181,7 +182,7 @@ extern "C" void value_release_origins(address state,cfn<address,address,u64,u64>
 extern "C" VfFlow value_block(address block,address values,address expressions,address context,
     Span registers,VfHost host,bool keep_expressions) on cpu
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.scalar) requires nonzero(host.storage)
-    requires nonzero(host.remap) requires nonzero(host.resize_rows) requires nonzero(host.scratch)
+    requires nonzero(host.rewrite.inspect) requires nonzero(host.resize_rows) requires nonzero(host.scratch)
     requires nonzero(host.rewrite_division) requires nonzero(host.pair)
     requires nonzero(host.origin.capture) requires nonzero(host.origin.resize)
     requires nonzero(host.memory.resize) requires nonzero(host.memory.move_rows)

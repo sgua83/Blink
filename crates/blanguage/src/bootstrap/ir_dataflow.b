@@ -716,11 +716,11 @@ extern "C" ReductionExtract reduction_extract(Node source,address uniform,Host i
  while(next.present!=0){unsafe_position<u8>(reduction_byte(uniform,next.value))=u8(1);next=next_result(output);}
  return ReductionExtract(1,operation,inputs);
 }
-void reduction_copy_roots(Span values,usize offset,usize root,ReductionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.header) requires nonzero(host.clone) requires nonzero(host.remap) requires nonzero(host.push_root) requires nonzero(host.roots) requires nonzero(host.part) requires nonzero(host.uniform) requires nonzero(host.extract) requires nonzero(host.release_uniform) requires nonzero(host.entry) requires nonzero(host.seed) requires nonzero(host.body) requires nonzero(host.retain) requires nonzero(host.forward) requires nonzero(host.origin) requires nonzero(host.alias) requires nonzero(host.invariant) requires nonzero(host.boundaries) requires nonzero(host.append) requires nonzero(host.finish) {
+void reduction_copy_roots(Span values,usize offset,usize root,ReductionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.header) requires nonzero(host.clone) requires nonzero(host.remap) requires nonzero(host.push_root) requires nonzero(host.roots) requires nonzero(host.part) requires nonzero(host.uniform) requires nonzero(host.extract) requires nonzero(host.release_uniform) requires nonzero(host.entry) requires nonzero(host.seed) requires nonzero(host.body) requires nonzero(host.retain) requires nonzero(host.forward) requires nonzero(host.origin) requires nonzero(host.aliases) requires nonzero(host.rebind) requires nonzero(host.invariant) requires nonzero(host.boundaries) requires nonzero(host.append) requires nonzero(host.finish) {
  usize index=0u64;
  while(index<values.count){host.push_root(host.context,root,word_at(values,index)+offset);index+=1u64;}
 }
-extern "C" void reduction_kernel(ReductionInput input,ReductionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.header) requires nonzero(host.clone) requires nonzero(host.remap) requires nonzero(host.push_root) requires nonzero(host.roots) requires nonzero(host.part) requires nonzero(host.uniform) requires nonzero(host.extract) requires nonzero(host.release_uniform) requires nonzero(host.entry) requires nonzero(host.seed) requires nonzero(host.body) requires nonzero(host.retain) requires nonzero(host.forward) requires nonzero(host.origin) requires nonzero(host.alias) requires nonzero(host.invariant) requires nonzero(host.boundaries) requires nonzero(host.append) requires nonzero(host.finish) {
+extern "C" void reduction_kernel(ReductionInput input,ReductionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.header) requires nonzero(host.clone) requires nonzero(host.remap) requires nonzero(host.push_root) requires nonzero(host.roots) requires nonzero(host.part) requires nonzero(host.uniform) requires nonzero(host.extract) requires nonzero(host.release_uniform) requires nonzero(host.entry) requires nonzero(host.seed) requires nonzero(host.body) requires nonzero(host.retain) requires nonzero(host.forward) requires nonzero(host.origin) requires nonzero(host.aliases) requires nonzero(host.rebind) requires nonzero(host.invariant) requires nonzero(host.boundaries) requires nonzero(host.append) requires nonzero(host.finish) {
  View source=host.ir.inspect(input.source);
  if(input.identity!=0){
   host.clone(host.context,1u64,source.left,0u64);
@@ -763,18 +763,18 @@ extern "C" void reduction_kernel(ReductionInput input,ReductionHost host) on cpu
  // Origin facts consume the same original roots before the binding rewrite.
  index=0u64;
  while(index<3u64){
-  usize root=index==0u64?3u64:(index==1u64?4u64:0u64);Span values=host.roots(host.context,root);usize component=0u64;
-  while(component<values.count){host.forward(host.context,root,component,word_at(values,component));component+=1u64;}
+  usize root=index==0u64?3u64:(index==1u64?4u64:0u64);RewriteSpan values=host.roots(host.context,root);usize component=0u64;
+  while(component<values.count){
+   usize reg=unsafe_position<usize>(rewrite_word_at(values,component));
+   host.forward(host.context,root,component,reg);component+=1u64;
+  }
   index+=1u64;
  }
  host.origin(host.context);
+ address aliases=host.aliases(host.context);
  index=0u64;
  while(index<6u64){
-  Span values=host.roots(host.context,index);usize component=0u64;
-  while(component<values.count){
-   address at=unsafe_address(address_bits(values.data)+u64(component)*u64(values.stride));
-   usize rebound=host.alias(host.context,unsafe_position<usize>(at));unsafe_position<usize>(at)=rebound;component+=1u64;
-  }
+  host.rebind(aliases,host.roots(host.context,index));
   index+=1u64;
  }
  Span entry=host.part(host.context,0u64);index=0u64;

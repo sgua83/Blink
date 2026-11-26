@@ -5,6 +5,8 @@ use std::{ffi::c_void, mem::MaybeUninit, ptr, sync::Arc};
 
 mod host;
 
+pub(super) use host::value_rebind_roots;
+
 #[repr(u32)]
 #[derive(Clone, Copy)]
 enum ReuseKind { Expression, LocalRead, IndexedStoreRead, IndexedRead }
@@ -125,7 +127,9 @@ impl ReductionFlow {
             }));
         }
     }
-    pub(super) fn root(&self, reg: Reg) -> Reg { host::root(&self.aliases, reg) }
+    pub(super) fn alias_address(&self) -> *const c_void {
+        host::alias_address(&self.aliases)
+    }
 }
 
 unsafe extern "C" fn accept_input(context: *mut c_void, row: *mut OriginRow) {
@@ -144,9 +148,7 @@ fn run_code(code: &mut Vec<Inst>, registers: &[Scalar], outputs: &mut [Reg]) -> 
     host::run(code, &mut values, &mut host::Expressions::default(), registers, &mut reuses, true);
     reuses.order();
     retain_reuses(code, &mut reuses);
-    for r in outputs {
-        *r = host::root(&values, *r);
-    }
+    host::rebind_roots(&values, outputs);
     reuses
 }
 pub(super) fn run_value(value: &mut ValueCode) {

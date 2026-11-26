@@ -67,8 +67,6 @@ struct Mapping {
     reg: *const c_void,
     slot: *const c_void,
 }
-#[repr(C)]
-struct InputMapping { context: *const c_void, reg: *const c_void }
 // These are the actual immutable mapping materials held by the producers.
 // They cannot contain a user callback or an interior-mutable mapping policy.
 pub(crate) enum Remap<'a> {
@@ -79,8 +77,6 @@ pub(crate) enum Remap<'a> {
 unsafe extern "C-unwind" {
     #[link_name = "bootstrap.ir_dataflow::rewrite_code"]
     fn b_code(code: Span, host: Host, mapping: Mapping);
-    #[link_name = "bootstrap.ir_dataflow::rewrite_operands"]
-    fn b_operands(source: Node, host: Host, mapping: InputMapping);
 }
 unsafe extern "C-unwind" fn register(context: *const c_void, value: usize) -> usize {
     match unsafe { &*context.cast::<Remap<'_>>() } {
@@ -99,15 +95,6 @@ unsafe extern "C-unwind" fn local(context: *const c_void, value: usize) -> usize
 pub(crate) fn map(code: &mut [Inst], mapping: Remap<'_>) {
     unsafe { b_code(Span::slice(code), HOST, Mapping {
         context: ptr::from_ref(&mapping).cast(), reg: register as *const c_void, slot: local as *const c_void,
-    }); }
-}
-// The value-flow owner supplies its existing C-ABI binding of the B alias-root
-// algorithm to the actual immutable Values/get pair. No root algorithm or
-// state is copied here. The reader must only read this borrowed source and
-// neither retain it nor retain any instruction projection after this call.
-pub(crate) unsafe fn operands<T>(value: &mut Inst, source: &T, root: extern "C" fn(&T, Reg) -> Reg) {
-    unsafe { b_operands(Node::of(value, Kind::Instruction), HOST, InputMapping {
-        context: ptr::from_ref(source).cast(), reg: root as *const c_void,
     }); }
 }
 fn optional(value: &mut Option<usize>) -> *mut usize {
