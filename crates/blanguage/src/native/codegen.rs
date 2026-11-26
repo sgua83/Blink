@@ -79,7 +79,25 @@ struct TailLiteral {
     references: *const usize,
     reference_count: usize,
     wide: u64,
-    target: usize,
+}
+
+struct TailSource<'a> {
+    literals: std::collections::btree_map::IntoIter<(Bits, bool), Vec<usize>>,
+    references: &'a mut Vec<super::TailReference>,
+}
+
+unsafe extern "C" fn next_tail_literal(context: *mut std::ffi::c_void, target: usize) -> TailLiteral {
+    let source = unsafe { &mut *context.cast::<TailSource<'_>>() };
+    // B calls once per entry using the original iterator's length.
+    let ((bits, wide), rel32_fields) = unsafe { source.literals.next().unwrap_unchecked() };
+    let literal = TailLiteral {
+        bits,
+        references: rel32_fields.as_ptr(),
+        reference_count: rel32_fields.len(),
+        wide: u64::from(wide),
+    };
+    source.references.push(super::TailReference { target, rel32_fields });
+    literal
 }
 
 #[repr(C)]
@@ -94,8 +112,9 @@ unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::tail_capacity"]
     fn tail_capacity(probe: usize, literal_count: usize) -> usize;
     #[link_name = "bootstrap.x64_instruction::write_tail"]
-    fn write_tail(image: *mut u8, end: usize, probe: usize, literals: *mut TailLiteral,
-        literal_count: usize, regions: *mut super::Region) -> CodeTail;
+    fn write_tail(image: *mut u8, end: usize, probe: usize, literal_count: usize,
+        regions: *mut super::Region, context: *mut std::ffi::c_void,
+        next_literal: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> TailLiteral) -> CodeTail;
     #[link_name = "bootstrap.x64_instruction::patch_relative"]
     fn patch_relative(field: *mut u8, offset: u64, target: u64);
     #[link_name = "bootstrap.x64_instruction::encode_branch"]
@@ -159,31 +178,25 @@ impl Emitter<'_> {
     fn finish(mut self, stack_bytes: u32, include_operation_ranges: bool) -> NativeCode {
         let function_end = self.code.len();
         let unwind = unwind::encode(self.prolog, &self.unwind);
-        let mut literals: Vec<_> = self.literals.iter().map(|(&(bits, wide), references)| TailLiteral {
-            bits,
-            references: references.as_ptr(),
-            reference_count: references.len(),
-            wide: u64::from(wide),
-            target: 0,
-        }).collect();
         let probe = self.probe.unwrap_or(0);
-        let count = literals.len();
+        let count = self.literals.len();
         let has_probe = usize::from(self.probe.is_some());
         let mut tail_regions = Vec::with_capacity(count + usize::from(count != 0) + has_probe);
-        self.code.reserve(unsafe { tail_capacity(probe, count) });
-        // B writes the tail and its regions while the original image and references are live.
-        unsafe {
-            let tail = write_tail(self.code.as_mut_ptr(), function_end, probe,
-                literals.as_mut_ptr(), count, tail_regions.as_mut_ptr());
-            self.code.set_len(tail.end);
-            tail_regions.set_len(tail.region_count);
-        }
         let mut tail_references = Vec::with_capacity(count + has_probe);
         if let Some(at) = self.probe {
             tail_references.push(super::TailReference { target: function_end, rel32_fields: vec![at] });
         }
-        tail_references.extend(literals.into_iter().zip(self.literals.into_values())
-            .map(|(literal, rel32_fields)| super::TailReference { target: literal.target, rel32_fields }));
+        self.code.reserve(unsafe { tail_capacity(probe, count) });
+        // The observation owner keeps the original reference storage live while B patches the image.
+        unsafe {
+            let mut source = TailSource { literals: self.literals.into_iter(), references: &mut tail_references };
+            let tail = write_tail(
+                self.code.as_mut_ptr(), function_end, probe, count, tail_regions.as_mut_ptr(),
+                std::ptr::from_mut(&mut source).cast(), next_tail_literal,
+            );
+            self.code.set_len(tail.end);
+            tail_regions.set_len(tail.region_count);
+        }
         NativeCode {
             bytes: self.code,
             relocations: self.relocations,

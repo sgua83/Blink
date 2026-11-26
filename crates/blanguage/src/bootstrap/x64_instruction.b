@@ -198,8 +198,8 @@ void tail_region(address regions,u64 ordinal,u64 end,TailRegionKind kind) on cpu
     unsafe_position<TailRegion>(target)=TailRegion(end,kind);
 }
 
-extern "C" CodeTail write_tail(address image,u64 end,u64 probe,address literals,
-    u64 literal_count,address regions) on cpu {
+extern "C" CodeTail write_tail(address image,u64 end,u64 probe,u64 literal_count,address regions,
+    address context,cfn<TailLiteral,address,u64> next_literal) on cpu requires nonzero(next_literal) {
     u64 cursor=end;
     u64 count=0u64;
     if(probe!=0u64){
@@ -219,11 +219,10 @@ extern "C" CodeTail write_tail(address image,u64 end,u64 probe,address literals,
             count+=1u64;
         }
     }
-    u64 ordinal=0u64;
-    while(ordinal<literal_count){
-        address at=unsafe_address(address_bits(literals)+ordinal*size_of<TailLiteral>());
-        TailLiteral literal=unsafe_position<TailLiteral>(at);
+    u64 remaining=literal_count;
+    while(remaining!=0u64){
         u64 start=cursor;
+        TailLiteral literal=next_literal(context,start);
         write_word(base+cursor,u32(literal.bits));
         cursor+=4u64;
         if(literal.wide!=0u64){
@@ -236,10 +235,9 @@ extern "C" CodeTail write_tail(address image,u64 end,u64 probe,address literals,
             patch_relative(unsafe_address(base+field),field,start);
             index+=1u64;
         }
-        unsafe_position<TailLiteral>(at).target=start;
         tail_region(regions,count,cursor,TailRegionKind::Literal);
         count+=1u64;
-        ordinal+=1u64;
+        remaining-=1u64;
     }
     return CodeTail(cursor,count);
 }
