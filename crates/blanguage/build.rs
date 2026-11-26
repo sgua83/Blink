@@ -92,15 +92,16 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
         ),
     ];
     for (name, module) in [
-        ("builtin_type", "builtin_type"),
-        ("number_text", "number_text"),
-        ("shared_type_layout", "type_layout"),
-        ("scalar_ranges", "scalar_ranges"),
+        ("builtin_type", "codec/builtin_type"),
+        ("number_text", "codec/number_text"),
+        ("shared_type_layout", "codec/type_layout"),
+        ("scalar_ranges", "codec/scalar_ranges"),
+        ("scan_roles", "spirv/scan_roles"),
     ] {
         for extension in ["b", "h"] {
-            println!("cargo:rerun-if-changed=src/codec/{module}.{extension}");
+            println!("cargo:rerun-if-changed=src/{module}.{extension}");
         }
-        jobs.push(compile(name, &format!("src/codec/{module}.b"), "src", object(name)));
+        jobs.push(compile(name, &format!("src/{module}.b"), "src", object(name)));
     }
     for (name, source) in [
         ("cpu_image", "library/blink/windows/cpu_image"),

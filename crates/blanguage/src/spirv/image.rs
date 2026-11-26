@@ -1,5 +1,6 @@
 //! 已编译GPU映像及页绑定ABI；编译器与执行器消费同一份表示。
 use crate::ir::{ExecutionPlan, Operation};
+use std::{ffi::c_void, ptr};
 
 /// GPU 存储页的最大字节数；每页只容纳完整记录，页表使用 64 位设备地址。
 pub const PAGE_BYTES: u32 = 256 * 1024 * 1024;
@@ -33,39 +34,127 @@ pub const DISPATCH_RECORD_BYTES: usize = 16;
 /// Byte offset of the histogram or the selected domain in a preparation pipeline.
 pub const DISPATCH_CONTINUATION_SPEC_ID: u32 = 0;
 
-pub fn sort_histogram_count(count: u32) -> u32 {
-    count.div_ceil(SCAN_WIDTH).max(1) * 16
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 #[repr(u32)]
-pub(crate) enum ScanShader {
-    Summary,
-    Terminal,
-    Both,
+pub(crate) enum EntryOperation {
+    Map,
+    Reduce,
+    Scan,
+    Segmented,
+    Compact,
+    Sort,
+    CustomScan,
+    CustomSegmented,
+    CustomReduce,
 }
 
-pub(crate) fn scan_shaders<R>(operation: &Operation<R>, selected: bool, count: Option<u32>) -> [ScanShader; 2] {
-    use ScanShader::*;
-    let (root, count) = match operation {
-        Operation::StableSort(_) => (true, count.map(sort_histogram_count)),
-        Operation::ScanExclusive(_) | Operation::CustomScan(_) | Operation::Compact(_) => (true, count),
-        Operation::Map if selected => (true, count),
-        Operation::SegmentedReduce(_) | Operation::CustomSegmentedReduce(_) => (false, count),
-        _ => return [Summary; 2],
-    };
-    let first = match (root, count) {
-        (true, None) => Both,
-        (true, Some(size)) if size <= SCAN_WIDTH => Terminal,
-        _ => Summary,
-    };
-    let tail = match count {
-        None => Both,
-        Some(size) if size > SCAN_WIDTH * SCAN_WIDTH => Both,
-        Some(size) if size > SCAN_WIDTH => Terminal,
-        _ => Summary,
-    };
-    [first, tail]
+pub(super) fn entry_operation<R>(operation: &Operation<R>) -> (EntryOperation, *const std::ffi::c_void) {
+    use EntryOperation::*;
+    match operation {
+        Operation::Map => (Map, std::ptr::null()),
+        Operation::Reduce(r) => (Reduce, std::ptr::from_ref(r).cast()),
+        Operation::ScanExclusive(r) => (Scan, std::ptr::from_ref(r).cast()),
+        Operation::SegmentedReduce(r) => (Segmented, std::ptr::from_ref(r).cast()),
+        Operation::Compact(r) => (Compact, std::ptr::from_ref(r).cast()),
+        Operation::StableSort(r) => (Sort, std::ptr::from_ref(r).cast()),
+        Operation::CustomScan(r) => (CustomScan, std::ptr::from_ref(r).cast()),
+        Operation::CustomSegmentedReduce(r) => (CustomSegmented, std::ptr::from_ref(r).cast()),
+        Operation::CustomReduce(r) => (CustomReduce, std::ptr::from_ref(r).cast()),
+    }
+}
+
+impl<R> From<&Operation<R>> for EntryOperation {
+    fn from(operation: &Operation<R>) -> Self {
+        entry_operation(operation).0
+    }
+}
+
+pub fn sort_histogram_count(count: u32) -> u32 {
+    unsafe { histogram_count(count, SCAN_WIDTH) }
+}
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct ScanShape {
+    operation: EntryOperation,
+    selected: u32,
+    count: u32,
+    fixed: u32,
+    width: u32,
+}
+
+impl ScanShape {
+    fn new(operation: EntryOperation, selected: bool, count: Option<u32>) -> Self {
+        Self {
+            operation, selected: u32::from(selected),
+            count: count.unwrap_or_default(), fixed: u32::from(count.is_some()), width: SCAN_WIDTH,
+        }
+    }
+}
+
+#[cfg(feature = "compiler")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Returned by the B scan-role query.
+#[repr(u32)]
+pub(crate) enum ScanShader { Summary, Terminal, Both }
+
+#[cfg(feature = "compiler")]
+#[repr(C)]
+struct ScanRoles { root: ScanShader, tail: ScanShader }
+
+#[cfg(feature = "compiler")]
+pub(crate) fn scan_shaders(operation: EntryOperation, selected: bool, count: Option<u32>) -> [ScanShader; 2] {
+    let roles = unsafe { scan_roles(ScanShape::new(operation, selected, count)) };
+    [roles.root, roles.tail]
+}
+
+#[repr(C)]
+struct ShaderWords { data: *const u32, count: usize }
+
+impl From<&[u32]> for ShaderWords {
+    fn from(words: &[u32]) -> Self { Self { data: words.as_ptr(), count: words.len() } }
+}
+
+#[repr(C)]
+struct StageShaders {
+    shape: ScanShape,
+    sort_keys: usize,
+    additional_count: usize,
+    main: ShaderWords,
+    tail: ShaderWords,
+    selector: ShaderWords,
+    binding: u32,
+}
+
+#[allow(dead_code)] // Returned by the B entry query.
+#[repr(u32)]
+enum TerminalKind { Absent, Canonical, Alternate }
+
+#[repr(C)]
+struct TerminalEntry { index: usize, kind: TerminalKind }
+
+#[repr(C)]
+struct AdditionalEntries {
+    sort: usize,
+    single_group: usize,
+    root: TerminalEntry,
+    tail: TerminalEntry,
+}
+
+unsafe extern "C" {
+    #[link_name = "spirv.scan_roles::histogram_count"]
+    fn histogram_count(count: u32, width: u32) -> u32;
+    #[cfg(feature = "compiler")]
+    #[link_name = "spirv.scan_roles::scan_roles"]
+    fn scan_roles(shape: ScanShape) -> ScanRoles;
+    #[link_name = "spirv.scan_roles::additional_entries"]
+    fn additional_entries(input: StageShaders, context: *const c_void,
+        additional: unsafe extern "C" fn(*const c_void, usize) -> ShaderWords) -> AdditionalEntries;
+}
+
+unsafe extern "C" fn additional_words(context: *const c_void, index: usize) -> ShaderWords {
+    let shaders = unsafe { *context.cast::<&[ShaderCode]>() };
+    shaders[index].words.as_slice().into()
 }
 
 pub enum TerminalScan<'a> {
@@ -82,64 +171,30 @@ pub struct AdditionalShaders<'a> {
 
 impl StageCode {
     pub fn additional_shaders(&self, plan: &ExecutionPlan, stage: &crate::ir::ExecutionStage) -> AdditionalShaders<'_> {
-        let mut shaders = self.additional.as_deref().unwrap_or_default().iter();
-        let operation = &stage.operation;
-        let count = plan.buffers()[stage.domain].count;
-        let sort = if let Operation::StableSort(sort) = operation {
-            let size = 19 + sort.keys.len();
-            let original = shaders.as_slice().get(..size).unwrap_or_default();
-            shaders = shaders.as_slice().get(size..).unwrap_or_default().iter();
-            original
-        } else {
-            &[]
+        let shaders = self.additional.as_deref().unwrap_or_default();
+        let input = StageShaders {
+            shape: ScanShape::new((&stage.operation).into(), stage.selection.is_some(), plan.buffers()[stage.domain].count),
+            sort_keys: match &stage.operation {
+                Operation::StableSort(sort) => sort.keys.len(),
+                _ => 0,
+            },
+            additional_count: shaders.len(),
+            main: self.main.as_slice().into(),
+            tail: self.tail.as_deref().unwrap_or_default().into(),
+            selector: self.selector.as_deref().unwrap_or_default().into(),
+            binding: (plan.buffers().len() + plan.accelerations().len() + plan.textures().len()) as u32,
         };
-        let segmented_single_group = if matches!(operation,
-            Operation::SegmentedReduce(_) | Operation::CustomSegmentedReduce(_))
-            && count.is_none_or(|size| size <= SCAN_WIDTH)
-        {
-            shaders.next()
-        } else {
-            None
-        };
-
-        let root = match operation {
-            Operation::StableSort(_) => sort.get(16).map(|shader| shader.words.as_slice()),
-            Operation::Map if stage.selection.is_some() => self.selector.as_deref(),
-            _ => Some(self.main.as_slice()),
-        };
-        let tail = if sort.is_empty() {
-            self.tail.as_deref()
-        } else {
-            sort.get(17).map(|shader| shader.words.as_slice())
-        };
-        let binding = (plan.buffers().len() + plan.accelerations().len() + plan.textures().len()) as u32;
-        let [root_role, tail_role] = scan_shaders(operation, stage.selection.is_some(), count);
-        let terminal_scans = [(root_role, root), (tail_role, tail)].map(|(role, canonical)| match role {
-                ScanShader::Summary => None,
-                ScanShader::Terminal => canonical.filter(|words| !declares_binding(words, binding))
-                    .map(|_| TerminalScan::Canonical),
-                ScanShader::Both => shaders.next().map(TerminalScan::Alternate),
-            });
-        AdditionalShaders { sort, segmented_single_group, terminal_scans }
-    }
-}
-
-// This reads the compiled page-binding declaration used by the original pipeline.
-// Older images declared the auxiliary slot even in a statically single-group scan.
-fn declares_binding(words: &[u32], binding: u32) -> bool {
-    let Some(mut instructions) = words.get(5..) else { return true };
-    while let Some(&header) = instructions.first() {
-        let width = (header >> 16) as usize;
-        let Some((instruction, rest)) = instructions.split_at_checked(width) else { return true };
-        match (header as u16, instruction) {
-            (54, _) => break, // OpFunction ends module declarations.
-            (71, [_, _, 33, slot]) if *slot == binding => return true, // OpDecorate Binding
-            (_, []) => return true,
-            _ => {}
+        let entries = unsafe { additional_entries(input, ptr::from_ref(&shaders).cast(), additional_words) };
+        AdditionalShaders {
+            sort: &shaders[..entries.sort],
+            segmented_single_group: shaders.get(entries.single_group),
+            terminal_scans: [entries.root, entries.tail].map(|entry| match entry.kind {
+                TerminalKind::Absent => None,
+                TerminalKind::Canonical => Some(TerminalScan::Canonical),
+                TerminalKind::Alternate => Some(TerminalScan::Alternate(&shaders[entry.index])),
+            }),
         }
-        instructions = rest;
     }
-    false
 }
 
 #[derive(Clone, Debug)]

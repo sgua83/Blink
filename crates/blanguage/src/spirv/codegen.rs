@@ -1,6 +1,7 @@
 //! 按 SPIR-V 1.4 标准直接编码；不调用 HLSL/GLSL 或第三方编译器。
 use crate::ir::*;
 use crate::ir::dataflow::{self, Span};
+use super::image::{EntryOperation, entry_operation};
 use crate::builtin_types::{ScalarBinaryOp, ScalarCode};
 use super::{PAGE_BYTES, PREFIX_LEVELS, SCAN_WIDTH, ProgramImage, ShaderCode, StageCode};
 #[path = "compact.rs"]
@@ -68,41 +69,6 @@ struct ShaderPass {
 unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::shader_pass"]
     fn shader_pass(kind: EntryPass, parameter: usize, word: u32) -> ShaderPass;
-}
-
-#[derive(Clone, Copy)]
-#[repr(u32)]
-enum EntryOperation {
-    Map,
-    Reduce,
-    Scan,
-    Segmented,
-    Compact,
-    Sort,
-    CustomScan,
-    CustomSegmented,
-    CustomReduce,
-}
-
-fn entry_operation<R>(operation: &Operation<R>) -> (EntryOperation, *const std::ffi::c_void) {
-    use EntryOperation::*;
-    match operation {
-        Operation::Map => (Map, std::ptr::null()),
-        Operation::Reduce(r) => (Reduce, std::ptr::from_ref(r).cast()),
-        Operation::ScanExclusive(r) => (Scan, std::ptr::from_ref(r).cast()),
-        Operation::SegmentedReduce(r) => (Segmented, std::ptr::from_ref(r).cast()),
-        Operation::Compact(r) => (Compact, std::ptr::from_ref(r).cast()),
-        Operation::StableSort(r) => (Sort, std::ptr::from_ref(r).cast()),
-        Operation::CustomScan(r) => (CustomScan, std::ptr::from_ref(r).cast()),
-        Operation::CustomSegmentedReduce(r) => (CustomSegmented, std::ptr::from_ref(r).cast()),
-        Operation::CustomReduce(r) => (CustomReduce, std::ptr::from_ref(r).cast()),
-    }
-}
-
-impl<R> From<&Operation<R>> for EntryOperation {
-    fn from(operation: &Operation<R>) -> Self {
-        entry_operation(operation).0
-    }
 }
 
 #[repr(C)]

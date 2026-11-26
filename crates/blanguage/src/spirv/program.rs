@@ -111,7 +111,7 @@ pub(crate) fn compile_stage(
         _ => (false, 0),
     };
     let [root_scan, tail_scan] = scan_shaders(
-        &stage.operation, stage.selection.is_some(), program.buffers[stage.domain].count,
+        operation, stage.selection.is_some(), program.buffers[stage.domain].count,
     );
     let (prefix_binding, prefix_word) = stage.prefix.map_or((0, 0), |prefix| (prefix.binding, prefix.word));
     let input = StageEntryInput {
