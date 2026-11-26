@@ -243,6 +243,23 @@ extern "C" void import_name(BindingBytes dll,BindingBytes name,address output) o
     decimal(output,15u64,dll.length);u64 begin=15u64+digits(dll.length);
     literal(output,begin,36u64,1u64);copy(output,begin+1u64,dll);copy(output,begin+1u64+dll.length,name);
 }
+extern "C" u64 host_anchor_name_size(HostAnchorName name) on cpu {
+    return 23u64+name.identity.length+digits(name.section)+digits(u64(name.value));
+}
+extern "C" void write_host_anchor_name(HostAnchorName name,address output) on cpu {
+    // "__blink_host_section$<identity>$<section>$<value>"
+    literal(output,0u64,6875710655180201823u64,8u64);
+    literal(output,8u64,7162257636215451496u64,8u64);
+    literal(output,16u64,156471617908u64,5u64);
+    copy(output,21u64,name.identity);
+    u64 separator=21u64+name.identity.length;
+    literal(output,separator,36u64,1u64);
+    decimal(output,separator+1u64,name.section);
+    separator+=1u64+digits(name.section);
+    literal(output,separator,36u64,1u64);
+    decimal(output,separator+1u64,u64(name.value));
+}
+
 u64 bound_symbol(BindingForest forest,address sections,BindingRelocation value) on cpu {
     if(value.target==u16(0) && value.value==0){
         return section_at(sections,value.section).symbol;

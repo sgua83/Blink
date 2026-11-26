@@ -324,6 +324,26 @@ extern "C" u64 host_group_resolution(HostGroupLinks input,HostGroupSources sourc
     return input.count;
 }
 
+extern "C" void rebind_host_relocations(address positions,u64 member,address records,u64 count,
+    address context,cfn<BindingBytes,address,u64,u32> anchor) on cpu requires nonzero(anchor) {
+    u64 index=0u64;
+    while(index<count){
+        address at=unsafe_address(address_bits(records)+index*size_of<BindingRelocation>());
+        BindingRelocation relocation=unsafe_position<BindingRelocation>(at);
+        if(relocation.target==u16(0)){
+            HostSection target=unsafe_position<HostSection>(host_section(positions,relocation.section));
+            if(target.member==member){
+                unsafe_position<BindingRelocation>(at).section=target.local;
+            }else{
+                BindingBytes name=anchor(context,relocation.section,relocation.value);
+                unsafe_position<BindingRelocation>(at).target=u16(1);
+                unsafe_position<BindingRelocation>(at).name=name;
+            }
+        }
+        index+=1u64;
+    }
+}
+
 ObjectTarget failure(u32 error) on cpu {
     return ObjectTarget(0u64,0u64,0u64,empty_bytes(),empty_bytes(),error);
 }

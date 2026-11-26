@@ -78,7 +78,43 @@ unsafe extern "C" fn reserve_host_group_edges(storage: *mut std::ffi::c_void, co
     edges.as_mut_ptr()
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct HostAnchorName {
+    identity: BindingBytes,
+    section: usize,
+    value: u32,
+}
+
+struct HostAnchors {
+    identity: BindingBytes,
+    names: BTreeMap<(usize, u32), String>,
+}
+
+unsafe extern "C" fn host_anchor_name(
+    context: *mut std::ffi::c_void, section: usize, value: u32,
+) -> BindingBytes {
+    let anchors = unsafe { &mut *context.cast::<HostAnchors>() };
+    let name = anchors.names.entry((section, value)).or_insert_with(|| {
+        let fields = HostAnchorName { identity: anchors.identity, section, value };
+        let length = unsafe { host_anchor_name_size(fields) };
+        let mut bytes = Box::<[u8]>::new_uninit_slice(length);
+        unsafe { write_host_anchor_name(fields, bytes.as_mut_ptr().cast()) };
+        // The writer fills this slice with the ASCII identity and decimal fields.
+        unsafe { String::from_utf8_unchecked(bytes.assume_init().into_vec()) }
+    });
+    BindingBytes::new(name.as_bytes())
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.bindings::host_anchor_name_size"]
+    fn host_anchor_name_size(name: HostAnchorName) -> usize;
+    #[link_name = "bootstrap.bindings::write_host_anchor_name"]
+    fn write_host_anchor_name(name: HostAnchorName, output: *mut u8);
+    #[link_name = "bootstrap.object_read::rebind_host_relocations"]
+    fn rebind_host_relocations(positions: *const HostSection, member: usize,
+        records: *mut BindingRelocation, count: usize, context: *mut std::ffi::c_void,
+        anchor: unsafe extern "C" fn(*mut std::ffi::c_void, usize, u32) -> BindingBytes);
     #[link_name = "bootstrap.object_read::host_group_resolution"]
     fn host_group_resolution(input: HostGroupLinks, source: HostGroupSources) -> usize;
     #[link_name = "bootstrap.object_read::host_groups"]
@@ -172,23 +208,12 @@ impl Groups {
         let build_index = build.map(|section| section.index);
         let combined = self.combine_closed_groups(raw);
         let identity = member_identity(bytes, raw, build);
-        let mut anchors = BTreeMap::new();
+        let mut anchors = HostAnchors { identity: BindingBytes::new(identity.as_bytes()), names: BTreeMap::new() };
         for (source, relocations) in self.relocations.iter_mut().enumerate() {
-            for relocation in relocations {
-                if !matches!(relocation.target, BindingTarget::Section) {
-                    continue;
-                }
-                let target = relocation.section as usize;
-                let position = self.positions[target];
-                if self.positions[source].member == position.member {
-                    relocation.section = position.local as u64;
-                } else {
-                    let value = relocation.value;
-                    let name = anchors.entry((target, value)).or_insert_with(||
-                        format!("__blink_host_section${identity}${target}${value}")).as_str();
-                    relocation.target = BindingTarget::Symbol;
-                    relocation.name = BindingBytes::new(name.as_bytes());
-                }
+            unsafe {
+                rebind_host_relocations(self.positions.as_ptr(), self.positions[source].member,
+                    relocations.as_mut_ptr(), relocations.len(), std::ptr::from_mut(&mut anchors).cast(),
+                    host_anchor_name);
             }
         }
         let mut definitions: Vec<Vec<BindingDefinition>> = self.members.iter().map(|_| Vec::new()).collect();
@@ -204,7 +229,7 @@ impl Groups {
             });
             names[member].push(Cow::Borrowed(name));
         }
-        for ((index, value), name) in anchors {
+        for ((index, value), name) in anchors.names {
             let HostSection { member, local: section, .. } = self.positions[index];
             definitions[member].push(BindingDefinition {
                 name: BindingBytes::new(name.as_bytes()), section: section as u64, value: u64::from(value), function: 0,

@@ -58,6 +58,9 @@ struct HostGroupSources {
 // Return the first of multiple closed groups, or count if no merge is needed.
 extern "C" u64 host_group_resolution(HostGroupLinks input,HostGroupSources source) on cpu
     requires nonzero(source.members) requires nonzero(source.relocations) requires nonzero(source.reserve);
+// Preserve the original target offset. The anchor callback borrows its final name.
+extern "C" void rebind_host_relocations(address positions,u64 member,address records,u64 count,
+    address context,cfn<BindingBytes,address,u64,u32> anchor) on cpu requires nonzero(anchor);
 struct ObjectRelocationStatus { u32 format; u32 object; };
 // The accepted record borrows the original bytes only through the synchronous consumer.
 extern "C" ObjectRelocationStatus object_relocations(
