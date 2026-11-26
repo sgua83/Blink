@@ -1,5 +1,6 @@
 module bootstrap.scalar_fold;
 import codec.scalar_ranges;
+import codec.value_format;
 
 extern "C" handle GetProcessHeap() on cpu from "KERNEL32.dll";
 extern "C" address HeapAlloc(handle heap, u32 flags, u64 bytes) on cpu from "KERNEL32.dll";
@@ -619,6 +620,32 @@ extern "C" FloatRange float_sum_range(u32 width,BitRange range,u64 maximum) on c
     f64 upper=input.upper<=0.0f64 ? input.upper : float_add_up(float_multiply_up(input.upper,count),error);
     return float_interval(width,lower,upper);
 }
+bool texture_coordinates_bounded(BitRange range) on cpu {
+    FloatInterval coordinates = float_finite(32, range);
+    return coordinates.present != 0 && coordinates.lower >= -1.0f64 && coordinates.upper <= 1.0f64;
+}
+
+extern "C" FloatRange texture_sample_range(SourceTexelFormat format, TextureSampleBounds input) on cpu {
+    if (format != SourceTexelFormat::Rgba8Unorm && format != SourceTexelFormat::Rgba8Srgb
+        && format != SourceTexelFormat::R8Unorm && format != SourceTexelFormat::Rg16Unorm
+        && format != SourceTexelFormat::Rgb10A2Unorm) {
+        return fp_unknown();
+    }
+    if (!texture_coordinates_bounded(input.x) || !texture_coordinates_bounded(input.y)
+        || (input.has_z != 0 && !texture_coordinates_bounded(input.z))) {
+        return fp_unknown();
+    }
+    FloatInterval lod = float_finite(32, input.lod);
+    if (lod.present == 0 || lod.lower < -4294967296.0f64 || lod.upper > 4294967296.0f64) {
+        return fp_unknown();
+    }
+    // 3D plus mip has four linear dimensions. Each nonnegative contribution
+    // includes at most 25 rounding factors with allowance 1e-4 per factor.
+    // 0x3f805205 is the outward f32 endpoint of the original directed (1+1e-4)^25.
+    u64 upper = format == SourceTexelFormat::Rgba8Srgb ? 0x40000000u64 : 0x3f805205u64;
+    return FloatRange(float_order(32, 0x80000000u64), float_order(32, upper), 1);
+}
+
 extern "C" FloatRange float_negate(u32 width,BitRange range) on cpu {
     FloatInterval input=float_finite(width,range);return input.present!=0 ? float_interval(width,-input.upper,-input.lower) : fp_unknown();
 }

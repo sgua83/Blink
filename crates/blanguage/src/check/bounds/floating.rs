@@ -61,25 +61,10 @@ impl Proof {
     pub(in crate::check) fn texture_sample(
         format: Option<crate::ast::TextureFormat>, coordinate: &Value, lod: &Value,
     ) -> Self {
-        use crate::ast::TextureFormat::*;
-        if !matches!(format, Some(Rgba8Unorm | Rgba8Srgb | R8Unorm | Rg16Unorm | Rgb10A2Unorm)) {
+        let Some(range) = scalar::texture_sample(format, coordinate, lod) else {
             return Self::default();
-        }
-        // 当前共同证明覆盖所选原资源尺寸(u32)缩放后仍在原生最低数值范围内的输入。
-        // 事实不足只保持未知，不改变合法采样域或生成运行检查。
-        let coordinates = (0..coordinate.regs.len()).all(|i|
-            finite(coordinate, i).is_some_and(|(a,b)| a >= -1.0 && b <= 1.0));
-        let lod = finite(lod, 0).is_some_and(|(a,b)| a >= -4294967296.0 && b <= 4294967296.0);
-        if !coordinates || !lod { return Self::default(); }
-        // Four linear dimensions (3D plus mip) have 16 nonnegative texel terms.
-        // Each contribution has at most 25 rounding factors, including conversions.
-        // Use four decimal digits, wider than Vulkan's minimum about 1 part in 10^5.
-        // CPU affine UNORM decode and four three-operation lerps fit inside this bound.
-        let upper = if matches!(format, Some(Rgba8Srgb)) { 2.0 } else {
-            let factor = add_up(1.0, 1.0e-4);
-            (0..25).fold(1.0, |value, _| multiply_up(value, factor))
         };
-        Self { ranges: vec![interval(Scalar::F32, 0.0, upper); 4], ..Self::default() }
+        Self { ranges: vec![range; 4], ..Self::default() }
     }
 }
 

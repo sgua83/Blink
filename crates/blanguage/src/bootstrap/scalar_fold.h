@@ -1,5 +1,6 @@
 module bootstrap.scalar_fold;
 import codec.scalar_ranges;
+import codec.value_format;
 
 enum UnaryOperation : u32 {
     Negate = 0; LogicalNot = 1; BitNot = 2; FloatNegate = 3;
@@ -64,6 +65,8 @@ extern "C" FloatRange float_range_arithmetic(BinaryOperation operation,u32 width
 // math: 1 min, 2 max, 3 abs, 4 floor, 5 log, 6 log2, 7 ceil; other operations remain unknown.
 extern "C" FloatRange float_math(u32 operation,u32 width,BitRange left,BitRange right) on cpu;
 extern "C" FloatRange float_sum_range(u32 width,BitRange range,u64 maximum) on cpu;
+struct TextureSampleBounds { BitRange x; BitRange y; BitRange z; BitRange lod; u32 has_z; };
+extern "C" FloatRange texture_sample_range(SourceTexelFormat format, TextureSampleBounds input) on cpu;
 extern "C" FloatRange float_negate(u32 width,BitRange range) on cpu;
 extern "C" f64 float_add_up(f64 left,f64 right) on cpu;
 extern "C" f64 float_multiply_up(f64 left,f64 right) on cpu;

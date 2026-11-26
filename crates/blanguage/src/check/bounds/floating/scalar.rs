@@ -1,10 +1,13 @@
 //! Synchronous POD numerical calls; Proof, Value and ScalarRanges stay native.
 use super::*;
+use crate::ast::TextureFormat;
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct RawRange { lower: Bits, upper: Bits }
 #[repr(C)]
 struct Finite { lower: f64, upper: f64, present: u32 }
+#[repr(C)]
+struct TextureSampleBounds { x: BitRange, y: BitRange, z: BitRange, lod: BitRange, has_z: u32 }
 #[repr(C)]
 struct NumericalRange { lower: Bits, upper: Bits, state: u32 }
 #[repr(C)]
@@ -35,6 +38,8 @@ unsafe extern "C" {
     #[link_name="bootstrap.scalar_fold::float_range_arithmetic"] fn source_arithmetic(operation:u32,width:u32,left:RawRange,right:RawRange)->NumericalRange;
     #[link_name="bootstrap.scalar_fold::float_math"] fn source_math(operation:u32,width:u32,left:RawRange,right:RawRange)->NumericalRange;
     #[link_name="bootstrap.scalar_fold::float_sum_range"] fn source_sum(width:u32,range:RawRange,maximum:Bits)->NumericalRange;
+    #[link_name = "bootstrap.scalar_fold::texture_sample_range"]
+    fn source_texture_sample(format: TextureFormat, input: TextureSampleBounds) -> NumericalRange;
     #[link_name="bootstrap.scalar_fold::float_negate"] fn source_negate(width:u32,range:RawRange)->NumericalRange;
     #[link_name="bootstrap.scalar_fold::float_add_up"] fn source_add_up(left:f64,right:f64)->f64;
     #[link_name="bootstrap.scalar_fold::float_multiply_up"] fn source_multiply_up(left:f64,right:f64)->f64;
@@ -83,6 +88,27 @@ pub(in crate::check::bounds) fn sum(input:&Proof,component:usize,scalar:Scalar,m
     let hull = input.element_hull(component, scalar);
     decoded(unsafe { source_sum(scalar.bit_width(), raw(hull), maximum) })
 }
+pub(super) fn texture_sample(format: Option<TextureFormat>, coordinate: &Value, lod: &Value) -> Option<ScalarRanges> {
+    let format = format?;
+    let hull = |value: &Value, component: usize| {
+        let clip = value.constant.as_ref().map_or((0, u64::from(u32::MAX)), |values| {
+            let point = order(Scalar::F32, values[component]);
+            (point, point)
+        });
+        range_sets::restricted_hull(value.proof.interval_source(component), clip, None).into()
+    };
+    let z = (coordinate.regs.len() == 3).then(|| hull(coordinate, 2));
+    let input = TextureSampleBounds {
+        x: hull(coordinate, 0),
+        y: hull(coordinate, 1),
+        z: z.unwrap_or_default(),
+        lod: hull(lod, 0),
+        has_z: u32::from(z.is_some()),
+    };
+    let range = unsafe { source_texture_sample(format, input) };
+    (range.state == 1).then(|| decoded(range))
+}
+
 pub(in crate::check::bounds) fn negate(value:&Value,component:usize)->ScalarRanges {
     decoded(unsafe{source_negate(value.ty.components[component].0.bit_width(),raw(super::ranges(value,component).hull()))})
 }
