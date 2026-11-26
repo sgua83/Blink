@@ -182,11 +182,35 @@ extern "C" address owned_type(Source source,address env,Host host) on cpu
     requires nonzero(host.root) requires nonzero(host.ty) requires nonzero(host.selected_field) {
     return type_of(source,source.expression,env,host);
 }
+extern "C" Part field_layout(address root,address fields,u64 count,Host host) on cpu
+    requires nonzero(host.element) {
+    Part selected=Part(0,root);
+    u64 i=0u64;
+    while(i<count){
+        u64 index=unsafe_position<u64>(at(fields,i*8u64));
+        Part child=host.element(selected.ty,index);
+        selected.ty=child.ty;
+        selected.offset+=child.offset;
+        i+=1u64;
+    }
+    return selected;
+}
 extern "C" void components(address root,address selected,u32 offset,address output,Host host) on cpu
     requires nonzero(host.ty) requires nonzero(host.word) requires nonzero(host.push) {
-    TypeInfo ty=host.ty(selected);u64 i=0u64;
-    while(i<ty.components){
-        u32 word=offset+host.word(selected,i);u64 found=0u64;
+    u64 count=host.ty(selected).components;
+    if(count==0u64){return;}
+    u32 first=offset+host.word(selected,0u64);
+    // The value layout appends fields, array elements and variant words in byte order.
+    u64 found=0u64;
+    u64 end=host.ty(root).components;
+    while(found<end){
+        u64 middle=found+(end-found)/2u64;
+        if(host.word(root,middle)<first){found=middle+1u64;}
+        else{end=middle;}
+    }
+    u64 i=0u64;
+    while(i<count){
+        u32 word=offset+host.word(selected,i);
         while(host.word(root,found)!=word){found+=1u64;}
         host.push(output,found);i+=1u64;
     }

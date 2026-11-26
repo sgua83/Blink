@@ -207,9 +207,10 @@ impl DataReference {
         place.project(ty.clone(),&components)
     }
     pub(super) fn element_layout(&self)->(u32,&Ty){
-        let mut ty=&self.data.ty;let mut offset=0;
-        for field in &self.projection{let(at,next)=ty.aggregate_part(*field);offset+=at;ty=next;}
-        (offset,ty)
+        owned_records::field_layout(&self.data.ty,&self.projection)
+    }
+    pub(super) fn components(&self) -> Vec<usize> {
+        owned_records::path_components(&self.data.ty, &self.projection)
     }
     pub(super) fn words(&self)->Vec<u32>{
         let(offset,ty)=self.element_layout();ty.components.iter().map(|(_,word)|offset+word).collect()
@@ -4692,8 +4693,7 @@ impl Builder<'_> {
             let proof=bindings.entry(source).or_default();
             *proof=std::mem::take(proof).with_identity(ordinal);
         }
-        let mut components=(0..data.ty.components.len()).collect::<Vec<_>>();let mut ty=&data.ty;
-        for field in projection{let(offset,next)=ty.aggregate_part(*field);components=next.components.iter().map(|(_,at)|components[ty.components.iter().position(|(_,word)|*word==offset+at).unwrap()]).collect();ty=next;}
+        let components=owned_records::path_components(&data.ty,projection);
         for (component,stored) in components.iter().enumerate(){
             let id=ValueIdentity::ElementComponent(*stored);let proof=bounds::Proof::default().with_identity(id);
             bindings.insert(id,proof.clone());
@@ -4720,11 +4720,9 @@ impl Builder<'_> {
         self.close_stored_resources(&mut model,&original,&bindings);Box::new(model)
     }
     pub(super) async fn materialize_element(&mut self,data:&DataReference,value:Option<Value>,place:&Place)->Result<returns::Returned>{
-        let mut model=*unsafe { self.world.call(self.element_model(&data.ty,&data.elements,(&data.residency,&[]),self.scope.span())).await }?;let mut components=(0..data.ty.components.len()).collect::<Vec<_>>();
+        let mut model=*unsafe { self.world.call(self.element_model(&data.ty,&data.elements,(&data.residency,&[]),self.scope.span())).await }?;
         for field in &data.projection{
             let returns::Returned::OwnedValue(owner)=model else{unreachable!()};
-            let(offset,ty)=owner.value.ty.aggregate_part(*field);
-            components=ty.components.iter().map(|(_,at)|components[owner.value.ty.components.iter().position(|(_,word)|*word==offset+at).unwrap()]).collect();
             model=self.unpack_record(&owner,*field);
         }
         let original=model.clone();let storage=self.returned_storage(&model);let mut bindings=self.element_owner_bindings(data);
@@ -4742,6 +4740,7 @@ impl Builder<'_> {
             selected=parent.as_deref();depth+=1;
         }
         let registers = if let Some(value) = value {
+            let components=data.components();
             for(component,index)in components.into_iter().zip(0..value.regs.len()){
                 let loaded=self.value_component(&value,index);
                 let proof=self.path_proof(&loaded.ty,bounds::Proof::capture(&loaded));
@@ -4813,7 +4812,7 @@ impl Builder<'_> {
             for source in value.component_origins(component).into_iter().filter(|source|matches!(source,ValueIdentity::DatasetContent(..))){bindings.insert(source,input.clone());}
         }
         bindings.insert(ValueIdentity::ElementIndex(0),bounds::Proof::capture(index));
-        let components=data.words().iter().map(|word|data.data.ty.components.iter().position(|(_,at)|at==word).unwrap()).collect::<Vec<_>>();
+        let components=data.components();
         let mut proof=value.proof.project_numeric_at_call(&components,value.regs.len(),&bindings);
         for(output,component)in components.iter().enumerate(){
             for source in value.component_origins(*component).into_iter().filter(|source|matches!(source,ValueIdentity::DatasetContent(..))){

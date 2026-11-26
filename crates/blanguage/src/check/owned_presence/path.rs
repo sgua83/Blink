@@ -130,7 +130,7 @@ fn metadata(builder:&mut Builder<'_>,value:ReadModel<'_>,declared:Option<&Ty>,in
    MetadataNeed::Child=>{facts.owns=u32::from(ty.unwrap().aggregate_part(cursor.index as usize).1.owns_resources());}
    MetadataNeed::Project=>{
     let ty=ty.unwrap();let(offset,child)=ty.aggregate_part(cursor.index as usize);
-    let components=child.components.iter().map(|(_,at)|ty.components.iter().position(|(_,word)|*word==offset+at).unwrap()).collect::<Vec<_>>();
+    let components=owned_records::field_components(ty,child,offset);
     child_place=Some(place.unwrap().clone().project(child.clone(),&components));
    }
    MetadataNeed::Recurse=>{

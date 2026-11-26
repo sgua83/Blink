@@ -35,6 +35,8 @@ unsafe extern "C"{
  fn b_type(source:SyntaxSource,env:Address,host:Host)->Address;
  #[link_name="bootstrap.ownership_projection::root_name"]
  fn b_root_name(source: SyntaxSource) -> Bytes;
+ #[link_name="bootstrap.ownership_projection::field_layout"]
+ fn b_field_layout(root: Address, fields: *const usize, count: u64, host: Host) -> Part;
  #[link_name="bootstrap.ownership_projection::components"]
  fn b_components(root:Address,selected:Address,offset:u32,output:*mut c_void,host:Host);
  #[link_name="bootstrap.ownership_projection::temporary"]
@@ -94,7 +96,19 @@ pub(in crate::check) fn root_name(expr: &Expr) -> Option<&str> {
     // The span borrows the sealed syntax held by expr.
     (!name.data.is_null()).then(|| unsafe { name.text() })
 }
-pub(super) fn components(root:&Ty,selected:&Ty,offset:u32)->Vec<usize>{
+pub(in crate::check) fn field_layout<'a>(root: &'a Ty, fields: &[usize]) -> (u32, &'a Ty) {
+    let selected = unsafe { b_field_layout(address(root), fields.as_ptr(), fields.len() as u64, HOST) };
+    // The checked field path selects a Ty borrowed from the original layout.
+    (selected.offset, unsafe { &*selected.ty.cast::<Ty>() })
+}
+pub(in crate::check) fn components(root:&Ty,selected:&Ty,offset:u32)->Vec<usize>{
  let mut output=Vec::new();unsafe{b_components(address(root),address(selected),offset,ptr::from_mut(&mut output).cast(),HOST)};output
+}
+pub(in crate::check) fn path_components(root: &Ty, fields: &[usize]) -> Vec<usize> {
+    if fields.is_empty() {
+        return (0..root.components.len()).collect();
+    }
+    let (offset, selected) = field_layout(root, fields);
+    components(root, selected, offset)
 }
 pub(super) fn temporary(expr:&Expr)->bool{unsafe{b_temporary(source(expr))}}

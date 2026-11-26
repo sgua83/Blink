@@ -277,7 +277,7 @@ impl Builder<'_> {
             let initial=self.returned_storage(&model);
             let context = self.loop_contexts.last().unwrap();
             let cursor = if source.is_some() { context.control_source.cursor.as_ref().unwrap() } else { index };
-            let components=data.words().iter().map(|word|data.ty.components.iter().position(|(_,at)|at==word).unwrap()).collect::<Vec<_>>();
+            let components=data.components();
             let complete=context.entry.cursor.as_ref().is_some_and(|begin|begin.minimum()==0&&begin.maximum()==0);
             let (normal,broken)=self.application_indexed_proof(&data.data,cursor,&initial,context.continues.iter().chain(context.exits.iter()),&context.controls,&context.writes);
             let normal=normal.project(&components,data.ty.components.len());
