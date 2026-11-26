@@ -20,8 +20,13 @@ struct FunctionName {
 
 extern "C" void pair_functions(address names, u64 declarations, u64 implementations, address output) on cpu;
 
-// The active path and key are borrowed from the synchronous evaluation calls.
-extern "C" bool dependency_active(address path, u64 count, NameBytes key) on cpu;
+// The evaluator holds this stack through the last active dependency.
+struct DependencyPath { address rows; u64 count; u64 capacity; };
+enum DependencyStatus:u32 { Entered=0; Recursive=1; Allocation=2; Overflow=3; };
+struct DependencyEntry { DependencyStatus status; u64 bytes; };
+extern "C" DependencyEntry enter_dependency(address path, NameBytes key) on cpu;
+extern "C" void leave_dependency(address path) on cpu;
+extern "C" void release_dependencies(address path) on cpu;
 
 void sort_rows<T>(address rows, u64 count, address context,
     cfn<bool,address,address,address> less) on cpu requires nonzero(less);

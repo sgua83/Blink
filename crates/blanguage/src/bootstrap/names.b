@@ -1,12 +1,55 @@
 module bootstrap.names;
-extern "C" bool dependency_active(address path, u64 count, NameBytes key) on cpu {
-    u64 at = count;
-    while (at != 0u64) {
-        at -= 1u64;
-        if (equal(import_at(path, at), key)) { return true; }
+extern "C" handle GetProcessHeap() on cpu from "KERNEL32.dll";
+extern "C" address HeapAlloc(handle heap,u32 flags,usize bytes) on cpu from "KERNEL32.dll";
+extern "C" address HeapReAlloc(handle heap,u32 flags,address rows,usize bytes) on cpu from "KERNEL32.dll";
+extern "C" i32 HeapFree(handle heap,u32 flags,address rows) on cpu from "KERNEL32.dll";
+
+extern "C" DependencyEntry enter_dependency(address path, NameBytes key) on cpu {
+    DependencyPath active=unsafe_position<DependencyPath>(path);
+    u64 at=active.count;
+    while (at!=0u64) {
+        at-=1u64;
+        if (equal(import_at(active.rows,at),key)) {
+            return DependencyEntry(DependencyStatus::Recursive,0u64);
+        }
     }
-    return false;
+
+    if (active.count==active.capacity) {
+        u64 max_rows=9223372036854775807u64/size_of<NameBytes>();
+        if (active.capacity==max_rows) {
+            return DependencyEntry(DependencyStatus::Overflow,0u64);
+        }
+        u64 capacity=4u64;
+        if (active.capacity!=0u64) {
+            capacity=active.capacity<=max_rows/2u64 ? active.capacity*2u64 : max_rows;
+        }
+        u64 bytes=capacity*size_of<NameBytes>();
+        handle heap=GetProcessHeap();
+        address rows;
+        if (active.capacity==0u64) { rows=HeapAlloc(heap,0,bytes); }
+        else { rows=HeapReAlloc(heap,0,active.rows,bytes); }
+        if (address_bits(rows)==0u64) {
+            return DependencyEntry(DependencyStatus::Allocation,bytes);
+        }
+        active.rows=rows;
+        active.capacity=capacity;
+    }
+
+    unsafe_position<NameBytes>(row_at<NameBytes>(active.rows,active.count))=key;
+    active.count+=1u64;
+    unsafe_position<DependencyPath>(path)=active;
+    return DependencyEntry(DependencyStatus::Entered,0u64);
 }
+
+extern "C" void leave_dependency(address path) on cpu {
+    unsafe_position<DependencyPath>(path).count-=1u64;
+}
+
+extern "C" void release_dependencies(address path) on cpu {
+    address rows=unsafe_position<DependencyPath>(path).rows;
+    if (address_bits(rows)!=0u64) { HeapFree(GetProcessHeap(),0,rows); }
+}
+
 NameBytes empty() on cpu {return NameBytes(unsafe_address(0u64),0u64);}
 u8 byte_at(NameBytes value,u64 at) on cpu {return unsafe_position<u8>(unsafe_address(address_bits(value.bytes)+at));}
 NameBytes import_at(address imports,u64 at) on cpu {return unsafe_position<NameBytes>(row_at<NameBytes>(imports,at));}

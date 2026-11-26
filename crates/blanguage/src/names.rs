@@ -1,6 +1,6 @@
 //! B chooses names and visibility; the original declaration maps keep their storage.
 use crate::{frontend::NameResolution, syntax::{List, wire::FunctionNode}};
-use std::{cell::RefCell, ffi::c_void, marker::PhantomData};
+use std::{cell::UnsafeCell, ffi::c_void, marker::PhantomData};
 #[derive(Clone,Copy)]
 #[repr(C)]
 struct Bytes { bytes:*const u8, length:u64 }
@@ -43,8 +43,12 @@ unsafe extern "C" {
         references: *mut c_void, next: unsafe extern "C" fn(*mut c_void) -> Bytes,
         external: *mut c_void, push: unsafe extern "C" fn(*mut c_void, Bytes),
     );
-    #[link_name = "bootstrap.names::dependency_active"]
-    fn dependency_active(path: *const Bytes, count: u64, key: Bytes) -> bool;
+    #[link_name = "bootstrap.names::enter_dependency"]
+    fn enter_dependency(path: *mut DependencyPath, key: Bytes) -> DependencyEntry;
+    #[link_name = "bootstrap.names::leave_dependency"]
+    fn leave_dependency(path: *mut DependencyPath);
+    #[link_name = "bootstrap.names::release_dependencies"]
+    fn release_dependencies(path: *mut DependencyPath);
     #[link_name = "bootstrap.names::order_imports"]
     fn order_imports(names: *mut Bytes, count: u64) -> u64;
     #[link_name = "bootstrap.names::pair_functions"]
@@ -57,30 +61,56 @@ unsafe extern "C" {
     ) -> Resolution;
 }
 
-#[derive(Default)]
+#[repr(C)]
+struct DependencyPath {
+    rows: *mut Bytes,
+    count: u64,
+    capacity: u64,
+}
+
+#[allow(dead_code)] // Produced by the B stack.
+#[repr(u32)]
+enum DependencyStatus { Entered, Recursive, Allocation, Overflow }
+
+#[repr(C)]
+struct DependencyEntry { status: DependencyStatus, bytes: u64 }
+
 pub(crate) struct ActiveDependencies {
-    path: RefCell<Vec<Bytes>>,
+    path: UnsafeCell<DependencyPath>,
+}
+
+impl Default for ActiveDependencies {
+    fn default() -> Self {
+        Self { path: UnsafeCell::new(DependencyPath { rows: std::ptr::null_mut(), count: 0, capacity: 0 }) }
+    }
+}
+
+impl Drop for ActiveDependencies {
+    fn drop(&mut self) {
+        unsafe { release_dependencies(self.path.get_mut()); }
+    }
 }
 
 struct DependencyScope<'a>(&'a ActiveDependencies);
 
 impl Drop for DependencyScope<'_> {
     fn drop(&mut self) {
-        self.0.path.borrow_mut().pop();
+        unsafe { leave_dependency(self.0.path.get()); }
     }
 }
 
 impl ActiveDependencies {
     pub(crate) async fn evaluate<T>(&self, key: &str, evaluate: impl std::ops::AsyncFnOnce() -> T) -> Option<T> {
-        let key = Bytes::new(key);
-        {
-            let path = self.path.borrow();
-            if unsafe { dependency_active(path.as_ptr(), path.len() as u64, key) } {
-                return None;
-            }
+        let entered = unsafe { enter_dependency(self.path.get(), Bytes::new(key)) };
+        match entered.status {
+            DependencyStatus::Entered => {}
+            DependencyStatus::Recursive => return None,
+            DependencyStatus::Allocation => std::alloc::handle_alloc_error(
+                std::alloc::Layout::from_size_align(entered.bytes as usize, std::mem::align_of::<Bytes>()).unwrap(),
+            ),
+            DependencyStatus::Overflow => panic!("capacity overflow"),
         }
-        self.path.borrow_mut().push(key);
-        // The key stays borrowed through this call; remove its descriptor before returning or unwinding.
+        // The original key remains borrowed until this evaluation leaves the B stack.
         let _scope = DependencyScope(self);
         Some(evaluate().await)
     }
