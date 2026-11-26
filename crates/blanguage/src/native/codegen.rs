@@ -59,12 +59,6 @@ const BUFFER_BYTES: u32 = std::mem::size_of::<BufferAddress>() as u32;
 const BUFFER_STRIDE: u32 = std::mem::offset_of!(BufferAddress, stride) as u32;
 
 #[repr(C)]
-struct RangeEnd {
-    back_edge: usize,
-    end: usize,
-}
-
-#[repr(C)]
 struct RangePrologue {
     length: u64,
     probe_field: u64,
@@ -129,13 +123,8 @@ unsafe extern "C" {
     #[link_name = "bootstrap.frame_layout::range_epilogue"]
     fn range_epilogue(frame: u32, saved: *const allocation::SavedRegister, count: usize,
         image: *mut u8, end: usize, exits: *const usize, exit_count: usize) -> usize;
-    #[link_name = "bootstrap.x64_instruction::range_bounds"]
-    fn encode_range_bounds(packet: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::emit_map_range"]
     fn emit_map_range(input: MapRangeInput, host: MapRangeHost) -> u32;
-    #[link_name = "bootstrap.x64_instruction::finish_range"]
-    fn encode_range_end(image: *mut u8, at: usize, begin: usize, exit_field: usize,
-        skip_field: usize, step: u8) -> RangeEnd;
 
 }
 
@@ -246,7 +235,7 @@ struct Emitter<'a> {
     tiles: &'a [Tile],
     range_origin: OperationOrigin,
     workgroup: u32,
-    buffers: &'a [Buffer],
+    buffer_count: usize,
     textures: &'a [TextureBinding],
     breaks: Vec<Vec<usize>>,
     exits: Vec<Vec<usize>>,
@@ -344,19 +333,6 @@ impl Emitter<'_> {
         };
         self.emit_bytes(9, |output| unsafe { encode_branch(condition, test_bits, output) });
         self.code.len() - 4
-    }
-    fn range_bounds(&mut self, packet: bool) -> usize {
-        self.emit_bytes(16, |output| unsafe { encode_range_bounds(u32::from(packet), output) });
-        self.code.len() - 4
-    }
-    fn finish_range(&mut self, begin: usize, exit_field: usize, skip_field: usize, step: u8) -> usize {
-        let at = self.code.len();
-        self.code.reserve(8);
-        unsafe {
-            let range = encode_range_end(self.code.as_mut_ptr(), at, begin, exit_field, skip_field, step);
-            self.code.set_len(range.end);
-            range.back_edge
-        }
     }
     fn patch(&mut self, at: usize, target: usize) {
         let field = &mut self.code[at..at + 4];
@@ -703,7 +679,7 @@ fn emit_map(
             generated_origin: stage.generated_origin.clone(),
         },
         workgroup,
-        buffers: &program.buffers,
+        buffer_count: program.buffers.len(),
         textures: &program.textures,
         breaks: Vec::new(),
         exits: vec![Vec::new()],

@@ -1,6 +1,7 @@
 //! 普通值 IR 直接成为范围累积与摘要合并机器码，不经宿主解释合并器。
 use super::*;
-use crate::ast::Access;
+use external::{AbiComponent, AbiValueComponent};
+use structure::{ScalarBodyStatus, ScalarHost};
 use crate::ir::dataflow::Span;
 use std::ffi::c_void;
 
@@ -231,6 +232,78 @@ const RANGE_HOST: RangeHost = RangeHost {
     move_block: range_move_block, branch: range_branch, size: range_size,
 };
 
+#[repr(C)]
+struct CustomRangeInput {
+    initialize: Span,
+    body: Span,
+    finish: Span,
+    frame: u32,
+    break_on_head: u32,
+    publish: u32,
+    summary_count: usize,
+    summary: *const c_void,
+}
+
+#[repr(C)]
+struct CustomRangeHost {
+    enter: unsafe extern "C" fn(*mut c_void, u32) -> u32,
+    leave: unsafe extern "C" fn(*mut c_void, u32),
+    breaks: unsafe extern "C" fn(*mut c_void, u32),
+    summary_component: AbiComponent,
+}
+
+#[repr(C)]
+struct CustomRangeProduct {
+    stack_bytes: u32,
+    status: ScalarBodyStatus,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.x64_instruction::emit_custom_range"]
+    fn emit_custom_range(
+        emitter: *mut c_void, input: CustomRangeInput, scalar: ScalarHost, host: CustomRangeHost,
+    ) -> CustomRangeProduct;
+}
+
+struct RangeSummary<'a> {
+    emitter: *mut Emitter<'a>,
+    first_slot: usize,
+    fields: &'a [(Scalar, u32)],
+    payload_words: usize,
+}
+
+unsafe extern "C" fn summary_component(context: *const c_void, index: u64) -> AbiValueComponent {
+    let input = unsafe { &*context.cast::<RangeSummary<'_>>() };
+    let index = index as usize;
+    let (scalar, offset) = match input.fields.get(index) {
+        Some(&field) => field,
+        None => (Scalar::U32, (input.payload_words + index - input.fields.len()) as u32 * 4),
+    };
+    // The image has been lent to the B writer. Borrow only the disjoint allocation.
+    let allocation = unsafe { &(*input.emitter).allocation };
+    let location = allocation.location(PrivateSlot::Local(input.first_slot + index));
+    AbiValueComponent {
+        location: location.into(), scalar: scalar.into(), field_scalar: scalar.into(), offset,
+    }
+}
+
+unsafe extern "C" fn enter_range(slot: *mut c_void, frame: u32) -> u32 {
+    unsafe { &mut *slot.cast::<Emitter<'_>>() }.enter(frame)
+}
+
+unsafe extern "C" fn leave_range(slot: *mut c_void, frame: u32) {
+    unsafe { &mut *slot.cast::<Emitter<'_>>() }.leave(frame);
+}
+
+unsafe extern "C" fn break_scope(slot: *mut c_void, open: u32) {
+    let emitter = unsafe { &mut *slot.cast::<Emitter<'_>>() };
+    if open != 0 {
+        emitter.breaks.push(Vec::new());
+    } else {
+        emitter.close_breaks();
+    }
+}
+
 pub(super) fn emit(
     program: &Program,
     index: usize,
@@ -246,23 +319,8 @@ pub(super) fn emit(
     let plan = unsafe { cpu_range_plan(pass, k, has_head, u32::from(counted)) };
     let mut kernel = r.kernel(&program.stages[index], plan.project != 0, plan.identity != 0);
     let mut stage = kernel.stage;
-    let mut buffers = program.buffers.clone();
-    let private = buffers.len();
-    if plan.apply != 0 || plan.finish != 0 {
-        buffers.push(Buffer {
-            name: String::from("<range>"),
-            access: Access::Read,
-            ty: Ty::vector(Scalar::U32, plan.summary),
-            stride: plan.summary as u32 * 4,
-            count: Some(1),
-        });
-    }
-    if plan.packed != 0 {
-        buffers[r.fields.source].stride = plan.summary as u32 * 4;
-    }
-    if plan.prefix != 0 {
-        buffers[r.fields.target].stride = plan.summary as u32 * 4;
-    }
+    let private = program.buffers.len();
+    let buffer_count = private + usize::from(plan.apply != 0 || plan.finish != 0);
 
     let mut combine = stage.code.split_off(kernel.project_end);
     let project = stage.code.split_off(kernel.initialize_end);
@@ -346,7 +404,7 @@ pub(super) fn emit(
         tiles: &[],
         range_origin: OperationOrigin::default(),
         workgroup: Stage::DEFAULT_WORKGROUP_WIDTH,
-        buffers: &buffers,
+        buffer_count,
         textures: &program.textures,
         breaks: Vec::new(),
         exits: vec![Vec::new()],
@@ -354,22 +412,24 @@ pub(super) fn emit(
         allocation,
         frame: layout,
     };
-    let stack_bytes = e.enter(frame);
-    e.block(&stage.code[..initialize_end])?;
-    let begin = e.code.len();
-    let end = e.range_bounds(false);
-    if body.break_on_head != 0 {
-        e.breaks.push(Vec::new());
-    }
-    e.block(&stage.code[initialize_end..loop_end])?;
-    e.finish_range(begin, end, 0, 1);
-    if body.break_on_head != 0 {
-        e.close_breaks();
-    }
-    e.block(&stage.code[loop_end..])?;
-    if plan.publish != 0 {
-        e.write_range_summary(stack_bytes, carry, &r.ty, k, plan.summary);
-    }
-    e.leave(frame);
-    Ok(e.finish(stack_bytes, true))
+    let emitter = std::ptr::from_mut(&mut e);
+    let summary = RangeSummary {
+        emitter, first_slot: carry, fields: &r.ty.components, payload_words: k,
+    };
+    let input = CustomRangeInput {
+        initialize: Span::slice(&stage.code[..initialize_end]),
+        body: Span::slice(&stage.code[initialize_end..loop_end]),
+        finish: Span::slice(&stage.code[loop_end..]),
+        frame,
+        break_on_head: body.break_on_head,
+        publish: plan.publish,
+        summary_count: fields + (plan.summary - k),
+        summary: std::ptr::from_ref(&summary).cast(),
+    };
+    let emitted = unsafe {
+        emit_custom_range(emitter.cast(), input, ScalarHost::new(emitter.cast(), Stage::DEFAULT_WORKGROUP_WIDTH),
+            CustomRangeHost { enter: enter_range, leave: leave_range, breaks: break_scope, summary_component })
+    };
+    emitted.status.result()?;
+    Ok(e.finish(emitted.stack_bytes, true))
 }

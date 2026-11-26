@@ -70,43 +70,18 @@ struct CallHost {
 
 #[repr(C)]
 struct SymbolEncoding { length: u64, field: u64 }
-#[repr(u32)]
-enum AbiMemoryMode { RangeSummary = 7 }
 
 #[repr(C)]
 pub(super) struct AbiValueComponent {
-    location: MoveLocation,
-    scalar: ScalarEncoding,
-    field_scalar: ScalarEncoding,
-    offset: u32,
-}
-
-struct RangeSummary<'a> {
-    allocation: &'a Allocation,
-    first_slot: usize,
-    fields: &'a [(Scalar, u32)],
-    payload_words: usize,
-}
-
-unsafe extern "C" fn summary_component(context: *const c_void, index: u64) -> AbiValueComponent {
-    let input = unsafe { &*context.cast::<RangeSummary<'_>>() };
-    let index = index as usize;
-    let (scalar, offset) = match input.fields.get(index) {
-        Some(&field) => field,
-        None => (Scalar::U32, (input.payload_words + index - input.fields.len()) as u32 * 4),
-    };
-    let location = input.allocation.location(PrivateSlot::Local(input.first_slot + index));
-    AbiValueComponent {
-        location: location.into(), scalar: scalar.into(), field_scalar: scalar.into(), offset,
-    }
+    pub(super) location: MoveLocation,
+    pub(super) scalar: ScalarEncoding,
+    pub(super) field_scalar: ScalarEncoding,
+    pub(super) offset: u32,
 }
 
 pub(super) type AbiComponent = unsafe extern "C" fn(*const c_void, u64) -> AbiValueComponent;
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.x64_instruction::abi_value"]
-    fn encode_abi_value(slot: u32, count: u64, mode: AbiMemoryMode, context: *const c_void,
-        component: AbiComponent, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::print_call"]
     fn emit_print_call(dst: MoveLocation, src: MoveLocation, value: ScalarEncoding,
         result: ScalarEncoding, output: *mut u8) -> SymbolEncoding;
@@ -187,23 +162,6 @@ unsafe extern "C" fn commit_call(context: *mut c_void, end: usize) {
 }
 
 impl Emitter<'_> {
-    pub(super) fn write_range_summary(
-        &mut self, stack_bytes: u32, first_slot: usize, ty: &Ty, payload_words: usize,
-        summary_words: usize,
-    ) {
-        let input = RangeSummary {
-            allocation: &self.allocation, first_slot, fields: &ty.components, payload_words,
-        };
-        let count = ty.components.len() + (summary_words - payload_words);
-        self.code.reserve(16 + 24 * count);
-        let start = self.code.len();
-        unsafe {
-            let length = encode_abi_value(stack_bytes, count as u64, AbiMemoryMode::RangeSummary,
-                std::ptr::from_ref(&input).cast(), summary_component, self.code.as_mut_ptr().add(start));
-            self.code.set_len(start + length as usize);
-        }
-    }
-
     pub(super) fn print_call(&mut self, dst: Reg, value: Reg) {
         let scalar = self.registers[value];
         let target = self.location(dst).into();

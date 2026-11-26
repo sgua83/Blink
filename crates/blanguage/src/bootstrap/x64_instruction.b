@@ -5823,3 +5823,49 @@ u64 emit_append(View value, ScalarValueHost host, u32 buffer_bytes,
         flag.width / 8, flag.kind == ScalarKind::Signed, unsafe_address(cursor));
     return cursor + stored.length - start;
 }
+
+extern "C" CustomRangeProduct emit_custom_range(address emitter, CustomRangeInput input,
+    ScalarBodyHost scalar, CustomRangeHost host) on cpu
+    requires nonzero(host.enter) requires nonzero(host.leave) requires nonzero(host.breaks)
+    requires nonzero(host.summary_component)
+    requires nonzero(scalar.addresses.values.ir.inspect) requires nonzero(scalar.addresses.values.location)
+    requires nonzero(scalar.addresses.values.scalar) requires nonzero(scalar.addresses.tile_stream)
+    requires nonzero(scalar.local) requires nonzero(scalar.reserve) requires nonzero(scalar.commit)
+    requires nonzero(scalar.literal) requires nonzero(scalar.math_symbol)
+    requires nonzero(scalar.mark) requires nonzero(scalar.publish) requires nonzero(scalar.emit)
+    requires nonzero(scalar.control.emit) requires nonzero(scalar.control.load) requires nonzero(scalar.control.offset)
+    requires nonzero(scalar.control.jump) requires nonzero(scalar.control.jump_to) requires nonzero(scalar.control.patch_here)
+    requires nonzero(scalar.control.open) requires nonzero(scalar.control.close) requires nonzero(scalar.control.defer)
+    requires nonzero(scalar.control.continuation) {
+    u32 stack_bytes = host.enter(emitter, input.frame);
+    ScalarBodyHost dispatch = scalar;
+    address context = address_of(dispatch);
+    u32 status = emit_scalar_body(context, emitter, input.initialize, scalar);
+    if (status != 0) { return CustomRangeProduct(stack_bytes, status); }
+
+    NativeCodeBuffer buffer = scalar.reserve(emitter, 16u64);
+    u64 begin = buffer.end;
+    address output = unsafe_address(address_bits(buffer.image) + begin);
+    u64 bounds_end = begin + range_bounds(false, output);
+    scalar.commit(emitter, bounds_end);
+
+    if (input.break_on_head != 0) { host.breaks(emitter, true); }
+    status = emit_scalar_body(context, emitter, input.body, scalar);
+    if (status != 0) { return CustomRangeProduct(stack_bytes, status); }
+    buffer = scalar.reserve(emitter, 8u64);
+    RangeEnd range = finish_range(buffer.image, buffer.end, begin, bounds_end - 4u64, 0u64, u8(1));
+    scalar.commit(emitter, range.end);
+    if (input.break_on_head != 0) { host.breaks(emitter, false); }
+
+    status = emit_scalar_body(context, emitter, input.finish, scalar);
+    if (status != 0) { return CustomRangeProduct(stack_bytes, status); }
+    if (input.publish != 0) {
+        buffer = scalar.reserve(emitter, 16u64 + 24u64 * input.summary_count);
+        output = unsafe_address(address_bits(buffer.image) + buffer.end);
+        u64 bytes = abi_value(stack_bytes, input.summary_count, AbiMemoryMode::RangeSummary,
+            input.summary, host.summary_component, output);
+        scalar.commit(emitter, buffer.end + bytes);
+    }
+    host.leave(emitter, input.frame);
+    return CustomRangeProduct(stack_bytes, 0);
+}

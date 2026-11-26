@@ -292,7 +292,7 @@ fn emit_value(
         tiles: &[],
         range_origin: OperationOrigin::default(),
         workgroup: Stage::DEFAULT_WORKGROUP_WIDTH,
-        buffers: &[],
+        buffer_count: 0,
         textures: &[],
         breaks: Vec::new(),
         exits: Vec::new(),

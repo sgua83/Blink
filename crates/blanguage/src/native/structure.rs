@@ -118,14 +118,25 @@ pub(super) enum ScalarLeaf {
 
 #[repr(u32)]
 #[allow(dead_code)]
-enum ScalarBodyStatus { Done, Unlowered, Subgroup, RayQuery }
+pub(super) enum ScalarBodyStatus { Done, Unlowered, Subgroup, RayQuery }
+
+impl ScalarBodyStatus {
+    pub(super) fn result(self) -> Result<(), &'static str> {
+        match self {
+            Self::Done => Ok(()),
+            Self::Unlowered => Err("原生操作尚未降低到CPU执行IR"),
+            Self::Subgroup => Err("CPU 后端不能执行 GPU subgroup 协作"),
+            Self::RayQuery => Err("CPU 后端不能执行硬件光线查询"),
+        }
+    }
+}
 
 #[repr(C)]
 pub(super) struct ScalarCursor { start: usize, ranges: usize }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct ScalarHost {
+pub(super) struct ScalarHost {
     control: Host,
     mark: unsafe extern "C" fn(Slot) -> ScalarCursor,
     publish: unsafe extern "C" fn(Slot, *const Inst, ScalarCursor),
@@ -200,11 +211,9 @@ pub(super) unsafe extern "C" fn emit_scalar(slot: Slot, leaf: ScalarLeaf, value:
     }
 }
 
-impl<'a> Emitter<'a> {
-    pub(super) fn block(&mut self, code: &[Inst]) -> Result<(), &'static str> {
-        let workgroup = self.workgroup;
-        let slot = std::ptr::from_mut(self).cast();
-        let mut host = ScalarHost {
+impl ScalarHost {
+    pub(super) fn new(slot: Slot, workgroup: u32) -> Self {
+        Self {
             control: control_host(scalar_child, scalar_load),
             mark: mark_scalar,
             publish: publish_scalar,
@@ -215,16 +224,15 @@ impl<'a> Emitter<'a> {
             commit: commit_scalar,
             literal: scalar_literal,
             math_symbol: scalar_math_symbol,
-        };
-        let result = unsafe {
-            emit_scalar_body(std::ptr::from_mut(&mut host).cast(), slot, Span::slice(code), host)
-        };
-        match result {
-            ScalarBodyStatus::Done => Ok(()),
-            ScalarBodyStatus::Unlowered => Err("原生操作尚未降低到CPU执行IR"),
-            ScalarBodyStatus::Subgroup => Err("CPU 后端不能执行 GPU subgroup 协作"),
-            ScalarBodyStatus::RayQuery => Err("CPU 后端不能执行硬件光线查询"),
         }
     }
+}
 
+impl Emitter<'_> {
+    pub(super) fn block(&mut self, code: &[Inst]) -> Result<(), &'static str> {
+        let workgroup = self.workgroup;
+        let slot = std::ptr::from_mut(self).cast();
+        let mut host = ScalarHost::new(slot, workgroup);
+        unsafe { emit_scalar_body(std::ptr::from_mut(&mut host).cast(), slot, Span::slice(code), host) }.result()
+    }
 }

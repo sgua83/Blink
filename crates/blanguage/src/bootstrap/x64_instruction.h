@@ -825,3 +825,39 @@ extern "C" u32 emit_scalar_body(address context, address emitter, Span code, Sca
     requires nonzero(host.control.jump) requires nonzero(host.control.jump_to) requires nonzero(host.control.patch_here)
     requires nonzero(host.control.open) requires nonzero(host.control.close) requires nonzero(host.control.defer)
     requires nonzero(host.control.continuation);
+
+struct CustomRangeInput {
+    Span initialize;
+    Span body;
+    Span finish;
+    u32 frame;
+    u32 break_on_head;
+    u32 publish;
+    u64 summary_count;
+    address summary;
+};
+
+struct CustomRangeHost {
+    cfn<u32,address,u32> enter;
+    cfn<void,address,u32> leave;
+    cfn<void,address,bool> breaks;
+    cfn<AbiValueComponent,address,u64> summary_component;
+};
+
+struct CustomRangeProduct { u32 stack_bytes; u32 status; };
+
+// The original emitter lends its current byte buffer to each writer and owns
+// the active break scope, source observations and final native image.
+extern "C" CustomRangeProduct emit_custom_range(address emitter, CustomRangeInput input,
+    ScalarBodyHost scalar, CustomRangeHost host) on cpu
+    requires nonzero(host.enter) requires nonzero(host.leave) requires nonzero(host.breaks)
+    requires nonzero(host.summary_component)
+    requires nonzero(scalar.addresses.values.ir.inspect) requires nonzero(scalar.addresses.values.location)
+    requires nonzero(scalar.addresses.values.scalar) requires nonzero(scalar.addresses.tile_stream)
+    requires nonzero(scalar.local) requires nonzero(scalar.reserve) requires nonzero(scalar.commit)
+    requires nonzero(scalar.literal) requires nonzero(scalar.math_symbol)
+    requires nonzero(scalar.mark) requires nonzero(scalar.publish) requires nonzero(scalar.emit)
+    requires nonzero(scalar.control.emit) requires nonzero(scalar.control.load) requires nonzero(scalar.control.offset)
+    requires nonzero(scalar.control.jump) requires nonzero(scalar.control.jump_to) requires nonzero(scalar.control.patch_here)
+    requires nonzero(scalar.control.open) requires nonzero(scalar.control.close) requires nonzero(scalar.control.defer)
+    requires nonzero(scalar.control.continuation);

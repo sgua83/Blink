@@ -224,7 +224,7 @@ impl Emitter<'_> {
             allocation: &self.allocation, registers: self.registers, tiles: self.tiles,
             frame: &self.frame, workgroup: self.workgroup,
         };
-        let table = TextureTable { buffers: self.buffers.len(), textures: self.textures };
+        let table = TextureTable { buffers: self.buffer_count, textures: self.textures };
         let host = TextureAccessHost {
             values: locations.host(), table: std::ptr::from_ref(&table).cast(),
             offset: descriptor_offset, stride: BUFFER_BYTES,
