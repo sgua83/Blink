@@ -796,6 +796,29 @@ unsafe extern "C" {
     ) -> u32;
 }
 
+type ActiveScopes<'a> = std::iter::Copied<std::collections::btree_set::Iter<'a, usize>>;
+
+#[repr(C)]
+struct HistoryRegisters {
+    first: usize,
+    end: usize,
+}
+
+#[repr(C)]
+struct HistoryBindingsHost {
+    next_scope: unsafe extern "C" fn(Slot) -> usize,
+    registers: unsafe extern "C" fn(Borrowed, usize) -> HistoryRegisters,
+    insert: unsafe extern "C" fn(Slot, usize, usize),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.relation_order::write_history_bindings"]
+    fn write_history_bindings(
+        function: Borrowed, output: Slot, source: Slot, active: Slot, prior: usize,
+        host: HistoryBindingsHost,
+    );
+}
+
 impl Function {
     pub(super) fn visit_carried_writes<F>(&self, memory: usize, mut consumer: F) -> bool
     where
@@ -803,7 +826,7 @@ impl Function {
     {
         let mut scopes = self.uses[memory].active_loops.iter().copied();
         let host = CarriedWriteHost {
-            next_scope: next_relation_root::<std::iter::Copied<std::collections::btree_set::Iter<'_, usize>>>,
+            next_scope: next_relation_root::<ActiveScopes<'_>>,
             history: Self::carried_scope,
             memory_facts: Self::carried_memory_facts,
             consider: Self::consider_carried_write::<F>,
@@ -849,6 +872,38 @@ impl Function {
         }
         let consumer = unsafe { &mut *consumer.cast::<F>() };
         1 + u32::from(consumer(scope, at, prior))
+    }
+    pub(super) fn history_names(&self, at: usize, memory: usize, prior: Option<usize>)
+        -> BTreeMap<ValueIdentity, ValueIdentity>
+    {
+        let mut source = self.uses[at].active_loops.iter().copied();
+        let mut active = self.uses[memory].active_loops.iter().copied();
+        let mut names = BTreeMap::new();
+        let host = HistoryBindingsHost {
+            next_scope: next_relation_root::<ActiveScopes<'_>>,
+            registers: Self::history_registers,
+            insert: Self::insert_history_name,
+        };
+        unsafe {
+            write_history_bindings(
+                ptr::from_ref(self).cast(), ptr::from_mut(&mut names).cast(),
+                ptr::from_mut(&mut source).cast(), ptr::from_mut(&mut active).cast(),
+                prior.unwrap_or(usize::MAX), host,
+            );
+        }
+        names
+    }
+
+    unsafe extern "C" fn history_registers(function: Borrowed, scope: usize) -> HistoryRegisters {
+        let function = unsafe { &*function.cast::<Self>() };
+        function.history.get(&scope).map_or(HistoryRegisters { first: 0, end: 0 }, |history| {
+            HistoryRegisters { first: history.registers.start, end: history.registers.end }
+        })
+    }
+
+    unsafe extern "C" fn insert_history_name(output: Slot, source: usize, destination: usize) {
+        let names = unsafe { &mut *output.cast::<BTreeMap<ValueIdentity, ValueIdentity>>() };
+        names.insert(ValueIdentity::Register(source), ValueIdentity::Register(destination));
     }
 }
 

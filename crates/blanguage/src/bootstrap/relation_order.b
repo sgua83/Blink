@@ -720,6 +720,40 @@ extern "C" u32 visit_carried_writes(address function, address scopes, address co
     return carried ? 1 : 0;
 }
 
+// History registers describe earlier iterations, outside the physical register index range.
+const usize HISTORY_REGISTER = 9223372036854775808u64;
+
+void write_history_scope(address function, address output, usize scope, HistoryBindingsHost host) on cpu
+    requires nonzero(host.registers) requires nonzero(host.insert)
+{
+    HistoryRegisters range = host.registers(function,scope);
+    usize index = range.first;
+    while (index < range.end) {
+        host.insert(output,index,index | HISTORY_REGISTER);
+        index += 1u64;
+    }
+}
+
+extern "C" void write_history_bindings(address function, address output, address source, address active,
+    usize prior, HistoryBindingsHost host) on cpu
+    requires nonzero(host.next_scope) requires nonzero(host.registers) requires nonzero(host.insert)
+{
+    usize current = host.next_scope(active);
+    usize scope = host.next_scope(source);
+    while (scope != WALK_END) {
+        while (current < scope) {
+            current = host.next_scope(active);
+        }
+        if (scope != current) {
+            write_history_scope(function,output,scope,host);
+        }
+        scope = host.next_scope(source);
+    }
+    if (prior != WALK_END) {
+        write_history_scope(function,output,prior,host);
+    }
+}
+
 PrefixBoundary prefix_boundary(WalkSlice runs, usize index) on cpu {
     return unsafe_position<PrefixBoundary>(cell(runs.data,index,16u64));
 }

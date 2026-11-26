@@ -176,6 +176,21 @@ extern "C" u32 visit_carried_writes(address function, address scopes, address co
     requires nonzero(host.next_scope) requires nonzero(host.history)
     requires nonzero(host.memory_facts) requires nonzero(host.consider);
 
+struct HistoryRegisters {
+    usize first;
+    usize end;
+};
+
+struct HistoryBindingsHost {
+    cfn<usize,address> next_scope;
+    cfn<HistoryRegisters,address,usize> registers;
+    cfn<void,address,usize,usize> insert;
+};
+
+extern "C" void write_history_bindings(address function, address output, address source, address active,
+    usize prior, HistoryBindingsHost host) on cpu
+    requires nonzero(host.next_scope) requires nonzero(host.registers) requires nonzero(host.insert);
+
 struct PrefixBoundary {
     usize memory;
     usize frame;

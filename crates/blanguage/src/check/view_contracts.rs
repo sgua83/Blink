@@ -995,21 +995,6 @@ impl Function {
     fn repeated_read(&self, memory: usize) -> bool {
         self.visit_carried_writes(memory, |_, _, _| true)
     }
-
-    fn history_names(&self, at: usize, memory: usize, prior: Option<usize>)
-        -> BTreeMap<ValueIdentity, ValueIdentity>
-    {
-        self.uses[at].active_loops.difference(&self.uses[memory].active_loops)
-            .copied().chain(prior)
-            .flat_map(|scope| self.history.get(&scope).into_iter().flat_map(|history| history.registers.clone()))
-            .map(|reg| {
-                // These proof identities describe an earlier iteration. The high bit
-                // is outside the index range of the vector of actual registers.
-                let history = reg | (1 << (usize::BITS - 1));
-                (ValueIdentity::Register(reg), ValueIdentity::Register(history))
-            })
-            .collect()
-    }
 }
 
 impl BorrowEvaluation<'_>{
