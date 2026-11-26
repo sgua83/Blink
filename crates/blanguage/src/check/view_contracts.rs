@@ -2523,26 +2523,6 @@ fn call_memory_effect(
     effect
 }
 
-fn memory_events(function: &Function) -> impl Iterator<Item = (usize, Option<&Call>, &[Use])> {
-    let mut at = 0;
-    let mut calls = function.calls.iter().filter(|call| !call.deferred).peekable();
-    std::iter::from_fn(move || {
-        let first = at;
-        let usage = function.uses.get(first)?;
-        at += 1;
-        let call = if let Requirement::Memory { target, .. } = &usage.requirement {
-            let call = calls.next_if(|call| call.memory == first);
-            if call.is_none() && matches!(target, address::MemoryTarget::Call(_)) {
-                while function.uses.get(at).is_some_and(|usage| matches!(
-                    &usage.requirement, Requirement::Memory { target: other, .. } if other == target
-                )) { at += 1; }
-            }
-            call
-        } else { None };
-        Some((first, call, &function.uses[first..at]))
-    })
-}
-
 fn memory_use_effect(
     evaluation: &mut BorrowEvaluation<'_>, usages: &[Use], resolved: &ScalarValues,
     consumer: &mut MemoryConsumers<'_>, first_path: impl Fn() -> bounds::Clause,
@@ -2949,6 +2929,7 @@ impl Builder<'_> {
 }
 
 pub(super) mod relation;
+use relation::memory_events;
 
 // Physical construction for the original public contract wire.
 crate::codec::contracts::codec!(PositionAccess);

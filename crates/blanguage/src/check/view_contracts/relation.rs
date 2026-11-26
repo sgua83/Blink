@@ -932,6 +932,58 @@ impl Function {
     }
 }
 
+#[repr(C)]
+struct MemoryEventCursor {
+    next_use: usize,
+    next_call: usize,
+    call_memory: usize,
+}
+
+#[repr(C)]
+struct MemoryUseFacts {
+    target: usize,
+    kind: u32,
+}
+
+#[repr(C)]
+struct MemoryEventHost {
+    usage: unsafe extern "C" fn(Borrowed, usize) -> MemoryUseFacts,
+    call: unsafe extern "C" fn(Borrowed, usize) -> MemoryCallFacts,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.relation_order::next_memory_event"]
+    fn next_memory_event(uses: WalkSlice, calls: WalkSlice, cursor: Slot, host: MemoryEventHost) -> usize;
+}
+
+pub(super) fn memory_events(function: &Function) -> impl Iterator<Item = (usize, Option<&Call>, &[Use])> {
+    let uses = WalkSlice::of(&function.uses);
+    let calls = WalkSlice::of(&function.calls);
+    let mut cursor = MemoryEventCursor { next_use: 0, next_call: 0, call_memory: usize::MAX };
+    std::iter::from_fn(move || {
+        let first = cursor.next_use;
+        if first == uses.count {
+            return None;
+        }
+        let call = unsafe {
+            next_memory_event(uses, calls, ptr::from_mut(&mut cursor).cast(), MemoryEventHost {
+                usage: memory_use_facts, call: Function::memory_call_facts,
+            })
+        };
+        Some((first, function.calls.get(call), &function.uses[first..cursor.next_use]))
+    })
+}
+
+unsafe extern "C" fn memory_use_facts(uses: Borrowed, index: usize) -> MemoryUseFacts {
+    let usage = unsafe { &*uses.cast::<Use>().add(index) };
+    match &usage.requirement {
+        Requirement::Memory { target: address::MemoryTarget::Call(target), .. } =>
+            MemoryUseFacts { kind: 2, target: *target },
+        Requirement::Memory { .. } => MemoryUseFacts { kind: 1, target: 0 },
+        _ => MemoryUseFacts { kind: 0, target: 0 },
+    }
+}
+
 struct Builder<'a> { function:&'a Function,state:LoopScope<'a>,known:&'a States<'a>,keys:BTreeMap<Key,usize>,prefix:FramePrefix,graph:Graph,parameters:BTreeMap<ValueIdentity,usize> }
 impl Builder<'_> {
     fn empty(&mut self)->usize{let id=self.graph.nodes.len();self.graph.nodes.push(Node::default());id}

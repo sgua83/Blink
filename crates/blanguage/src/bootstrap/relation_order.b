@@ -778,6 +778,44 @@ extern "C" usize find_memory_call(WalkSlice calls, usize memory, u32 immediate,
     return WALK_END;
 }
 
+const u32 NON_MEMORY_USE = 0;
+const u32 CALL_MEMORY_USE = 2;
+
+extern "C" usize next_memory_event(WalkSlice uses, WalkSlice calls, address cursor, MemoryEventHost host) on cpu
+    requires nonzero(host.usage) requires nonzero(host.call)
+{
+    MemoryEventCursor state = unsafe_position<MemoryEventCursor>(cursor);
+    usize first = state.next_use;
+    state.next_use += 1u64;
+    MemoryUseFacts event = host.usage(uses.data,first);
+    usize call = WALK_END;
+
+    if (event.kind != NON_MEMORY_USE) {
+        while (state.next_call < calls.count && state.call_memory == WALK_END) {
+            MemoryCallFacts next = host.call(calls.data,state.next_call);
+            if (next.deferred != 0) {
+                state.next_call += 1u64;
+            } else {
+                state.call_memory = next.memory;
+            }
+        }
+        if (state.call_memory == first) {
+            call = state.next_call;
+            state.next_call += 1u64;
+            state.call_memory = WALK_END;
+        } else if (event.kind == CALL_MEMORY_USE) {
+            while (state.next_use < uses.count) {
+                MemoryUseFacts next = host.usage(uses.data,state.next_use);
+                if (next.kind != CALL_MEMORY_USE || next.target != event.target) { break; }
+                state.next_use += 1u64;
+            }
+        }
+    }
+
+    unsafe_position<MemoryEventCursor>(cursor) = state;
+    return call;
+}
+
 PrefixBoundary prefix_boundary(WalkSlice runs, usize index) on cpu {
     return unsafe_position<PrefixBoundary>(cell(runs.data,index,16u64));
 }

@@ -200,6 +200,25 @@ extern "C" usize find_memory_call(WalkSlice calls, usize memory, u32 immediate,
     cfn<MemoryCallFacts,address,usize> facts) on cpu
     requires nonzero(facts);
 
+struct MemoryEventCursor {
+    usize next_use;
+    usize next_call;
+    usize call_memory;
+};
+
+struct MemoryUseFacts {
+    usize target;
+    u32 kind;
+};
+
+struct MemoryEventHost {
+    cfn<MemoryUseFacts,address,usize> usage;
+    cfn<MemoryCallFacts,address,usize> call;
+};
+
+extern "C" usize next_memory_event(WalkSlice uses, WalkSlice calls, address cursor, MemoryEventHost host) on cpu
+    requires nonzero(host.usage) requires nonzero(host.call);
+
 struct PrefixBoundary {
     usize memory;
     usize frame;
