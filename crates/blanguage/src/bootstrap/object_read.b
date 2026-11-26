@@ -2,6 +2,7 @@ module bootstrap.object_read;
 import blink.windows.coff;
 import bootstrap.metadata_read;
 import bootstrap.bindings;
+import bootstrap.coff;
 
 const u8 SYMBOL_IMPORT = u8(2);
 const u8 SYMBOL_INVALID_IMPORT = u8(3);
@@ -164,6 +165,28 @@ ObjectAssociation association(ObjectRows rows,address definitions,u64 index) on 
 }
 address host_section(address output,u64 index) on cpu {
     return unsafe_address(address_bits(output)+index*size_of<HostSection>());
+}
+
+extern "C" HostArchiveMode host_archive_mode(ObjectRows rows,ObjectSymbols symbols,BindingBytes runtime) on cpu {
+    u64 index=0u64;
+    while(index<rows.count){
+        ObjectSection row=row_at(rows,index);
+        if(row.mapped!=0u64 && needs_body(row.flags,row.relocation_count)!=0){return HostArchiveMode::Materialize;}
+        index+=1u64;
+    }
+
+    index=0u64;
+    while(index<symbols.count){
+        address slot=unsafe_address(address_bits(symbols.values)+index*size_of<ObjectSymbol>());
+        ObjectSymbol symbol=unsafe_position<ObjectSymbol>(slot);
+        if(symbol.external!=u8(0) && symbol.section<=i16(0)){
+            if(symbol.role!=SYMBOL_IMPORT || bytes_compare(BindingBytes(symbol.name.bytes,u64(symbol.value)),runtime)==0){
+                return HostArchiveMode::Group;
+            }
+        }
+        index+=1u64;
+    }
+    return HostArchiveMode::Borrow;
 }
 
 extern "C" HostGroupResult host_groups(ObjectRows rows,address definitions,address output,u64 count) on cpu {

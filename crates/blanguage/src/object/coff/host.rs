@@ -1,18 +1,6 @@
 //! Project a module's linked code groups into independently extractable native members.
 use super::*;
 
-pub(super) fn needs_groups(symbols: &[ObjectSymbol<'_>]) -> bool {
-    symbols.iter().filter(|symbol| symbol.external != 0 && symbol.section <= 0).any(|symbol| {
-        match symbol.role {
-            ObjectSymbolRole::Import => {
-                let payload = unsafe { symbol.name.borrowed() };
-                &payload[..symbol.value as usize] == crate::resource::RUNTIME_LIBRARY.as_bytes()
-            }
-            ObjectSymbolRole::Data | ObjectSymbolRole::Function | ObjectSymbolRole::InvalidImport => true,
-        }
-    })
-}
-
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct HostSection {

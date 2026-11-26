@@ -73,8 +73,6 @@ struct CoffWork<'a> {
 unsafe extern "C" {
     #[link_name = "bootstrap.coff::with_output"]
     fn coff_with_output(source: CoffSource, work: CoffWork<'_>) -> CoffError;
-    #[link_name = "bootstrap.coff::needs_body"]
-    fn coff_needs_body(flags: u64, relocation_count: usize) -> u32;
     #[link_name = "bootstrap.coff::write"]
     fn coff_write(plan: &CoffOutput<'_>, output: *mut u8);
     #[link_name = "bootstrap.bindings::relocation_symbol"]
@@ -310,6 +308,14 @@ impl<'a> ObjectSymbol<'a> {
 #[derive(Clone, Copy)]
 struct ObjectSymbols<'a> { values: *const ObjectSymbol<'a>, count: usize }
 
+#[repr(u32)]
+#[allow(dead_code)]
+enum HostArchiveMode { Borrow = 0, Group = 1, Materialize = 2 }
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.object_read::host_archive_mode"]
+    fn host_archive_mode(rows: ObjectRows, symbols: ObjectSymbols<'_>, runtime: BindingBytes) -> HostArchiveMode;
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -1198,13 +1204,14 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         if !self.is_module(parts.metadata)? { return Ok(false); }
         let mut definitions = vec![SectionDefinition::default(); self.headers.len() / 40];
         let (symbols, offset) = self.symbol_rows(&mut definitions, table)?;
-        let needs_body = raw.iter().any(|row| {
-            row.mapped != 0 && unsafe { coff_needs_body(row.flags, row.relocation_count) != 0 }
-        });
-        let mut groups = if needs_body || host::needs_groups(&symbols) {
-            host::Groups::new(&raw, &definitions, needs_body)?
-        } else {
-            None
+        let mode = unsafe {
+            host_archive_mode(ObjectRows::new(&raw), ObjectSymbols { values: symbols.as_ptr(), count: symbols.len() },
+                BindingBytes::new(crate::resource::RUNTIME_LIBRARY.as_bytes()))
+        };
+        let mut groups = match mode {
+            HostArchiveMode::Borrow => None,
+            HostArchiveMode::Group | HostArchiveMode::Materialize =>
+                host::Groups::new(&raw, &definitions, matches!(mode, HostArchiveMode::Materialize))?,
         };
         let names = if groups.is_none() { export_names(&raw, &symbols)? } else { Vec::new() };
         for row in raw.iter().filter(|row| row.mapped != 0) {

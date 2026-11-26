@@ -37,6 +37,8 @@ extern "C" ObjectScanStatus object_metadata_sections(ReadBytes input, ReadBytes 
 extern "C" ObjectScanStatus object_symbols(ReadBytes input, ReadSymbols table, address rows,
     address definitions, u64 definition_count, address context,
     cfn<u32,address,ReadBytes,u64> consume) on cpu requires nonzero(consume);
+enum HostArchiveMode : u32 { Borrow = 0; Group = 1; Materialize = 2; };
+extern "C" HostArchiveMode host_archive_mode(ObjectRows rows,ObjectSymbols symbols,BindingBytes runtime) on cpu;
 // One output row per mapped section, in its original logical order.
 extern "C" HostGroupResult host_groups(ObjectRows rows,address definitions,address output,u64 count) on cpu;
 
