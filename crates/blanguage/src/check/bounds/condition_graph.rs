@@ -953,7 +953,6 @@ struct Host {
     add_next: unsafe extern "C" fn(Slot) -> u32,
     begin_facts: unsafe extern "C" fn(Slot, usize),
     next_fact: unsafe extern "C" fn(Slot) -> Borrowed,
-    inspect_fact: unsafe extern "C" fn(Borrowed) -> super::fact_fields::Fields,
     set_next_fact: unsafe extern "C" fn(Slot, super::fact_fields::Fields),
     facts: super::fact_fields::Host,
     remaining: unsafe extern "C" fn(Slot) -> usize,
@@ -1210,7 +1209,6 @@ fn host(unsigned32: &super::Scalar) -> Host {
         add_next,
         begin_facts,
         next_fact,
-        inspect_fact: super::fact_fields::project,
         set_next_fact,
         facts: super::fact_fields::Host {
             unsigned32: std::ptr::from_ref(unsigned32).cast(),

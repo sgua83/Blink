@@ -382,7 +382,7 @@ ReadStatus status_40=numeric_read_floating_form(input,position,output.form);if(s
 return ReadStatus::Success;
 }
 
-extern "C" void numeric_write_domain(address source,address output,NumericWriter host) on cpu requires nonzero(host.append) requires nonzero(host.identity) requires nonzero(host.expression) requires nonzero(host.floating) requires nonzero(host.domain) {
+extern "C" void numeric_write_domain(address source,address output,NumericWriter host) on cpu requires nonzero(host.append) requires nonzero(host.expression) requires nonzero(host.floating) requires nonzero(host.domain) {
 DomainFields value=host.domain(source);
 if(value.kind==DomainKind::Data){word(0,output,host.append);
 wide(value.ordinal,output,host.append);
@@ -398,50 +398,50 @@ wide(value.ordinal,output,host.append);
 else if(value.kind==DomainKind::TileLength){word(4,output,host.append);
 }
 else if(value.kind==DomainKind::View){word(5,output,host.append);
-numeric_write_identity(host.identity(value.first),output,host.append);
-numeric_write_identity(host.identity(value.second),output,host.append);
-numeric_write_identity(host.identity(value.third),output,host.append);
+numeric_write_identity(capture_key_identity(value.first),output,host.append);
+numeric_write_identity(capture_key_identity(value.second),output,host.append);
+numeric_write_identity(capture_key_identity(value.third),output,host.append);
 }
 else if(value.kind==DomainKind::ViewLength){word(6,output,host.append);
-numeric_write_identity(host.identity(value.first),output,host.append);
-numeric_write_identity(host.identity(value.second),output,host.append);
-numeric_write_identity(host.identity(value.third),output,host.append);
+numeric_write_identity(capture_key_identity(value.first),output,host.append);
+numeric_write_identity(capture_key_identity(value.second),output,host.append);
+numeric_write_identity(capture_key_identity(value.third),output,host.append);
 }
 else if(value.kind==DomainKind::ApplicationData){word(7,output,host.append);
-numeric_write_identity(host.identity(value.first),output,host.append);
+numeric_write_identity(capture_key_identity(value.first),output,host.append);
 }
 else if(value.kind==DomainKind::ApplicationLength){word(8,output,host.append);
-numeric_write_identity(host.identity(value.first),output,host.append);
+numeric_write_identity(capture_key_identity(value.first),output,host.append);
 }
 else if(value.kind==DomainKind::Upper){word(9,output,host.append);
-numeric_write_identity(host.identity(value.first),output,host.append);
+numeric_write_identity(capture_key_identity(value.first),output,host.append);
 word(u32(value.distance),output,host.append);
 }
 else if(value.kind==DomainKind::Room){word(10,output,host.append);
-numeric_write_identity(host.identity(value.first),output,host.append);
+numeric_write_identity(capture_key_identity(value.first),output,host.append);
 }
 else if(value.kind==DomainKind::Sum){word(11,output,host.append);
-numeric_write_identity(host.identity(value.first),output,host.append);
-numeric_write_identity(host.identity(value.second),output,host.append);
+numeric_write_identity(capture_key_identity(value.first),output,host.append);
+numeric_write_identity(capture_key_identity(value.second),output,host.append);
 }
 else if(value.kind==DomainKind::Shifted){word(12,output,host.append);
-numeric_write_identity(host.identity(value.first),output,host.append);
-numeric_write_identity(host.identity(value.second),output,host.append);
+numeric_write_identity(capture_key_identity(value.first),output,host.append);
+numeric_write_identity(capture_key_identity(value.second),output,host.append);
 word(u32(value.distance),output,host.append);
 }
 else if(value.kind==DomainKind::Offset){word(13,output,host.append);
-numeric_write_identity(host.identity(value.first),output,host.append);
+numeric_write_identity(capture_key_identity(value.first),output,host.append);
 word(u32(value.distance),output,host.append);
 }
 else if(value.kind==DomainKind::Computed){word(14,output,host.append);
 numeric_write_expression(host.expression(value.expression),output,host.append);
 }
 else if(value.kind==DomainKind::Lower){word(15,output,host.append);
-numeric_write_identity(host.identity(value.first),output,host.append);
+numeric_write_identity(capture_key_identity(value.first),output,host.append);
 word(u32(value.distance),output,host.append);
 }
 else if(value.kind==DomainKind::CommonRange){word(16,output,host.append);
-numeric_write_identity(host.identity(value.first),output,host.append);
+numeric_write_identity(capture_key_identity(value.first),output,host.append);
 numeric_write_scalar(value.scalars[0],output,host.append);
 numeric_write_scalar(value.scalars[1],output,host.append);
 numeric_write_scalar(value.scalars[2],output,host.append);
@@ -496,70 +496,114 @@ ReadStatus status_77=numeric_read_operand(input,position,output.right);if(status
 return ReadStatus::Success;
 }
 
-extern "C" void numeric_write_fact(address source,address output,NumericWriter host) on cpu requires nonzero(host.append) requires nonzero(host.identity) requires nonzero(host.expression) requires nonzero(host.floating) requires nonzero(host.domain) requires nonzero(host.fact) requires nonzero(host.predicate) {
-FactFields value=host.fact(source);
-if(value.kind==FactKind::Equal){word(0,output,host.append);
-numeric_write_identity(host.identity(value.first),output,host.append);
-numeric_write_identity(host.identity(value.second),output,host.append);
-}
-else if(value.kind==FactKind::Index){word(1,output,host.append);
-numeric_write_identity(host.identity(value.first),output,host.append);
-numeric_write_domain(value.domain,output,host);
-}
-else if(value.kind==FactKind::Minimum){word(2,output,host.append);
-numeric_write_identity(host.identity(value.first),output,host.append);
-numeric_write_scalar(value.scalar,output,host.append);
-wide(value.bits,output,host.append);
-}
-else if(value.kind==FactKind::Maximum){word(3,output,host.append);
-numeric_write_identity(host.identity(value.first),output,host.append);
-numeric_write_scalar(value.scalar,output,host.append);
-wide(value.bits,output,host.append);
-}
-else if(value.kind==FactKind::NonZero){word(4,output,host.append);
-numeric_write_identity(host.identity(value.first),output,host.append);
-}
-else if(value.kind==FactKind::Boolean){word(5,output,host.append);
-numeric_write_identity(host.identity(value.first),output,host.append);
-byte(u8(value.truth),output,host.append);
-}
-else if(value.kind==FactKind::Below){word(6,output,host.append);
-numeric_write_identity(host.identity(value.first),output,host.append);
-numeric_write_identity(host.identity(value.second),output,host.append);
-byte(u8(value.truth),output,host.append);
-numeric_write_scalar(value.scalar,output,host.append);
-}
-else if(value.kind==FactKind::Outside){word(7,output,host.append);
-numeric_write_identity(host.identity(value.first),output,host.append);
-numeric_write_domain(value.domain,output,host);
-}
-else if(value.kind==FactKind::Zero){word(8,output,host.append);
-numeric_write_identity(host.identity(value.first),output,host.append);
-}
-else if(value.kind==FactKind::NotEqual){word(9,output,host.append);
-numeric_write_identity(host.identity(value.first),output,host.append);
-numeric_write_identity(host.identity(value.second),output,host.append);
-}
-else if(value.kind==FactKind::Predicate){word(10,output,host.append);
-numeric_write_predicate(host.predicate(value.predicate),output,host.append);
-byte(u8(value.truth),output,host.append);
-}
+extern "C" void numeric_write_fact(address source,address output,NumericWriter host) on cpu
+    requires nonzero(host.append) requires nonzero(host.expression)
+    requires nonzero(host.floating) requires nonzero(host.domain) {
+    FactView value = read_fact_fields(source);
+    word(u32(value.kind),output,host.append);
+    if (value.kind == FactKind::Predicate) {
+        numeric_write_predicate(capture_key_predicate(value.payload),output,host.append);
+        byte(u8(value.flag),output,host.append);
+        return;
+    }
+
+    numeric_write_identity(capture_key_identity(value.first),output,host.append);
+    if (value.kind == FactKind::Equal || value.kind == FactKind::NotEqual || value.kind == FactKind::Below) {
+        numeric_write_identity(capture_key_identity(value.second),output,host.append);
+        if (value.kind == FactKind::Below) {
+            byte(u8(value.flag),output,host.append);
+            numeric_write_scalar(fact_scalar_tag(value.scalar),output,host.append);
+        }
+    } else if (value.kind == FactKind::Index || value.kind == FactKind::Outside) {
+        numeric_write_domain(value.payload,output,host);
+    } else if (value.kind == FactKind::Minimum || value.kind == FactKind::Maximum) {
+        numeric_write_scalar(fact_scalar_tag(value.scalar),output,host.append);
+        wide(value.value,output,host.append);
+    } else if (value.kind == FactKind::Boolean) {
+        byte(u8(value.flag),output,host.append);
+    }
 }
 
-extern "C" ReadStatus numeric_read_fact(Bytes input,inout u64 position,address output,NumericReader host) on cpu requires nonzero(host.fact) {
-ReadValue tag=fixed_value(input,position,4);if(tag.status!=ReadStatus::Success){return tag.status;}
-if(tag.value==0u64){return host.fact(host.context,output,FactKind::Equal);}
-else if(tag.value==1u64){return host.fact(host.context,output,FactKind::Index);}
-else if(tag.value==2u64){return host.fact(host.context,output,FactKind::Minimum);}
-else if(tag.value==3u64){return host.fact(host.context,output,FactKind::Maximum);}
-else if(tag.value==4u64){return host.fact(host.context,output,FactKind::NonZero);}
-else if(tag.value==5u64){return host.fact(host.context,output,FactKind::Boolean);}
-else if(tag.value==6u64){return host.fact(host.context,output,FactKind::Below);}
-else if(tag.value==7u64){return host.fact(host.context,output,FactKind::Outside);}
-else if(tag.value==8u64){return host.fact(host.context,output,FactKind::Zero);}
-else if(tag.value==9u64){return host.fact(host.context,output,FactKind::NotEqual);}
-else if(tag.value==10u64){return host.fact(host.context,output,FactKind::Predicate);}
-return ReadStatus::Fact;
+NumericIdentity empty_key_identity() on cpu {
+    return NumericIdentity(IdentityKind::Register,0u64,0u64,0u64);
+}
+
+ReadStatus read_fact_predicate(Bytes input, inout u64 position, address output) on cpu {
+    NumericOperand empty = NumericOperand(OperandKind::Value,empty_key_identity(),ScalarTag::F32,0u64);
+    NumericPredicate predicate = NumericPredicate(ComparisonKind::Equal,ScalarTag::F32,empty,empty);
+    ReadStatus status = numeric_read_predicate(input,position,predicate);
+    if (status != ReadStatus::Success) { return status; }
+    ReadValue truth = read_boolean(input,position);
+    if (truth.status != ReadStatus::Success) { return truth.status; }
+
+    PredicateKey key = make_key_predicate(predicate);
+    address payload = address_of(key);
+    materialize_fact(FactView(1,FactKind::Predicate,address(),address(),payload,address(),
+        0u64,0u64,u32(truth.value),0),output);
+    return ReadStatus::Success;
+}
+
+extern "C" ReadStatus numeric_read_fact(Bytes input,inout u64 position,address output,NumericReader host) on cpu
+    requires nonzero(host.domain) {
+    ReadValue tag = fixed_value(input,position,4);
+    if (tag.status != ReadStatus::Success) { return tag.status; }
+    if (tag.value > u64(u32(FactKind::Predicate))) { return ReadStatus::Fact; }
+    u32 code = u32(tag.value);
+    FactKind kind = unsafe_position<FactKind>(address_of(code));
+    if (kind == FactKind::Predicate) { return read_fact_predicate(input,position,output); }
+
+    NumericIdentity identity = empty_key_identity();
+    ReadStatus status = numeric_read_identity(input,position,identity);
+    if (status != ReadStatus::Success) { return status; }
+    IdentityKey key = make_key_identity(identity);
+    address first = address_of(key);
+    FactView view = FactView(1,kind,first,address(),address(),address(),0u64,0u64,0,0);
+
+    if (kind == FactKind::Index || kind == FactKind::Outside) {
+        array<u64,13> domain = array<u64,13>(0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64);
+        view.payload = address_of(domain[0]);
+        status = numeric_read_domain(input,position,view.payload,host);
+        if (status != ReadStatus::Success) { return status; }
+        materialize_fact(view,output);
+        return ReadStatus::Success;
+    }
+
+    ScalarTag scalar = ScalarTag::F32;
+    u8 scalar_code = u8(0);
+    if (kind == FactKind::Equal || kind == FactKind::NotEqual || kind == FactKind::Below) {
+        NumericIdentity second = empty_key_identity();
+        status = numeric_read_identity(input,position,second);
+        if (status != ReadStatus::Success) { return status; }
+        if (kind == FactKind::Below) {
+            ReadValue truth = read_boolean(input,position);
+            if (truth.status != ReadStatus::Success) { return truth.status; }
+            view.flag = u32(truth.value);
+            status = numeric_read_scalar(input,position,scalar);
+            if (status != ReadStatus::Success) { return status; }
+            scalar_code = u8(u32(scalar));
+            view.scalar = address_of(scalar_code);
+        }
+        IdentityKey other = make_key_identity(second);
+        view.second = address_of(other);
+        materialize_fact(view,output);
+        return ReadStatus::Success;
+    }
+
+    if (kind == FactKind::Boolean) {
+        ReadValue truth = read_boolean(input,position);
+        if (truth.status != ReadStatus::Success) { return truth.status; }
+        view.flag = u32(truth.value);
+    } else if (kind == FactKind::Minimum || kind == FactKind::Maximum) {
+        status = numeric_read_scalar(input,position,scalar);
+        if (status != ReadStatus::Success) { return status; }
+        ReadValue bits = fixed_value(input,position,8);
+        if (bits.status != ReadStatus::Success) { return bits.status; }
+        scalar_code = u8(u32(scalar));
+        view.scalar = address_of(scalar_code);
+        view.value = bits.value;
+    }
+    materialize_fact(view,output);
+    return ReadStatus::Success;
 }
 
 extern "C" void numeric_write_ranges(Span values,address output,RangeWriter host) on cpu requires nonzero(host.append) requires nonzero(host.interval) {
@@ -625,39 +669,6 @@ extern "C" ReadStatus numeric_read_payload_known_bits(Bytes input,inout u64 posi
 ReadStatus status_174=numeric_read_scalar(input,position,field0);if(status_174!=ReadStatus::Success){return status_174;}
 ReadValue part_175=fixed_value(input,position,8);if(part_175.status!=ReadStatus::Success){return part_175.status;}field1=part_175.value;
 ReadValue part_176=fixed_value(input,position,8);if(part_176.status!=ReadStatus::Success){return part_176.status;}field2=part_176.value;
-return ReadStatus::Success;
-}
-
-extern "C" ReadStatus numeric_read_payload_identity_domain(Bytes input,inout u64 position,inout NumericIdentity field0,address field1,NumericReader host) on cpu requires nonzero(host.domain) {
-ReadStatus status_177=numeric_read_identity(input,position,field0);if(status_177!=ReadStatus::Success){return status_177;}
-ReadStatus domain_status=numeric_read_domain(input,position,field1,host);if(domain_status!=ReadStatus::Success){return domain_status;}
-return ReadStatus::Success;
-}
-
-extern "C" ReadStatus numeric_read_payload_identity_scalar_bits(Bytes input,inout u64 position,inout NumericIdentity field0,inout ScalarTag field1,inout u64 field2) on cpu {
-ReadStatus status_178=numeric_read_identity(input,position,field0);if(status_178!=ReadStatus::Success){return status_178;}
-ReadStatus status_179=numeric_read_scalar(input,position,field1);if(status_179!=ReadStatus::Success){return status_179;}
-ReadValue part_180=fixed_value(input,position,8);if(part_180.status!=ReadStatus::Success){return part_180.status;}field2=part_180.value;
-return ReadStatus::Success;
-}
-
-extern "C" ReadStatus numeric_read_payload_identity_truth(Bytes input,inout u64 position,inout NumericIdentity field0,inout u32 field1) on cpu {
-ReadStatus status_181=numeric_read_identity(input,position,field0);if(status_181!=ReadStatus::Success){return status_181;}
-ReadValue part_182=read_boolean(input,position);if(part_182.status!=ReadStatus::Success){return part_182.status;}field1=u32(part_182.value);
-return ReadStatus::Success;
-}
-
-extern "C" ReadStatus numeric_read_payload_ordered_identities(Bytes input,inout u64 position,inout NumericIdentity field0,inout NumericIdentity field1,inout u32 field2,inout ScalarTag field3) on cpu {
-ReadStatus status_183=numeric_read_identity(input,position,field0);if(status_183!=ReadStatus::Success){return status_183;}
-ReadStatus status_184=numeric_read_identity(input,position,field1);if(status_184!=ReadStatus::Success){return status_184;}
-ReadValue part_185=read_boolean(input,position);if(part_185.status!=ReadStatus::Success){return part_185.status;}field2=u32(part_185.value);
-ReadStatus status_186=numeric_read_scalar(input,position,field3);if(status_186!=ReadStatus::Success){return status_186;}
-return ReadStatus::Success;
-}
-
-extern "C" ReadStatus numeric_read_payload_predicate_truth(Bytes input,inout u64 position,inout NumericPredicate field0,inout u32 field1) on cpu {
-ReadStatus status_187=numeric_read_predicate(input,position,field0);if(status_187!=ReadStatus::Success){return status_187;}
-ReadValue part_188=read_boolean(input,position);if(part_188.status!=ReadStatus::Success){return part_188.status;}field1=u32(part_188.value);
 return ReadStatus::Success;
 }
 
@@ -741,7 +752,7 @@ extern "C" i32 compare_proof_condition(address left,address right,u64 left_count
  return compare_condition_index(index(left,a.second),index(right,b.second));
 }
 
-extern "C" void write_fact_sequence(u64 count,address iterator,address output,NumericWriter host,cfn<address,address> next) on cpu requires nonzero(host.append) requires nonzero(host.identity) requires nonzero(host.expression) requires nonzero(host.floating) requires nonzero(host.domain) requires nonzero(host.fact) requires nonzero(host.predicate) requires nonzero(next) {
+extern "C" void write_fact_sequence(u64 count,address iterator,address output,NumericWriter host,cfn<address,address> next) on cpu requires nonzero(host.append) requires nonzero(host.expression) requires nonzero(host.floating) requires nonzero(host.domain) requires nonzero(next) {
  wide(count,output,host.append);u64 index=0u64;
  while(index<count){numeric_write_fact(next(iterator),output,host);index+=1u64;}
 }

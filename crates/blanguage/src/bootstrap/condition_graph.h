@@ -1,6 +1,7 @@
 module bootstrap.condition_graph;
 import codec.scalar_ranges;
 import bootstrap.scalar_fold;
+import bootstrap.fact_key;
 
 // These descriptors borrow the original Clause query and its physical buffers.
 // They are private native fields, not a stored condition or public graph format.
@@ -44,7 +45,6 @@ struct Host {
  cfn<u32,address> add_next;
  cfn<void,address,usize> begin_facts;
  cfn<address,address> next_fact;
- cfn<FactView,address> ensures memory(read) inspect_fact;
  cfn<void,address,FactView> set_next_fact;
  FactHost facts;
  cfn<usize,address> ensures memory(read) remaining;
@@ -57,7 +57,7 @@ extern "C" u32 overlap(usize first,usize second,u32 right_truth,address context,
  requires nonzero(host.trail_push) requires nonzero(host.trail_pop) requires nonzero(host.trail)
  requires nonzero(host.additions) requires nonzero(host.undo_addition) requires nonzero(host.add_leaf)
  requires nonzero(host.contradictory) requires nonzero(host.add_next) requires nonzero(host.begin_facts)
- requires nonzero(host.next_fact) requires nonzero(host.inspect_fact) requires nonzero(host.set_next_fact)
+ requires nonzero(host.next_fact) requires nonzero(host.set_next_fact)
  requires nonzero(host.facts.compare) requires nonzero(host.remaining)
  requires nonzero(host.push_clause) requires nonzero(host.push_fact) requires nonzero(host.pop_alternative);
 // The preparation frame borrows the original facts and owns only query-local containers.
@@ -89,7 +89,7 @@ extern "C" u32 equivalent(usize first,usize second,address plan,address context,
  requires nonzero(host.trail_push) requires nonzero(host.trail_pop) requires nonzero(host.trail)
  requires nonzero(host.additions) requires nonzero(host.undo_addition) requires nonzero(host.add_leaf)
  requires nonzero(host.contradictory) requires nonzero(host.add_next) requires nonzero(host.begin_facts)
- requires nonzero(host.next_fact) requires nonzero(host.inspect_fact) requires nonzero(host.set_next_fact)
+ requires nonzero(host.next_fact) requires nonzero(host.set_next_fact)
  requires nonzero(host.facts.compare) requires nonzero(host.remaining)
  requires nonzero(host.push_clause) requires nonzero(host.push_fact) requires nonzero(host.pop_alternative)
  requires nonzero(reset)
@@ -123,8 +123,6 @@ extern "C" void required_evaluate(RequiredGraph graph,address context,RequiredHo
  requires nonzero(host.leaf) requires nonzero(host.union) requires nonzero(host.common)
  requires nonzero(host.valid_additions) requires nonzero(host.release);
 
-enum FactKind : u32 { Equal=1;Index=2;Minimum=3;Maximum=4;NonZero=5;Boolean=6;Below=7;Outside=8;Zero=9;NotEqual=10;Predicate=11; };
-struct FactView { u32 present; FactKind kind; address first; address second; address payload; address scalar; u64 value; u64 mask; u32 flag; u32 fixed; };
 struct CrossScalars { array<address,4> values; };
 struct CrossHost {
  cfn<usize,address,u32> ensures memory(read) count;

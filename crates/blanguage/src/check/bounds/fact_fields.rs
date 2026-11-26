@@ -6,27 +6,10 @@ type Borrowed = *const c_void;
 type Slot = *mut c_void;
 
 #[derive(Clone, Copy, Default)]
-#[repr(u32)]
-enum Kind {
-    #[default]
-    Equal = 1,
-    Index,
-    Minimum,
-    Maximum,
-    NonZero,
-    Boolean,
-    Below,
-    Outside,
-    Zero,
-    NotEqual,
-    Predicate,
-}
-
-#[derive(Clone, Copy, Default)]
 #[repr(C)]
 pub(super) struct Fields {
     present: u32,
-    kind: Kind,
+    kind: u32,
     first: Borrowed,
     second: Borrowed,
     payload: Borrowed,
@@ -37,132 +20,32 @@ pub(super) struct Fields {
     fixed: u32,
 }
 
+unsafe extern "C" {
+    #[link_name = "bootstrap.fact_key::inspect_fact"]
+    fn project(fact: Borrowed) -> Fields;
+    #[link_name = "bootstrap.fact_key::materialize_fact"]
+    fn materialize(view: Fields, output: Slot);
+    #[link_name = "bootstrap.fact_key::fact_bound"]
+    fn fact_bound(identity: Borrowed, scalar: Borrowed, value: u64, minimum: u32) -> Fields;
+    #[link_name = "bootstrap.fact_key::inspect_fact_scalar"]
+    pub(super) fn scalar(value: Borrowed) -> ScalarView;
+}
+
 impl From<&Fact> for Fields {
     fn from(fact: &Fact) -> Self {
-        let mut view = Self {
-            present: 1,
-            ..Self::default()
-        };
-        match fact {
-            Fact::Equal(a, b) => {
-                view.kind = Kind::Equal;
-                view.first = ptr::from_ref(a).cast();
-                view.second = ptr::from_ref(b).cast();
-            }
-            Fact::NotEqual(a, b) => {
-                view.kind = Kind::NotEqual;
-                view.first = ptr::from_ref(a).cast();
-                view.second = ptr::from_ref(b).cast();
-            }
-            Fact::Index(id, domain) => {
-                view.kind = Kind::Index;
-                view.first = ptr::from_ref(id).cast();
-                view.payload = ptr::from_ref(domain).cast();
-                if let IndexDomain::Fixed(length) = domain {
-                    view.fixed = 1;
-                    view.value = u64::from(*length);
-                }
-            }
-            Fact::Outside(id, domain) => {
-                view.kind = Kind::Outside;
-                view.first = ptr::from_ref(id).cast();
-                view.payload = ptr::from_ref(domain).cast();
-            }
-            Fact::Minimum(id, scalar, value) => {
-                view.kind = Kind::Minimum;
-                view.first = ptr::from_ref(id).cast();
-                view.scalar = ptr::from_ref(scalar).cast();
-                view.value = *value;
-                view.mask = scalar.bit_mask();
-            }
-            Fact::Maximum(id, scalar, value) => {
-                view.kind = Kind::Maximum;
-                view.first = ptr::from_ref(id).cast();
-                view.scalar = ptr::from_ref(scalar).cast();
-                view.value = *value;
-                view.mask = scalar.bit_mask();
-            }
-            Fact::NonZero(id) => {
-                view.kind = Kind::NonZero;
-                view.first = ptr::from_ref(id).cast();
-            }
-            Fact::Zero(id) => {
-                view.kind = Kind::Zero;
-                view.first = ptr::from_ref(id).cast();
-            }
-            Fact::Boolean(id, truth) => {
-                view.kind = Kind::Boolean;
-                view.first = ptr::from_ref(id).cast();
-                view.flag = u32::from(*truth);
-            }
-            Fact::Below(a, b, strict, scalar) => {
-                view.kind = Kind::Below;
-                view.first = ptr::from_ref(a).cast();
-                view.second = ptr::from_ref(b).cast();
-                view.scalar = ptr::from_ref(scalar).cast();
-                view.flag = u32::from(*strict);
-            }
-            Fact::Predicate(predicate, truth) => {
-                view.kind = Kind::Predicate;
-                view.payload = ptr::from_ref(predicate).cast();
-                view.flag = u32::from(*truth);
-            }
-        }
-        view
+        unsafe { project(ptr::from_ref(fact).cast()) }
     }
 }
 
-// These keys only live during the native container operation that consumes them.
 pub(super) unsafe fn key(view: Fields) -> Fact {
+    let mut result = std::mem::MaybeUninit::<Fact>::uninit();
     unsafe {
-        match view.kind {
-            Kind::Equal => Fact::Equal(
-                *view.first.cast::<ValueIdentity>(),
-                *view.second.cast::<ValueIdentity>(),
-            ),
-            Kind::NotEqual => Fact::NotEqual(
-                *view.first.cast::<ValueIdentity>(),
-                *view.second.cast::<ValueIdentity>(),
-            ),
-            Kind::Index => Fact::Index(
-                *view.first.cast::<ValueIdentity>(),
-                *view.payload.cast::<IndexDomain>(),
-            ),
-            Kind::Outside => Fact::Outside(
-                *view.first.cast::<ValueIdentity>(),
-                *view.payload.cast::<IndexDomain>(),
-            ),
-            Kind::Minimum => Fact::Minimum(
-                *view.first.cast::<ValueIdentity>(),
-                *view.scalar.cast::<Scalar>(),
-                view.value,
-            ),
-            Kind::Maximum => Fact::Maximum(
-                *view.first.cast::<ValueIdentity>(),
-                *view.scalar.cast::<Scalar>(),
-                view.value,
-            ),
-            Kind::NonZero => Fact::NonZero(*view.first.cast::<ValueIdentity>()),
-            Kind::Zero => Fact::Zero(*view.first.cast::<ValueIdentity>()),
-            Kind::Boolean => Fact::Boolean(*view.first.cast::<ValueIdentity>(), view.flag != 0),
-            Kind::Below => Fact::Below(
-                *view.first.cast::<ValueIdentity>(),
-                *view.second.cast::<ValueIdentity>(),
-                view.flag != 0,
-                *view.scalar.cast::<Scalar>(),
-            ),
-            Kind::Predicate => {
-                Fact::Predicate(*view.payload.cast::<ScalarPredicate>(), view.flag != 0)
-            }
-        }
+        materialize(view, result.as_mut_ptr().cast());
+        result.assume_init()
     }
 }
 
 pub(super) use super::fact_key::order_identity as compare;
-
-pub(super) unsafe extern "C" fn project(fact: Borrowed) -> Fields {
-    Fields::from(unsafe { &*fact.cast::<Fact>() })
-}
 
 #[repr(C)]
 pub(super) struct Host {
@@ -175,23 +58,6 @@ pub(super) struct ScalarView {
     width: u32,
     mask: u64,
     bias: u64,
-}
-pub(super) unsafe extern "C" fn scalar(value: Borrowed) -> ScalarView {
-    let value = unsafe { *value.cast::<Scalar>() };
-    ScalarView {
-        kind: if value.is_float() {
-            2
-        } else if value.is_signed() {
-            1
-        } else if value == Scalar::Bool {
-            3
-        } else {
-            0
-        },
-        width: value.bit_width(),
-        mask: value.bit_mask(),
-        bias: value.order_bias(),
-    }
 }
 pub(super) unsafe extern "C" fn same_scalar(a: Borrowed, b: Borrowed) -> u32 {
     u32::from(unsafe { *a.cast::<Scalar>() == *b.cast::<Scalar>() })
@@ -223,19 +89,7 @@ pub(super) unsafe extern "C" fn upper(value: Borrowed) -> UpperView {
 }
 
 pub(super) fn bound(id: &ValueIdentity, scalar: &Scalar, value: u64, minimum: bool) -> Fields {
-    Fields {
-        present: 1,
-        kind: if minimum {
-            Kind::Minimum
-        } else {
-            Kind::Maximum
-        },
-        first: ptr::from_ref(id).cast(),
-        scalar: ptr::from_ref(scalar).cast(),
-        value,
-        mask: scalar.bit_mask(),
-        ..Fields::default()
-    }
+    unsafe { fact_bound(ptr::from_ref(id).cast(), ptr::from_ref(scalar).cast(), value, u32::from(minimum)) }
 }
 
 #[derive(Default)]

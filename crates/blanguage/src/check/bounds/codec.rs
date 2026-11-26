@@ -5,35 +5,6 @@ use crate::module::codec::{Decode, Encode, ReadStatus, Reader, Result, Writer};
 use std::{ffi::c_void, ptr};
 #[repr(u32)]
 #[derive(Clone, Copy, Default)]
-enum IdentityKind {
-    #[default]
-    Register = 0,
-    DataLength = 1,
-    TileLength = 2,
-    ParameterContent = 3,
-    ResourceParameter = 4,
-    ParameterStorage = 5,
-    ElementComponent = 6,
-    ElementParent = 7,
-    ElementIndex = 8,
-    DatasetContent = 9,
-    MemoryValue = 10,
-    LoopValue = 11,
-    TaskResult = 12,
-    TaskCompletion = 13,
-    TaskWorkCompletion = 14,
-    TaskControl = 15,
-    TaskReturnSource = 16,
-}
-#[repr(u32)]
-#[derive(Clone, Copy, Default)]
-enum OperandKind {
-    #[default]
-    Value = 0,
-    Constant = 1,
-}
-#[repr(u32)]
-#[derive(Clone, Copy, Default)]
 enum IntegerKind {
     #[default]
     Add = 0,
@@ -91,22 +62,6 @@ enum DomainKind {
 }
 #[repr(u32)]
 #[derive(Clone, Copy, Default)]
-enum FactKind {
-    #[default]
-    Equal = 0,
-    Index = 1,
-    Minimum = 2,
-    Maximum = 3,
-    NonZero = 4,
-    Boolean = 5,
-    Below = 6,
-    Outside = 7,
-    Zero = 8,
-    NotEqual = 9,
-    Predicate = 10,
-}
-#[repr(u32)]
-#[derive(Clone, Copy, Default)]
 enum ScalarTag {
     #[default]
     F32 = 0,
@@ -124,7 +79,7 @@ enum ScalarTag {
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct NumericIdentity {
-    kind: IdentityKind,
+    kind: u32,
     first: u64,
     second: u64,
     third: u64,
@@ -132,7 +87,7 @@ struct NumericIdentity {
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct NumericOperand {
-    kind: OperandKind,
+    kind: u32,
     identity: NumericIdentity,
     scalar: ScalarTag,
     bits: u64,
@@ -238,160 +193,38 @@ impl NativeValue for Scalar {
         }
     }
 }
-impl NativeValue for ValueIdentity {
-    type Frame = NumericIdentity;
-    fn into_frame(self) -> NumericIdentity {
-        match self {
-            Self::Register(v0) => {
-                let mut value = NumericIdentity::default();
-                value.kind = IdentityKind::Register;
-                value.first = v0 as u64;
-                value
+macro_rules! physical_frame {
+    ($ty:ty, $frame:ty, $capture:ident, $materialize:ident, $reader:literal, $writer:literal) => {
+        unsafe extern "C" {
+            #[link_name = $reader]
+            fn $capture(value: *const c_void) -> $frame;
+            #[link_name = $writer]
+            fn $materialize(value: $frame, output: *mut c_void);
+        }
+
+        impl NativeValue for $ty {
+            type Frame = $frame;
+
+            fn into_frame(self) -> Self::Frame {
+                unsafe { $capture(ptr::from_ref(&self).cast()) }
             }
-            Self::DataLength(v0) => {
-                let mut value = NumericIdentity::default();
-                value.kind = IdentityKind::DataLength;
-                value.first = v0 as u64;
-                value
-            }
-            Self::TileLength => {
-                let mut value = NumericIdentity::default();
-                value.kind = IdentityKind::TileLength;
-                value
-            }
-            Self::ParameterContent(v0, v1) => {
-                let mut value = NumericIdentity::default();
-                value.kind = IdentityKind::ParameterContent;
-                value.first = v0 as u64;
-                value.second = v1 as u64;
-                value
-            }
-            Self::ResourceParameter(v0, v1) => {
-                let mut value = NumericIdentity::default();
-                value.kind = IdentityKind::ResourceParameter;
-                value.first = v0 as u64;
-                value.second = v1 as u64;
-                value
-            }
-            Self::ParameterStorage(v0) => {
-                let mut value = NumericIdentity::default();
-                value.kind = IdentityKind::ParameterStorage;
-                value.first = v0 as u64;
-                value
-            }
-            Self::ElementComponent(v0) => {
-                let mut value = NumericIdentity::default();
-                value.kind = IdentityKind::ElementComponent;
-                value.first = v0 as u64;
-                value
-            }
-            Self::ElementParent(v0, v1) => {
-                let mut value = NumericIdentity::default();
-                value.kind = IdentityKind::ElementParent;
-                value.first = v0 as u64;
-                value.second = v1 as u64;
-                value
-            }
-            Self::DatasetContent(v0, v1, v2) => {
-                let mut value = NumericIdentity::default();
-                value.kind = IdentityKind::DatasetContent;
-                value.first = v0 as u64;
-                value.second = v1 as u64;
-                value.third = v2 as u64;
-                value
-            }
-            Self::MemoryValue(v0, v1) => {
-                let mut value = NumericIdentity::default();
-                value.kind = IdentityKind::MemoryValue;
-                value.first = v0 as u64;
-                value.second = v1 as u64;
-                value
-            }
-            Self::ElementIndex(v0) => {
-                let mut value = NumericIdentity::default();
-                value.kind = IdentityKind::ElementIndex;
-                value.first = v0 as u64;
-                value
-            }
-            Self::LoopValue(v0, v1) => {
-                let mut value = NumericIdentity::default();
-                value.kind = IdentityKind::LoopValue;
-                value.first = v0 as u64;
-                value.second = v1 as u64;
-                value
-            }
-            Self::TaskResult(v0) => {
-                let mut value = NumericIdentity::default();
-                value.kind = IdentityKind::TaskResult;
-                value.first = v0 as u64;
-                value
-            }
-            Self::TaskCompletion(v0, v1) => {
-                let mut value = NumericIdentity::default();
-                value.kind = IdentityKind::TaskCompletion;
-                value.first = v0 as u64;
-                value.second = v1 as u64;
-                value
-            }
-            Self::TaskControl(v0) => {
-                let mut value = NumericIdentity::default();
-                value.kind = IdentityKind::TaskControl;
-                value.first = v0 as u64;
-                value
-            }
-            Self::TaskReturnSource(v0) => {
-                let mut value = NumericIdentity::default();
-                value.kind = IdentityKind::TaskReturnSource;
-                value.first = v0 as u64;
-                value
-            }
-            Self::TaskWorkCompletion(v0, v1) => {
-                let mut value = NumericIdentity::default();
-                value.kind = IdentityKind::TaskWorkCompletion;
-                value.first = v0 as u64;
-                value.second = v1 as u64;
-                value
+
+            fn from_frame(value: Self::Frame) -> Self {
+                let mut output = std::mem::MaybeUninit::<Self>::uninit();
+                unsafe {
+                    $materialize(value, output.as_mut_ptr().cast());
+                    output.assume_init()
+                }
             }
         }
-    }
-    fn from_frame(value: NumericIdentity) -> Self {
-        match value.kind {
-            IdentityKind::Register => Self::Register(value.first as usize),
-            IdentityKind::DataLength => Self::DataLength(value.first as usize),
-            IdentityKind::TileLength => Self::TileLength,
-            IdentityKind::ParameterContent => {
-                Self::ParameterContent(value.first as usize, value.second as usize)
-            }
-            IdentityKind::ResourceParameter => {
-                Self::ResourceParameter(value.first as usize, value.second as usize)
-            }
-            IdentityKind::ParameterStorage => Self::ParameterStorage(value.first as usize),
-            IdentityKind::ElementComponent => Self::ElementComponent(value.first as usize),
-            IdentityKind::ElementParent => {
-                Self::ElementParent(value.first as usize, value.second as usize)
-            }
-            IdentityKind::DatasetContent => Self::DatasetContent(
-                value.first as usize,
-                value.second as usize,
-                value.third as usize,
-            ),
-            IdentityKind::MemoryValue => {
-                Self::MemoryValue(value.first as usize, value.second as usize)
-            }
-            IdentityKind::ElementIndex => Self::ElementIndex(value.first as usize),
-            IdentityKind::LoopValue => Self::LoopValue(value.first as usize, value.second as usize),
-            IdentityKind::TaskResult => Self::TaskResult(value.first as usize),
-            IdentityKind::TaskCompletion => {
-                Self::TaskCompletion(value.first as usize, value.second as usize)
-            }
-            IdentityKind::TaskControl => Self::TaskControl(value.first as usize),
-            IdentityKind::TaskReturnSource => Self::TaskReturnSource(value.first as usize),
-            IdentityKind::TaskWorkCompletion => {
-                Self::TaskWorkCompletion(value.first as u32, value.second as u32)
-            }
-        }
-    }
+    };
 }
+
+physical_frame!(
+    ValueIdentity, NumericIdentity, capture_identity, materialize_identity,
+    "bootstrap.fact_key::capture_key_identity", "bootstrap.fact_key::materialize_key_identity"
+);
+
 impl NativeValue for Selector {
     type Frame = NumericSelection;
 
@@ -445,32 +278,11 @@ impl NativeValue for Selector {
     }
 }
 
-impl NativeValue for Operand {
-    type Frame = NumericOperand;
-    fn into_frame(self) -> NumericOperand {
-        match self {
-            Self::Value(v0) => {
-                let mut value = NumericOperand::default();
-                value.kind = OperandKind::Value;
-                value.identity = v0.into_frame();
-                value
-            }
-            Self::Constant(v0, v1) => {
-                let mut value = NumericOperand::default();
-                value.kind = OperandKind::Constant;
-                value.scalar = v0.into_frame();
-                value.bits = v1;
-                value
-            }
-        }
-    }
-    fn from_frame(value: NumericOperand) -> Self {
-        match value.kind {
-            OperandKind::Value => Self::Value(ValueIdentity::from_frame(value.identity)),
-            OperandKind::Constant => Self::Constant(Scalar::from_frame(value.scalar), value.bits),
-        }
-    }
-}
+physical_frame!(
+    Operand, NumericOperand, capture_operand, materialize_operand,
+    "bootstrap.fact_key::capture_key_operand", "bootstrap.fact_key::materialize_key_operand"
+);
+
 impl NativeValue for IntegerOperation {
     type Frame = IntegerKind;
     fn into_frame(self) -> IntegerKind {
@@ -592,25 +404,11 @@ impl NativeValue for FloatingBound {
         }
     }
 }
-impl NativeValue for ScalarPredicate {
-    type Frame = NumericPredicate;
-    fn into_frame(self) -> NumericPredicate {
-        NumericPredicate {
-            operation: self.op.into_frame(),
-            scalar: self.scalar.into_frame(),
-            left: self.a.into_frame(),
-            right: self.b.into_frame(),
-        }
-    }
-    fn from_frame(value: NumericPredicate) -> Self {
-        Self {
-            op: Comparison::from_frame(value.operation),
-            scalar: Scalar::from_frame(value.scalar),
-            a: Operand::from_frame(value.left),
-            b: Operand::from_frame(value.right),
-        }
-    }
-}
+physical_frame!(
+    ScalarPredicate, NumericPredicate, capture_predicate, materialize_predicate,
+    "bootstrap.fact_key::capture_key_predicate", "bootstrap.fact_key::materialize_key_predicate"
+);
+
 unsafe extern "C" {
     #[link_name = "bootstrap.contract_codec::numeric_write_identity"]
     fn write_identity(
@@ -838,32 +636,16 @@ struct DomainFields {
     floating: *const c_void,
 }
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
-struct FactFields {
-    kind: FactKind,
-    first: *const c_void,
-    second: *const c_void,
-    domain: *const c_void,
-    scalar: ScalarTag,
-    bits: u64,
-    truth: u32,
-    predicate: *const c_void,
-}
-#[repr(C)]
 struct NumericWriter {
     append: unsafe extern "C" fn(*mut c_void, *const u8, usize),
-    identity: unsafe extern "C" fn(*const c_void) -> NumericIdentity,
     expression: unsafe extern "C" fn(*const c_void) -> NumericExpression,
     floating: unsafe extern "C" fn(*const c_void) -> NumericFloating,
-    predicate: unsafe extern "C" fn(*const c_void) -> NumericPredicate,
     domain: unsafe extern "C" fn(*const c_void) -> DomainFields,
-    fact: unsafe extern "C" fn(*const c_void) -> FactFields,
 }
 #[repr(C)]
 struct NumericReader {
     context: Slot,
     domain: unsafe extern "C" fn(Slot, Slot, DomainKind) -> ReadStatus,
-    fact: unsafe extern "C" fn(Slot, Slot, FactKind) -> ReadStatus,
 }
 struct ReadContext {
     input: Bytes,
@@ -872,36 +654,26 @@ struct ReadContext {
 fn writer_host() -> NumericWriter {
     NumericWriter {
         append,
-        identity: identity_fields,
         expression: expression_fields,
         floating: floating_fields,
-        predicate: predicate_fields,
         domain: domain_fields,
-        fact: fact_fields,
     }
 }
 fn reader_host(context: Slot) -> NumericReader {
     NumericReader {
         context,
         domain: construct_domain,
-        fact: construct_fact,
     }
 }
 unsafe fn input(context: Slot) -> (Bytes, *mut usize) {
     let context = unsafe { &*context.cast::<ReadContext>() };
     (context.input, context.position)
 }
-unsafe extern "C" fn identity_fields(source: *const c_void) -> NumericIdentity {
-    unsafe { *source.cast::<ValueIdentity>() }.into_frame()
-}
 unsafe extern "C" fn expression_fields(source: *const c_void) -> NumericExpression {
     unsafe { *source.cast::<IntegerExpression>() }.into_frame()
 }
 unsafe extern "C" fn floating_fields(source: *const c_void) -> NumericFloating {
     unsafe { *source.cast::<FloatingBound>() }.into_frame()
-}
-unsafe extern "C" fn predicate_fields(source: *const c_void) -> NumericPredicate {
-    unsafe { *source.cast::<ScalarPredicate>() }.into_frame()
 }
 unsafe extern "C" fn domain_fields(source: *const c_void) -> DomainFields {
     let source = unsafe { &*source.cast::<IndexDomain>() };
@@ -1036,90 +808,6 @@ unsafe extern "C" fn domain_fields(source: *const c_void) -> DomainFields {
         }
     }
 }
-unsafe extern "C" fn fact_fields(source: *const c_void) -> FactFields {
-    let source = unsafe { &*source.cast::<Fact>() };
-    match source {
-        Fact::Equal(v0, v1) => {
-            let mut fields = FactFields::default();
-            fields.kind = FactKind::Equal;
-            fields.first = ptr::from_ref(v0).cast();
-            fields.second = ptr::from_ref(v1).cast();
-            fields
-        }
-        Fact::Index(v0, v1) => {
-            let mut fields = FactFields::default();
-            fields.kind = FactKind::Index;
-            fields.first = ptr::from_ref(v0).cast();
-            fields.domain = ptr::from_ref(v1).cast();
-            fields
-        }
-        Fact::Minimum(v0, v1, v2) => {
-            let mut fields = FactFields::default();
-            fields.kind = FactKind::Minimum;
-            fields.first = ptr::from_ref(v0).cast();
-            fields.scalar = (*v1).into_frame();
-            fields.bits = (*v2);
-            fields
-        }
-        Fact::Maximum(v0, v1, v2) => {
-            let mut fields = FactFields::default();
-            fields.kind = FactKind::Maximum;
-            fields.first = ptr::from_ref(v0).cast();
-            fields.scalar = (*v1).into_frame();
-            fields.bits = (*v2);
-            fields
-        }
-        Fact::NonZero(v0) => {
-            let mut fields = FactFields::default();
-            fields.kind = FactKind::NonZero;
-            fields.first = ptr::from_ref(v0).cast();
-            fields
-        }
-        Fact::Boolean(v0, v1) => {
-            let mut fields = FactFields::default();
-            fields.kind = FactKind::Boolean;
-            fields.first = ptr::from_ref(v0).cast();
-            fields.truth = u32::from((*v1));
-            fields
-        }
-        Fact::Below(v0, v1, v2, v3) => {
-            let mut fields = FactFields::default();
-            fields.kind = FactKind::Below;
-            fields.first = ptr::from_ref(v0).cast();
-            fields.second = ptr::from_ref(v1).cast();
-            fields.truth = u32::from((*v2));
-            fields.scalar = (*v3).into_frame();
-            fields
-        }
-        Fact::Outside(v0, v1) => {
-            let mut fields = FactFields::default();
-            fields.kind = FactKind::Outside;
-            fields.first = ptr::from_ref(v0).cast();
-            fields.domain = ptr::from_ref(v1).cast();
-            fields
-        }
-        Fact::Zero(v0) => {
-            let mut fields = FactFields::default();
-            fields.kind = FactKind::Zero;
-            fields.first = ptr::from_ref(v0).cast();
-            fields
-        }
-        Fact::NotEqual(v0, v1) => {
-            let mut fields = FactFields::default();
-            fields.kind = FactKind::NotEqual;
-            fields.first = ptr::from_ref(v0).cast();
-            fields.second = ptr::from_ref(v1).cast();
-            fields
-        }
-        Fact::Predicate(v0, v1) => {
-            let mut fields = FactFields::default();
-            fields.kind = FactKind::Predicate;
-            fields.predicate = ptr::from_ref(v0).cast();
-            fields.truth = u32::from((*v1));
-            fields
-        }
-    }
-}
 unsafe extern "C" {
     #[link_name = "bootstrap.contract_codec::numeric_write_domain"]
     fn write_domain(source: *const c_void, output: Slot, host: NumericWriter);
@@ -1250,45 +938,6 @@ unsafe extern "C" {
         field0: *mut ScalarTag,
         field1: *mut u64,
         field2: *mut u64,
-    ) -> ReadStatus;
-    #[link_name = "bootstrap.contract_codec::numeric_read_payload_identity_domain"]
-    fn read_payload_identity_domain(
-        input: Bytes,
-        position: *mut usize,
-        field0: *mut NumericIdentity,
-        field1: Slot,
-        host: NumericReader,
-    ) -> ReadStatus;
-    #[link_name = "bootstrap.contract_codec::numeric_read_payload_identity_scalar_bits"]
-    fn read_payload_identity_scalar_bits(
-        input: Bytes,
-        position: *mut usize,
-        field0: *mut NumericIdentity,
-        field1: *mut ScalarTag,
-        field2: *mut u64,
-    ) -> ReadStatus;
-    #[link_name = "bootstrap.contract_codec::numeric_read_payload_identity_truth"]
-    fn read_payload_identity_truth(
-        input: Bytes,
-        position: *mut usize,
-        field0: *mut NumericIdentity,
-        field1: *mut u32,
-    ) -> ReadStatus;
-    #[link_name = "bootstrap.contract_codec::numeric_read_payload_ordered_identities"]
-    fn read_payload_ordered_identities(
-        input: Bytes,
-        position: *mut usize,
-        field0: *mut NumericIdentity,
-        field1: *mut NumericIdentity,
-        field2: *mut u32,
-        field3: *mut ScalarTag,
-    ) -> ReadStatus;
-    #[link_name = "bootstrap.contract_codec::numeric_read_payload_predicate_truth"]
-    fn read_payload_predicate_truth(
-        input: Bytes,
-        position: *mut usize,
-        field0: *mut NumericPredicate,
-        field1: *mut u32,
     ) -> ReadStatus;
 }
 unsafe extern "C" fn construct_domain(context: Slot, output: Slot, kind: DomainKind) -> ReadStatus {
@@ -1559,209 +1208,6 @@ unsafe extern "C" fn construct_domain(context: Slot, output: Slot, kind: DomainK
         }
     }
 }
-unsafe extern "C" fn construct_fact(context: Slot, output: Slot, kind: FactKind) -> ReadStatus {
-    let (bytes, position) = unsafe { input(context) };
-    match kind {
-        FactKind::Equal => {
-            let mut v0: NumericIdentity = Default::default();
-            let mut v1: NumericIdentity = Default::default();
-            let status = unsafe {
-                read_payload_identity_pair(
-                    bytes,
-                    position,
-                    ptr::from_mut(&mut v0),
-                    ptr::from_mut(&mut v1),
-                )
-            };
-            if status == ReadStatus::Success {
-                unsafe {
-                    *output.cast::<Fact>() =
-                        Fact::Equal(ValueIdentity::from_frame(v0), ValueIdentity::from_frame(v1))
-                };
-            }
-            status
-        }
-        FactKind::Index => {
-            let mut v0: NumericIdentity = Default::default();
-            let mut v1: IndexDomain = IndexDomain::Tile;
-            let status = unsafe {
-                read_payload_identity_domain(
-                    bytes,
-                    position,
-                    ptr::from_mut(&mut v0),
-                    slot(&mut v1),
-                    reader_host(context),
-                )
-            };
-            if status == ReadStatus::Success {
-                unsafe { *output.cast::<Fact>() = Fact::Index(ValueIdentity::from_frame(v0), v1) };
-            }
-            status
-        }
-        FactKind::Minimum => {
-            let mut v0: NumericIdentity = Default::default();
-            let mut v1: ScalarTag = Default::default();
-            let mut v2: u64 = Default::default();
-            let status = unsafe {
-                read_payload_identity_scalar_bits(
-                    bytes,
-                    position,
-                    ptr::from_mut(&mut v0),
-                    ptr::from_mut(&mut v1),
-                    ptr::from_mut(&mut v2),
-                )
-            };
-            if status == ReadStatus::Success {
-                unsafe {
-                    *output.cast::<Fact>() =
-                        Fact::Minimum(ValueIdentity::from_frame(v0), Scalar::from_frame(v1), v2)
-                };
-            }
-            status
-        }
-        FactKind::Maximum => {
-            let mut v0: NumericIdentity = Default::default();
-            let mut v1: ScalarTag = Default::default();
-            let mut v2: u64 = Default::default();
-            let status = unsafe {
-                read_payload_identity_scalar_bits(
-                    bytes,
-                    position,
-                    ptr::from_mut(&mut v0),
-                    ptr::from_mut(&mut v1),
-                    ptr::from_mut(&mut v2),
-                )
-            };
-            if status == ReadStatus::Success {
-                unsafe {
-                    *output.cast::<Fact>() =
-                        Fact::Maximum(ValueIdentity::from_frame(v0), Scalar::from_frame(v1), v2)
-                };
-            }
-            status
-        }
-        FactKind::NonZero => {
-            let mut v0: NumericIdentity = Default::default();
-            let status = unsafe { read_identity(bytes, position, ptr::from_mut(&mut v0)) };
-            if status == ReadStatus::Success {
-                unsafe { *output.cast::<Fact>() = Fact::NonZero(ValueIdentity::from_frame(v0)) };
-            }
-            status
-        }
-        FactKind::Boolean => {
-            let mut v0: NumericIdentity = Default::default();
-            let mut v1: u32 = Default::default();
-            let status = unsafe {
-                read_payload_identity_truth(
-                    bytes,
-                    position,
-                    ptr::from_mut(&mut v0),
-                    ptr::from_mut(&mut v1),
-                )
-            };
-            if status == ReadStatus::Success {
-                unsafe {
-                    *output.cast::<Fact>() = Fact::Boolean(ValueIdentity::from_frame(v0), (v1 != 0))
-                };
-            }
-            status
-        }
-        FactKind::Below => {
-            let mut v0: NumericIdentity = Default::default();
-            let mut v1: NumericIdentity = Default::default();
-            let mut v2: u32 = Default::default();
-            let mut v3: ScalarTag = Default::default();
-            let status = unsafe {
-                read_payload_ordered_identities(
-                    bytes,
-                    position,
-                    ptr::from_mut(&mut v0),
-                    ptr::from_mut(&mut v1),
-                    ptr::from_mut(&mut v2),
-                    ptr::from_mut(&mut v3),
-                )
-            };
-            if status == ReadStatus::Success {
-                unsafe {
-                    *output.cast::<Fact>() = Fact::Below(
-                        ValueIdentity::from_frame(v0),
-                        ValueIdentity::from_frame(v1),
-                        (v2 != 0),
-                        Scalar::from_frame(v3),
-                    )
-                };
-            }
-            status
-        }
-        FactKind::Outside => {
-            let mut v0: NumericIdentity = Default::default();
-            let mut v1: IndexDomain = IndexDomain::Tile;
-            let status = unsafe {
-                read_payload_identity_domain(
-                    bytes,
-                    position,
-                    ptr::from_mut(&mut v0),
-                    slot(&mut v1),
-                    reader_host(context),
-                )
-            };
-            if status == ReadStatus::Success {
-                unsafe {
-                    *output.cast::<Fact>() = Fact::Outside(ValueIdentity::from_frame(v0), v1)
-                };
-            }
-            status
-        }
-        FactKind::Zero => {
-            let mut v0: NumericIdentity = Default::default();
-            let status = unsafe { read_identity(bytes, position, ptr::from_mut(&mut v0)) };
-            if status == ReadStatus::Success {
-                unsafe { *output.cast::<Fact>() = Fact::Zero(ValueIdentity::from_frame(v0)) };
-            }
-            status
-        }
-        FactKind::NotEqual => {
-            let mut v0: NumericIdentity = Default::default();
-            let mut v1: NumericIdentity = Default::default();
-            let status = unsafe {
-                read_payload_identity_pair(
-                    bytes,
-                    position,
-                    ptr::from_mut(&mut v0),
-                    ptr::from_mut(&mut v1),
-                )
-            };
-            if status == ReadStatus::Success {
-                unsafe {
-                    *output.cast::<Fact>() =
-                        Fact::NotEqual(ValueIdentity::from_frame(v0), ValueIdentity::from_frame(v1))
-                };
-            }
-            status
-        }
-        FactKind::Predicate => {
-            let mut v0: NumericPredicate = Default::default();
-            let mut v1: u32 = Default::default();
-            let status = unsafe {
-                read_payload_predicate_truth(
-                    bytes,
-                    position,
-                    ptr::from_mut(&mut v0),
-                    ptr::from_mut(&mut v1),
-                )
-            };
-            if status == ReadStatus::Success {
-                unsafe {
-                    *output.cast::<Fact>() =
-                        Fact::Predicate(ScalarPredicate::from_frame(v0), (v1 != 0))
-                };
-            }
-            status
-        }
-    }
-}
-
-
 pub(super) mod conditions;
 
 // Physical construction for the original public contract wire.

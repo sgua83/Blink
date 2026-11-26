@@ -91,7 +91,7 @@ u32 query_search(usize first,usize second,u32 right_truth,address context,Graph 
  requires nonzero(host.trail_push) requires nonzero(host.trail_pop) requires nonzero(host.trail)
  requires nonzero(host.additions) requires nonzero(host.undo_addition) requires nonzero(host.add_leaf)
  requires nonzero(host.contradictory) requires nonzero(host.add_next) requires nonzero(host.begin_facts)
- requires nonzero(host.next_fact) requires nonzero(host.inspect_fact) requires nonzero(host.set_next_fact)
+ requires nonzero(host.next_fact) requires nonzero(host.set_next_fact)
  requires nonzero(host.facts.compare) requires nonzero(host.remaining)
  requires nonzero(host.push_clause) requires nonzero(host.push_fact) requires nonzero(host.pop_alternative) {
  address values=graph.values;usize at=0u64;
@@ -124,7 +124,7 @@ u32 query_search(usize first,usize second,u32 right_truth,address context,Graph 
      while(true){
       address fact=host.next_fact(context);
       if(address_bits(fact)==0u64){break;}
-      FactView negated=negated_fact(host.inspect_fact(fact),host.facts);
+      FactView negated=negated_fact(inspect_fact(fact),host.facts);
       if(negated.present!=0){
        host.set_next_fact(context,negated);
        if(host.remaining(context)!=0u64){
@@ -172,7 +172,7 @@ extern "C" u32 overlap(usize first,usize second,u32 right_truth,address context,
  requires nonzero(host.trail_push) requires nonzero(host.trail_pop) requires nonzero(host.trail)
  requires nonzero(host.additions) requires nonzero(host.undo_addition) requires nonzero(host.add_leaf)
  requires nonzero(host.contradictory) requires nonzero(host.add_next) requires nonzero(host.begin_facts)
- requires nonzero(host.next_fact) requires nonzero(host.inspect_fact) requires nonzero(host.set_next_fact)
+ requires nonzero(host.next_fact) requires nonzero(host.set_next_fact)
  requires nonzero(host.facts.compare) requires nonzero(host.remaining)
  requires nonzero(host.push_clause) requires nonzero(host.push_fact) requires nonzero(host.pop_alternative) {
  return query_search(first,second,right_truth,context,graph,host);
@@ -419,7 +419,7 @@ extern "C" u32 equivalent(usize first,usize second,address plan,address context,
  requires nonzero(host.trail_push) requires nonzero(host.trail_pop) requires nonzero(host.trail)
  requires nonzero(host.additions) requires nonzero(host.undo_addition) requires nonzero(host.add_leaf)
  requires nonzero(host.contradictory) requires nonzero(host.add_next) requires nonzero(host.begin_facts)
- requires nonzero(host.next_fact) requires nonzero(host.inspect_fact) requires nonzero(host.set_next_fact)
+ requires nonzero(host.next_fact) requires nonzero(host.set_next_fact)
  requires nonzero(host.facts.compare) requires nonzero(host.remaining)
  requires nonzero(host.push_clause) requires nonzero(host.push_fact) requires nonzero(host.pop_alternative)
  requires nonzero(reset)

@@ -2,21 +2,6 @@ module bootstrap.fact_key;
 
 // Tagged Rust keys have a u32 tag followed by their C-layout fields.
 // Only the selected fields are read; padding does not participate in the order.
-enum IdentityKind : u32 {
-    Register=0; DataLength=1; TileLength=2; ParameterContent=3; ResourceParameter=4;
-    ParameterStorage=5; ElementComponent=6; ElementParent=7; ElementIndex=8;
-    DatasetContent=9; MemoryValue=10; LoopValue=11; TaskResult=12; TaskCompletion=13;
-    TaskWorkCompletion=14; TaskControl=15; TaskReturnSource=16;
-};
-enum DomainKind : u32 {
-    Data=0; Fixed=1; Tile=2; DataLength=3; TileLength=4; View=5; ViewLength=6;
-    ApplicationData=7; ApplicationLength=8; Upper=9; Lower=10; Room=11; Sum=12; Offset=13;
-    Shifted=14; Computed=15; CommonRange=16; KnownBits=17; Floating=18;
-};
-enum KeyKind : u32 {
-    Equal=0; Index=1; Minimum=2; Maximum=3; NonZero=4; Boolean=5; Below=6; Outside=7;
-    Zero=8; NotEqual=9; Predicate=10;
-};
 
 address field(address key, u64 at) on cpu {
     return unsafe_address(address_bits(key) + at);
@@ -64,6 +49,17 @@ i32 signed_wide(address left, address right) on cpu {
     return words(left,right,1u64);
 }
 
+u64 identity_words(u32 tag) on cpu {
+    if (tag == u32(IdentityKind::TileLength)) { return 0u64; }
+    if (tag == u32(IdentityKind::DatasetContent)) { return 3u64; }
+    if (tag == u32(IdentityKind::ParameterContent) || tag == u32(IdentityKind::ResourceParameter)
+        || tag == u32(IdentityKind::ElementParent) || tag == u32(IdentityKind::MemoryValue)
+        || tag == u32(IdentityKind::LoopValue) || tag == u32(IdentityKind::TaskCompletion)) {
+        return 2u64;
+    }
+    return 1u64;
+}
+
 extern "C" i32 order_identity(address left, address right) on cpu {
     u32 a = unsafe_position<u32>(left);
     u32 b = unsafe_position<u32>(right);
@@ -73,15 +69,7 @@ extern "C" i32 order_identity(address left, address right) on cpu {
         i32 first = word32(left,right,4u64);
         return first != 0 ? first : word32(left,right,8u64);
     }
-    u64 count = 1u64;
-    if (a == u32(IdentityKind::DatasetContent)) {
-        count = 3u64;
-    } else if (a == u32(IdentityKind::ParameterContent) || a == u32(IdentityKind::ResourceParameter)
-        || a == u32(IdentityKind::ElementParent) || a == u32(IdentityKind::MemoryValue)
-        || a == u32(IdentityKind::LoopValue) || a == u32(IdentityKind::TaskCompletion)) {
-        count = 2u64;
-    }
-    return words(field(left,8u64),field(right,8u64),count);
+    return words(field(left,8u64),field(right,8u64),identity_words(a));
 }
 
 i32 identities(address left, address right, u64 count) on cpu {
@@ -184,24 +172,180 @@ extern "C" i32 order_fact(address left, address right) on cpu {
     if (a != b) { return tag_order(a,b); }
     address first = field(left,8u64);
     address other = field(right,8u64);
-    if (a == u32(KeyKind::Predicate)) {
+    if (a == u32(FactKind::Predicate)) {
         i32 predicate = order_predicate(first,other);
         return predicate != 0 ? predicate : bytes(field(left,96u64),field(right,96u64),1u64);
     }
     i32 identity = order_identity(first,other);
     if (identity != 0) { return identity; }
-    if (a == u32(KeyKind::NonZero) || a == u32(KeyKind::Zero)) { return i32(0); }
+    if (a == u32(FactKind::NonZero) || a == u32(FactKind::Zero)) { return i32(0); }
     address payload = field(left,40u64);
     address payload_other = field(right,40u64);
-    if (a == u32(KeyKind::Index) || a == u32(KeyKind::Outside)) {
+    if (a == u32(FactKind::Index) || a == u32(FactKind::Outside)) {
         return order_domain(payload,payload_other);
     }
-    if (a == u32(KeyKind::Minimum) || a == u32(KeyKind::Maximum)) {
+    if (a == u32(FactKind::Minimum) || a == u32(FactKind::Maximum)) {
         i32 scalar = bytes(payload,payload_other,1u64);
         return scalar != 0 ? scalar : words(field(left,48u64),field(right,48u64),1u64);
     }
-    if (a == u32(KeyKind::Boolean)) { return bytes(payload,payload_other,1u64); }
+    if (a == u32(FactKind::Boolean)) { return bytes(payload,payload_other,1u64); }
     i32 value = order_identity(payload,payload_other);
-    if (value != 0 || a != u32(KeyKind::Below)) { return value; }
+    if (value != 0 || a != u32(FactKind::Below)) { return value; }
     return bytes(field(left,72u64),field(right,72u64),2u64);
+}
+
+extern "C" void RtlMoveMemory(address output, address input, u64 bytes) on cpu from "KERNEL32.dll";
+
+extern "C" ScalarTag fact_scalar_tag(address scalar) on cpu {
+    u32 code = u32(unsafe_position<u8>(scalar));
+    return unsafe_position<ScalarTag>(address_of(code));
+}
+
+extern "C" FactScalarView inspect_fact_scalar(address scalar) on cpu {
+    ScalarTag tag = fact_scalar_tag(scalar);
+    bool signed = tag == ScalarTag::I8 || tag == ScalarTag::I16 || tag == ScalarTag::I32 || tag == ScalarTag::I64;
+    bool floating = tag == ScalarTag::F32 || tag == ScalarTag::F64;
+    u32 kind = floating ? 2 : signed ? 1 : tag == ScalarTag::Bool ? 3 : 0;
+    u32 width = 32;
+    if (tag == ScalarTag::U8 || tag == ScalarTag::I8) { width = 8; }
+    else if (tag == ScalarTag::U16 || tag == ScalarTag::I16) { width = 16; }
+    else if (tag == ScalarTag::U64 || tag == ScalarTag::I64 || tag == ScalarTag::F64) { width = 64; }
+    u64 mask = 18446744073709551615u64 >> u64(64 - width);
+    u64 bias = signed ? 1u64 << u64(width - 1) : 0u64;
+    return FactScalarView(kind,width,mask,bias);
+}
+
+extern "C" FactView read_fact_fields(address source) on cpu {
+    FactKind kind = unsafe_position<FactKind>(source);
+    FactView view = FactView(1,kind,address(),address(),address(),address(),0u64,0u64,0,0);
+    address first = field(source,8u64);
+    address tail = field(source,40u64);
+    if (kind == FactKind::Predicate) {
+        view.payload = first;
+        view.flag = u32(unsafe_position<u8>(field(source,96u64)));
+        return view;
+    }
+
+    view.first = first;
+    if (kind == FactKind::Equal || kind == FactKind::NotEqual || kind == FactKind::Below) {
+        view.second = tail;
+        if (kind == FactKind::Below) {
+            view.flag = u32(unsafe_position<u8>(field(source,72u64)));
+            view.scalar = field(source,73u64);
+        }
+    } else if (kind == FactKind::Index || kind == FactKind::Outside) {
+        view.payload = tail;
+    } else if (kind == FactKind::Minimum || kind == FactKind::Maximum) {
+        view.scalar = tail;
+        view.value = unsafe_position<u64>(field(source,48u64));
+    } else if (kind == FactKind::Boolean) {
+        view.flag = u32(unsafe_position<u8>(tail));
+    }
+    return view;
+}
+
+extern "C" FactView inspect_fact(address source) on cpu {
+    FactView view = read_fact_fields(source);
+    if (view.kind == FactKind::Minimum || view.kind == FactKind::Maximum) {
+        view.mask = inspect_fact_scalar(view.scalar).mask;
+    } else if (view.kind == FactKind::Index && unsafe_position<DomainKind>(view.payload) == DomainKind::Fixed) {
+        view.fixed = 1;
+        view.value = u64(unsafe_position<u32>(field(view.payload,4u64)));
+    }
+    return view;
+}
+
+extern "C" FactView fact_bound(address identity, address scalar, u64 value, u32 minimum) on cpu {
+    FactKind kind = minimum != 0 ? FactKind::Minimum : FactKind::Maximum;
+    return FactView(1,kind,identity,address(),address(),scalar,value,inspect_fact_scalar(scalar).mask,0,0);
+}
+
+extern "C" void materialize_fact(FactView source, address output) on cpu {
+    address first = field(output,8u64);
+    address tail = field(output,40u64);
+    u8 truth = u8(source.flag != 0);
+    if (source.kind == FactKind::Predicate) {
+        RtlMoveMemory(first,source.payload,88u64);
+        unsafe_position<u8>(field(output,96u64)) = truth;
+    } else {
+        RtlMoveMemory(first,source.first,32u64);
+        if (source.kind == FactKind::Equal || source.kind == FactKind::NotEqual || source.kind == FactKind::Below) {
+            RtlMoveMemory(tail,source.second,32u64);
+            if (source.kind == FactKind::Below) {
+                unsafe_position<u8>(field(output,72u64)) = truth;
+                unsafe_position<u8>(field(output,73u64)) = unsafe_position<u8>(source.scalar);
+            }
+        } else if (source.kind == FactKind::Index || source.kind == FactKind::Outside) {
+            RtlMoveMemory(tail,source.payload,104u64);
+        } else if (source.kind == FactKind::Minimum || source.kind == FactKind::Maximum) {
+            unsafe_position<u8>(tail) = unsafe_position<u8>(source.scalar);
+            unsafe_position<u64>(field(output,48u64)) = source.value;
+        } else if (source.kind == FactKind::Boolean) {
+            unsafe_position<u8>(tail) = truth;
+        }
+    }
+    unsafe_position<FactKind>(output) = source.kind;
+}
+
+extern "C" NumericIdentity capture_key_identity(address source) on cpu {
+    IdentityKind kind = unsafe_position<IdentityKind>(source);
+    if (kind == IdentityKind::TaskWorkCompletion) {
+        return NumericIdentity(kind,u64(unsafe_position<u32>(field(source,4u64))),
+            u64(unsafe_position<u32>(field(source,8u64))),0u64);
+    }
+
+    NumericIdentity value = NumericIdentity(kind,0u64,0u64,0u64);
+    u64 count = identity_words(u32(kind));
+    if (count >= 1u64) { value.first = unsafe_position<u64>(field(source,8u64)); }
+    if (count >= 2u64) { value.second = unsafe_position<u64>(field(source,16u64)); }
+    if (count >= 3u64) { value.third = unsafe_position<u64>(field(source,24u64)); }
+    return value;
+}
+
+IdentityKey make_key_identity(NumericIdentity source) on cpu {
+    if (source.kind == IdentityKind::TaskWorkCompletion) {
+        return IdentityKey(source.kind,u32(source.first),u64(u32(source.second)),0u64,0u64);
+    }
+    return IdentityKey(source.kind,0,source.first,source.second,source.third);
+}
+
+extern "C" void materialize_key_identity(NumericIdentity source, address output) on cpu {
+    unsafe_position<IdentityKey>(output) = make_key_identity(source);
+}
+
+extern "C" NumericOperand capture_key_operand(address source) on cpu {
+    OperandKind kind = unsafe_position<OperandKind>(source);
+    if (kind == OperandKind::Value) {
+        return NumericOperand(kind,capture_key_identity(field(source,8u64)),ScalarTag::F32,0u64);
+    }
+    return NumericOperand(kind,NumericIdentity(IdentityKind::Register,0u64,0u64,0u64),
+        fact_scalar_tag(field(source,4u64)),unsafe_position<u64>(field(source,8u64)));
+}
+
+OperandKey make_key_operand(NumericOperand source) on cpu {
+    if (source.kind == OperandKind::Value) {
+        IdentityKey identity = make_key_identity(source.identity);
+        u64 header = u64(u32(identity.kind)) | (u64(identity.packed) << 32u64);
+        return OperandKey(source.kind,u8(0),header,identity.first,identity.second,identity.third);
+    }
+    return OperandKey(source.kind,u8(u32(source.scalar)),source.bits,0u64,0u64,0u64);
+}
+
+extern "C" void materialize_key_operand(NumericOperand source, address output) on cpu {
+    unsafe_position<OperandKey>(output) = make_key_operand(source);
+}
+
+extern "C" NumericPredicate capture_key_predicate(address source) on cpu {
+    u32 code = u32(unsafe_position<u8>(source));
+    return NumericPredicate(unsafe_position<ComparisonKind>(address_of(code)),fact_scalar_tag(field(source,1u64)),
+        capture_key_operand(field(source,8u64)),capture_key_operand(field(source,48u64)));
+}
+
+PredicateKey make_key_predicate(NumericPredicate source) on cpu {
+    return PredicateKey(u8(u32(source.operation)),u8(u32(source.scalar)),
+        make_key_operand(source.left),make_key_operand(source.right));
+}
+
+extern "C" void materialize_key_predicate(NumericPredicate source, address output) on cpu {
+    unsafe_position<PredicateKey>(output) = make_key_predicate(source);
 }

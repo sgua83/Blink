@@ -44,7 +44,7 @@ pub(super) fn for_cursor(begin: &Value, limit: &Value, seeks: bool) -> Proof {
         .with_domains(indices_below(&limit.proof.domains(0), true))
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 #[repr(u32)]
 enum Fact {
     Equal(ValueIdentity, ValueIdentity),
@@ -59,6 +59,13 @@ enum Fact {
     NotEqual(ValueIdentity, ValueIdentity),
     Predicate(ScalarPredicate, bool),
 }
+impl PartialEq for Fact {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
+}
+impl Eq for Fact {}
+
 // 运算关系只引用已求值的快照；常量使用实际类型与位模式。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
