@@ -1,5 +1,6 @@
 //! 选择式先检查两侧，在运行时只求值一侧；结果仍是普通值。
 use super::*;
+use std::{ffi::c_void, ptr};
 impl Builder<'_> {
     #[inline(never)]
     pub(super) async fn selection(
@@ -121,40 +122,35 @@ impl Builder<'_> {
             let value=lower(builder).await?;
             let retained=value.as_ref().and_then(returns::Returned::view_value).map(|value|value.proof.typed_view_borrow(&value.ty)).unwrap_or_default();
             let borrow=retained.owners().restricted(&builder.path);
-            let names={
-                let mut bindings=builder.env.iter();let mut current=None;let mut resources=None;let mut resource=None;
-                let mut references:Option<view::Borrow>=None;let mut sources=None;let mut source=None;let mut names=Vec::new();
-                let mut cursor=OwnerCursor {phase:0};let mut facts=OwnerFacts {name:OwnerName {data:std::ptr::null(),length:0},present:0,kind:0,answer:0};
-                loop {
-                    let step=unsafe {owner_step(cursor,facts)};cursor=step.cursor;
-                    match step.need {
-                        OwnerNeed::NextBinding=>{
-                            references=None;resources=None;resource=None;sources=None;source=None;current=bindings.next();
-                            facts.present=u32::from(current.is_some());facts.name=current.map_or(OwnerName {data:std::ptr::null(),length:0},|(name,_)|OwnerName {data:name.as_ptr(),length:name.len()});
-                        },
-                        OwnerNeed::Original=>facts.answer=u32::from(original.contains(current.unwrap().0)),
-                        OwnerNeed::Kind=>facts.kind=match current.unwrap().1 {Binding::OwnedValue(_)=>1,Binding::ApplicationData(_)=>2,_=>0},
-                        OwnerNeed::MayOwn=>facts.answer=u32::from(matches!(current.unwrap().1,Binding::OwnedValue(value)if value.ownership.may_own())||matches!(current.unwrap().1,Binding::ApplicationData(data)if data.ownership.may_own())),
-                        OwnerNeed::Reference=>facts.answer=u32::from(matches!(current.unwrap().1,Binding::OwnedValue(value)if matches!(value.place(),Some(Place::Reference{..})))),
-                        OwnerNeed::Borrow=>{
-                            let binding=current.unwrap().1;references=Some(unsafe {builder.world.call(binding.view_borrow(builder)).await}?.owners());resources=Some(binding.application_resources().into_iter());
-                        },
-                        OwnerNeed::NextResource=>{resource=resources.as_mut().unwrap().next();facts.present=u32::from(resource.is_some());},
-                        OwnerNeed::UnionResource=>references.as_mut().unwrap().union(&builder.owned_resource_borrow(resource.unwrap()).owners()),
-                        OwnerNeed::Restrict=>references=Some(references.take().unwrap().restricted(&builder.path)),
-                        OwnerNeed::BorrowPending=>facts.answer=u32::from(borrow.pending()),
-                        OwnerNeed::ReferencesPending=>facts.answer=u32::from(references.as_ref().unwrap().pending()),
-                        OwnerNeed::StartSources=>sources=Some(borrow.sources.entries()),
-                        OwnerNeed::NextSource=>{source=sources.as_mut().unwrap().next();facts.present=u32::from(source.is_some());},
-                        OwnerNeed::Overlap=>{let(source,when)=source.take().unwrap();facts.answer=u32::from(references.as_ref().unwrap().overlaps_source(source,&when));},
-                        OwnerNeed::Keep=>names.push(current.unwrap().0.clone()),
-                        OwnerNeed::Complete=>break names,
+            let names = {
+                let mut scan = OwnerScan { bindings: builder.env.iter(), original, current: None };
+                let mut names = Vec::new();
+                while let Some((name, binding)) = scan.next_candidate() {
+                    let references = unsafe { builder.world.call(binding.view_borrow(builder)).await }?.owners();
+                    let mut evidence = OwnerEvidence {
+                        builder,
+                        borrow: &borrow,
+                        references,
+                        resources: binding.application_resources().into_iter(),
+                        sources: borrow.sources.entries(),
+                    };
+                    if evidence.retains_owner() {
+                        names.push(name.clone());
                     }
                 }
+                names
             };
-            let count=names.len();let mut moves=OwnerMoves {builder,names:Some(names),ordered:None,owners:Vec::new()};
-            unsafe {move_owners(count,OwnerNamesHost {context:&mut moves,name:owner_name,exchange:exchange_owner_names,begin:begin_owner_moves,take:take_owner_move})};
-            let owners=moves.owners;
+            let count = names.len();
+            let mut moves = OwnerMoves { builder, names, owners: Vec::new() };
+            unsafe {
+                move_owners(count, OwnerNamesHost {
+                    context: &mut moves,
+                    name: owner_name,
+                    exchange: exchange_owner_names,
+                    take: take_owner_move,
+                });
+            }
+            let owners = moves.owners;
             Ok(((value,owners),retained))
         })).await }
     }
@@ -414,28 +410,167 @@ struct SelectionFirst {
 #[derive(Clone,Copy)]
 struct OwnerName {data:*const u8,length:usize}
 #[repr(C)]
-#[derive(Clone,Copy)]
-struct OwnerCursor {phase:u32}
+struct OwnerBinding {
+    may_own: u32,
+    reference: u32,
+}
+
 #[repr(C)]
-#[derive(Clone,Copy)]
-struct OwnerFacts {name:OwnerName,present:u32,kind:u32,answer:u32}
+struct OwnerScanHost {
+    context: *mut c_void,
+    next_binding: unsafe extern "C" fn(*mut c_void) -> OwnerName,
+    original: unsafe extern "C" fn(*mut c_void) -> u32,
+    describe: unsafe extern "C" fn(*mut c_void) -> OwnerBinding,
+}
+
 #[repr(u32)]
-enum OwnerNeed {NextBinding,Original,Kind,MayOwn,Reference,Borrow,NextResource,UnionResource,Restrict,BorrowPending,ReferencesPending,StartSources,NextSource,Overlap,Keep,Complete}
+enum OwnerSource {
+    End,
+    Different,
+    Overlap,
+}
+
 #[repr(C)]
-struct OwnerStep {cursor:OwnerCursor,need:OwnerNeed}
+struct OwnerEvidenceHost {
+    context: *mut c_void,
+    append_resource: unsafe extern "C" fn(*mut c_void) -> u32,
+    restrict: unsafe extern "C" fn(*mut c_void) -> u32,
+    next_source: unsafe extern "C" fn(*mut c_void) -> OwnerSource,
+}
+
 #[repr(C)]
-struct OwnerNamesHost<'a,'w> {context:*mut OwnerMoves<'a,'w>,name:unsafe extern "C" fn(*const OwnerMoves<'a,'w>,usize)->OwnerName,
- exchange:unsafe extern "C" fn(*mut OwnerMoves<'a,'w>,usize,usize),begin:unsafe extern "C" fn(*mut OwnerMoves<'a,'w>),take:unsafe extern "C" fn(*mut OwnerMoves<'a,'w>)}
+struct OwnerNamesHost<'a, 'w> {
+    context: *mut OwnerMoves<'a, 'w>,
+    name: unsafe extern "C" fn(*const OwnerMoves<'a, 'w>, usize) -> OwnerName,
+    exchange: unsafe extern "C" fn(*mut OwnerMoves<'a, 'w>, usize, usize),
+    take: unsafe extern "C" fn(*mut OwnerMoves<'a, 'w>, usize),
+}
+
 unsafe extern "C" {
- #[link_name="bootstrap.function_body::owner_step"] fn owner_step(cursor:OwnerCursor,facts:OwnerFacts)->OwnerStep;
- #[link_name="bootstrap.function_body::move_owners"] fn move_owners(count:usize,host:OwnerNamesHost<'_,'_>);
+    #[link_name = "bootstrap.function_body::next_owner_candidate"]
+    fn next_owner_candidate(host: OwnerScanHost);
+    #[link_name = "bootstrap.function_body::retain_owner"]
+    fn retain_owner(host: OwnerEvidenceHost) -> u32;
+    #[link_name = "bootstrap.function_body::move_owners"]
+    fn move_owners(count: usize, host: OwnerNamesHost<'_, '_>);
 }
-struct OwnerMoves<'a,'w> {builder:&'a mut Builder<'w>,names:Option<Vec<String>>,ordered:Option<std::vec::IntoIter<String>>,owners:Vec<Binding>}
-unsafe extern "C" fn owner_name(context:*const OwnerMoves<'_,'_>,index:usize)->OwnerName {
- let name=&unsafe {&*context}.names.as_ref().unwrap()[index];OwnerName {data:name.as_ptr(),length:name.len()}
+
+struct OwnerScan<'a> {
+    bindings: std::collections::btree_map::Iter<'a, String, Binding>,
+    original: &'a BTreeSet<String>,
+    current: Option<(&'a String, &'a Binding)>,
 }
-unsafe extern "C" fn exchange_owner_names(context:*mut OwnerMoves<'_,'_>,a:usize,b:usize) {unsafe {&mut *context}.names.as_mut().unwrap().swap(a,b);}
-unsafe extern "C" fn begin_owner_moves(context:*mut OwnerMoves<'_,'_>) {let values=unsafe {&mut *context};values.ordered=Some(values.names.take().unwrap().into_iter());}
-unsafe extern "C" fn take_owner_move(context:*mut OwnerMoves<'_,'_>) {
- let values=unsafe {&mut *context};let name=values.ordered.as_mut().unwrap().next().unwrap();values.owners.push(values.builder.env.remove(&name).unwrap());
+
+impl<'a> OwnerScan<'a> {
+    fn next_candidate(&mut self) -> Option<(&'a String, &'a Binding)> {
+        unsafe {
+            next_owner_candidate(OwnerScanHost {
+                context: ptr::from_mut(self).cast(),
+                next_binding: next_owner_binding,
+                original: original_owner_binding,
+                describe: describe_owner_binding,
+            });
+        }
+        self.current
+    }
+}
+
+unsafe extern "C" fn next_owner_binding(context: *mut c_void) -> OwnerName {
+    let scan = unsafe { &mut *context.cast::<OwnerScan<'_>>() };
+    scan.current = scan.bindings.next();
+    match scan.current {
+        Some((name, _)) => OwnerName { data: name.as_ptr(), length: name.len() },
+        None => OwnerName { data: ptr::null(), length: 0 },
+    }
+}
+
+unsafe extern "C" fn original_owner_binding(context: *mut c_void) -> u32 {
+    let scan = unsafe { &*context.cast::<OwnerScan<'_>>() };
+    let (name, _) = scan.current.unwrap();
+    u32::from(scan.original.contains(name))
+}
+
+unsafe extern "C" fn describe_owner_binding(context: *mut c_void) -> OwnerBinding {
+    let scan = unsafe { &*context.cast::<OwnerScan<'_>>() };
+    let (_, binding) = scan.current.unwrap();
+    match binding {
+        Binding::OwnedValue(value) => {
+            let may_own = value.ownership.may_own();
+            OwnerBinding {
+                may_own: u32::from(may_own),
+                reference: u32::from(may_own && matches!(value.place(), Some(Place::Reference { .. }))),
+            }
+        }
+        Binding::ApplicationData(data) => OwnerBinding {
+            may_own: u32::from(data.ownership.may_own()),
+            reference: 0,
+        },
+        _ => OwnerBinding { may_own: 0, reference: 0 },
+    }
+}
+
+struct OwnerEvidence<'a, 'w, I> {
+    builder: &'a Builder<'w>,
+    borrow: &'a view::Borrow,
+    references: view::Borrow,
+    resources: std::vec::IntoIter<&'a application::Data>,
+    sources: I,
+}
+
+impl<'source, I: Iterator<Item = (&'source view::Source, bounds::Clause)>> OwnerEvidence<'_, '_, I> {
+    fn retains_owner(&mut self) -> bool {
+        unsafe {
+            retain_owner(OwnerEvidenceHost {
+                context: ptr::from_mut(self).cast(),
+                append_resource: append_owner_resource::<I>,
+                restrict: restrict_owner_references::<I>,
+                next_source: next_owner_source::<I>,
+            }) != 0
+        }
+    }
+}
+
+unsafe extern "C" fn append_owner_resource<I>(context: *mut c_void) -> u32 {
+    let evidence = unsafe { &mut *context.cast::<OwnerEvidence<'_, '_, I>>() };
+    let Some(resource) = evidence.resources.next() else { return 0 };
+    evidence.references.union(&evidence.builder.owned_resource_borrow(resource).owners());
+    1
+}
+
+unsafe extern "C" fn restrict_owner_references<I>(context: *mut c_void) -> u32 {
+    let evidence = unsafe { &mut *context.cast::<OwnerEvidence<'_, '_, I>>() };
+    evidence.references = evidence.references.restricted(&evidence.builder.path);
+    u32::from(evidence.borrow.pending() || evidence.references.pending())
+}
+
+unsafe extern "C" fn next_owner_source<'source, I: Iterator<Item = (&'source view::Source, bounds::Clause)>>(
+    context: *mut c_void,
+) -> OwnerSource {
+    let evidence = unsafe { &mut *context.cast::<OwnerEvidence<'_, '_, I>>() };
+    match evidence.sources.next() {
+        Some((source, when)) if evidence.references.overlaps_source(source, &when) => OwnerSource::Overlap,
+        Some(_) => OwnerSource::Different,
+        None => OwnerSource::End,
+    }
+}
+
+struct OwnerMoves<'a, 'w> {
+    builder: &'a mut Builder<'w>,
+    names: Vec<String>,
+    owners: Vec<Binding>,
+}
+
+unsafe extern "C" fn owner_name(context: *const OwnerMoves<'_, '_>, index: usize) -> OwnerName {
+    let name = &unsafe { &*context }.names[index];
+    OwnerName { data: name.as_ptr(), length: name.len() }
+}
+
+unsafe extern "C" fn exchange_owner_names(context: *mut OwnerMoves<'_, '_>, a: usize, b: usize) {
+    unsafe { &mut *context }.names.swap(a, b);
+}
+
+unsafe extern "C" fn take_owner_move(context: *mut OwnerMoves<'_, '_>, index: usize) {
+    let moves = unsafe { &mut *context };
+    let name = std::mem::take(&mut moves.names[index]);
+    moves.owners.push(moves.builder.env.remove(&name).unwrap());
 }

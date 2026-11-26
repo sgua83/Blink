@@ -98,14 +98,32 @@ struct SelectionStep {SelectionCursor cursor;SelectionNeed need;u32 uniform;};
 extern "C" SelectionStep selection_step(SelectionCursor cursor,SelectionFacts facts) on cpu;
 
 struct OwnerName {address data;u64 length;};
-struct OwnerCursor {u32 phase;};
-struct OwnerFacts {OwnerName name;u32 present;u32 kind;u32 answer;};
-enum OwnerNeed:u32 {NextBinding=0;Original=1;Kind=2;MayOwn=3;Reference=4;Borrow=5;NextResource=6;UnionResource=7;Restrict=8;BorrowPending=9;ReferencesPending=10;StartSources=11;NextSource=12;Overlap=13;Keep=14;Complete=15;};
-struct OwnerStep {OwnerCursor cursor;OwnerNeed need;};
-struct OwnerNamesHost {address context;cfn<OwnerName,address,u64> name;cfn<void,address,u64,u64> exchange;cfn<void,address> begin;cfn<void,address> take;};
-extern "C" OwnerStep owner_step(OwnerCursor cursor,OwnerFacts facts) on cpu;
+struct OwnerBinding {u32 may_own;u32 reference;};
+struct OwnerScanHost {
+ address context;
+ cfn<OwnerName,address> next_binding;
+ cfn<u32,address> original;
+ cfn<OwnerBinding,address> describe;
+};
+enum OwnerSource:u32 {End=0;Different=1;Overlap=2;};
+struct OwnerEvidenceHost {
+ address context;
+ cfn<u32,address> append_resource;
+ cfn<u32,address> restrict;
+ cfn<OwnerSource,address> next_source;
+};
+struct OwnerNamesHost {
+ address context;
+ cfn<OwnerName,address,u64> name;
+ cfn<void,address,u64,u64> exchange;
+ cfn<void,address,u64> take;
+};
+extern "C" void next_owner_candidate(OwnerScanHost host) on cpu
+ requires nonzero(host.next_binding) requires nonzero(host.original) requires nonzero(host.describe);
+extern "C" u32 retain_owner(OwnerEvidenceHost host) on cpu
+ requires nonzero(host.append_resource) requires nonzero(host.restrict) requires nonzero(host.next_source);
 extern "C" void move_owners(u64 count,OwnerNamesHost host) on cpu
- requires nonzero(host.name) requires nonzero(host.exchange) requires nonzero(host.begin) requires nonzero(host.take);
+ requires nonzero(host.name) requires nonzero(host.exchange) requires nonzero(host.take);
 
 struct WhileCursor {u32 phase;};
 struct WhileFacts {u32 initial;u32 present;u32 truth;u32 possible;u32 continuing;u32 outer;u32 condition;u32 flow;u32 next;};
