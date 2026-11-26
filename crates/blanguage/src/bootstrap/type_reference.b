@@ -80,12 +80,37 @@ bool member_is<const N:u32 in {2,3,6}>(Name name,read array<u8,N> expected) on c
     }
     return true;
 }
-extern "C" Projection contract_projection(BuiltinKind kind,u32 wrappers,Name field,u32 tail) on cpu {
-    if (((wrappers&1)!=0||kind==BuiltinKind::Array)&&member_is(field,"length")) {
-        return tail!=0 ? Projection::LengthTail : Projection::Length;
+extern "C" PathStart contract_path_start(BuiltinKind kind,u32 wrappers,u64 remaining) on cpu {
+    if (kind==BuiltinKind::CFunction && wrappers==0) {
+        return remaining==0u64 ? PathStart::FunctionNumeric : PathStart::FunctionField;
     }
-    if (kind==BuiltinKind::Result&&(member_is(field,"Ok")||member_is(field,"Err"))) {
-        return Projection::Variant;
+    return PathStart::Bind;
+}
+
+PathAction variant_path(bool tail) on cpu {
+    return tail ? PathAction::VariantTail : PathAction::Variant;
+}
+
+extern "C" PathAction contract_path_next(address path,PathInput input,PathHost host) on cpu
+    requires nonzero(host.member) requires nonzero(host.ordinary_record) {
+    ContractPath cursor=unsafe_position<ContractPath>(path);
+    if (cursor.index==cursor.count) {
+        return host.ordinary_record(host.context)!=0 ? PathAction::RecordNumeric : PathAction::Layout;
     }
-    return Projection::Member;
+
+    bool tail=cursor.index+1u64<cursor.count;
+    if (((input.wrappers&1)!=0 || input.kind==BuiltinKind::Array) && member_is(input.field,"length")) {
+        return tail ? PathAction::LengthTail : PathAction::Length;
+    }
+    if (input.kind==BuiltinKind::Result && (member_is(input.field,"Ok") || member_is(input.field,"Err"))) {
+        return variant_path(tail);
+    }
+    if (input.builtin!=0) { return PathAction::Builtin; }
+
+    PathMember member=host.member(host.context,input.field);
+    if (member==PathMember::Variant) { return variant_path(tail); }
+    if (member==PathMember::MissingType) { return PathAction::MissingType; }
+    if (member==PathMember::MissingField) { return PathAction::MissingField; }
+    unsafe_position<ContractPath>(path).index=cursor.index+1u64;
+    return PathAction::Specialize;
 }

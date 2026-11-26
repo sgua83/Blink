@@ -28,5 +28,20 @@ extern "C" Need step(address state,address context,Host host) on cpu
     requires nonzero(host.argument) requires nonzero(host.append_value) requires nonzero(host.append_release)
     requires nonzero(host.fail) requires nonzero(host.finish);
 
-enum Projection:u32 { Member=0; Length=1; LengthTail=2; Variant=3; };
-extern "C" Projection contract_projection(BuiltinKind kind,u32 wrappers,Name field,u32 tail) on cpu;
+enum PathStart:u32 { Bind=0; FunctionNumeric=1; FunctionField=2; };
+struct ContractPath { u64 index; u64 count; };
+enum PathMember:u32 { Field=0; Variant=1; MissingType=2; MissingField=3; };
+enum PathAction:u32 {
+    Layout=0; Specialize=1; Builtin=2; Length=3; Variant=4; LengthTail=5; VariantTail=6;
+    MissingType=7; MissingField=8; RecordNumeric=9;
+};
+struct PathInput { BuiltinKind kind; u32 wrappers; u32 builtin; Name field; };
+struct PathHost {
+    address context;
+    cfn<PathMember,address,Name> member;
+    cfn<u32,address> ordinary_record;
+};
+
+extern "C" PathStart contract_path_start(BuiltinKind kind,u32 wrappers,u64 remaining) on cpu;
+extern "C" PathAction contract_path_next(address path,PathInput input,PathHost host) on cpu
+    requires nonzero(host.member) requires nonzero(host.ordinary_record);
