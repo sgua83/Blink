@@ -1000,6 +1000,159 @@ impl Builder<'_> {
         }
     }
 }
+struct ComponentPort<'name> {
+    name: &'name str,
+    scalars: BTreeMap<ValueIdentity, bounds::Proof>,
+    roots: BTreeMap<ValueIdentity, usize>,
+}
+
+impl<'name> ComponentPort<'name> {
+    fn new(
+        name: &'name str, scalars: BTreeMap<ValueIdentity, bounds::Proof>,
+        builder: &mut Builder<'_>, initial: bool,
+    ) -> Self {
+        let roots = scalars.keys().map(|&input| {
+            let root = builder.empty();
+            builder.graph.variables.insert(root);
+            if initial {
+                builder.graph.nodes[root].seeds = Borrow::source(Origin::Parameter(input, Vec::new()));
+            }
+            (input, root)
+        }).collect();
+        Self { name, scalars, roots }
+    }
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.relation_order::expand_component_ports"]
+    fn expand_component_ports(
+        context: Slot, count: unsafe extern "C" fn(Borrowed) -> usize,
+        visit: unsafe extern "C" fn(Slot, usize),
+    );
+    #[link_name = "bootstrap.relation_order::expand_component_calls"]
+    fn expand_component_calls(
+        context: Slot, count: usize, visit: unsafe extern "C" fn(Slot, usize),
+    );
+}
+
+struct ComponentInputGraph<'name, 'state, F> {
+    functions: &'state BTreeMap<String, &'state Function>,
+    public_parameters: F,
+    formals: BTreeMap<&'name str, BTreeSet<ValueIdentity>>,
+    builder: Builder<'state>,
+    ports: Vec<ComponentPort<'name>>,
+}
+
+impl<'name, 'state, 'bindings, F> ComponentInputGraph<'name, 'state, F>
+where
+    F: Fn(&'name str) -> &'bindings BTreeMap<ValueIdentity, bounds::Proof>,
+{
+    fn expand(&mut self) {
+        unsafe { expand_component_ports(ptr::from_mut(self).cast(), Self::count, Self::port) };
+    }
+
+    unsafe extern "C" fn count(context: Borrowed) -> usize {
+        let inputs = unsafe { &*context.cast::<Self>() };
+        inputs.ports.len()
+    }
+
+    unsafe extern "C" fn port(context: Slot, port: usize) {
+        let inputs = unsafe { &mut *context.cast::<Self>() };
+        let caller = inputs.ports[port].name;
+        let function = inputs.functions[caller];
+        let known = inputs.builder.known;
+        let state = known[caller].loop_scope();
+        let public = (inputs.public_parameters)(caller);
+        let mut local = ComponentCallInputs {
+            inputs, port, public, builder: Graph::builder(function, state, known), operands: Vec::new(),
+        };
+        local.expand(function.calls.len());
+        local.publish();
+    }
+}
+
+struct ComponentCallInputs<'work, 'name, 'state, 'bindings, F> {
+    inputs: &'work mut ComponentInputGraph<'name, 'state, F>,
+    port: usize,
+    public: &'bindings BTreeMap<ValueIdentity, bounds::Proof>,
+    builder: Builder<'state>,
+    operands: Vec<(usize, usize, bounds::Clause)>,
+}
+
+impl<F> ComponentCallInputs<'_, '_, '_, '_, F> {
+    fn expand(&mut self, count: usize) {
+        unsafe { expand_component_calls(ptr::from_mut(self).cast(), count, Self::call) };
+    }
+
+    unsafe extern "C" fn call(context: Slot, index: usize) {
+        let local = unsafe { &mut *context.cast::<Self>() };
+        let inputs = &mut *local.inputs;
+        let function = local.builder.function;
+        let call = &function.calls[index];
+        let Some((&callee, formals)) = inputs.formals.get_key_value(call.function.as_str()) else {
+            return;
+        };
+        let scalars = &inputs.ports[local.port].scalars;
+        let when = call.path.project_guard(local.public).project_guard(scalars);
+        if !when.possible() { return; }
+
+        let empty = BTreeMap::new();
+        let incoming = formals.iter().map(|&input| {
+            let scalar = call.arguments.get(&input).map_or_else(bounds::Proof::default, |proof| {
+                let local = proof.numeric_at_call(&empty);
+                if local.known_boolean_value(1).is_some() {
+                    return local;
+                }
+                proof.known_identity(0).and_then(|id| function.parameters.get(&id))
+                    .and_then(|id| scalars.get(id)).cloned().unwrap_or(local)
+            });
+            (input, scalar)
+        }).collect::<BTreeMap<_,_>>();
+        let target = match inputs.ports.iter().position(|port| port.name == callee && port.scalars == incoming) {
+            Some(index) => index,
+            None => {
+                let index = inputs.ports.len();
+                inputs.ports.push(ComponentPort::new(callee, incoming, &mut inputs.builder, false));
+                index
+            }
+        };
+        let epoch = Epoch::Local { memory: call.memory, snapshots: call.snapshots.clone() };
+        for (input, proof) in &call.arguments {
+            let Some(&node) = inputs.ports[target].roots.get(input) else { continue; };
+            let actual = proof.view_borrow(0).restricted(&call.path);
+            if actual.active() {
+                let source = local.builder.borrow(&actual, &epoch);
+                local.operands.push((node, source, when.clone()));
+            }
+        }
+    }
+
+    fn publish(self) {
+        let Self { inputs, port, public, builder, operands } = self;
+        let Builder { function, state, known, graph, .. } = builder;
+        let local = Arc::new(graph);
+        let mut evaluation = BorrowEvaluation {
+            function, state, known, expand_loops: true, deferred_reads: false,
+            loop_bindings: None, values: BTreeMap::new(), stored: None, exit_writes: None,
+            stored_paths: Default::default(),
+        };
+        let port = &inputs.ports[port];
+        let identities = port.scalars.iter().map(|(&input, proof)| {
+            let mut proof = proof.clone();
+            proof.set_view_borrow(0, Borrow::source(Origin::Parameter(input, Vec::new())));
+            (input, proof)
+        }).collect::<BTreeMap<_,_>>();
+        inputs.builder.parameters.clone_from(&port.roots);
+        for (target, source, when) in operands {
+            let value = local.solve(source, &mut evaluation);
+            if let Some(actual) = function.address_borrows(public, value) {
+                let source = inputs.builder.borrow(&actual.at_call(&identities), &Epoch::Input);
+                inputs.builder.edge(target, source, Op::Identity, when);
+            }
+        }
+    }
+}
+
 impl Graph {
     fn builder<'a>(function:&'a Function,state:LoopScope<'a>,known:&'a States<'a>)->Builder<'a>{Builder{function,state,known,keys:BTreeMap::new(),prefix:FramePrefix::default(),graph:Self::default(),parameters:BTreeMap::new()}}
     pub(super) fn recursive_inputs(name:&str,function:&Function,state:LoopScope<'_>,known:&States)->Option<BTreeMap<ValueIdentity,Borrow>>{
@@ -1036,23 +1189,10 @@ impl Graph {
     pub(super) fn component_inputs<'name, 'state, 'bindings>(
         entry: &'name str,
         members: &[&'name str],
-        functions: &'state BTreeMap<String, &Function>,
+        functions: &'state BTreeMap<String, &'state Function>,
         known: &'state States<'state>,
         public_parameters: impl Fn(&'name str) -> &'bindings BTreeMap<ValueIdentity, bounds::Proof>,
-    ) -> Vec<(&'name str, BTreeMap<ValueIdentity, bounds::Proof>, BTreeMap<ValueIdentity, Borrow>)> {
-        fn roots(builder: &mut Builder<'_>, scalars: &BTreeMap<ValueIdentity, bounds::Proof>, initial: bool)
-            -> BTreeMap<ValueIdentity,usize>
-        {
-            scalars.keys().map(|&input| {
-                let root = builder.empty();
-                builder.graph.variables.insert(root);
-                if initial {
-                    builder.graph.nodes[root].seeds = Borrow::source(Origin::Parameter(input, Vec::new()));
-                }
-                (input, root)
-            }).collect()
-        }
-
+    ) -> Vec<(&'name str, BTreeMap<ValueIdentity, bounds::Proof>)> {
         let function = functions[entry];
         let state = known[entry].loop_scope();
         let mut builder = Self::builder(function, state, known);
@@ -1060,83 +1200,27 @@ impl Graph {
             let function = functions[name];
             (name, function.parameters.values().copied().filter(|&formal| function.input(formal)).collect::<BTreeSet<_>>())
         }).collect::<BTreeMap<_,_>>();
-        let entry_scalars = formals[entry].iter().map(|&input| {
+        let scalars = formals[entry].iter().map(|&input| {
             (input, bounds::Proof::default().with_identity(input))
         }).collect::<BTreeMap<_,_>>();
-        let entry_roots = roots(&mut builder, &entry_scalars, true);
-        let mut ports = vec![(entry, entry_scalars, entry_roots)];
-        let mut port = 0;
-        while port < ports.len() {
-            let (caller, scalars, parameters) = ports[port].clone();
-            port += 1;
-            let function = functions[caller];
-            let state = known[caller].loop_scope();
-            let public = public_parameters(caller);
-            let mut local = Self::builder(function, state, known);
-            let mut operands = Vec::new();
-            let empty = BTreeMap::new();
-            for call in &function.calls {
-                let Some((&callee, inputs)) = formals.get_key_value(call.function.as_str()) else { continue; };
-                let when = call.path.project_guard(public).project_guard(&scalars);
-                if !when.possible() { continue; }
-                let incoming = inputs.iter().map(|&input| {
-                    let scalar = call.arguments.get(&input).map_or_else(bounds::Proof::default, |proof| {
-                        let local = proof.numeric_at_call(&empty);
-                        if local.known_boolean_value(1).is_some() {
-                            return local;
-                        }
-                        proof.known_identity(0).and_then(|id| function.parameters.get(&id))
-                            .and_then(|id| scalars.get(id)).cloned().unwrap_or(local)
-                    });
-                    (input, scalar)
-                }).collect::<BTreeMap<_,_>>();
-                let target = match ports.iter().position(|(name, known, _)| *name == callee && *known == incoming) {
-                    Some(index) => index,
-                    None => {
-                        let nodes = roots(&mut builder, &incoming, false);
-                        let index = ports.len();
-                        ports.push((callee, incoming, nodes));
-                        index
-                    }
-                };
-                let epoch = Epoch::Local { memory: call.memory, snapshots: call.snapshots.clone() };
-                for (input, proof) in &call.arguments {
-                    let Some(&node) = ports[target].2.get(input) else { continue; };
-                    let actual = proof.view_borrow(0).restricted(&call.path);
-                    if actual.active() {
-                        let source = local.borrow(&actual, &epoch);
-                        operands.push((node, source, when.clone()));
-                    }
-                }
-            }
-            let local = Arc::new(local.graph);
-            let mut evaluation = BorrowEvaluation {
-                function, state, known, expand_loops: true, deferred_reads: false,
-                loop_bindings: None, values: BTreeMap::new(), stored: None, exit_writes: None,
-                stored_paths: Default::default(),
-            };
-            let identities = scalars.into_iter().map(|(input, mut proof)| {
-                proof.set_view_borrow(0, Borrow::source(Origin::Parameter(input, Vec::new())));
-                (input, proof)
-            }).collect::<BTreeMap<_,_>>();
-            builder.parameters = parameters;
-            for (target, source, when) in operands {
-                let value = local.solve(source, &mut evaluation);
-                if let Some(actual) = function.address_borrows(public, value) {
-                    let source = builder.borrow(&actual.at_call(&identities), &Epoch::Input);
-                    builder.edge(target, source, Op::Identity, when);
-                }
-            }
-        }
-        let graph = Arc::new(builder.graph);
+        let first = ComponentPort::new(entry, scalars, &mut builder, true);
+        let mut inputs = ComponentInputGraph {
+            functions, public_parameters, formals, builder, ports: vec![first],
+        };
+        inputs.expand();
+
+        let graph = Arc::new(inputs.builder.graph);
         let mut evaluation = BorrowEvaluation {
             function, state, known, expand_loops: true, deferred_reads: false,
             loop_bindings: None, values: BTreeMap::new(), stored: None, exit_writes: None,
             stored_paths: Default::default(),
         };
-        ports.into_iter().map(|(name, scalars, nodes)| {
-            let inputs = nodes.into_iter().map(|(input, node)| (input, graph.solve(node, &mut evaluation))).collect();
-            (name, scalars, inputs)
+        inputs.ports.into_iter().map(|ComponentPort { name, mut scalars, roots }| {
+            // The roots and proofs have the same ordered keys from port creation.
+            for (proof, root) in scalars.values_mut().zip(roots.into_values()) {
+                proof.set_view_borrow(0, graph.solve(root, &mut evaluation));
+            }
+            (name, scalars)
         }).collect()
     }
 

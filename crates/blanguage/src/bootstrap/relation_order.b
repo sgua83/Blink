@@ -742,3 +742,24 @@ extern "C" void bind_relation_values(address context, usize nodes, usize frames,
         index += 1u64;
     }
 }
+
+extern "C" void expand_component_ports(address context, cfn<usize,address> count,
+    cfn<void,address,usize> visit) on cpu
+    requires nonzero(count) requires nonzero(visit)
+{
+    usize port = 0u64;
+    while (port < count(context)) {
+        visit(context,port);
+        port += 1u64;
+    }
+}
+
+extern "C" void expand_component_calls(address context, usize count, cfn<void,address,usize> visit) on cpu
+    requires nonzero(visit)
+{
+    usize index = 0u64;
+    while (index < count) {
+        visit(context,index);
+        index += 1u64;
+    }
+}

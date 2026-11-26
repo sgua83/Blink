@@ -196,3 +196,10 @@ struct RelationValueOps {
 extern "C" void bind_relation_values(address context, usize nodes, usize frames, RelationValueOps ops) on cpu
     requires nonzero(ops.node) requires nonzero(ops.edge)
     requires nonzero(ops.frame) requires nonzero(ops.write);
+
+extern "C" void expand_component_ports(address context, cfn<usize,address> count,
+    cfn<void,address,usize> visit) on cpu
+    requires nonzero(count) requires nonzero(visit);
+
+extern "C" void expand_component_calls(address context, usize count, cfn<void,address,usize> visit) on cpu
+    requires nonzero(visit);
