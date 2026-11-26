@@ -568,6 +568,16 @@ struct TreeComponent {
     u32 raw_type;
     u32 value_type;
 };
+struct CollectiveComponent { BuiltinScalar scalar; u32 offset; };
+struct CollectiveLayout {
+    address source;
+    usize count;
+    cfn<CollectiveComponent,address,usize> component;
+};
+struct CollectiveTree { u32 shared; u32 pointer; CollectiveOperation operation; };
+extern "C" void collective_tree(CollectiveLayout layout, CollectiveTree tree, ScalarHost host,
+    address components) on cpu
+    requires nonzero(layout.component) requires nonzero(host.constant) requires nonzero(host.type_id);
 // group_remaining writes 10 words and two IDs, with the count at first + 1.
 extern "C" void group_remaining(address body, u32 uint_type, u32 index, u32 lane, u32 count, u32 first) on cpu;
 struct CustomTree {
@@ -632,6 +642,10 @@ struct CollectiveField {
     u32 shift;
     u32 slot;
 };
+extern "C" void collective_fields(CollectiveLayout layout, u32 source_word, u32 has_source,
+    MemoryHost host, address fields) on cpu
+    requires nonzero(layout.component) requires nonzero(host.scalars.constant)
+    requires nonzero(host.scalars.type_id) requires nonzero(host.pointer_type);
 
 struct ReductionWriteback {
     PageAddress target;

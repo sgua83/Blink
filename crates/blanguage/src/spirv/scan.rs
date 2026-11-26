@@ -1,5 +1,5 @@
 //! 64 线程 work-efficient Blelloch 独占扫描，工作组间由设备递归前缀传播。
-use super::{reduce::{CollectiveField, CollectiveInput}, *};
+use super::{reduce::{CollectiveField, CollectiveInput, CollectiveLayout}, *};
 #[repr(C)]
 pub(super) struct TreeComponent {
     shared: u32,
@@ -41,6 +41,13 @@ struct ScanGroup {
 }
 
 #[repr(C)]
+struct CollectiveTree {
+    shared: u32,
+    pointer: u32,
+    operation: CollectiveOperator,
+}
+
+#[repr(C)]
 struct ScanPrefix {
     target: PageAddress,
     prefix_descriptor: u32,
@@ -67,6 +74,9 @@ pub(super) struct PhysicalField {
 
 
 unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::collective_tree"]
+    fn emit_collective_tree(layout: CollectiveLayout, tree: CollectiveTree, host: ScalarHost,
+        components: *mut TreeComponent);
     #[link_name = "bootstrap.spirv_envelope::scan_group"]
     fn emit_scan_group(input: ScanGroup, levels: *const ScanLevel, components: *const TreeComponent,
         fields: *const CollectiveField, count: u32, workspace: *mut u32, body: *mut u32,
@@ -78,14 +88,6 @@ unsafe extern "C" {
     fn emit_group_remaining(body: *mut u32, uint_type: u32, index: u32, lane: u32, count: u32, first: u32);
 }
 
-#[derive(Clone, Copy)]
-pub(super) struct SharedTree {
-    pub shared: u32,
-    pub pointer: u32,
-    pub base_word: u32,
-    pub scalar: Scalar,
-    pub operator: CollectiveOperator,
-}
 impl Emitter<'_> {
     pub(super) fn scan_input_binding(&self, fields: &Reduction) -> usize {
         if fields.source == fields.target
@@ -131,10 +133,7 @@ impl Emitter<'_> {
     ) {
         let r = &scan.values;
         let identity = self.collective_identity(scan.ty.components[0].0, scan.operator);
-        let trees: Vec<_> = scan.ty.components.iter().map(|&(scalar, offset)| SharedTree {
-            shared, pointer, base_word: (offset / 4) * 64, scalar, operator: scan.operator,
-        }).collect();
-        let components = self.tree_components(&trees);
+        let components = self.tree_components(&scan.ty, scan.operator, shared, pointer);
         let fields = self.collective_fields(&scan.ty, Some(if tail { 0 } else { r.source_word }));
         let mut workspace = vec![0; 4 * fields.len()];
         let levels = self.scan_levels();
@@ -183,26 +182,16 @@ impl Emitter<'_> {
     }
 
 
-    pub(super) fn tree_components(&mut self, trees: &[SharedTree]) -> Vec<TreeComponent> {
-        trees.iter().map(|tree| {
-            let count = tree.scalar.size().div_ceil(4);
-            let low = if tree.base_word == 0 { 0 } else { self.constant(Scalar::U32, tree.base_word) };
-            let (high, scale, shift) = if count == 2 {
-                (self.constant(Scalar::U32, tree.base_word + 1),
-                 self.constant(Scalar::U32, 2), self.constant(Scalar::U32, 32))
-            } else {
-                (0, 0, 0)
-            };
-            TreeComponent {
-                shared: tree.shared,
-                pointer_type: tree.pointer,
-                low, high, scale, shift, count,
-                operation: tree.operator as u32,
-                scalar: tree.scalar.into(),
-                raw_type: self.raw_type(tree.scalar),
-                value_type: self.types[&tree.scalar],
-            }
-        }).collect()
+    pub(super) fn tree_components(&mut self, ty: &Ty, operation: CollectiveOperator,
+        shared: u32, pointer: u32) -> Vec<TreeComponent> {
+        let tree = CollectiveTree { shared, pointer, operation };
+        let count = ty.components.len();
+        let mut components = Vec::with_capacity(count);
+        unsafe {
+            emit_collective_tree(CollectiveLayout::borrow(ty), tree, self.scalar_host(), components.as_mut_ptr());
+            components.set_len(count);
+        }
+        components
     }
 
     pub(super) fn scan_add(&mut self, scan: &Scan, root: bool) {

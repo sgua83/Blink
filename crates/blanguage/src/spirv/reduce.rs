@@ -1,5 +1,6 @@
 //! 全域数值归约：分量共用 64 路树的同步，递归结果在设备驻留。
-use super::{scan::{SharedTree, TreeComponent, TreeWords}, *};
+use super::{scan::{TreeComponent, TreeWords}, *};
+use std::ffi::c_void;
 
 #[repr(C)]
 struct CollectivePair {
@@ -34,6 +35,30 @@ pub(super) struct CollectiveField {
 }
 
 #[repr(C)]
+struct CollectiveComponent {
+    scalar: ScalarCode,
+    offset: u32,
+}
+
+#[repr(C)]
+pub(super) struct CollectiveLayout {
+    source: *const c_void,
+    count: usize,
+    component: unsafe extern "C" fn(*const c_void, usize) -> CollectiveComponent,
+}
+
+impl CollectiveLayout {
+    pub(super) fn borrow(ty: &Ty) -> Self {
+        Self { source: ty.components.as_ptr().cast(), count: ty.components.len(), component: layout_component }
+    }
+}
+
+unsafe extern "C" fn layout_component(source: *const c_void, index: usize) -> CollectiveComponent {
+    let (scalar, offset) = unsafe { *source.cast::<(Scalar, u32)>().add(index) };
+    CollectiveComponent { scalar: scalar.into(), offset }
+}
+
+#[repr(C)]
 struct ReductionWriteback {
     target: PageAddress,
     bool_type: u32,
@@ -63,6 +88,9 @@ struct ReductionGroup {
 }
 
 unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::collective_fields"]
+    fn emit_collective_fields(layout: CollectiveLayout, source_word: u32, has_source: u32,
+        host: MemoryHost, fields: *mut CollectiveField);
     #[link_name = "bootstrap.spirv_envelope::reduction_group"]
     fn emit_reduction_group(input: ReductionGroup, strides: *const u32, components: *const TreeComponent,
         fields: *const CollectiveField, count: u32, workspace: *mut u32, body: *mut u32,
@@ -115,10 +143,7 @@ impl Emitter<'_> {
         let r = &reduction.fields;
         let scalar = reduction.ty.components[0].0;
         let identity = self.collective_identity(scalar, reduction.operator);
-        let trees: Vec<_> = reduction.ty.components.iter().map(|&(scalar, offset)| SharedTree {
-            shared, pointer, base_word: (offset / 4) * 64, scalar, operator: reduction.operator,
-        }).collect();
-        let components = self.tree_components(&trees);
+        let components = self.tree_components(&reduction.ty, reduction.operator, shared, pointer);
         let fields = self.collective_fields(&reduction.ty, Some(if tail { 0 } else { r.source_word }));
         let mut workspace = vec![0; 4 * fields.len()];
         let strides = [32, 16, 8, 4, 2, 1].map(|stride| self.constant(Scalar::U32, stride));
@@ -156,25 +181,14 @@ impl Emitter<'_> {
     }
 
     pub(super) fn collective_fields(&mut self, ty: &Ty, source: Option<u32>) -> Vec<CollectiveField> {
-        ty.components.iter().enumerate().map(|(index, &(scalar, offset))| {
-            let unit = Self::physical_unit(scalar);
-            let source_offset = match source {
-                Some(base) if base + offset != 0 => self.constant(Scalar::U64, base + offset),
-                _ => 0,
-            };
-            CollectiveField {
-                source_offset,
-                target_offset: if offset == 0 { 0 } else { self.constant(Scalar::U64, offset) },
-                unit_type: self.types[&unit],
-                unit_bytes: unit.size(),
-                pointer_type: self.physical_pointers[&unit],
-                step: if scalar.size() == 8 { self.constant(Scalar::U64, 4) } else { 0 },
-                shift: if scalar.size() < 4 && offset % 4 != 0 {
-                    self.constant(Scalar::U32, offset % 4 * 8)
-                } else { 0 },
-                slot: if source.is_some() { 2 * index as u32 } else { offset / 4 },
-            }
-        }).collect()
+        let count = ty.components.len();
+        let mut fields = Vec::with_capacity(count);
+        unsafe {
+            emit_collective_fields(CollectiveLayout::borrow(ty), source.unwrap_or(0),
+                u32::from(source.is_some()), self.memory_host(), fields.as_mut_ptr());
+            fields.set_len(count);
+        }
+        fields
     }
 
     fn reduction_writeback_input(&mut self, r: &Reduction) -> ReductionWriteback {

@@ -3810,6 +3810,61 @@ void tile_tree_store(TreeComponent component, u32 node, u32 value, u32 uint_type
         value, address_of(pointers[0]), address(), memory);
 }
 
+extern "C" void collective_tree(CollectiveLayout layout, CollectiveTree tree, ScalarHost host,
+    address components) on cpu
+    requires nonzero(layout.component) requires nonzero(host.constant) requires nonzero(host.type_id) {
+    usize index = 0u64;
+    while (index < layout.count) {
+        CollectiveComponent field = layout.component(layout.source, index);
+        u32 width = scalar_definition(field.scalar).width;
+        u32 base = (field.offset / 4) * 64;
+        u32 low = base != 0 ? host.constant(host.context, BuiltinScalar::U32, u64(base)) : 0;
+        u32 high = 0;
+        u32 scale = 0;
+        u32 shift = 0;
+        if (width == 64) {
+            high = host.constant(host.context, BuiltinScalar::U32, u64(base + 1));
+            scale = host.constant(host.context, BuiltinScalar::U32, 2u64);
+            shift = host.constant(host.context, BuiltinScalar::U32, 32u64);
+        }
+        address at = unsafe_address(address_bits(components) + index * size_of<TreeComponent>());
+        unsafe_position<TreeComponent>(at) = TreeComponent(tree.shared, tree.pointer, low, high,
+            scale, shift, (width + 31) / 32, tree.operation, field.scalar,
+            host.type_id(host.context, unsigned_scalar(width)), host.type_id(host.context, field.scalar));
+        index += 1u64;
+    }
+}
+
+extern "C" void collective_fields(CollectiveLayout layout, u32 source_word, u32 has_source,
+    MemoryHost host, address fields) on cpu
+    requires nonzero(layout.component) requires nonzero(host.scalars.constant)
+    requires nonzero(host.scalars.type_id) requires nonzero(host.pointer_type) {
+    ScalarHost stream = host.scalars;
+    address context = stream.context;
+    usize index = 0u64;
+    while (index < layout.count) {
+        CollectiveComponent field = layout.component(layout.source, index);
+        u32 width = scalar_definition(field.scalar).width;
+        u32 unit_bytes = width < 32 ? width / 8 : 4;
+        BuiltinScalar unit = unsigned_scalar(unit_bytes * 8);
+        u32 source = 0;
+        u32 slot = field.offset / 4;
+        if (has_source != 0) {
+            u32 offset = source_word + field.offset;
+            if (offset != 0) { source = stream.constant(context, BuiltinScalar::U64, u64(offset)); }
+            slot = 2 * u32(index);
+        }
+        u32 target = field.offset == 0 ? 0 : stream.constant(context, BuiltinScalar::U64, u64(field.offset));
+        u32 step = width == 64 ? stream.constant(context, BuiltinScalar::U64, 4u64) : 0;
+        u32 byte = field.offset % 4;
+        u32 shift = width < 32 && byte != 0 ? stream.constant(context, BuiltinScalar::U32, u64(byte * 8)) : 0;
+        address at = unsafe_address(address_bits(fields) + index * size_of<CollectiveField>());
+        unsafe_position<CollectiveField>(at) = CollectiveField(source, target, stream.type_id(context, unit),
+            unit_bytes, host.pointer_type(context, unit), step, shift, slot);
+        index += 1u64;
+    }
+}
+
 void tile_collective_layer(u32 stride, u32 padded, u32 down, address components, u32 count,
     BlockHost emit, MemoryHost memory, StructuredHost control) on cpu
     requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
