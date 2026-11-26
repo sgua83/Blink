@@ -54,7 +54,6 @@ extern "C" u64 float_bits(u32 width,u64 value) on cpu;
 extern "C" f64 float_number(u32 width,u64 value) on cpu;
 extern "C" bool float_ranges_require_preserve(u32 width, RangeInput values, BitRange clip) on cpu
     requires nonzero(values.get);
-extern "C" FloatInterval float_finite(u32 width,BitRange range) on cpu;
 extern "C" f64 float_rounded(u32 width,f64 value,u32 lower) on cpu;
 extern "C" f64 float_sum_bound(u32 width,f64 left,f64 right,u32 lower) on cpu;
 extern "C" FloatRange float_interval(u32 width,f64 low,f64 high) on cpu;
@@ -73,11 +72,29 @@ extern "C" FloatRange float_sum_range(u32 width,BitRange range,u64 maximum) on c
 struct TextureSampleBounds { BitRange x; BitRange y; BitRange z; BitRange lod; u32 has_z; };
 extern "C" FloatRange texture_sample_range(SourceTexelFormat format, TextureSampleBounds input) on cpu;
 extern "C" FloatRange float_negate(u32 width,BitRange range) on cpu;
-extern "C" f64 float_add_up(f64 left,f64 right) on cpu;
-extern "C" f64 float_multiply_up(f64 left,f64 right) on cpu;
-extern "C" f64 float_divide_up(f64 left,f64 right) on cpu;
 extern "C" f64 float_upper_maximum(BitRange inputs, f64 scale, f64 offset, f64 reciprocal) on cpu;
-extern "C" f64 float_conversion_error(u64 upper) on cpu;
+
+enum FloatArithmeticForm : u32 { End = 0; Cast = 1; Upper = 2; };
+struct FloatArithmeticBound {
+    address origin;
+    address scalar;
+    BitRange range;
+    f64 scale;
+    f64 offset;
+    f64 reciprocal;
+    FloatArithmeticForm form;
+};
+struct FloatArithmeticHost {
+    cfn<void,address,u32> rewind;
+    cfn<FloatArithmeticBound,address,u32> next;
+    cfn<u32,address,address> same_scalar;
+    cfn<bool,address,address,address,address> below;
+    cfn<void,address,FloatArithmeticBound> emit;
+};
+extern "C" void float_arithmetic_domains(BinaryOperation op, u32 left_width, BitRange left,
+    u32 right_width, BitRange right, address context, FloatArithmeticHost host) on cpu
+    requires nonzero(host.rewind) requires nonzero(host.next) requires nonzero(host.same_scalar)
+    requires nonzero(host.below) requires nonzero(host.emit);
 
 enum IntegerBitwise : u32 { And = 0; Or = 1; Xor = 2; };
 // Inputs are the original integer Scalar width/bias and ordered intervals.

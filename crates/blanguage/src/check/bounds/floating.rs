@@ -1,9 +1,10 @@
 //! 同一Proof区间集合中的有限浮点次序；不拥有运行资源或另一份事实表。
 use super::*;
+use crate::builtin_types::ScalarBinaryOp;
 use crate::ir::scalar_ranges::RangeInput;
 #[path="floating/scalar.rs"]
 mod scalar;
-pub(super) use scalar::{order,bits,comparison_possible,finite,interval,bitcast,cast,arithmetic,math,sum,negate,add_up,multiply_up,divide_up,conversion_error};
+pub(super) use scalar::{order,bits,comparison_possible,interval,bitcast,cast,arithmetic,math,sum,negate};
 
 unsafe extern "C" {
     #[link_name = "bootstrap.scalar_fold::float_upper_maximum"]
@@ -70,19 +71,6 @@ impl Proof {
 
 impl FloatingBound {
     fn coefficients(self) -> [f64; 3] { self.terms.map(f64::from_bits) }
-    fn upper(self, terms: [f64; 3]) -> Self {
-        Self { terms: terms.map(f64::to_bits), form: FloatingForm::Upper, ..self }
-    }
-    fn scaled(self, factor: f64, extra: f64) -> Self {
-        let [a,b,c] = self.coefficients();
-        self.upper([multiply_up(a,factor),add_up(multiply_up(b,factor),extra),multiply_up(c,factor)])
-    }
-    fn rounded(self) -> Self { self.scaled(1.0 + 2.0f64.powi(-23),2.0f64.powi(-149)) }
-    fn common(self, other: Self) -> Option<Self> {
-        if self.source != other.source || self.scalar != other.scalar { return None; }
-        let bound = Self { lower: self.lower.max(other.lower), upper: self.upper.min(other.upper), ..self };
-        (bound.lower <= bound.upper).then_some(bound)
-    }
     fn maximum(self) -> f64 {
         let inputs = BitRange { lower: self.lower, upper: self.upper };
         let [scale, offset, reciprocal] = self.coefficients();
@@ -110,81 +98,109 @@ impl FloatingBound {
 fn upper_range(upper: f64) -> ScalarRanges {
     interval(Scalar::F32,-(f32::MAX as f64),upper)
 }
+type ArithmeticSlot = *mut std::ffi::c_void;
+type ArithmeticBorrow = *const std::ffi::c_void;
+
+#[derive(Default)]
+#[repr(C)]
+struct ArithmeticBound {
+    origin: ArithmeticBorrow,
+    scalar: ArithmeticBorrow,
+    range: BitRange,
+    scale: f64,
+    offset: f64,
+    reciprocal: f64,
+    form: u32,
+}
+
+#[repr(C)]
+struct ArithmeticHost {
+    rewind: unsafe extern "C" fn(ArithmeticSlot, u32),
+    next: unsafe extern "C" fn(ArithmeticSlot, u32) -> ArithmeticBound,
+    same_scalar: unsafe extern "C" fn(ArithmeticBorrow, ArithmeticBorrow) -> u32,
+    below: unsafe extern "C" fn(ArithmeticSlot, ArithmeticBorrow, ArithmeticBorrow, ArithmeticBorrow) -> bool,
+    emit: unsafe extern "C" fn(ArithmeticSlot, ArithmeticBound),
+}
+
+struct ArithmeticDomains<'a, 'program> {
+    builder: &'a Builder<'program>,
+    inputs: [&'a Domains; 2],
+    iterators: [std::collections::btree_set::Iter<'a, IndexDomain>; 2],
+    result: Domains,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.scalar_fold::float_arithmetic_domains"]
+    fn produce_arithmetic_domains(
+        op: ScalarBinaryOp, left_width: u32, left: BitRange, right_width: u32, right: BitRange,
+        context: ArithmeticSlot, host: ArithmeticHost,
+    );
+}
+
+unsafe extern "C" fn rewind_arithmetic_operand(context: ArithmeticSlot, side: u32) {
+    let state = unsafe { &mut *context.cast::<ArithmeticDomains<'_, '_>>() };
+    state.iterators[side as usize] = state.inputs[side as usize].iter();
+}
+
+unsafe extern "C" fn next_arithmetic_bound(context: ArithmeticSlot, side: u32) -> ArithmeticBound {
+    let state = unsafe { &mut *context.cast::<ArithmeticDomains<'_, '_>>() };
+    state.iterators[side as usize].find_map(|domain| {
+        let IndexDomain::Floating(bound) = domain else { return None; };
+        let [scale, offset, reciprocal] = bound.coefficients();
+        Some(ArithmeticBound {
+            origin: std::ptr::from_ref(&bound.source).cast(),
+            scalar: std::ptr::from_ref(&bound.scalar).cast(),
+            range: BitRange { lower: bound.lower, upper: bound.upper },
+            scale, offset, reciprocal,
+            form: u32::from(bound.form == FloatingForm::Upper) + 1,
+        })
+    }).unwrap_or_default()
+}
+
+unsafe extern "C" fn arithmetic_origin_below(
+    context: ArithmeticSlot, left: ArithmeticBorrow, right: ArithmeticBorrow, scalar: ArithmeticBorrow,
+) -> bool {
+    let state = unsafe { &*context.cast::<ArithmeticDomains<'_, '_>>() };
+    unsafe {
+        state.builder.integer_below(*left.cast::<ValueIdentity>(), *right.cast::<ValueIdentity>(), *scalar.cast::<Scalar>())
+    }
+}
+
+unsafe extern "C" fn emit_arithmetic_bound(context: ArithmeticSlot, value: ArithmeticBound) {
+    let state = unsafe { &mut *context.cast::<ArithmeticDomains<'_, '_>>() };
+    let bound = FloatingBound {
+        source: unsafe { *value.origin.cast::<ValueIdentity>() },
+        scalar: unsafe { *value.scalar.cast::<Scalar>() },
+        lower: value.range.lower,
+        upper: value.range.upper,
+        terms: [value.scale, value.offset, value.reciprocal].map(f64::to_bits),
+        form: FloatingForm::Upper,
+    };
+    state.result.insert(IndexDomain::Floating(bound));
+}
+
 pub(super) fn arithmetic_domains(builder: &Builder<'_>, op: &str, a: &Value, b: &Value, component: usize) -> Domains {
-    let (ai,bi) = (component % a.regs.len(),component % b.regs.len());
-    let Some((al,ah)) = finite(a,ai) else { return Domains::new(); };
-    let Some((bl,bh)) = finite(b,bi) else { return Domains::new(); };
-    let mut domains = Domains::new();
-    for (value,at,other_min,other_max) in [(a,ai,bl,bh),(b,bi,al,ah)] {
-        for domain in value.proof.domains(at).iter().copied() {
-            let IndexDomain::Floating(bound) = domain else { continue; };
-            let bound = if bound.form == FloatingForm::Cast && op == "+" {
-                bound.upper([1.0 + conversion_error(bound.upper), 0.0, 0.0])
-            } else { bound };
-            if bound.form != FloatingForm::Upper { continue; }
-            let [x,y,z] = bound.coefficients();
-            let result = match op {
-                "+" if al >= 0.0 && bl >= 0.0 => Some(bound.upper([x,add_up(y,other_max),z]).rounded()),
-                "*" if other_min >= 0.0 && other_min == other_max && finite(value,at).is_some_and(|(low,_)| low >= 0.0) => Some(bound.scaled(other_max,0.0).rounded()),
-                _ => None,
-            };
-            if let Some(result) = result { domains.insert(IndexDomain::Floating(result)); }
-        }
+    let Some(operation @ (ScalarBinaryOp::Add | ScalarBinaryOp::Multiply | ScalarBinaryOp::Divide)) =
+        scalar::arithmetic_operation(op)
+    else { return Domains::new(); };
+    let (ai, bi) = (component % a.regs.len(), component % b.regs.len());
+    let domains = [a.proof.domains(ai), b.proof.domains(bi)];
+    let inputs: [&Domains; 2] = domains.each_ref().map(|domains| domains.as_ref());
+    if inputs.iter().all(|domains| domains.is_empty()) { return Domains::new(); }
+    let mut state = ArithmeticDomains { builder, inputs, iterators: inputs.map(Domains::iter), result: Domains::new() };
+    unsafe {
+        produce_arithmetic_domains(
+            operation,
+            a.ty.components[ai].0.bit_width(), ranges(a, ai).hull().into(),
+            b.ty.components[bi].0.bit_width(), ranges(b, bi).hull().into(),
+            std::ptr::from_mut(&mut state).cast(),
+            ArithmeticHost {
+                rewind: rewind_arithmetic_operand, next: next_arithmetic_bound,
+                same_scalar: fact_fields::same_scalar, below: arithmetic_origin_below, emit: emit_arithmetic_bound,
+            },
+        );
     }
-    if op == "/" && al >= 0.0 && bl > 0.0 {
-        for domain in b.proof.domains(bi).iter().copied() {
-            let IndexDomain::Floating(divisor) = domain else { continue; };
-            if divisor.form != FloatingForm::Cast || divisor.lower == 0 { continue; }
-            let factor = divide_up(1.0 + 3.0*2.0f64.powi(-23),1.0-conversion_error(divisor.upper));
-            domains.insert(IndexDomain::Floating(divisor.upper([0.0,3.0*2.0f64.powi(-149),multiply_up(ah,factor)])));
-            for numerator in a.proof.domains(ai).iter().copied() {
-                let IndexDomain::Floating(numerator) = numerator else { continue; };
-                if numerator.form != FloatingForm::Upper { continue; }
-                let [x,y,z] = numerator.coefficients();
-                if z != 0.0 { continue; }
-                if let Some(common) = numerator.common(divisor) {
-                    domains.insert(IndexDomain::Floating(common.upper([0.0,add_up(multiply_up(x,factor),3.0*2.0f64.powi(-149)),multiply_up(y,factor)])));
-                }
-            }
-        }
-    }
-    if op == "*" && al >= 0.0 && bl >= 0.0 {
-        for (left,li,right,ri) in [(a,ai,b,bi),(b,bi,a,ai)] {
-            for left in left.proof.domains(li).iter().copied() {
-                let IndexDomain::Floating(left) = left else { continue; };
-                if left.form != FloatingForm::Upper { continue; }
-                let [a,b,c] = left.coefficients();
-                if c != 0.0 { continue; }
-                for right in right.proof.domains(ri).iter().copied() {
-                    let IndexDomain::Floating(right) = right else { continue; };
-                    if right.form != FloatingForm::Upper { continue; }
-                    let [x,y,z] = right.coefficients();
-                    if x != 0.0 || y < 0.0 { continue; }
-                    let mut left = left;
-                    let mut b = b;
-                    if left.source != right.source && left.scalar == right.scalar && a >= 0.0 && z != 0.0
-                        && builder.integer_below(left.source, right.source, left.scalar)
-                    {
-                        b = add_up(b, -a);
-                        left = FloatingBound { source: right.source, lower: right.lower, upper: right.upper, ..left }.upper([a,b,0.0]);
-                    }
-                    if let Some(common) = left.common(right) {
-                        let result = common.upper([multiply_up(a,y),add_up(multiply_up(a,z),multiply_up(b,y)),multiply_up(b,z)]).rounded();
-                        domains.insert(IndexDomain::Floating(result));
-                    }
-                }
-            }
-        }
-    }
-    // A finite upper fact must not conceal an overflowing intermediate result.
-    domains.retain(|domain| match domain {
-        IndexDomain::Floating(bound) => {
-            let maximum = bound.maximum();
-            maximum.is_finite() && maximum <= f32::MAX as f64
-        }
-        _ => true,
-    });
-    domains
+    state.result
 }
 pub(super) fn refine(proof: &mut Proof) {
     for (component,domains) in proof.domains.iter().enumerate() {
