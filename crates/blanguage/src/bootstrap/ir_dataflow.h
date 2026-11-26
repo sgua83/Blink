@@ -585,44 +585,27 @@ extern "C" u32 program_maximal_reconvergence(Span stages,Host host) on cpu requi
 // The original program's buffers and type storage are borrowed synchronously.
 extern "C" u32 shader_pages_fit(Span buffers,u32 bytes,Host host) on cpu requires nonzero(host.inspect);
 
-// CPU ordering borrows the real block and reuses its pending instruction storage.
-enum ReadQueue:u32 { Immediate=0; Value=1; Shared=2; Local=3; };
-enum ReadWorkKind:u32 { Done=0; Expand=1; Emit=2; Demand=3; };
-enum ReadClear:u32 { All=0; Shared=1; Local=2; };
-struct ReadWork { usize id; ReadWorkKind kind; };
-struct ReadPrivate { usize id; usize first; usize end; bool pending; };
+// The host moves whole IR instructions. The scheduler owns all pending metadata.
 struct ReadHost {
  Host ir;
  cfn<u64,u32> math_outgoing;
  cfn<Node,address> next;
- cfn<void,address> sample;
- cfn<void,address,u32> child;
- cfn<void,address,address,ReadQueue,usize,usize,usize> store;
+ cfn<usize,address> sample;
+ cfn<void,address,u32,address> child;
+ cfn<void,address,address,bool> store;
  cfn<Node,address,usize> queued;
- cfn<u32,address,usize> enqueue_operand;
- cfn<u32,address,usize> demand_operand;
- cfn<usize,address,usize> producer;
- cfn<void,address,usize,usize> bind;
- cfn<void,address,usize> unbind;
- cfn<usize,address> work_len;
- cfn<void,address,ReadWork> push;
- cfn<void,address,usize> reverse;
- cfn<ReadWork,address> pop;
  cfn<void,address,usize> emit;
- cfn<usize,address,ReadClear> count;
- cfn<usize,address,usize> read_at;
- cfn<ReadPrivate,address,usize> private_at;
- cfn<void,address,usize,usize> retain;
- cfn<void,address,ReadClear,usize> clear;
+ cfn<void,address> clear;
 };
-extern "C" void place_reads(address input,address pending,Span writes,ReadHost host) on cpu
+extern "C" void place_reads(address input,address pending,Span writes,usize registers,ReadHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.math_outgoing)
- requires nonzero(host.next) requires nonzero(host.sample) requires nonzero(host.child) requires nonzero(host.store)
- requires nonzero(host.queued) requires nonzero(host.enqueue_operand) requires nonzero(host.demand_operand)
- requires nonzero(host.producer) requires nonzero(host.bind) requires nonzero(host.unbind) requires nonzero(host.work_len)
- requires nonzero(host.push) requires nonzero(host.reverse) requires nonzero(host.pop)
- requires nonzero(host.emit) requires nonzero(host.count) requires nonzero(host.read_at)
- requires nonzero(host.private_at) requires nonzero(host.retain) requires nonzero(host.clear);
+ requires nonzero(host.next) requires nonzero(host.sample) requires nonzero(host.child)
+ requires nonzero(host.store) requires nonzero(host.queued) requires nonzero(host.emit) requires nonzero(host.clear);
+// Only a synchronous child of the current placement may borrow its scratch.
+extern "C" void place_read_block(address input,address pending,address scratch,Span writes,ReadHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.math_outgoing)
+ requires nonzero(host.next) requires nonzero(host.sample) requires nonzero(host.child)
+ requires nonzero(host.store) requires nonzero(host.queued) requires nonzero(host.emit) requires nonzero(host.clear);
 
 enum CpuRangePass:u32 { Reduce=0; ReduceTail=1; Scan=2; ScanPrefix=3; ScanAdd=4;
  SegmentReduce=5; SegmentPrefix=6; SegmentFinish=7; };

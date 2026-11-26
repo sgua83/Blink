@@ -2321,187 +2321,270 @@ extern "C" u32 shader_pages_fit(Span buffers,u32 bytes,Host host) on cpu require
  return 1;
 }
 
-void read_expand(address pending,usize id,ReadHost host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.queued)
- requires nonzero(host.push) requires nonzero(host.work_len) requires nonzero(host.reverse) requires nonzero(host.enqueue_operand) {
- Node node=host.queued(pending,id);
- if(address_bits(node.data)==0u64){return;}
- host.push(pending,ReadWork(id,ReadWorkKind::Emit));
- usize start=host.work_len(pending);
- operands(node,host.ir,pending,host.enqueue_operand);
- host.reverse(pending,start);
+extern "C" handle GetProcessHeap() on cpu from "KERNEL32.dll";
+extern "C" address HeapAlloc(handle heap,u32 flags,usize bytes) on cpu from "KERNEL32.dll";
+extern "C" address HeapReAlloc(handle heap,u32 flags,address data,usize bytes) on cpu from "KERNEL32.dll";
+extern "C" i32 HeapFree(handle heap,u32 flags,address data) on cpu from "KERNEL32.dll";
+
+const u32 READ_HEAP_EXCEPTIONS=4;
+const u32 READ_HEAP_ZERO=8;
+struct ReadStorage {address data;usize capacity;};
+struct ReadList {ReadStorage storage;usize count;};
+enum ReadWorkKind:u32 {Expand=0;Emit=1;Demand=2;};
+struct ReadWork {usize id;ReadWorkKind kind;};
+struct ReadPrivate {usize id;usize first;usize end;};
+struct ReadScratch {
+ ReadStorage producers;
+ ReadList work;
+ ReadList shared;
+ ReadList locals;
+ usize pending;
+};
+
+void reserve_reads(inout ReadStorage storage,usize needed,usize stride,u32 flags) on cpu {
+ if(needed<=storage.capacity){return;}
+ usize grown=storage.capacity==0u64 ? 4u64 : storage.capacity*2u64;
+ usize capacity=grown<needed ? needed : grown;
+ handle heap=GetProcessHeap();
+ if(storage.capacity==0u64){
+  storage.data=HeapAlloc(heap,flags|READ_HEAP_EXCEPTIONS,capacity*stride);
+ }else{
+  storage.data=HeapReAlloc(heap,flags|READ_HEAP_EXCEPTIONS,storage.data,capacity*stride);
+ }
+ storage.capacity=capacity;
 }
 
-void read_emit(address pending,usize id,ReadHost host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.queued)
- requires nonzero(host.unbind) requires nonzero(host.emit) {
+address read_row<T>(ReadStorage storage,usize index) on cpu {
+ return unsafe_address(address_bits(storage.data)+u64(index)*size_of<T>());
+}
+
+void push_read<T>(inout ReadList rows,T value) on cpu {
+ reserve_reads(rows.storage,rows.count+1u64,size_of<T>(),0);
+ unsafe_position<T>(read_row<T>(rows.storage,rows.count))=value;
+ rows.count+=1u64;
+}
+
+void release_reads(ReadStorage storage) on cpu {
+ if(storage.capacity!=0u64){HeapFree(GetProcessHeap(),0,storage.data);}
+}
+
+usize read_producer(ReadStorage producers,usize reg) on cpu {
+ return unsafe_position<usize>(read_row<usize>(producers,reg));
+}
+
+struct ReadOperands {address scratch;bool deferred;};
+extern "C" u32 read_operand(address context,usize reg) on cpu {
+ ReadOperands operands=unsafe_position<ReadOperands>(context);
+ if(operands.deferred){
+  push_read<ReadWork>(unsafe_position<ReadScratch>(operands.scratch).work,ReadWork(reg,ReadWorkKind::Demand));
+ }else{
+  usize producer=read_producer(unsafe_position<ReadScratch>(operands.scratch).producers,reg);
+  if(producer!=0u64){
+   push_read<ReadWork>(unsafe_position<ReadScratch>(operands.scratch).work,ReadWork(producer-1u64,ReadWorkKind::Expand));
+  }
+ }
+ return 1;
+}
+
+void append_read_operands(View inst,address scratch,bool deferred,Host host) on cpu
+ requires nonzero(host.inspect) {
+ ReadOperands context=ReadOperands(scratch,deferred);
+ usize first=unsafe_position<ReadScratch>(scratch).work.count;
+ visit_instruction(inst,host,address_of(context),c_function(read_operand));
+ ReadList work=unsafe_position<ReadScratch>(scratch).work;
+ usize end=work.count;
+ while(first+1u64<end){
+  end-=1u64;
+  address left=read_row<ReadWork>(work.storage,first);
+  address right=read_row<ReadWork>(work.storage,end);
+  ReadWork previous=unsafe_position<ReadWork>(left);
+  unsafe_position<ReadWork>(left)=unsafe_position<ReadWork>(right);
+  unsafe_position<ReadWork>(right)=previous;
+  first+=1u64;
+ }
+}
+
+void read_expand(address pending,address scratch,usize id,ReadHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.queued) {
+ Node node=host.queued(pending,id);
+ if(address_bits(node.data)==0u64){return;}
+ push_read<ReadWork>(unsafe_position<ReadScratch>(scratch).work,ReadWork(id,ReadWorkKind::Emit));
+ append_read_operands(host.ir.inspect(node),scratch,false,host.ir);
+}
+
+void read_emit(address pending,address scratch,usize id,ReadHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.queued) requires nonzero(host.emit) {
  Node node=host.queued(pending,id);
  if(address_bits(node.data)==0u64){return;}
  Results outputs=results(node,host.ir);
+ ReadStorage producers=unsafe_position<ReadScratch>(scratch).producers;
  Word reg=next_result(outputs);
  while(reg.present!=0){
-  host.unbind(pending,reg.value);
+  unsafe_position<usize>(read_row<usize>(producers,reg.value))=0u64;
   reg=next_result(outputs);
  }
  host.emit(pending,id);
 }
 
-void drain_reads(address pending,ReadHost host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.queued) requires nonzero(host.push)
- requires nonzero(host.work_len) requires nonzero(host.reverse) requires nonzero(host.pop)
- requires nonzero(host.emit) requires nonzero(host.enqueue_operand)
- requires nonzero(host.producer) requires nonzero(host.unbind) {
- while(true) {
-  ReadWork work=host.pop(pending);
-  if(work.kind==ReadWorkKind::Done){return;}
-  if(work.kind==ReadWorkKind::Emit){read_emit(pending,work.id,host);}
-  else if(work.kind==ReadWorkKind::Demand){
-   // Boundary operands use the producer still present after the preceding operand finishes.
-   usize producer=host.producer(pending,work.id);
-   if(producer!=18446744073709551615u64){read_expand(pending,producer,host);}
-  }else{read_expand(pending,work.id,host);}
+void drain_reads(address pending,address scratch,ReadHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.queued) requires nonzero(host.emit) {
+ while(unsafe_position<ReadScratch>(scratch).work.count!=0u64){
+  unsafe_position<ReadScratch>(scratch).work.count-=1u64;
+  ReadList work=unsafe_position<ReadScratch>(scratch).work;
+  ReadWork task=unsafe_position<ReadWork>(read_row<ReadWork>(work.storage,work.count));
+  if(task.kind==ReadWorkKind::Emit){read_emit(pending,scratch,task.id,host);}
+  else if(task.kind==ReadWorkKind::Demand){
+   // The preceding operand can retire this definition before it is needed.
+   usize producer=read_producer(unsafe_position<ReadScratch>(scratch).producers,task.id);
+   if(producer!=0u64){read_expand(pending,scratch,producer-1u64,host);}
+  }else{read_expand(pending,scratch,task.id,host);}
  }
 }
 
-void read_demand(address pending,usize id,ReadHost host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.queued) requires nonzero(host.push)
- requires nonzero(host.work_len) requires nonzero(host.reverse) requires nonzero(host.pop)
- requires nonzero(host.emit) requires nonzero(host.enqueue_operand)
- requires nonzero(host.producer) requires nonzero(host.unbind) {
- read_expand(pending,id,host);
- drain_reads(pending,host);
+void read_demand(address pending,address scratch,usize id,ReadHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.queued) requires nonzero(host.emit) {
+ read_expand(pending,scratch,id,host);
+ drain_reads(pending,scratch,host);
 }
 
-void demand_read_operands(View inst,address pending,ReadHost host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.queued) requires nonzero(host.push)
- requires nonzero(host.work_len) requires nonzero(host.reverse) requires nonzero(host.pop)
- requires nonzero(host.emit) requires nonzero(host.enqueue_operand)
- requires nonzero(host.producer) requires nonzero(host.unbind) requires nonzero(host.demand_operand) {
- usize start=host.work_len(pending);
- visit_instruction(inst,host.ir,pending,host.demand_operand);
- host.reverse(pending,start);
- drain_reads(pending,host);
-}
-
-void queue_read(address input,address pending,View inst,ReadQueue queue,usize first,usize end,ReadHost host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.count) requires nonzero(host.bind) requires nonzero(host.store) {
- usize id=host.count(pending,ReadClear::All);
- // Any borrowed result span belongs to the input instruction until store moves it.
+void queue_read(address input,address pending,address scratch,View inst,ReadHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.store) {
+ usize id=unsafe_position<ReadScratch>(scratch).pending;
  Results outputs=view_results(inst,host.ir);
+ ReadStorage producers=unsafe_position<ReadScratch>(scratch).producers;
  Word reg=next_result(outputs);
  while(reg.present!=0){
-  host.bind(pending,reg.value,id);
+  unsafe_position<usize>(read_row<usize>(producers,reg.value))=id+1u64;
   reg=next_result(outputs);
  }
- host.store(input,pending,queue,id,first,end);
+ host.store(input,pending,true);
+ unsafe_position<ReadScratch>(scratch).pending=id+1u64;
 }
 
-void finish_shared_reads(address pending,ReadHost host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.queued) requires nonzero(host.push)
- requires nonzero(host.work_len) requires nonzero(host.reverse) requires nonzero(host.pop)
- requires nonzero(host.emit) requires nonzero(host.enqueue_operand) requires nonzero(host.count) requires nonzero(host.read_at)
- requires nonzero(host.producer) requires nonzero(host.unbind) requires nonzero(host.clear) {
- usize count=host.count(pending,ReadClear::Shared);
+void finish_shared_reads(address pending,address scratch,ReadHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.queued) requires nonzero(host.emit) {
+ ReadList shared=unsafe_position<ReadScratch>(scratch).shared;
  usize index=0u64;
- while(index<count) {
-  read_demand(pending,host.read_at(pending,index),host);
+ while(index<shared.count){
+  read_demand(pending,scratch,unsafe_position<usize>(read_row<usize>(shared.storage,index)),host);
   index+=1u64;
  }
- host.clear(pending,ReadClear::Shared,0u64);
+ unsafe_position<ReadScratch>(scratch).shared.count=0u64;
 }
 
-void finish_overlapping_reads(address pending,usize first,usize end,ReadHost host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.queued) requires nonzero(host.push)
- requires nonzero(host.work_len) requires nonzero(host.reverse) requires nonzero(host.pop)
- requires nonzero(host.emit) requires nonzero(host.enqueue_operand) requires nonzero(host.count) requires nonzero(host.private_at)
- requires nonzero(host.producer) requires nonzero(host.unbind) requires nonzero(host.retain) requires nonzero(host.clear) {
- usize count=host.count(pending,ReadClear::Local);
+void finish_overlapping_reads(address pending,address scratch,usize first,usize end,ReadHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.queued) requires nonzero(host.emit) {
+ ReadList locals=unsafe_position<ReadScratch>(scratch).locals;
  usize kept=0u64;
  usize index=0u64;
- while(index<count) {
-  ReadPrivate row=host.private_at(pending,index);
-  if(row.pending) {
-   if(row.first<end&&first<row.end){read_demand(pending,row.id,host);}
-   else {
-    host.retain(pending,index,kept);
+ while(index<locals.count){
+  ReadPrivate row=unsafe_position<ReadPrivate>(read_row<ReadPrivate>(locals.storage,index));
+  if(address_bits(host.queued(pending,row.id).data)!=0u64){
+   if(row.first<end&&first<row.end){read_demand(pending,scratch,row.id,host);}
+   else{
+    unsafe_position<ReadPrivate>(read_row<ReadPrivate>(locals.storage,kept))=row;
     kept+=1u64;
    }
   }
   index+=1u64;
  }
- host.clear(pending,ReadClear::Local,kept);
+ unsafe_position<ReadScratch>(scratch).locals.count=kept;
 }
 
-void read_finish(address pending,ReadHost host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.queued) requires nonzero(host.push)
- requires nonzero(host.work_len) requires nonzero(host.reverse) requires nonzero(host.pop)
- requires nonzero(host.emit) requires nonzero(host.enqueue_operand) requires nonzero(host.count) requires nonzero(host.clear)
- requires nonzero(host.producer) requires nonzero(host.unbind) {
- usize count=host.count(pending,ReadClear::All);
+void read_finish(address pending,address scratch,ReadHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.queued)
+ requires nonzero(host.emit) requires nonzero(host.clear) {
+ usize count=unsafe_position<ReadScratch>(scratch).pending;
  usize index=0u64;
- while(index<count) {
-  read_demand(pending,index,host);
+ while(index<count){
+  read_demand(pending,scratch,index,host);
   index+=1u64;
  }
- host.clear(pending,ReadClear::All,0u64);
+ host.clear(pending);
+ unsafe_position<ReadScratch>(scratch).pending=0u64;
+ unsafe_position<ReadScratch>(scratch).shared.count=0u64;
+ unsafe_position<ReadScratch>(scratch).locals.count=0u64;
 }
 
 bool binding_written(Span writes,usize binding) on cpu {
  usize index=0u64;
- while(index<writes.count) {
+ while(index<writes.count){
   if(word_at(writes,index)==binding){return true;}
   index+=1u64;
  }
  return false;
 }
 
-extern "C" void place_reads(address input,address pending,Span writes,ReadHost host) on cpu
+extern "C" void place_read_block(address input,address pending,address scratch,Span writes,ReadHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.math_outgoing)
- requires nonzero(host.next) requires nonzero(host.sample) requires nonzero(host.child) requires nonzero(host.store)
- requires nonzero(host.queued) requires nonzero(host.enqueue_operand) requires nonzero(host.demand_operand)
- requires nonzero(host.producer) requires nonzero(host.bind) requires nonzero(host.unbind) requires nonzero(host.work_len)
- requires nonzero(host.push) requires nonzero(host.reverse) requires nonzero(host.pop)
- requires nonzero(host.emit) requires nonzero(host.count) requires nonzero(host.read_at)
- requires nonzero(host.private_at) requires nonzero(host.retain) requires nonzero(host.clear) {
- while(true) {
+ requires nonzero(host.next) requires nonzero(host.sample) requires nonzero(host.child)
+ requires nonzero(host.store) requires nonzero(host.queued) requires nonzero(host.emit) requires nonzero(host.clear) {
+ while(true){
   Node node=host.next(input);
   if(address_bits(node.data)==0u64){break;}
   View inst=host.ir.inspect(node);
   u32 tag=inst.tag;
-  if(tag==OP_TEXTURE_SAMPLE){host.sample(input);continue;}
+  if(tag==OP_TEXTURE_SAMPLE){
+   usize registers=host.sample(input);
+   reserve_reads(unsafe_position<ReadScratch>(scratch).producers,registers,size_of<usize>(),READ_HEAP_ZERO);
+   continue;
+  }
   if(tag==OP_CONSTANT||tag==OP_INDEX_VALUE||tag==OP_UNARY||tag==OP_BINARY||tag==OP_INTEGER_DIVIDE||
-     tag==OP_CAST||tag==OP_SELECT_VALUE||(tag==OP_MATH&&host.math_outgoing(u32(inst.b))==0u64)) {
-   queue_read(input,pending,inst,ReadQueue::Value,0u64,0u64,host);
-  } else if(tag==OP_LOAD_LOCAL||tag==OP_LOAD_LOCAL_INDEXED) {
+     tag==OP_CAST||tag==OP_SELECT_VALUE||(tag==OP_MATH&&host.math_outgoing(u32(inst.b))==0u64)){
+   queue_read(input,pending,scratch,inst,host);
+  }else if(tag==OP_LOAD_LOCAL||tag==OP_LOAD_LOCAL_INDEXED){
    usize end=inst.b+1u64;
    if(tag==OP_LOAD_LOCAL_INDEXED){end=inst.b+inst.c;}
-   queue_read(input,pending,inst,ReadQueue::Local,inst.b,end,host);
-  } else if(tag==OP_VIEW_LOAD||(tag==OP_LOAD&&!binding_written(writes,inst.b))) {
-   queue_read(input,pending,inst,ReadQueue::Shared,0u64,0u64,host);
-  } else {
-   if(tag==OP_STORE_LOCAL||tag==OP_STORE_LOCAL_INDEXED) {
-    finish_shared_reads(pending,host);
+   usize id=unsafe_position<ReadScratch>(scratch).pending;
+   push_read<ReadPrivate>(unsafe_position<ReadScratch>(scratch).locals,ReadPrivate(id,inst.b,end));
+   queue_read(input,pending,scratch,inst,host);
+  }else if(tag==OP_VIEW_LOAD||(tag==OP_LOAD&&!binding_written(writes,inst.b))){
+   usize id=unsafe_position<ReadScratch>(scratch).pending;
+   push_read<usize>(unsafe_position<ReadScratch>(scratch).shared,id);
+   queue_read(input,pending,scratch,inst,host);
+  }else{
+   if(tag==OP_STORE_LOCAL||tag==OP_STORE_LOCAL_INDEXED){
+    finish_shared_reads(pending,scratch,host);
     usize end=inst.a+1u64;
     if(tag==OP_STORE_LOCAL_INDEXED){end=inst.a+inst.b;}
-    finish_overlapping_reads(pending,inst.a,end,host);
-    demand_read_operands(inst,pending,host);
-   } else if(tag==OP_STORE||tag==OP_STORE_INDEXED||tag==OP_LOAD_INDEXED||tag==OP_LOAD) {
-    finish_shared_reads(pending,host);
-    demand_read_operands(inst,pending,host);
-   } else if(tag!=OP_UNIFORM) {
-    // A full boundary leaves no pending producer to demand for this instruction.
-    read_finish(pending,host);
-    if(tag==OP_BRANCH||tag==OP_LOOP_VALUE) {
-     host.child(input,0);
-     host.child(input,1);
-    } else if(tag==OP_SCOPE) {
-     host.child(input,0);
+    finish_overlapping_reads(pending,scratch,inst.a,end,host);
+    append_read_operands(inst,scratch,true,host.ir);
+    drain_reads(pending,scratch,host);
+   }else if(tag==OP_STORE||tag==OP_STORE_INDEXED||tag==OP_LOAD_INDEXED||tag==OP_LOAD){
+    finish_shared_reads(pending,scratch,host);
+    append_read_operands(inst,scratch,true,host.ir);
+    drain_reads(pending,scratch,host);
+   }else if(tag!=OP_UNIFORM){
+    // A child borrows the emptied scheduler after the parent finishes every producer.
+    read_finish(pending,scratch,host);
+    if(tag==OP_BRANCH||tag==OP_LOOP_VALUE){
+     host.child(input,0,scratch);
+     host.child(input,1,scratch);
+    }else if(tag==OP_SCOPE){
+     host.child(input,0,scratch);
     }
    }
-   host.store(input,pending,ReadQueue::Immediate,0u64,0u64,0u64);
+   host.store(input,pending,false);
   }
  }
- read_finish(pending,host);
+ read_finish(pending,scratch,host);
+}
+
+extern "C" void place_reads(address input,address pending,Span writes,usize registers,ReadHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.math_outgoing)
+ requires nonzero(host.next) requires nonzero(host.sample) requires nonzero(host.child)
+ requires nonzero(host.store) requires nonzero(host.queued) requires nonzero(host.emit) requires nonzero(host.clear) {
+ ReadStorage empty=ReadStorage(address(),0u64);
+ ReadList list=ReadList(empty,0u64);
+ ReadScratch scratch=ReadScratch(empty,list,list,list,0u64);
+ // Every operand is an index in the original register table. Texture lowering
+ // is its only producer during placement and publishes each new length.
+ reserve_reads(scratch.producers,registers,size_of<usize>(),READ_HEAP_ZERO);
+ place_read_block(input,pending,address_of(scratch),writes,host);
+ release_reads(scratch.producers);
+ release_reads(scratch.work.storage);
+ release_reads(scratch.shared.storage);
+ release_reads(scratch.locals.storage);
 }
 
 extern "C" CpuRangePlan cpu_range_plan(CpuRangePass pass,usize words,u32 has_head,u32 counted) on cpu {
