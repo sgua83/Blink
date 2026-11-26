@@ -325,13 +325,8 @@ pub(super) fn emit(
         &live,
         &std::collections::BTreeSet::new(),
     ));
-    let tile_width = stage.tile_workgroup_width();
-    let tile_scope = tile_width.is_some();
     let mut graph = allocation::Graph::with_live(&stage.code, &stage.registers, &stage.locals, live);
-    if tile_scope {
-        graph.tile_interference(&stage.tile_phases());
-    }
-    let allocation = Allocation::new(&stage.locals, &mut graph, tile_scope);
+    let allocation = Allocation::new(&stage.locals, &mut graph, false);
     drop(graph);
     let layout = Frame::new(&allocation, None);
     let frame = i32::try_from(layout.end.div_ceil(16) * 16)
@@ -348,9 +343,9 @@ pub(super) fn emit(
         function_abi: None,
         literals: std::collections::BTreeMap::new(),
         registers: &stage.registers,
-        tiles: &stage.tiles,
+        tiles: &[],
         range_origin: OperationOrigin::default(),
-        workgroup: tile_width.unwrap_or(Stage::DEFAULT_WORKGROUP_WIDTH),
+        workgroup: Stage::DEFAULT_WORKGROUP_WIDTH,
         buffers: &buffers,
         textures: &program.textures,
         breaks: Vec::new(),

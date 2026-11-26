@@ -71,7 +71,7 @@ pub(crate) fn kernel(reduction: &CustomReduction, stage: &Stage, project: bool, 
         registers: Vec::new(), locals: BTreeMap::new(), code: Vec::new(),
         reads: stage.reads.clone(), writes: stage.writes.clone(), write_regions: stage.write_regions.clone(),
         prefix_guarantees: stage.prefix_guarantees.clone(), element_guarantees: stage.element_guarantees.clone(),
-        cross_access: stage.cross_access.clone(), tiles: stage.tiles.clone(),
+        cross_access: stage.cross_access.clone(), tiles: Vec::new(),
     };
     let kernel = ReductionKernel { stage, invariant_end: 0, invariants: BTreeSet::new(),
         initialize_end: 0, project_end: 0, source: Vec::new(), projected: Vec::new(),

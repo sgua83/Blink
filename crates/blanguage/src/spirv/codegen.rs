@@ -1952,7 +1952,6 @@ impl ShaderStageFacts {
 
 struct PreparedReduction {
     kernel: ReductionKernel,
-    layout: PlacedTiles,
     facts: ShaderStageFacts,
 }
 
@@ -1970,9 +1969,8 @@ fn prepare_reduction(stage: &Stage, pass: ShaderPass) -> Option<PreparedReductio
         KernelPreparation::Combine => (false, false),
     };
     let kernel = reduction.kernel(stage, project, identity);
-    let layout = kernel.stage.tile_layout(true, None);
     let facts = ShaderStageFacts::new(&kernel.stage, pass.numeric != 0, pass.kind == EntryPass::Main);
-    Some(PreparedReduction { kernel, layout, facts })
+    Some(PreparedReduction { kernel, facts })
 }
 
 #[repr(C)]
@@ -2189,8 +2187,15 @@ fn emit_shader(
     let argument_pass = request.arguments != 0;
     let numeric_pass = request.numeric != 0;
     let local_facts;
-    let (stage, tile_layout, facts, custom_kernel) = match reduction {
-        Some(prepared) => (&prepared.kernel.stage, &prepared.layout, &prepared.facts, Some(&prepared.kernel)),
+    let empty_tiles;
+    let (stage, tile_layout, tile_width, facts, custom_kernel) = match reduction {
+        Some(prepared) => {
+            empty_tiles = PlacedTiles {
+                words: BTreeMap::new(),
+                extents: Default::default(),
+            };
+            (&prepared.kernel.stage, &empty_tiles, None, &prepared.facts, Some(&prepared.kernel))
+        }
         None => {
             let facts = match shared_original_facts {
                 Some(shared) => shared,
@@ -2199,7 +2204,7 @@ fn emit_shader(
                     &local_facts
                 }
             };
-            (original_stage, layout, facts, None)
+            (original_stage, layout, original_stage.tile_workgroup_width(), facts, None)
         }
     };
     let mut e = Emitter {
@@ -2236,7 +2241,7 @@ fn emit_shader(
         ext: 0,
         subgroup_inputs: [0; 3],
         ballot_type: 0,
-        workgroup_width: stage.workgroup_width(),
+        workgroup_width: tile_width.unwrap_or(Stage::DEFAULT_WORKGROUP_WIDTH),
         tile_layout: &tile_layout.words,
         tile_shared64: 0,
         tile_pointer64: 0,
@@ -2297,7 +2302,8 @@ fn emit_shader(
     let resources = e.declare_shader_resources(publishes_summary, single_group, argument_pass);
     let ShaderResourceIds { ray_pointer, index_type: v3, global, num_groups, .. } = resources;
     let (narrow_cells, wide_cells, scratch_words) = if pass == EntryPass::Main {
-        (tile_layout.extents.narrow as u64, tile_layout.extents.wide as u64, stage.tile_scratch_bytes() / 4)
+        let scratch_words = tile_width.map_or(0, |_| stage.tile_scratch_bytes() / 4);
+        (tile_layout.extents.narrow as u64, tile_layout.extents.wide as u64, scratch_words)
     } else {
         (0, 0, 0)
     };
@@ -2372,7 +2378,7 @@ fn emit_shader(
         selection: u32::from(!selection.is_null()), scan_local,
         segmented_scan: u32::from(segment_head.is_some()),
         invariants: u32::from(custom_kernel.is_some()),
-        tile_scope: u32::from(stage.has_tile_scope()),
+        tile_scope: u32::from(tile_width.is_some()),
         prefix_index: u32::from(num_groups != 0),
     };
     let mut emission = ShaderBodyEmission {
