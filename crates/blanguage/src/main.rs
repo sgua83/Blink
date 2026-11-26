@@ -10,7 +10,7 @@ mod layout_facts;
 mod x64_facts;
 mod spirv_facts;
 
-use std::{ffi::{OsStr, OsString, c_void}, num::NonZeroUsize, path::{Path, PathBuf}, process::ExitCode};
+use std::{ffi::{OsStr, OsString, c_void}, io::Write, num::NonZeroUsize, path::Path, process::ExitCode};
 
 #[repr(C)]
 struct Argument {
@@ -257,37 +257,144 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         CompileCommand::Object => return build_object(&compiler, &args, operands, &line),
         _ => line.error.result(&args, line.error_index)?,
     }
-    let path = PathBuf::from(&args[line.source_index]);
-    let root = args.get(line.root_index).map(PathBuf::from).unwrap_or_else(|| path.parent().unwrap().into());
-    let has_output = matches!(line.command, CompileCommand::Build);
-    let compilation = if let Some(entry) = args.get(line.entry_index) {
-        compiler.compile_entry(&path, &root, unsafe { parsed_text(entry) })?
-    } else if has_output {
-        compiler.compile(&path, &root)?
-    } else {
-        compiler.check(&path, &root)?
+    let path = Path::new(&args[line.source_index]);
+    let root = args.get(line.root_index).map(Path::new).unwrap_or_else(|| path.parent().unwrap());
+    let mut program = ProgramCommand { compiler: &compiler, args: &args, path, root, compilation: None, error: None };
+    let host = ProgramCommandHost {
+        context: std::ptr::from_mut(&mut program).cast(),
+        compile: compile_programs,
+        report_generics: report_open_generics,
+        describe: describe_program,
+        prepare_output: prepare_output_directory,
+        export_program: export_requested_program,
+        report_library: report_checked_library,
     };
-    if !compilation.open_generics.is_empty() {
-        println!(
-            "open generic declarations (body checked on instantiation): {}",
-            compilation.open_generics.join(", ")
-        );
-    }
-    let programs = compilation.programs.iter().map(|p| &**p)
-        .chain(compilation.templates.iter().map(|p| &**p));
-    for p in programs.clone() {
-        print!("{}", p.describe());
-    }
-    if has_output {
-        let out = PathBuf::from(args.get(line.output_index).ok_or("缺少输出目录")?);
-        std::fs::create_dir_all(&out)?;
-        for (index, p) in programs.enumerate() {
-            export::program(&compiler, p, &out, index)?;
+    unsafe { run_program_command(line.command, args.len(), line.entry_index, line.output_index, host); }
+    program.error.map_or(Ok(()), Err)
+}
+
+#[repr(u32)]
+#[expect(dead_code, reason = "the B command module supplies the ABI discriminants")]
+enum ProgramRequest {
+    Check,
+    All,
+    Entry,
+}
+
+#[repr(C)]
+struct ProgramResults {
+    count: usize,
+    generics: u32,
+    success: u32,
+}
+
+#[repr(C)]
+struct ProgramCommandHost {
+    context: *mut c_void,
+    compile: unsafe extern "C" fn(*mut c_void, ProgramRequest, usize) -> ProgramResults,
+    report_generics: unsafe extern "C" fn(*mut c_void) -> u32,
+    describe: unsafe extern "C" fn(*mut c_void, usize) -> u32,
+    prepare_output: unsafe extern "C" fn(*mut c_void, usize) -> u32,
+    export_program: unsafe extern "C" fn(*mut c_void, usize, usize) -> u32,
+    report_library: unsafe extern "C" fn(*mut c_void),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.cli::run_program_command"]
+    fn run_program_command(command: CompileCommand, arguments: usize, entry: usize, output: usize, host: ProgramCommandHost);
+}
+
+struct ProgramCommand<'a> {
+    compiler: &'a blanguage::Compiler,
+    args: &'a [OsString],
+    path: &'a Path,
+    root: &'a Path,
+    compilation: Option<blanguage::Compilation>,
+    error: Option<Box<dyn std::error::Error>>,
+}
+
+impl ProgramCommand<'_> {
+    fn program(&self, index: usize) -> &blanguage::ir::Program {
+        let compilation = self.compilation.as_ref().unwrap();
+        if index < compilation.programs.len() {
+            &compilation.programs[index]
+        } else {
+            &compilation.templates[index - compilation.programs.len()]
         }
-    } else if compilation.programs.is_empty() && compilation.templates.is_empty() {
-        println!("library {} checked", path.display());
     }
-    Ok(())
+
+    fn report(&mut self, text: std::fmt::Arguments<'_>) -> u32 {
+        self.record(std::io::stdout().lock().write_fmt(text).map_err(Into::into))
+    }
+
+    fn record(&mut self, result: Result<(), Box<dyn std::error::Error>>) -> u32 {
+        match result {
+            Ok(()) => 1,
+            Err(error) => {
+                self.error = Some(error);
+                0
+            }
+        }
+    }
+}
+
+unsafe extern "C" fn compile_programs(
+    context: *mut c_void,
+    request: ProgramRequest,
+    entry: usize,
+) -> ProgramResults {
+    let command = unsafe { &mut *context.cast::<ProgramCommand<'_>>() };
+    let result = match request {
+        ProgramRequest::Check => command.compiler.check(command.path, command.root),
+        ProgramRequest::All => command.compiler.compile(command.path, command.root),
+        ProgramRequest::Entry => {
+            let entry = unsafe { parsed_text(&command.args[entry]) };
+            command.compiler.compile_entry(command.path, command.root, entry)
+        }
+    };
+    match result {
+        Ok(compilation) => {
+            let count = compilation.programs.len() + compilation.templates.len();
+            let generics = u32::from(!compilation.open_generics.is_empty());
+            command.compilation = Some(compilation);
+            ProgramResults { count, generics, success: 1 }
+        }
+        Err(error) => {
+            command.error = Some(error.into());
+            ProgramResults { count: 0, generics: 0, success: 0 }
+        }
+    }
+}
+
+unsafe extern "C" fn report_open_generics(context: *mut c_void) -> u32 {
+    let command = unsafe { &mut *context.cast::<ProgramCommand<'_>>() };
+    let names = command.compilation.as_ref().unwrap().open_generics.join(", ");
+    command.report(format_args!("open generic declarations (body checked on instantiation): {names}\n"))
+}
+
+unsafe extern "C" fn describe_program(context: *mut c_void, index: usize) -> u32 {
+    let command = unsafe { &mut *context.cast::<ProgramCommand<'_>>() };
+    let description = command.program(index).describe();
+    command.report(format_args!("{description}"))
+}
+
+unsafe extern "C" fn prepare_output_directory(context: *mut c_void, output: usize) -> u32 {
+    let command = unsafe { &mut *context.cast::<ProgramCommand<'_>>() };
+    let result = command.args.get(output).ok_or_else(|| "缺少输出目录".into())
+        .and_then(|path| std::fs::create_dir_all(path).map_err(Into::into));
+    command.record(result)
+}
+
+unsafe extern "C" fn export_requested_program(context: *mut c_void, output: usize, index: usize) -> u32 {
+    let command = unsafe { &mut *context.cast::<ProgramCommand<'_>>() };
+    let result = export::program(command.compiler, command.program(index), Path::new(&command.args[output]), index);
+    command.record(result)
+}
+
+unsafe extern "C" fn report_checked_library(context: *mut c_void) {
+    let command = unsafe { &mut *context.cast::<ProgramCommand<'_>>() };
+    let path = command.path;
+    command.report(format_args!("library {} checked\n", path.display()));
 }
 
 type ObjectCommandResult = Result<(), Box<dyn std::error::Error>>;

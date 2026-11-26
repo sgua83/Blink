@@ -551,6 +551,31 @@ extern "C" CompileCommandLine parse_compile_arguments(address arguments, u64 cou
     return result;
 }
 
+extern "C" void run_program_command(CompileCommand command, u64 arguments, u64 entry, u64 output, ProgramCommandHost host) on cpu
+    requires nonzero(host.compile) requires nonzero(host.report_generics) requires nonzero(host.describe)
+    requires nonzero(host.prepare_output) requires nonzero(host.export_program) requires nonzero(host.report_library) {
+    bool build = command == CompileCommand::Build;
+    ProgramRequest request = entry < arguments ? ProgramRequest::Entry : (build ? ProgramRequest::All : ProgramRequest::Check);
+    ProgramResults programs = host.compile(host.context, request, entry);
+    if (programs.success == 0) { return; }
+    if (programs.generics != 0 && host.report_generics(host.context) == 0) { return; }
+    u64 index = 0u64;
+    while (index < programs.count) {
+        if (host.describe(host.context, index) == 0) { return; }
+        index += 1u64;
+    }
+    if (build) {
+        if (host.prepare_output(host.context, output) == 0) { return; }
+        index = 0u64;
+        while (index < programs.count) {
+            if (host.export_program(host.context, output, index) == 0) { return; }
+            index += 1u64;
+        }
+    } else if (programs.count == 0u64) {
+        host.report_library(host.context);
+    }
+}
+
 extern "C" CodeCommandLine parse_code_arguments(address arguments, u64 count) on cpu {
     CodeCommandLine line = CodeCommandLine(
         CodeInput::Entry, CompileError::CodeUsage,

@@ -153,6 +153,21 @@ extern "C" bool export_cpu_image(ExportHost host, ExportSpan stem, address image
 extern "C" CompileCommandLine parse_compile_arguments(address arguments, u64 count, OperandSink operands) on cpu
     requires nonzero(operands.import_path) requires nonzero(operands.instance_name) requires nonzero(operands.processor);
 
+enum ProgramRequest:u32 { Check=0; All=1; Entry=2; };
+struct ProgramResults { u64 count; u32 generics; u32 success; };
+struct ProgramCommandHost {
+    address context;
+    cfn<ProgramResults,address,ProgramRequest,u64> compile;
+    cfn<u32,address> report_generics;
+    cfn<u32,address,u64> describe;
+    cfn<u32,address,u64> prepare_output;
+    cfn<u32,address,u64,u64> export_program;
+    cfn<void,address> report_library;
+};
+extern "C" void run_program_command(CompileCommand command, u64 arguments, u64 entry, u64 output, ProgramCommandHost host) on cpu
+    requires nonzero(host.compile) requires nonzero(host.report_generics) requires nonzero(host.describe)
+    requires nonzero(host.prepare_output) requires nonzero(host.export_program) requires nonzero(host.report_library);
+
 struct ObjectCommandHost {
     cfn<u32,address,u64> import_interface;
     cfn<void,address,CompileError,u64> diagnostic;
