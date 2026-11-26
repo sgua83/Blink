@@ -109,13 +109,25 @@ extern "C" void eliminate_code(address block,address needed,
 enum VfRegMap:u32 { Aliases=0; Locals=1; };
 enum VfDivisionChoice:u32 { Quotient=1; Remainder=2; Both=3; };
 enum VfAction:u32 { Discard=0; Keep=1; Stop=2; };
-enum VfReuseKind:u32 { Expression=0; LocalRead=1; IndexedRead=2; IndexedStoreRead=3; };
+enum VfReuseKind:u32 { Expression=0; LocalRead=1; IndexedStoreRead=2; IndexedRead=3; };
 enum VfRole:u32 { Value=0; Quotient=1; Remainder=2; };
 struct VfExpression { u32 kind; u32 operation; u64 first; u64 second; u64 third; u64 count; };
 struct VfOptional { u64 value; u32 present; };
 struct VfDivision { u64 instruction; u64 quotient; u64 remainder; u32 mask; };
 struct VfMemory { u64 value; u64 origin; u32 present; };
 struct VfReuse { address origin; VfReuseKind kind; VfRole role; u32 paired; };
+struct VfResultLocation { u64 index; u64 count; ResultRole role; };
+struct VfOriginHost {
+    u64 stride;
+    cfn<address,address,u64,u64> resize;
+    cfn<void,address,u64,address,VfReuse> capture;
+    cfn<void,address> discard;
+};
+struct VfOriginWriter {
+    address sink;
+    cfn<void,address,address,VfResultLocation> collect;
+    cfn<void,address,address,VfReuseKind> attach;
+};
 struct VfRows { usize data; u64 count; u64 capacity; };
 struct VfRegisters { VfRows aliases; VfRows locals; };
 struct VfExpressions { VfRows entries; VfRows arguments; VfRows buckets; };
@@ -141,7 +153,7 @@ struct VfHost {
     cfn<address,address,u64,u64> scratch;
     cfn<void,address,VfDivisionChoice,u64,u64> rewrite_division;
     cfn<void,address,address,address,address,u64,u64,u64> pair;
-    cfn<void,address,u64,address,VfReuse> note;
+    VfOriginHost origin;
     VfMemoryHost memory;
 };
 // All pointers borrow this invocation's actual nodes or native owning containers.
@@ -158,12 +170,21 @@ extern "C" void value_copy_memory(address target,address source,VfMemoryHost mem
     requires nonzero(memory.resize) requires nonzero(memory.copy_origin);
 extern "C" void value_release_expressions(address state,cfn<address,address,u64,u64> resize) on cpu
     requires nonzero(resize);
+extern "C" void value_order_origins(address state,u64 stride) on cpu;
+extern "C" void value_retain_origins(RewriteSpan code,address state,Host read,RewriteHost write,
+    u64 stride,VfOriginWriter writer) on cpu requires nonzero(read.inspect) requires nonzero(write.inspect)
+    requires nonzero(writer.collect) requires nonzero(writer.attach);
+extern "C" void value_take_input_origins(address state,u64 result,address sink,VfOriginHost host,
+    cfn<void,address,address> accept) on cpu requires nonzero(host.discard) requires nonzero(accept);
+extern "C" void value_release_origins(address state,cfn<address,address,u64,u64> resize,VfOriginHost host) on cpu
+    requires nonzero(resize) requires nonzero(host.resize) requires nonzero(host.discard);
 extern "C" VfFlow value_block(address block,address values,address expressions,address context,
     Span registers,VfHost host,bool keep_expressions) on cpu
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.scalar) requires nonzero(host.storage)
     requires nonzero(host.remap) requires nonzero(host.resize_rows) requires nonzero(host.scratch)
     requires nonzero(host.rewrite_division) requires nonzero(host.pair)
-    requires nonzero(host.note) requires nonzero(host.memory.resize) requires nonzero(host.memory.move_rows)
+    requires nonzero(host.origin.capture) requires nonzero(host.origin.resize)
+    requires nonzero(host.memory.resize) requires nonzero(host.memory.move_rows)
     requires nonzero(host.memory.capture_origin) requires nonzero(host.memory.drop_origin) requires nonzero(host.memory.copy_origin)
     requires nonzero(host.instruction_span) requires nonzero(host.swap_instructions) requires nonzero(host.truncate);
 extern "C" void value_discard_flow(VfFlow flow,cfn<address,address,u64,u64> resize) on cpu

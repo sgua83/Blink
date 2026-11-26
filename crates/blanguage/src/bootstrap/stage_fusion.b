@@ -1,5 +1,6 @@
 module bootstrap.stage_fusion;
 import bootstrap.ir_dataflow;
+import bootstrap.names;
 
 u64 binding_at(address data, u64 index) on cpu {
     return unsafe_position<u64>(unsafe_address(address_bits(data) + index * 8u64));
@@ -1018,6 +1019,151 @@ void vf_insert_division(inout VfRows table,u64 at,VfDivisionEntry entry,
     table.count+=1u64;
 }
 
+struct VfOriginHead { u64 result; u32 kind; u32 pending; };
+struct VfOriginBook { VfRows order; VfRows facts; };
+struct VfOriginOrder { VfRows facts; u64 stride; };
+
+address vf_origin_fact(VfRows facts,u64 ordinal,u64 stride) on cpu {
+    return unsafe_address(facts.data+ordinal*stride);
+}
+
+address vf_ordered_origin(VfOriginBook book,u64 index,u64 stride) on cpu {
+    u64 ordinal=unsafe_position<u64>(vf_word(book.order.data,index));
+    return vf_origin_fact(book.facts,ordinal,stride);
+}
+
+void vf_note_origin(address state,u64 result,address instruction,VfReuse reuse,VfHost host) on cpu
+    requires nonzero(host.scratch) requires nonzero(host.origin.resize) requires nonzero(host.origin.capture) {
+    VfOriginBook book=unsafe_position<VfOriginBook>(state);
+    u64 ordinal=book.order.count;
+    u64 count=ordinal+1u64;
+    vf_reserve(book.order,count,host.scratch);
+    vf_reserve(book.facts,count,host.origin.resize);
+    host.origin.capture(vf_origin_fact(book.facts,ordinal,host.origin.stride),result,instruction,reuse);
+    unsafe_position<u64>(vf_word(book.order.data,ordinal))=ordinal;
+    book.order.count=count;
+    book.facts.count=count;
+    unsafe_position<VfOriginBook>(state)=book;
+}
+
+extern "C" bool vf_origin_before(address left,address right,address context) on cpu {
+    VfOriginOrder order=unsafe_position<VfOriginOrder>(context);
+    u64 a=unsafe_position<u64>(left);
+    u64 b=unsafe_position<u64>(right);
+    u64 x=unsafe_position<VfOriginHead>(vf_origin_fact(order.facts,a,order.stride)).result;
+    u64 y=unsafe_position<VfOriginHead>(vf_origin_fact(order.facts,b,order.stride)).result;
+    return x<y || (x==y && a<b);
+}
+
+extern "C" void value_order_origins(address state,u64 stride) on cpu {
+    VfOriginBook book=unsafe_position<VfOriginBook>(state);
+    VfOriginOrder input=VfOriginOrder(book.facts,stride);
+    sort_rows<u64>(unsafe_address(book.order.data),book.order.count,address_of(input),c_function(vf_origin_before));
+}
+
+u64 vf_origin_lower(VfOriginBook book,u64 result,u64 stride) on cpu {
+    u64 start=0u64;
+    u64 end=book.order.count;
+    while(start<end){
+        u64 middle=start+(end-start)/2u64;
+        address fact=vf_ordered_origin(book,middle,stride);
+        if(unsafe_position<VfOriginHead>(fact).result<result){start=middle+1u64;}
+        else{end=middle;}
+    }
+    return start;
+}
+
+u32 vf_collect_origins(address state,u64 result,VfResultLocation location,u64 stride,VfOriginWriter writer) on cpu
+    requires nonzero(writer.collect) {
+    VfOriginBook book=unsafe_position<VfOriginBook>(state);
+    u64 at=vf_origin_lower(book,result,stride);
+    u32 kinds=0;
+    while(at<book.order.count){
+        address fact=vf_ordered_origin(book,at,stride);
+        VfOriginHead head=unsafe_position<VfOriginHead>(fact);
+        if(head.result!=result || head.pending==0){break;}
+        kinds|=u32(1)<<head.kind;
+        writer.collect(writer.sink,fact,location);
+        unsafe_position<VfOriginHead>(fact).pending=0;
+        book.facts.count-=1u64;
+        at+=1u64;
+    }
+    if(kinds!=0){unsafe_position<VfOriginBook>(state).facts.count=book.facts.count;}
+    return kinds;
+}
+
+bool vf_retain_origin_block(RewriteSpan code,address state,Host read,RewriteHost write,u64 stride,VfOriginWriter writer) on cpu
+    requires nonzero(read.inspect) requires nonzero(write.inspect)
+    requires nonzero(writer.collect) requires nonzero(writer.attach) {
+    u64 index=0u64;
+    while(index<code.count){
+        address inst=unsafe_address(address_bits(code.data)+index*code.stride);
+        View value=read.inspect(Node(inst,N_INSTRUCTION));
+        OriginResults results=origin_results(value,read);
+        u64 at=0u64;
+        u32 kinds=0;
+        while(at<results.count){
+            OriginResult result=next_origin_result(results);
+            kinds|=vf_collect_origins(state,result.reg,VfResultLocation(at,results.count,result.role),stride,writer);
+            at+=1u64;
+        }
+        if(kinds!=0){
+            if((kinds&1)!=0){writer.attach(writer.sink,inst,VfReuseKind::Expression);}
+            if((kinds&2)!=0){writer.attach(writer.sink,inst,VfReuseKind::LocalRead);}
+            if((kinds&4)!=0){writer.attach(writer.sink,inst,VfReuseKind::IndexedStoreRead);}
+            if((kinds&8)!=0){writer.attach(writer.sink,inst,VfReuseKind::IndexedRead);}
+            if(unsafe_position<VfOriginBook>(state).facts.count==0u64){return false;}
+        }
+        if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE){
+            RewriteView children=write.inspect(RewriteNode(inst,N_INSTRUCTION));
+            if(!vf_retain_origin_block(children.first,state,read,write,stride,writer) ||
+               !vf_retain_origin_block(children.second,state,read,write,stride,writer)){return false;}
+        }
+        index+=1u64;
+    }
+    return true;
+}
+
+extern "C" void value_retain_origins(RewriteSpan code,address state,Host read,RewriteHost write,
+    u64 stride,VfOriginWriter writer) on cpu requires nonzero(read.inspect) requires nonzero(write.inspect)
+    requires nonzero(writer.collect) requires nonzero(writer.attach) {
+    if(unsafe_position<VfOriginBook>(state).facts.count!=0u64){
+        vf_retain_origin_block(code,state,read,write,stride,writer);
+    }
+}
+
+extern "C" void value_take_input_origins(address state,u64 result,address sink,VfOriginHost host,
+    cfn<void,address,address> accept) on cpu requires nonzero(host.discard) requires nonzero(accept) {
+    VfOriginBook book=unsafe_position<VfOriginBook>(state);
+    u64 at=vf_origin_lower(book,result,host.stride);
+    while(at<book.order.count){
+        address fact=vf_ordered_origin(book,at,host.stride);
+        VfOriginHead head=unsafe_position<VfOriginHead>(fact);
+        if(head.result!=result || head.pending==0){break;}
+        if(head.kind==u32(VfReuseKind::LocalRead)){accept(sink,fact);}
+        else{host.discard(fact);}
+        unsafe_position<VfOriginHead>(fact).pending=0;
+        book.facts.count-=1u64;
+        at+=1u64;
+    }
+    unsafe_position<VfOriginBook>(state).facts.count=book.facts.count;
+}
+
+extern "C" void value_release_origins(address state,cfn<address,address,u64,u64> resize,VfOriginHost host) on cpu
+    requires nonzero(resize) requires nonzero(host.resize) requires nonzero(host.discard) {
+    VfOriginBook book=unsafe_position<VfOriginBook>(state);
+    if(book.facts.count!=0u64){
+        u64 ordinal=0u64;
+        while(ordinal<book.order.count){
+            address fact=vf_origin_fact(book.facts,ordinal,host.stride);
+            if(unsafe_position<VfOriginHead>(fact).pending!=0){host.discard(fact);}
+            ordinal+=1u64;
+        }
+    }
+    vf_release(book.order,resize);
+    vf_release(book.facts,host.resize);
+}
+
 VfExpression value_expression(View node,Span registers,RegisterHost host) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
     u32 kind=node.tag;
@@ -1037,7 +1183,8 @@ VfAction value_instruction(address instruction,address retained_at,address value
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.scalar) requires nonzero(host.storage)
     requires nonzero(host.remap) requires nonzero(host.resize_rows) requires nonzero(host.scratch)
     requires nonzero(host.rewrite_division) requires nonzero(host.pair)
-    requires nonzero(host.note) requires nonzero(host.memory.resize) requires nonzero(host.memory.move_rows)
+    requires nonzero(host.origin.capture) requires nonzero(host.origin.resize)
+    requires nonzero(host.memory.resize) requires nonzero(host.memory.move_rows)
     requires nonzero(host.memory.capture_origin) requires nonzero(host.memory.drop_origin) requires nonzero(host.memory.copy_origin)
     requires nonzero(host.instruction_span) requires nonzero(host.swap_instructions) requires nonzero(host.truncate)
     {
@@ -1064,7 +1211,7 @@ VfAction value_instruction(address instruction,address retained_at,address value
             VfOptional old=vf_expression(expressions,key,0u64,quotient_result,host.scratch);
             if(old.present!=0){
                 vf_put(register_state,VfRegMap::Aliases,quotient_result,old.value,host.resize_rows);
-                host.note(context,old.value,instruction,VfReuse(none,VfReuseKind::Expression,VfRole::Quotient,paired));
+                vf_note_origin(context,old.value,instruction,VfReuse(none,VfReuseKind::Expression,VfRole::Quotient,paired),host);
             } else {retained|=1;}
         }
         if((mask&2)!=0){
@@ -1072,7 +1219,7 @@ VfAction value_instruction(address instruction,address retained_at,address value
             VfOptional old=vf_expression(expressions,key,0u64,remainder_result,host.scratch);
             if(old.present!=0){
                 vf_put(register_state,VfRegMap::Aliases,remainder_result,old.value,host.resize_rows);
-                host.note(context,old.value,instruction,VfReuse(none,VfReuseKind::Expression,VfRole::Remainder,paired));
+                vf_note_origin(context,old.value,instruction,VfReuse(none,VfReuseKind::Expression,VfRole::Remainder,paired),host);
             } else {retained|=2;}
         }
         if(retained==0){return VfAction::Discard;}
@@ -1103,7 +1250,7 @@ VfAction value_instruction(address instruction,address retained_at,address value
         VfOptional old=vf_expression(expressions,expression,address_bits(node.first.data),node.a,host.scratch);
         if(old.present!=0){
             vf_put(register_state,VfRegMap::Aliases,node.a,old.value,host.resize_rows);
-            host.note(context,old.value,instruction,VfReuse(none,VfReuseKind::Expression,VfRole::Value,0));
+            vf_note_origin(context,old.value,instruction,VfReuse(none,VfReuseKind::Expression,VfRole::Value,0),host);
             return VfAction::Discard;
         }
     }
@@ -1131,7 +1278,7 @@ VfAction value_instruction(address instruction,address retained_at,address value
         if(old.present!=0){
             u64 value=value_root(register_state,old.value);
             vf_put(register_state,VfRegMap::Aliases,node.a,value,host.resize_rows);
-            host.note(context,value,instruction,VfReuse(none,VfReuseKind::LocalRead,VfRole::Value,0));
+            vf_note_origin(context,value,instruction,VfReuse(none,VfReuseKind::LocalRead,VfRole::Value,0),host);
         }
         vf_put(register_state,VfRegMap::Locals,node.b,node.a,host.resize_rows);
     } else if(kind==OP_STORE_LOCAL){vf_put(register_state,VfRegMap::Locals,node.a,node.b,host.resize_rows);}
@@ -1144,7 +1291,7 @@ VfAction value_instruction(address instruction,address retained_at,address value
             VfReuseKind reuse;
             if(old.origin!=0u64){reuse=VfReuseKind::IndexedStoreRead;}
             else {reuse=VfReuseKind::IndexedRead;}
-            host.note(context,old.value,instruction,VfReuse(unsafe_address(old.origin),reuse,VfRole::Value,0));
+            vf_note_origin(context,old.value,instruction,VfReuse(unsafe_address(old.origin),reuse,VfRole::Value,0),host);
             return VfAction::Discard;
         }
         vf_memory_insert(values,node.b,node.c,u32(node.d),node.a,none,host.memory);
@@ -1197,7 +1344,8 @@ extern "C" VfFlow value_block(address block,address values,address expressions,a
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.scalar) requires nonzero(host.storage)
     requires nonzero(host.remap) requires nonzero(host.resize_rows) requires nonzero(host.scratch)
     requires nonzero(host.rewrite_division) requires nonzero(host.pair)
-    requires nonzero(host.note) requires nonzero(host.memory.resize) requires nonzero(host.memory.move_rows)
+    requires nonzero(host.origin.capture) requires nonzero(host.origin.resize)
+    requires nonzero(host.memory.resize) requires nonzero(host.memory.move_rows)
     requires nonzero(host.memory.capture_origin) requires nonzero(host.memory.drop_origin) requires nonzero(host.memory.copy_origin)
     requires nonzero(host.instruction_span) requires nonzero(host.swap_instructions) requires nonzero(host.truncate) {
     Span code=host.instruction_span(block);

@@ -1,7 +1,7 @@
 //! The original owning IR, primitive containers and source construction.
 use super::*;
 use super::super::{BlockSpan, InstructionStorage, instruction_span, instruction_storage, swap_instructions};
-use crate::ir::dataflow::{REGISTER_HOST, RegisterHost, Span};
+use crate::ir::{dataflow::{REGISTER_HOST, RegisterHost, Span}, rewrite};
 use std::mem::{offset_of, size_of, MaybeUninit};
 
 #[repr(C)]
@@ -83,11 +83,54 @@ impl Drop for Expressions {
     }
 }
 
-#[repr(u32)]
-enum ReuseKind { Expression, LocalRead, IndexedRead, IndexedStoreRead }
-
 #[repr(C)]
 struct Reuse { origin: *const OperationOrigin, kind: ReuseKind, role: ResultRole, paired: u32 }
+
+#[repr(C)]
+#[derive(Default)]
+pub(super) struct Reuses { order: Rows, facts: Rows }
+
+type CollectOrigin = unsafe extern "C" fn(*mut c_void, *mut OriginRow, ResultLocation);
+type AttachOrigin = unsafe extern "C" fn(*mut c_void, *mut Inst, ReuseKind);
+type AcceptOrigin = unsafe extern "C" fn(*mut c_void, *mut OriginRow);
+
+#[repr(C)]
+struct OriginWriter {
+    sink: *mut c_void,
+    collect: CollectOrigin,
+    attach: AttachOrigin,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct OriginHost {
+    stride: usize,
+    resize: ResizeRows,
+    capture: unsafe extern "C" fn(*mut OriginRow, Reg, *const Inst, Reuse),
+    discard: unsafe extern "C" fn(*mut OriginRow),
+}
+
+impl Reuses {
+    pub(super) fn order(&mut self) {
+        unsafe { value_order_origins(self, size_of::<OriginRow>()); }
+    }
+
+    pub(super) fn retain(&mut self, code: &mut [Inst], sink: *mut c_void, collect: CollectOrigin, attach: AttachOrigin) {
+        let writer = OriginWriter { sink, collect, attach };
+        unsafe { value_retain_origins(rewrite::Span::slice(code), self, crate::ir::dataflow::HOST,
+            rewrite::HOST, size_of::<OriginRow>(), writer); }
+    }
+
+    pub(super) fn input(&mut self, reg: Reg, sink: *mut c_void, accept: AcceptOrigin) {
+        unsafe { value_take_input_origins(self, reg, sink, ORIGIN_HOST, accept); }
+    }
+}
+
+impl Drop for Reuses {
+    fn drop(&mut self) {
+        unsafe { value_release_origins(self, resize_rows::<u64>, ORIGIN_HOST); }
+    }
+}
 #[repr(u32)]
 enum DivisionChoice { Quotient = 1, Remainder, Both }
 #[repr(C)]
@@ -119,11 +162,20 @@ struct Host {
     scratch: ResizeRows,
     rewrite_division: unsafe extern "C" fn(*mut IntegerDivisionResult, DivisionChoice, Reg, Reg),
     pair: unsafe extern "C" fn(*mut Inst, *const Inst, *const Inst, *const IntegerDivisor, Reg, Reg, Reg),
-    note: unsafe extern "C" fn(*mut Reuses, Reg, *const Inst, Reuse),
+    origin: OriginHost,
     memory: MemoryHost,
 }
 
 unsafe extern "C" {
+    #[link_name = "bootstrap.stage_fusion::value_order_origins"]
+    fn value_order_origins(state: *mut Reuses, stride: usize);
+    #[link_name = "bootstrap.stage_fusion::value_retain_origins"]
+    fn value_retain_origins(code: rewrite::Span, state: *mut Reuses, read: crate::ir::dataflow::Host,
+        write: rewrite::Host, stride: usize, writer: OriginWriter);
+    #[link_name = "bootstrap.stage_fusion::value_take_input_origins"]
+    fn value_take_input_origins(state: *mut Reuses, reg: Reg, sink: *mut c_void, host: OriginHost, accept: AcceptOrigin);
+    #[link_name = "bootstrap.stage_fusion::value_release_origins"]
+    fn value_release_origins(state: *mut Reuses, resize: ResizeRows, host: OriginHost);
     #[link_name = "bootstrap.stage_fusion::value_block"]
     fn value_block(code: *mut Vec<Inst>, values: *mut Values, expressions: *mut Expressions,
         reuses: *mut Reuses, registers: Span, host: Host, keep_expressions: bool) -> Flow;
@@ -205,13 +257,32 @@ unsafe extern "C" fn pair(retained: *mut Inst, quotient_from: *const Inst, remai
             trigger: Some(GenerationAnchor::IntegerDivisionPair { quotient: quotient_origin, remainder: remainder_origin }) }),
     ); }
 }
-unsafe extern "C" fn note(reuses: *mut Reuses, retained: Reg, instruction: *const Inst, reuse: Reuse) {
-    let origin = OperationOrigin::from_instruction(unsafe { &*instruction }); let fact = match reuse.kind {
-        ReuseKind::Expression => RetainedUse::Expression(ExpressionReuse { result: reuse.role.reuse(), paired_input: reuse.paired != 0, origin }),
-        ReuseKind::LocalRead => RetainedUse::LocalRead(origin), ReuseKind::IndexedRead => RetainedUse::IndexedRead(origin),
-        ReuseKind::IndexedStoreRead => RetainedUse::IndexedStoreRead { store: unsafe { &*reuse.origin }.clone(), read: origin },
-    }; unsafe { &mut *reuses }.entry(retained).or_default().push(fact);
+unsafe extern "C" fn capture_origin(row: *mut OriginRow, result: Reg, instruction: *const Inst, reuse: Reuse) {
+    let read = OperationOrigin::from_instruction(unsafe { &*instruction });
+    let store = if matches!(reuse.kind, ReuseKind::IndexedStoreRead) {
+        MaybeUninit::new(unsafe { &*reuse.origin }.clone())
+    } else {
+        MaybeUninit::uninit()
+    };
+    unsafe { row.write(OriginRow { result, kind: reuse.kind, pending: 1, role: reuse.role, paired: reuse.paired,
+        read: MaybeUninit::new(read), store }); }
 }
+
+unsafe extern "C" fn discard_origin(row: *mut OriginRow) {
+    let row = unsafe { &mut *row };
+    unsafe {
+        row.read.assume_init_drop();
+        if matches!(row.kind, ReuseKind::IndexedStoreRead) { row.store.assume_init_drop(); }
+    }
+}
+
+const ORIGIN_HOST: OriginHost = OriginHost {
+    stride: size_of::<OriginRow>(),
+    resize: resize_rows::<OriginRow>,
+    capture: capture_origin,
+    discard: discard_origin,
+};
+
 unsafe extern "C" fn move_memory_rows(target: *mut MemoryRow, source: *const MemoryRow, count: usize) {
     unsafe { ptr::copy(source, target, count); }
 }
@@ -241,5 +312,5 @@ const MEMORY_HOST: MemoryHost = MemoryHost {
 };
 const HOST: Host = Host {
     values: REGISTER_HOST, storage: instruction_storage, remap, instruction_span, swap_instructions, truncate,
-    resize_rows: resize_rows::<LocalValue>, scratch: resize_rows::<u64>, rewrite_division, pair, note, memory: MEMORY_HOST,
+    resize_rows: resize_rows::<LocalValue>, scratch: resize_rows::<u64>, rewrite_division, pair, origin: ORIGIN_HOST, memory: MEMORY_HOST,
 };

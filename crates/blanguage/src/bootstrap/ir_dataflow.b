@@ -281,9 +281,7 @@ extern "C" RegisterDefinition register_definition(Span code,usize reg,Host host)
  return find_register_definition(code,reg,true,host);
 }
 
-u32 visit_result_origins(read View value,Host host,address context,
- cfn<u32,address,usize,usize,usize,ResultRole> visit) on cpu
- requires nonzero(host.inspect) requires nonzero(visit) {
+OriginResults origin_results(read View value,Host host) on cpu requires nonzero(host.inspect) {
  Results output;
  ResultRole role=ResultRole::Value;
  if(value.tag==OP_INTEGER_DIVIDE){
@@ -291,22 +289,25 @@ u32 visit_result_origins(read View value,Host host,address context,
   output=division_results(division.a,division.b,division.tag);
   role=division.tag==1 ? ResultRole::Remainder : ResultRole::Quotient;
  }else{output=ordinary_results(value);}
- usize count=output.first.count+output.second.count+output.inline_count;
- usize index=0u64;
- u32 attached=0;
- while(index<count){
-  Word entry=next_result(output);
-  attached|=visit(context,entry.value,index,count,role);
-  if(role==ResultRole::Quotient){role=ResultRole::Remainder;}
-  index+=1u64;
- }
- return attached;
+ return OriginResults(output,output.first.count+output.second.count+output.inline_count,role);
+}
+OriginResult next_origin_result(inout OriginResults state) on cpu {
+ Word entry=next_result(state.outputs);
+ ResultRole role=state.role;
+ if(role==ResultRole::Quotient){state.role=ResultRole::Remainder;}
+ return OriginResult(entry.value,role);
 }
 extern "C" void result_origins(Node source,Host host,address context,
  cfn<u32,address,usize,usize,usize,ResultRole> visit) on cpu
  requires nonzero(host.inspect) requires nonzero(visit) {
  View value=host.inspect(source);
- visit_result_origins(value,host,context,visit);
+ OriginResults output=origin_results(value,host);
+ usize index=0u64;
+ while(index<output.count){
+  OriginResult entry=next_origin_result(output);
+  visit(context,entry.reg,index,output.count,entry.role);
+  index+=1u64;
+ }
 }
 
 u32 visit_span(Span values,address context,cfn<u32,address,usize> visit) on cpu requires nonzero(visit) {
@@ -1402,36 +1403,6 @@ extern "C" void rewrite_code(RewriteSpan code,RewriteHost host,RewriteMap mappin
  requires nonzero(host.inspect) requires nonzero(mapping.reg) requires nonzero(mapping.slot) {rewrite_block(code,host,mapping);}
 extern "C" void rewrite_operands(RewriteNode source,RewriteHost host,RewriteInputMap mapping) on cpu
  requires nonzero(host.inspect) requires nonzero(mapping.reg) {rewrite_inputs(host.inspect(source),host,mapping);}
-
-u32 retain_origin_block(RewriteSpan code,address context,RetainOriginHost host) on cpu
- requires nonzero(host.read.inspect) requires nonzero(host.write.inspect) requires nonzero(host.collect)
- requires nonzero(host.attach) requires nonzero(host.pending) {
- usize index=0u64;
- while(index<code.count){
-  RewriteNode node=rewrite_node_at(code,index,N_INSTRUCTION);
-  View value=host.read.inspect(Node(node.data,N_INSTRUCTION));
-  u32 kinds=visit_result_origins(value,host.read,context,host.collect);
-  if(kinds!=0){
-   if((kinds&1)!=0){host.attach(context,node.data,ResultOriginKind::Expression);}
-   if((kinds&2)!=0){host.attach(context,node.data,ResultOriginKind::LocalRead);}
-   if((kinds&4)!=0){host.attach(context,node.data,ResultOriginKind::IndexedStoreRead);}
-   if((kinds&8)!=0){host.attach(context,node.data,ResultOriginKind::IndexedRead);}
-   if(host.pending(context)==0){return 0;}
-  }
-  if(value.tag==OP_SCOPE||value.tag==OP_BRANCH||value.tag==OP_LOOP_VALUE){
-   RewriteView storage=host.write.inspect(node);
-   if(retain_origin_block(storage.first,context,host)==0
-     ||retain_origin_block(storage.second,context,host)==0){return 0;}
-  }
-  index+=1u64;
- }
- return 1;
-}
-extern "C" void retain_result_origins(RewriteSpan code,address context,RetainOriginHost host) on cpu
- requires nonzero(host.read.inspect) requires nonzero(host.write.inspect) requires nonzero(host.collect)
- requires nonzero(host.attach) requires nonzero(host.pending) {
- retain_origin_block(code,context,host);
-}
 
 extern "C" void seed_effect_flags(EffectSeedHost host) on cpu
  requires nonzero(host.next) requires nonzero(host.remember) {
