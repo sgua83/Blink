@@ -53,6 +53,23 @@ pub(super) enum Access<Path = bounds::Condition> {
     Stored {borrows:Borrow,word:u32,value:Borrow,when:Path},
 }
 impl<Path> Access<Path> {
+    fn replace_when<T>(self, when: T) -> (Access<T>, Path) {
+        match self {
+            Self::Resource { resources, borrows, kind, when: original } =>
+                (Access::Resource { resources, borrows, kind, when }, original),
+            Self::Position { borrows, position, when: original } =>
+                (Access::Position { borrows, position, when }, original),
+            Self::Memory { borrows, access, when: original } =>
+                (Access::Memory { borrows, access, when }, original),
+            Self::Dataset { borrows, index, access, atomic, when: original } =>
+                (Access::Dataset { borrows, index, access, atomic, when }, original),
+            Self::Initialized { borrows, initialized, when: original } =>
+                (Access::Initialized { borrows, initialized, when }, original),
+            Self::Stored { borrows, word, value, when: original } =>
+                (Access::Stored { borrows, word, value, when }, original),
+        }
+    }
+
     fn accessed(&self)->Option<(&Borrow,&Path,super::Access)> {
         match self {
             Self::Position{borrows,when,position}=>{
@@ -1887,8 +1904,8 @@ fn converge_access(
         groups
     }
     let groups = recursive_groups(functions);
-    fn insert(accesses:&mut BTreeMap<Access,bounds::Condition>,mut access:Access) {
-        let when=std::mem::replace(access.when_mut(),bounds::Condition::constant(true));
+    fn insert(accesses: &mut BTreeMap<Access<()>, bounds::Condition>, access: Access) {
+        let (access, when) = access.replace_when(());
         accesses.entry(access).and_modify(|old|{if *old!=when {
             *old=old.clone().logical(when.clone(),true);
         }}).or_insert(when);
@@ -2092,7 +2109,9 @@ fn converge_access(
             if let Some(entries)=&state.entries && component.is_none(){
                 let invoked=function.calls.iter().filter(|call|call.function==*name).map(|call|bounds::Condition::execution(&call.path).guard_at_call(parameters)).reduce(|a,b|a.logical(b,true)).unwrap();
                 let inputs=entries.iter().map(|(input,value)|(*input,{let mut component_proof=bounds::Proof::default();component_proof.set_view_borrow(0,value.clone());component_proof})).collect::<BTreeMap<_,_>>();
-                let direct=access.iter().map(|(access,when)|{let mut a=access.clone();*a.when_mut()=when.clone();a}).collect::<Vec<_>>();
+                let direct = access.iter()
+                    .map(|(value, when)| value.clone().replace_when(when.clone()).0)
+                    .collect::<Vec<_>>();
                 for value in direct.into_iter().filter_map(|value| value.at_recursive_entry(&inputs, &invoked)) {
                     insert(&mut access, value);
                 }
@@ -2102,11 +2121,8 @@ fn converge_access(
         let changed = bases.into_iter().filter_map(|(name, mut access)| {
             if let Some((_, invoked, inputs)) = components.get(name.as_str()) {
                 for (member, bindings) in inputs {
-                    let local = direct[member].1.iter().map(|(value, when)| {
-                        let mut value = value.clone();
-                        *value.when_mut() = when.clone();
-                        value
-                    });
+                    let local = direct[member].1.iter()
+                        .map(|(value, when)| value.clone().replace_when(when.clone()).0);
                     let projected = call_accesses[member].values().flat_map(|projection| {
                         projection.access.iter().flatten().flatten().cloned()
                     });
@@ -2116,9 +2132,9 @@ fn converge_access(
                 }
             }
             let normalize = groups.contains_key(name.as_str());
-            let next = access.into_iter().map(|(mut value, when)| {
-                *value.when_mut() = if normalize { normalized_condition(when) } else { when };
-                value
+            let next = access.into_iter().map(|(value, when)| {
+                let when = if normalize { normalized_condition(when) } else { when };
+                value.replace_when(when).0
             }).collect::<BTreeSet<_>>();
             (next != known[name].interface.access).then_some((name, next))
         }).collect::<Vec<_>>();
