@@ -5,19 +5,6 @@ use std::{ffi::c_void, ptr, sync::Arc};
 
 mod host;
 
-#[repr(C)]
-struct LocalValue {
-    slot: usize,
-    value: Reg,
-}
-
-type LocalValues = Vec<LocalValue>;
-
-unsafe extern "C" {
-    #[link_name = "bootstrap.stage_fusion::intersect_local_values"]
-    fn intersect_local_values(left: *mut LocalValue, left_count: usize,
-        right: *const LocalValue, right_count: usize) -> usize;
-}
 // Only pending origin facts for this invocation; SSA keys never enter retained metadata.
 type Reuses = BTreeMap<Reg, Vec<RetainedUse>>;
 enum RetainedUse {

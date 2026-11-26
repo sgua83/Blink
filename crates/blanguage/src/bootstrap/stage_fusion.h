@@ -50,11 +50,6 @@ extern "C" GuaranteeCounts retain_stage_guarantees(address writes, GuaranteeCoun
 
 struct LocalValue { u64 slot; u64 value; };
 
-// Both inputs are sorted by slot. The left buffer receives their identical
-// slot/value pairs in slot order and the return value is its new length.
-extern "C" u64 intersect_local_values(address left, u64 left_count,
-    address right, u64 right_count) on cpu;
-
 // The original IR and PrivateSlot sets stay in their native owning containers.
 // Every borrowed block and temporary clone ends with this synchronous query.
 enum LiveSetAction:u32 { Copy=0; Union=1; RemoveRegister=2; InsertLocal=3; RemoveLocal=4; Swap=5; };
@@ -111,9 +106,9 @@ extern "C" void eliminate_code(address block,address needed,
     requires nonzero(host.live.insert_register) requires nonzero(host.record)
     requires nonzero(host.prune_division) requires nonzero(host.prune_collective);
 
-enum VfMap:u32 { Aliases=0; Expressions=1; Memory=2; Locals=3; };
+enum VfMap:u32 { Expressions=0; Memory=1; };
 enum VfRegMap:u32 { Aliases=0; Locals=1; };
-enum VfStateOp:u32 { New=0; Clone=1; Drop=2; Move=3; Copy=4; Clear=5; Extend=6; };
+enum VfStateOp:u32 { New=0; Clone=1; Drop=2; Move=3; Copy=4; Clear=5; };
 enum VfDivisionOp:u32 { Clear=0; Take=1; Put=2; };
 enum VfDivisionChoice:u32 { Quotient=1; Remainder=2; Both=3; };
 enum VfAction:u32 { Discard=0; Keep=1; Stop=2; };
@@ -124,7 +119,10 @@ struct VfOptional { u64 value; u32 present; };
 struct VfDivision { address instruction; u64 quotient; u64 remainder; u32 mask; u32 present; };
 struct VfMemory { u64 value; address origin; u32 present; };
 struct VfReuse { address origin; VfReuseKind kind; VfRole role; u32 paired; };
-struct VfFlow { address next; address exits; };
+struct VfRows { usize data; u64 count; u64 capacity; };
+struct VfRegisters { VfRows aliases; VfRows locals; };
+struct VfPath { VfRows rows; u32 reached; };
+struct VfFlow { VfPath next; VfPath exits; };
 struct VfHost {
     RegisterHost values;
     cfn<InstructionStorage,address> storage;
@@ -134,13 +132,7 @@ struct VfHost {
     cfn<void,address,address> swap_instructions;
     cfn<void,address,u64> truncate;
     cfn<address,VfStateOp,address,address,VfMap> state;
-    cfn<VfOptional,address,VfRegMap,u64> get;
-    cfn<void,address,VfRegMap,u64,u64> put;
-    cfn<void,address,u64,u64> remove_range;
-    cfn<address,address> snapshot;
-    cfn<void,address,address> intersect;
-    cfn<void,address> drop_snapshot;
-    cfn<void,address,address> apply;
+    cfn<address,address,u64,u64> resize_rows;
     cfn<VfOptional,address,VfExpression,u64> expression;
     cfn<VfDivision,address,VfDivisionOp,u64,u64,u64,VfDivision> division;
     cfn<void,address,VfDivisionChoice,u64,u64> rewrite_division;
@@ -149,19 +141,22 @@ struct VfHost {
     cfn<VfMemory,address,u64,u64,u32> memory_get;
     cfn<void,address,u64,u64,u32,u64,address> memory_put;
     cfn<void,address,u32,u64,u64,u32> memory_filter;
-    cfn<void,address,usize> remove_local;
 };
 // All pointers borrow this invocation's actual nodes or native owning containers.
-extern "C" u64 value_root(address values,u64 reg,cfn<VfOptional,address,VfRegMap,u64> get) on cpu requires nonzero(get);
+extern "C" u64 value_root(address values,u64 reg) on cpu;
+extern "C" void value_copy_registers(address target,address source,u32 locals,
+    cfn<address,address,u64,u64> resize) on cpu requires nonzero(resize);
+extern "C" void value_release_registers(address values,cfn<address,address,u64,u64> resize) on cpu
+    requires nonzero(resize);
+extern "C" void value_merge_aliases(address target,address source,cfn<address,address,u64,u64> resize) on cpu
+    requires nonzero(resize);
 extern "C" u32 value_memory_keeps(u32 mode,u64 binding,u64 index,u32 word,u64 target,u64 at,u32 field) on cpu;
 extern "C" VfFlow value_block(address block,address values,address context,Span registers,VfHost host) on cpu
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.scalar) requires nonzero(host.storage)
     requires nonzero(host.remap) requires nonzero(host.block) requires nonzero(host.state)
-    requires nonzero(host.get) requires nonzero(host.put) requires nonzero(host.remove_range) requires nonzero(host.snapshot)
-    requires nonzero(host.intersect) requires nonzero(host.drop_snapshot) requires nonzero(host.apply) requires nonzero(host.expression)
+    requires nonzero(host.resize_rows) requires nonzero(host.expression)
     requires nonzero(host.division) requires nonzero(host.rewrite_division) requires nonzero(host.pair)
     requires nonzero(host.note) requires nonzero(host.memory_get) requires nonzero(host.memory_put) requires nonzero(host.memory_filter)
-    requires nonzero(host.remove_local)
     requires nonzero(host.instruction_span) requires nonzero(host.swap_instructions) requires nonzero(host.truncate);
-extern "C" void value_discard_flow(VfFlow flow,VfHost host) on cpu 
-    requires nonzero(host.drop_snapshot);
+extern "C" void value_discard_flow(VfFlow flow,cfn<address,address,u64,u64> resize) on cpu
+    requires nonzero(resize);
