@@ -54,7 +54,7 @@ struct ResidencyVisit {
 struct ResidencyVisitResult { u32 accepted; u32 deferred; };
 struct ResidencyCheckNode { ResidencyBranch branch; address origins; };
 enum ResidencyOriginKind:u32 { End=0; Cpu=1; Gpu=2; Input=3; Output=4; };
-struct ResidencyOriginItem { ResidencyOriginKind kind; address input; };
+struct ResidencyOriginItem { ResidencyOriginKind kind; address value; };
 struct ResidencyCheckHost {
     cfn<u32,address> possible;
     cfn<ResidencyCheckNode,address> inspect;
@@ -175,3 +175,21 @@ extern "C" ChoicePlan choose_residency(address when,address yes,address no,Resid
 extern "C" JoinPlan join_residency(address left,address right,ResidencyAlgebraHost host) on cpu
     requires nonzero(host.inspect) requires nonzero(host.equal)
     requires nonzero(host.condition_equal) requires nonzero(host.order) requires nonzero(host.exclusive) requires nonzero(host.empty);
+
+struct QueryValuePath { address value; address path; };
+struct QueryValueKeyHost {
+    cfn<ResidencyCheckNode,address> inspect;
+    cfn<void,address,QueryValuePath,address,u32> branch;
+    cfn<void,address,address,address> collect;
+};
+extern "C" void collect_query_value_key(address context,QueryValuePath visit,QueryValueKeyHost host) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.branch) requires nonzero(host.collect);
+
+enum KeyOriginProjection:u32 { Concrete=0; Output=1; Input=2; };
+struct QueryOriginKeyHost {
+    cfn<ResidencyOriginItem,address> next;
+    cfn<u32,address,address> matches;
+    cfn<void,address,KeyOriginProjection,address> append;
+};
+extern "C" void collect_query_origin_keys(address context,address cursor,address wanted,QueryOriginKeyHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.matches) requires nonzero(host.append);

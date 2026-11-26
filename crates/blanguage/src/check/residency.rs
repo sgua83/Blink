@@ -266,16 +266,6 @@ impl Residency {
         Self::Origins(origins)=>Self::Origins(origins.iter().map(|origin|match origin{Origin::Input(input)=>Origin::Input(input.at_call(bindings)),Origin::Output(output)=>Origin::Output(Output{function:output.function.clone(),kind:output.kind.clone(),fields:output.fields.clone(),arguments:output.arguments.iter().map(|(input,value)|(input.clone(),value.at_call(&scoped_indices(bindings,input.depth())))).collect(),bindings:output.bindings.iter().map(|(input,value)|(*input,value.at_call(bindings))).collect()}),_=>origin.clone()}).collect()),
         Self::Absent=>Self::Absent,
     }}
-    // 合并重复来源而保留其成立域；Absent 不被提升为真实资源来源。
-    fn canonical(&self)->Self{
-        fn collect(value:&Residency,path:&bounds::Clause,terms:&mut BTreeMap<BTreeSet<Origin>,bounds::Clause>){match value{
-            Residency::Absent=>{},
-            Residency::Origins(origins)=>{let guard=terms.entry(origins.clone()).or_insert_with(bounds::Clause::impossible);*guard=bounds::Clause::either(guard,path);},
-            Residency::Selected(when,a,b)=>{collect(a,&when.assume(path,true),terms);collect(b,&when.assume(path,false),terms);},
-        }}
-        let mut terms=BTreeMap::new();collect(self,&bounds::Clause::default(),&mut terms);
-        terms.into_iter().fold(Self::Absent,|other,(origins,path)|Self::conditional(bounds::Condition::paths(path.canonical(),bounds::Clause::default()),Self::Origins(origins),other))
-    }
     pub(super) fn with_aliases(&self,aliases:&bounds::Clause)->Self{match self{
         Self::Selected(when,a,b)=>{
             let yes=when.assume(aliases,true);let no=when.assume(aliases,false);
@@ -519,29 +509,123 @@ pub(super) fn infer(inputs:&Inputs,parameters:&BTreeMap<ValueIdentity,bounds::Pr
     Ok(Contract{required,calls})
 }
 
-// 本次查询只观察具体位置，以及被查询路径的前缀。其余Input仍是原合同
-// 中未代入的输入，不因为重复经过同一调用而产生新的具体位置事实。
-fn query_value(value:&Residency,wanted:Option<&Input>,outputs:&Outputs,w:&mut crate::module::codec::Writer){
+// The active key groups equivalent sources at their original paths. It keeps
+// the wanted input prefix and follows direct output links without changing storage.
+struct QueryValueKey<'a> {
+    wanted: Option<&'a Input>,
+    outputs: &'a Outputs,
+    terms: BTreeMap<BTreeSet<Vec<u8>>, bounds::Clause>,
+}
+
+#[repr(C)]
+struct QueryValuePath {
+    value: Borrowed,
+    path: Borrowed,
+}
+
+#[repr(C)]
+struct QueryValueKeyHost {
+    inspect: unsafe extern "C" fn(Borrowed) -> ResidencyCheckNode,
+    branch: unsafe extern "C" fn(Context, QueryValuePath, Borrowed, u32),
+    collect: unsafe extern "C" fn(Context, Borrowed, Borrowed),
+}
+
+#[repr(u32)]
+enum KeyOriginProjection { Concrete, Output, Input }
+
+#[repr(C)]
+struct QueryOriginKeyHost {
+    next: unsafe extern "C" fn(Context) -> ResidencyOriginItem,
+    matches: unsafe extern "C" fn(Borrowed, Borrowed) -> u32,
+    append: unsafe extern "C" fn(Context, KeyOriginProjection, Borrowed),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ownership_path::collect_query_value_key"]
+    fn collect_query_value_key(context: Context, visit: QueryValuePath, host: QueryValueKeyHost);
+    #[link_name = "bootstrap.ownership_path::collect_query_origin_keys"]
+    fn collect_query_origin_keys(context: Context, cursor: Context, wanted: Borrowed, host: QueryOriginKeyHost);
+}
+
+const QUERY_VALUE_KEY_HOST: QueryValueKeyHost = QueryValueKeyHost {
+    inspect: inspect_residency_visit,
+    branch: query_value_key_branch,
+    collect: query_value_key_group,
+};
+
+unsafe extern "C" fn query_value_key_branch(context: Context, mut visit: QueryValuePath, condition: Borrowed, truth: u32) {
+    let condition = unsafe { &*condition.cast::<bounds::Condition>() };
+    let path = condition.assume(unsafe { &*visit.path.cast::<bounds::Clause>() }, truth != 0);
+    visit.path = ptr::from_ref(&path).cast();
+    unsafe { collect_query_value_key(context, visit, QUERY_VALUE_KEY_HOST) };
+}
+
+struct QueryOriginKey<'a> {
+    outputs: &'a Outputs,
+    encoded: BTreeSet<Vec<u8>>,
+}
+
+unsafe extern "C" fn query_value_key_group(context: Context, origins: Borrowed, path: Borrowed) {
+    use std::collections::btree_map::Entry;
+    let context = unsafe { &mut *context.cast::<QueryValueKey<'_>>() };
+    let path = unsafe { &*path.cast::<bounds::Clause>() };
+    let mut origins = unsafe { &*origins.cast::<BTreeSet<Origin>>() }.iter();
+    let mut key = QueryOriginKey { outputs: context.outputs, encoded: BTreeSet::new() };
+    let wanted = context.wanted.map_or(ptr::null(), |input| ptr::from_ref(input).cast());
+    let host = QueryOriginKeyHost {
+        next: visit_next_origin,
+        matches: query_input_prefix,
+        append: append_query_origin_key,
+    };
+    unsafe {
+        collect_query_origin_keys(ptr::from_mut(&mut key).cast(), ptr::from_mut(&mut origins).cast(), wanted, host);
+    }
+    match context.terms.entry(key.encoded) {
+        Entry::Occupied(mut group) => {
+            *group.get_mut() = bounds::Clause::either(group.get(), path);
+        }
+        Entry::Vacant(group) => {
+            group.insert(path.clone());
+        }
+    }
+}
+
+unsafe extern "C" fn query_input_prefix(wanted: Borrowed, input: Borrowed) -> u32 {
+    let wanted = unsafe { &*wanted.cast::<Input>() };
+    let input = unsafe { &*input.cast::<Input>() };
+    u32::from(wanted.parameter == input.parameter && wanted.fields.starts_with(&input.fields))
+}
+
+unsafe extern "C" fn append_query_origin_key(context: Context, projection: KeyOriginProjection, value: Borrowed) {
+    use crate::module::codec::{Encode, Writer};
+    let context = unsafe { &mut *context.cast::<QueryOriginKey<'_>>() };
+    let mut writer = Writer(Vec::new());
+    match projection {
+        KeyOriginProjection::Concrete => unsafe { &*value.cast::<Origin>() }.encode(&mut writer),
+        KeyOriginProjection::Output => {
+            let output = unsafe { &*value.cast::<Output>() };
+            context.encoded.insert(canonical_output_key(output, context.outputs));
+            return;
+        }
+        KeyOriginProjection::Input => {
+            2u8.encode(&mut writer);
+            unsafe { value.cast::<Input>().as_ref() }.encode(&mut writer);
+        }
+    }
+    context.encoded.insert(writer.0);
+}
+
+fn query_value(value: &Residency, wanted: Option<&Input>, outputs: &Outputs, writer: &mut crate::module::codec::Writer) {
     use crate::module::codec::Encode;
-    fn terms(value:&Residency,wanted:Option<&Input>,path:&bounds::Clause,outputs:&Outputs,out:&mut BTreeMap<BTreeSet<Vec<u8>>,bounds::Clause>){match value{
-        Residency::Absent=>{},
-        Residency::Selected(when,a,b)=>{terms(a,wanted,&when.assume(path,true),outputs,out);terms(b,wanted,&when.assume(path,false),outputs,out);},
-        Residency::Origins(origins)=>{
-            let key=origins.iter().map(|origin|{
-                let mut w=crate::module::codec::Writer(Vec::new());
-                match origin{
-                    Origin::Input(input)=>{2u8.encode(&mut w);wanted.filter(|wanted|wanted.parameter==input.parameter&&wanted.fields.starts_with(&input.fields)).map(|_|input.clone()).encode(&mut w);},
-                    Origin::Output(output)=>return canonical_output_key(output,outputs),
-                    other=>other.encode(&mut w),
-                }
-                w.0
-            }).collect();
-            let guard=out.entry(key).or_insert_with(bounds::Clause::impossible);*guard=bounds::Clause::either(guard,path);
-        },
-    }}
-    let mut out=BTreeMap::new();terms(value,wanted,&bounds::Clause::default(),outputs,&mut out);
-    out.len().encode(w);
-    for(origins,path)in out{origins.encode(w);bounds::Condition::guard(path).encode(w);}
+    let mut key = QueryValueKey { wanted, outputs, terms: BTreeMap::new() };
+    let path = bounds::Clause::default();
+    let visit = QueryValuePath { value: ptr::from_ref(value).cast(), path: ptr::from_ref(&path).cast() };
+    unsafe { collect_query_value_key(ptr::from_mut(&mut key).cast(), visit, QUERY_VALUE_KEY_HOST) };
+    key.terms.len().encode(writer);
+    for (origins, path) in key.terms {
+        origins.encode(writer);
+        bounds::Condition::guard(path).encode(writer);
+    }
 }
 fn query_bindings(bindings: &BTreeMap<ValueIdentity, bounds::Proof>, w: &mut crate::module::codec::Writer) {
     use crate::module::codec::Encode;
@@ -950,7 +1034,7 @@ struct ResidencyCheckNode { branch: ResidencyBranch, origins: Borrowed }
 enum ResidencyOriginKind { End, Cpu, Gpu, Input, Output }
 
 #[repr(C)]
-struct ResidencyOriginItem { kind: ResidencyOriginKind, input: Borrowed }
+struct ResidencyOriginItem { kind: ResidencyOriginKind, value: Borrowed }
 
 #[repr(C)]
 struct ResidencyCheckHost {
@@ -993,14 +1077,14 @@ unsafe extern "C" fn visit_residency_branch(context: Context, mut visit: Residen
 unsafe extern "C" fn visit_next_origin(iterator: Context) -> ResidencyOriginItem {
     use ResidencyOriginKind::{Cpu, End, Gpu, Input, Output};
     let iterator = unsafe { &mut *iterator.cast::<std::collections::btree_set::Iter<'_, Origin>>() };
-    let (kind, input) = match iterator.next() {
-        Some(Origin::Cpu | Origin::TaskTransfer) => (Cpu, ptr::null()),
-        Some(Origin::Gpu) => (Gpu, ptr::null()),
+    let (kind, value) = match iterator.next() {
+        Some(origin @ (Origin::Cpu | Origin::TaskTransfer)) => (Cpu, ptr::from_ref(origin).cast()),
+        Some(origin @ Origin::Gpu) => (Gpu, ptr::from_ref(origin).cast()),
         Some(Origin::Input(input)) => (Input, ptr::from_ref(input).cast()),
-        Some(Origin::Output(_)) => (Output, ptr::null()),
+        Some(Origin::Output(output)) => (Output, ptr::from_ref(output).cast()),
         None => (End, ptr::null()),
     };
-    ResidencyOriginItem { kind, input }
+    ResidencyOriginItem { kind, value }
 }
 
 unsafe extern "C" fn visit_path_overlaps(path: Borrowed) -> u32 {
@@ -1605,19 +1689,24 @@ fn output_source_key(output: &Output) -> Vec<u8> {
 
 // Follow a single output source without replacing its identity with its storage.
 fn canonical_output_key(output: &Output, outputs: &Outputs) -> Vec<u8> {
+    use std::collections::btree_map::Entry;
     let mut output = Cow::Borrowed(output);
-    let mut visited = BTreeSet::new();
+    let mut visited = BTreeMap::new();
     loop {
-        let key = output_source_key(&output);
-        if !visited.insert(key.clone()) {
-            return key;
+        let entry = match visited.entry(output_source_key(&output)) {
+            Entry::Occupied(entry) => return entry.remove_entry().0,
+            Entry::Vacant(entry) => entry,
+        };
+        let Some(Residency::Origins(mut origins)) = output_source(&output, outputs) else {
+            return entry.into_key();
+        };
+        if origins.len() != 1 {
+            return entry.into_key();
         }
-        let Some(Residency::Origins(origins)) = output_source(&output, outputs) else { return key; };
-        let mut origins = origins.into_iter();
-        let Some(Origin::Output(next)) = origins.next() else { return key; };
-        if origins.next().is_some() {
-            return key;
-        }
+        let Some(Origin::Output(next)) = origins.pop_first() else {
+            return entry.into_key();
+        };
+        entry.insert(());
         output = Cow::Owned(next);
     }
 }

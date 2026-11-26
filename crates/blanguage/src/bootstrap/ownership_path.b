@@ -171,13 +171,13 @@ extern "C" ResidencyVisitResult check_residency_origins(address context,Residenc
         }else if(origin.kind==ResidencyOriginKind::Output){
             accepted=u32(visit.mode==ResidencyCheckMode::Known || (query && host.overlaps(visit.path)==0));
         }else if(visit.mode==ResidencyCheckMode::Require){
-            accepted=host.insert(context,origin.input,visit.target,visit.path);
+            accepted=host.insert(context,origin.value,visit.target,visit.path);
         }else if(query){
             bool wanted=address_bits(visit.wanted)!=0u64;
-            bool matches=wanted && host.same_input(visit.wanted,origin.input)!=0;
+            bool matches=wanted && host.same_input(visit.wanted,origin.value)!=0;
             if((deferred==0 || matches) && (wanted || host.overlaps(visit.path)!=0)){
                 deferred=1;
-                if(matches){accepted=host.insert(context,origin.input,visit.target,visit.path);}
+                if(matches){accepted=host.insert(context,origin.value,visit.target,visit.path);}
             }
         }
         if(accepted==0){return ResidencyVisitResult(0,deferred);}
@@ -424,4 +424,31 @@ extern "C" JoinPlan join_residency(address left,address right,ResidencyAlgebraHo
         plan.right_no=b.branch.no;
     }
     return plan;
+}
+
+extern "C" void collect_query_value_key(address context,QueryValuePath visit,QueryValueKeyHost host) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.branch) requires nonzero(host.collect) {
+    ResidencyCheckNode shape=host.inspect(visit.value);
+    if(address_bits(shape.branch.condition)!=0u64){
+        host.branch(context,QueryValuePath(shape.branch.yes,visit.path),shape.branch.condition,1);
+        host.branch(context,QueryValuePath(shape.branch.no,visit.path),shape.branch.condition,0);
+    }else if(address_bits(shape.origins)!=0u64){
+        host.collect(context,shape.origins,visit.path);
+    }
+}
+
+extern "C" void collect_query_origin_keys(address context,address cursor,address wanted,QueryOriginKeyHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.matches) requires nonzero(host.append) {
+    ResidencyOriginItem origin=host.next(cursor);
+    while(origin.kind!=ResidencyOriginKind::End){
+        if(origin.kind==ResidencyOriginKind::Input){
+            bool retain=address_bits(wanted)!=0u64 && host.matches(wanted,origin.value)!=0;
+            host.append(context,KeyOriginProjection::Input,retain ? origin.value : address());
+        }else if(origin.kind==ResidencyOriginKind::Output){
+            host.append(context,KeyOriginProjection::Output,origin.value);
+        }else{
+            host.append(context,KeyOriginProjection::Concrete,origin.value);
+        }
+        origin=host.next(cursor);
+    }
 }
