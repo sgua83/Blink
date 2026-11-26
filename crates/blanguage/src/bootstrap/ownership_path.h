@@ -246,3 +246,28 @@ extern "C" u32 bind_residency(ResidencyBinding visit,address value,ResidencyBind
 extern "C" u32 bind_residency_origins(ResidencyBinding visit,address iterator,u64 count,ResidencyBindingOriginsHost host) on cpu
     requires nonzero(host.next) requires nonzero(host.bound) requires nonzero(host.unknown)
     requires nonzero(host.input) requires nonzero(host.output) requires nonzero(host.concrete);
+
+struct LoopRefineNode { address condition; address yes; address no; address origins; };
+struct LoopRefineHost {
+    cfn<LoopRefineNode,address> inspect;
+    cfn<void,address,address,LoopRefineNode> branch;
+    cfn<void,address,address,address> origins;
+};
+struct LoopRefineOrigin { u32 present; address requirements; };
+struct LoopRefineOriginsHost {
+    cfn<LoopRefineOrigin,address> next;
+    cfn<void,address> empty;
+    cfn<void,address,address> apply;
+    cfn<void,address> merge;
+};
+struct LoopRefineGuard { address condition; u32 cpu; };
+struct LoopRefineGuardsHost {
+    cfn<LoopRefineGuard,address> next;
+    cfn<void,address,LoopRefineGuard> select;
+};
+extern "C" void refine_loop_residency(address required,address value,LoopRefineHost host) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.branch) requires nonzero(host.origins);
+extern "C" void refine_loop_origins(address context,LoopRefineOriginsHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.empty) requires nonzero(host.apply) requires nonzero(host.merge);
+extern "C" void refine_loop_guards(address value,address cursor,LoopRefineGuardsHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.select);

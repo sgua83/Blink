@@ -623,15 +623,29 @@ pub(super) fn canonical(required:&Requirements,parameters:&BTreeMap<ValueIdentit
         if !insert(&mut result,input.at_call(&bindings),*target,guard.guard_at_call(&bindings)){return source.fail(span,"B266","输入资源在同一接口条件下同时要求CPU和GPU存储");}
     }}Ok(result)
 }
-fn local(required:&Requirements,parameters:&BTreeMap<ValueIdentity,bounds::Proof>)->Requirements{
-    let mut inverse=BTreeMap::new();
-    for(source,target)in parameters{
-        let target=target.known_identity(0).unwrap();
-        let entry=inverse.entry(target).or_insert_with(||bounds::Proof::default().with_identity(*source));
-        if !matches!(target,ValueIdentity::Register(_))&&*source==target{*entry=bounds::Proof::default().with_identity(*source);}
+type LoopRequirements = BTreeMap<Input, BTreeMap<Target, BTreeSet<bounds::Condition>>>;
+
+fn local_loop_requirements(
+    required: Requirements,
+    parameters: &BTreeMap<ValueIdentity, bounds::Proof>,
+) -> LoopRequirements {
+    let mut inverse = BTreeMap::new();
+    for (source, target) in parameters {
+        let target = target.known_identity(0).unwrap();
+        let entry = inverse.entry(target).or_insert_with(|| bounds::Proof::default().with_identity(*source));
+        if !matches!(target, ValueIdentity::Register(_)) && *source == target {
+            *entry = bounds::Proof::default().with_identity(*source);
+        }
     }
-    required.iter().fold(Requirements::new(),|mut result,((input,need),guards)|{let bindings=scoped_indices(&inverse,input.depth());result.entry((input.at_call(&bindings),*need)).or_default().extend(guards.iter().map(|guard|guard.guard_at_call(&bindings)));result})
+    let mut local = LoopRequirements::new();
+    for ((input, target), guards) in required {
+        let bindings = scoped_indices(&inverse, input.depth());
+        local.entry(input.at_call(&bindings)).or_default().entry(target).or_default()
+            .extend(guards.into_iter().map(|guard| guard.guard_at_call(&bindings)));
+    }
+    local
 }
+
 pub(super) fn infer(inputs:&Inputs,parameters:&BTreeMap<ValueIdentity,bounds::Proof>,outputs:&Outputs,source:&Source,span:Span)->Result<Contract>{
     let mut required=Requirements::new();
     for usage in &inputs.uses{match usage {
@@ -1138,18 +1152,167 @@ pub(super) fn check_calls<'a>(calls:impl Iterator<Item=&'a Call>,known:&super::n
     Ok(deferred)
 }
 
-fn refine(value:&Residency,required:&Requirements)->Residency{match value{
-    Residency::Selected(when,a,b)=>Residency::conditional(when.as_ref().clone(),refine(a,required),refine(b,required)),
-    Residency::Absent=>Residency::Absent,
-    Residency::Origins(origins)=>{
-        if origins.is_empty(){return value.clone();}let mut all=Residency::Absent;
-        for origin in origins{
-            let mut item=Residency::Origins(BTreeSet::from([origin.clone()]));
-            if let Origin::Input(input)=origin{for((other,target),guards)in required{if input==other{for guard in guards{item=Residency::conditional(guard.clone(),if *target==Target::Cpu{Residency::cpu()}else{Residency::gpu()},item);}}}}
-            all.join(&item);
-        }all
-    },
-}}
+#[repr(C)]
+#[derive(Default)]
+struct LoopRefineNode {
+    condition: Context,
+    yes: Context,
+    no: Context,
+    origins: Context,
+}
+
+#[repr(C)]
+struct LoopRefineHost {
+    inspect: unsafe extern "C" fn(Context) -> LoopRefineNode,
+    branch: unsafe extern "C" fn(Borrowed, Context, LoopRefineNode),
+    origins: unsafe extern "C" fn(Borrowed, Context, Context),
+}
+
+#[repr(C)]
+struct LoopRefineOrigin {
+    present: u32,
+    requirements: Borrowed,
+}
+
+#[repr(C)]
+struct LoopRefineOriginsHost {
+    next: unsafe extern "C" fn(Context) -> LoopRefineOrigin,
+    empty: unsafe extern "C" fn(Context),
+    apply: unsafe extern "C" fn(Context, Borrowed),
+    merge: unsafe extern "C" fn(Context),
+}
+
+#[repr(C)]
+struct LoopRefineGuard {
+    condition: Borrowed,
+    cpu: u32,
+}
+
+#[repr(C)]
+struct LoopRefineGuardsHost {
+    next: unsafe extern "C" fn(Context) -> LoopRefineGuard,
+    select: unsafe extern "C" fn(Context, LoopRefineGuard),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ownership_path::refine_loop_residency"]
+    fn refine_loop_residency(required: Borrowed, value: Context, host: LoopRefineHost);
+    #[link_name = "bootstrap.ownership_path::refine_loop_origins"]
+    fn refine_loop_origins(context: Context, host: LoopRefineOriginsHost);
+    #[link_name = "bootstrap.ownership_path::refine_loop_guards"]
+    fn refine_loop_guards(value: Context, cursor: Context, host: LoopRefineGuardsHost);
+}
+
+const LOOP_REFINE_HOST: LoopRefineHost = LoopRefineHost {
+    inspect: inspect_loop_refinement,
+    branch: refine_loop_branch,
+    origins: refine_loop_origin_set,
+};
+
+fn refine(mut value: Residency, required: &LoopRequirements) -> Residency {
+    unsafe { refine_loop_residency(ptr::from_ref(required).cast(), ptr::from_mut(&mut value).cast(), LOOP_REFINE_HOST) };
+    value
+}
+
+unsafe extern "C" fn inspect_loop_refinement(value: Context) -> LoopRefineNode {
+    match unsafe { &mut *value.cast::<Residency>() } {
+        Residency::Selected(when, yes, no) => LoopRefineNode {
+            condition: ptr::from_mut(when.as_mut()).cast(),
+            yes: ptr::from_mut(yes.as_mut()).cast(),
+            no: ptr::from_mut(no.as_mut()).cast(),
+            ..LoopRefineNode::default()
+        },
+        Residency::Origins(origins) => LoopRefineNode {
+            origins: ptr::from_mut(origins).cast(),
+            ..LoopRefineNode::default()
+        },
+        Residency::Absent => LoopRefineNode::default(),
+    }
+}
+
+unsafe extern "C" fn refine_loop_branch(required: Borrowed, value: Context, node: LoopRefineNode) {
+    let required = unsafe { &*required.cast::<LoopRequirements>() };
+    let condition = std::mem::take(unsafe { &mut *node.condition.cast::<bounds::Condition>() });
+    let yes = std::mem::replace(unsafe { &mut *node.yes.cast::<Residency>() }, Residency::Absent);
+    let no = std::mem::replace(unsafe { &mut *node.no.cast::<Residency>() }, Residency::Absent);
+    unsafe { *value.cast::<Residency>() = Residency::conditional(condition, refine(yes, required), refine(no, required)) };
+}
+
+struct LoopRefinement<'a> {
+    required: &'a LoopRequirements,
+    origins: std::collections::btree_set::IntoIter<Origin>,
+    current: Residency,
+    result: Residency,
+}
+
+unsafe extern "C" fn refine_loop_origin_set(required: Borrowed, value: Context, origins: Context) {
+    let required = unsafe { &*required.cast::<LoopRequirements>() };
+    let origins = std::mem::take(unsafe { &mut *origins.cast::<BTreeSet<Origin>>() });
+    let mut state = LoopRefinement {
+        required,
+        origins: origins.into_iter(),
+        current: Residency::Absent,
+        result: Residency::Absent,
+    };
+    unsafe { refine_loop_origins(ptr::from_mut(&mut state).cast(), LOOP_REFINE_ORIGINS_HOST) };
+    unsafe { *value.cast::<Residency>() = state.result };
+}
+
+const LOOP_REFINE_ORIGINS_HOST: LoopRefineOriginsHost = LoopRefineOriginsHost {
+    next: next_refinement_origin,
+    empty: refine_unknown,
+    apply: apply_origin_requirements,
+    merge: merge_refined_origin,
+};
+
+unsafe extern "C" fn next_refinement_origin(context: Context) -> LoopRefineOrigin {
+    let state = unsafe { &mut *context.cast::<LoopRefinement<'_>>() };
+    let Some(origin) = state.origins.next() else {
+        return LoopRefineOrigin { present: 0, requirements: ptr::null() };
+    };
+    let requirements = match &origin {
+        Origin::Input(input) => state.required.get(input).map_or(ptr::null(), |entry| ptr::from_ref(entry).cast()),
+        _ => ptr::null(),
+    };
+    state.current = Residency::Origins(BTreeSet::from([origin]));
+    LoopRefineOrigin { present: 1, requirements }
+}
+
+unsafe extern "C" fn refine_unknown(context: Context) {
+    unsafe { &mut *context.cast::<LoopRefinement<'_>>() }.result = Residency::default();
+}
+
+unsafe extern "C" fn merge_refined_origin(context: Context) {
+    let state = unsafe { &mut *context.cast::<LoopRefinement<'_>>() };
+    let current = std::mem::replace(&mut state.current, Residency::Absent);
+    merge_bound_source(&mut state.result, current);
+}
+
+struct LoopGuardCursor<'a>(&'a mut dyn Iterator<Item = (Target, &'a bounds::Condition)>);
+
+unsafe extern "C" fn apply_origin_requirements(context: Context, requirements: Borrowed) {
+    let state = unsafe { &mut *context.cast::<LoopRefinement<'_>>() };
+    let requirements = unsafe { &*requirements.cast::<BTreeMap<Target, BTreeSet<bounds::Condition>>>() };
+    let mut guards = requirements.iter().flat_map(|(&target, entries)| entries.iter().map(move |guard| (target, guard)));
+    let mut cursor = LoopGuardCursor(&mut guards);
+    let host = LoopRefineGuardsHost { next: next_refinement_guard, select: apply_refinement_guard };
+    unsafe { refine_loop_guards(ptr::from_mut(&mut state.current).cast(), ptr::from_mut(&mut cursor).cast(), host) };
+}
+
+unsafe extern "C" fn next_refinement_guard(cursor: Context) -> LoopRefineGuard {
+    let cursor = unsafe { &mut *cursor.cast::<LoopGuardCursor<'_>>() };
+    cursor.0.next().map_or(LoopRefineGuard { condition: ptr::null(), cpu: 0 }, |(target, condition)| {
+        LoopRefineGuard { condition: ptr::from_ref(condition).cast(), cpu: u32::from(target == Target::Cpu) }
+    })
+}
+
+unsafe extern "C" fn apply_refinement_guard(value: Context, guard: LoopRefineGuard) {
+    let value = unsafe { &mut *value.cast::<Residency>() };
+    let condition = unsafe { &*guard.condition.cast::<bounds::Condition>() };
+    let physical = if guard.cpu != 0 { Residency::cpu() } else { Residency::gpu() };
+    *value = Residency::conditional(condition.clone(), physical, std::mem::take(value));
+}
+
 fn physical_target(value: &Residency) -> Option<Target> {
     let Residency::Origins(origins) = value else { return None; };
     let location = |origin: &Origin| match origin {
@@ -1493,27 +1656,57 @@ where
     };
     unsafe { compare_residency(ptr::from_mut(leaf).cast(), pair, compare_host::<F>()) != 0 }
 }
-pub(super) fn check_loops(name:&str,inputs:&Inputs,contract:&Contract,parameters:&BTreeMap<ValueIdentity,bounds::Proof>,outputs:&Outputs,known:&super::native_function::ResidencyContracts<'_>,parameter_count:usize)->Result<()>{
-    let mut required=contract.required.clone();
-    let mut root=None;
-    for usage in &inputs.uses{if let Use::Same{before,after,source,span,..}=usage{
-        let mut wanted=BTreeSet::new();self::inputs(&evaluate(before,outputs,&bounds::Clause::default()),&mut wanted);self::inputs(&evaluate(after,outputs,&bounds::Clause::default()),&mut wanted);
-        for input in wanted{
-            let input=input.at_call(parameters);
-            let call=root.get_or_insert_with(||Call {
+pub(super) fn check_loops(
+    name: &str,
+    inputs: &Inputs,
+    contract: &Contract,
+    parameters: &BTreeMap<ValueIdentity, bounds::Proof>,
+    outputs: &Outputs,
+    known: &super::native_function::ResidencyContracts<'_>,
+    parameter_count: usize,
+) -> Result<()> {
+    let backedges = inputs.uses.iter().filter_map(|usage| match usage {
+        Use::Same { before, after, path, source, span } => Some((before, after, path, source, *span)),
+        _ => None,
+    });
+    if backedges.clone().next().is_none() {
+        return Ok(());
+    }
+
+    let mut required = contract.required.clone();
+    let mut root = None;
+    for (before, after, _, source, span) in backedges.clone() {
+        let mut wanted = BTreeSet::new();
+        self::inputs(&evaluate(before, outputs, &bounds::Clause::default()), &mut wanted);
+        self::inputs(&evaluate(after, outputs, &bounds::Clause::default()), &mut wanted);
+        for input in wanted {
+            let input = input.at_call(parameters);
+            let call = root.get_or_insert_with(|| Call {
                 function: name.into(),
-                arguments: Arc::new((0..parameter_count).map(|parameter|(Input::new(parameter),Residency::parameter(parameter))).collect()),
-                bindings: parameters.values().filter_map(|proof|proof.known_identity(0)).map(|id|(id,bounds::Proof::default().with_identity(id))).collect(),
+                arguments: Arc::new((0..parameter_count).map(|parameter| (Input::new(parameter), Residency::parameter(parameter))).collect()),
+                bindings: parameters.values().filter_map(|proof| proof.known_identity(0))
+                    .map(|id| (id, bounds::Proof::default().with_identity(id))).collect(),
                 path: bounds::Clause::default(), source: None, span: Span::default(),
             });
-            for(key,guards)in query(call,known,outputs,Some(&input),source,*span,false)?.0{required.entry(key).or_default().extend(guards);}
+            let (queried, _) = query(call, known, outputs, Some(&input), source, span, false)?;
+            for (key, guards) in queried {
+                required.entry(key).or_default().extend(guards);
+            }
         }
-    }}
-    let required=local(&required,parameters);
-    for usage in &inputs.uses{if let Use::Same{before,after,path,source,span}=usage{
-        let before=evaluate(before,outputs,path);let after=evaluate(after,outputs,path);if before.absent()||after.absent(){continue;}
-        if !equal_under(&refine(&before,&required),&refine(&after,&required),path,&mut|_,_,path|!path.overlaps(&bounds::Clause::default())){return source.fail(*span,"B266","循环真实回边没有在该路径归还入口相同的CPU／GPU存储位置");}
-    }}Ok(())
+    }
+    let required = local_loop_requirements(required, parameters);
+    for (before, after, path, source, span) in backedges {
+        let before = evaluate(before, outputs, path);
+        let after = evaluate(after, outputs, path);
+        if before.absent() || after.absent() {
+            continue;
+        }
+        if !equal_under(&refine(before, &required), &refine(after, &required), path,
+            &mut |_, _, path| !path.overlaps(&bounds::Clause::default())) {
+            return source.fail(span, "B266", "循环真实回边没有在该路径归还入口相同的CPU／GPU存储位置");
+        }
+    }
+    Ok(())
 }
 pub(super) fn visit(
     value: &mut Returned,

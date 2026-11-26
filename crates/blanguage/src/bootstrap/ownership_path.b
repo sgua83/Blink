@@ -540,3 +540,30 @@ extern "C" u32 bind_residency_origins(ResidencyBinding visit,address iterator,u6
     }
     return host.bound(visit.result);
 }
+
+extern "C" void refine_loop_residency(address required,address value,LoopRefineHost host) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.branch) requires nonzero(host.origins) {
+    LoopRefineNode node=host.inspect(value);
+    if(node.condition!=address()){host.branch(required,value,node);}
+    else if(node.origins!=address()){host.origins(required,value,node.origins);}
+}
+
+extern "C" void refine_loop_origins(address context,LoopRefineOriginsHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.empty) requires nonzero(host.apply) requires nonzero(host.merge) {
+    LoopRefineOrigin origin=host.next(context);
+    if(origin.present==0){host.empty(context);return;}
+    while(origin.present!=0){
+        if(origin.requirements!=address()){host.apply(context,origin.requirements);}
+        host.merge(context);
+        origin=host.next(context);
+    }
+}
+
+extern "C" void refine_loop_guards(address value,address cursor,LoopRefineGuardsHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.select) {
+    LoopRefineGuard guard=host.next(cursor);
+    while(guard.condition!=address()){
+        host.select(value,guard);
+        guard=host.next(cursor);
+    }
+}
