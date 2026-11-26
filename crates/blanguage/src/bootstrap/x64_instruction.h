@@ -322,16 +322,9 @@ enum PacketPlanOperation:u32 {
 struct PacketPlanDecision {
     PacketPlanOperation operation;u32 uniform_count;PacketAddress dataset;PacketViewAddress view;PacketMathOperation math;
 };
-struct PacketBodyStep {
-    address instruction;
-    Span first;
-    Span second;
-    PacketPlanDecision decision;
-};
 struct PacketLayout { u32 sparse; u32 slots; u32 buffer_bytes; u32 stride_field; };
 struct PacketBodyHost {
     ControlHost control;
-    cfn<PacketBodyStep,address> step;
     cfn<MoveLocation,address,usize> local;
     cfn<ScalarCursor,address> mark;
     cfn<void,address,address,ScalarCursor> publish;
@@ -340,7 +333,7 @@ struct PacketBodyHost {
     ScalarValueHost values;
 };
 extern "C" void emit_packet_body(address context, address emitter, Span code, ControlTargets targets, PacketLayout layout, PacketBodyHost host) on cpu
-    requires nonzero(host.step) requires nonzero(host.local) requires nonzero(host.mark) requires nonzero(host.publish)
+    requires nonzero(host.local) requires nonzero(host.mark) requires nonzero(host.publish)
     requires nonzero(host.reserve) requires nonzero(host.commit)
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location) requires nonzero(host.values.scalar)
     requires nonzero(host.control.emit) requires nonzero(host.control.load) requires nonzero(host.control.buffer)
@@ -632,16 +625,13 @@ struct PacketPlanHost {
     cfn<ScalarEncoding,address,usize> scalar;
     cfn<u32,address,cfn<u32,usize>> widths;
     cfn<address,address,usize> uses_storage;
-    cfn<address> plan_new;
-    cfn<void,address> plan_drop;
-    cfn<void,address,address,PacketPlanDecision,address,address> append;
 };
-// A successful plan transfers both the final Step vector and the original uses
-// buffer. The latter is consumed by packet coloring before emission.
-extern "C" address packet_plan(address context, Span code, PacketPlanHeader header, address output, PacketPlanHost host) on cpu 
+// A successful plan borrows the original instructions through emission.
+// The caller releases the span through packet_plan_drop after the last emission.
+extern "C" bool packet_plan(address context, Span code, PacketPlanHeader header, address output_uses, address output_plan, PacketPlanHost host) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.stride) requires nonzero(host.written) requires nonzero(host.scalar)
-    requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append)
     requires nonzero(host.widths) requires nonzero(host.uses_storage);
+extern "C" void packet_plan_drop(Span plan) on cpu;
 extern "C" u32 packet_plan_uniform_operand(address bytes,u64 reg) on cpu;
 extern "C" u32 packet_plan_mark_operand(address bytes,u64 reg) on cpu;
 extern "C" u32 packet_plan_width(usize bytes) on cpu;
