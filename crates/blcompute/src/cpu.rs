@@ -1,31 +1,24 @@
 pub use crate::texture::{TextureInput, CpuTextureBinding, CpuTextures};
 mod dataset;
+mod image;
+use image::{Allocation, LoadedCode};
 mod observation;
 mod sort;
 use crate::{Dataset, DomainBindings, ReadDataset, Result, Value, arguments, error};
 use crate::bindings::{self, DomainRelations, StorageSlots};
 use crate::application::{FrameArguments, ResidentData};
-use crate::library::Library;
 use blanguage::{
     ExecutableProgram, TemplateProgram,
     ir::{Bits, CollectiveOperator, ExecutionPlan as Program, Scalar, Ty},
-    native::{BufferAddress, NativeSymbol, RangeEntry, RangeResult},
+    native::{BufferAddress, RangeEntry, RangeResult},
 };
 pub use dataset::CpuDataset;
 pub use observation::{CpuRangeCall, CpuRangeTiming, CpuRangeTimings, CpuThreadTime, CpuTimePoint};
-use std::{collections::{BTreeMap, btree_map::Entry}, ffi::c_void, mem::MaybeUninit, ptr::NonNull, sync::Arc};
+use std::{ffi::c_void, mem::MaybeUninit, sync::Arc};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
-    fn VirtualAlloc(address: *mut c_void, size: usize, kind: u32, protect: u32) -> *mut c_void;
-    fn VirtualProtect(address: *mut c_void, size: usize, protect: u32, old: *mut u32) -> i32;
-    fn VirtualFree(address: *mut c_void, size: usize, kind: u32) -> i32;
-    fn VirtualQuery(address: *const c_void, information: *mut MemoryBasicInformation, size: usize) -> usize;
-    fn FlushInstructionCache(process: *mut c_void, address: *const c_void, size: usize) -> i32;
-    fn GetCurrentProcess() -> *mut c_void;
-    fn RtlAddFunctionTable(table: *mut RuntimeFunction, count: u32, base: u64) -> u8;
-    fn RtlDeleteFunctionTable(table: *mut RuntimeFunction) -> u8;
     fn CreateThreadpoolWork(
         callback: unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void),
         context: *mut c_void,
@@ -189,19 +182,6 @@ impl Drop for WorkHandle {
         }
     }
 }
-#[repr(C)]
-struct RuntimeFunction { begin: u32, end: u32, unwind: u32 }
-#[repr(C)]
-struct MemoryBasicInformation {
-    base_address: *mut c_void,
-    allocation_base: *mut c_void,
-    allocation_protect: u32,
-    partition_id: u16,
-    region_size: usize,
-    state: u32,
-    protect: u32,
-    kind: u32,
-}
 /// 原CPU代码入口的当前Windows VM区段快照；不持有代码或授予地址访问权。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CpuCodeMemory {
@@ -220,37 +200,6 @@ pub struct CpuCodeMemory {
     pub state: u32,
     pub kind: u32,
 }
-struct Allocation {
-    address: *mut c_void,
-    functions: Vec<NonNull<RuntimeFunction>>,
-    _libraries: Vec<Library>,
-}
-struct LoadedCode {
-    allocation: Arc<Allocation>,
-    table: NonNull<[RuntimeFunction]>,
-}
-impl LoadedCode {
-    fn entries(&self) -> &[RuntimeFunction] {
-        // The initialized root table is read-only and belongs to allocation.
-        unsafe { self.table.as_ref() }
-    }
-}
-fn external_symbol<'image>(
-    libraries: &mut BTreeMap<&'image str, Library>, name: &'image blanguage::ast::ExternalName,
-) -> Result<*const ()> {
-    if name.library == blanguage::resource::RUNTIME_LIBRARY {
-        return crate::application::resource_symbol(&name.symbol)
-            .ok_or_else(|| error(format!("未知的Blink资源C符号 {}", name.symbol)));
-    }
-    let library = match libraries.entry(name.library.as_str()) {
-        Entry::Occupied(entry) => entry.into_mut(),
-        Entry::Vacant(entry) => entry.insert(Library::load(&name.library)
-            .map_err(|error| crate::error(format!("加载 {} 失败：{error}", name.library)))?),
-    };
-    library.symbol(&std::ffi::CString::new(name.symbol.as_str())?)
-        .map_err(|error| crate::error(format!("解析 {}!{} 失败：{error}", name.library, name.symbol)))
-}
-
 fn write_stdout(text: &[u8]) -> u32 {
     use std::io::Write;
     match std::io::stdout().lock().write(text) {
@@ -318,245 +267,6 @@ extern "C" fn print_float(bits: u64, width: u32) -> u32 {
     }
     write_stdout(&text[..count as usize])
 }
-impl CpuCodeMemory {
-    fn query(stage: usize, address: *mut c_void, runtime_owned: bool) -> Result<Self> {
-        let mut information = std::mem::MaybeUninit::<MemoryBasicInformation>::zeroed();
-        if unsafe { VirtualQuery(address, information.as_mut_ptr(), std::mem::size_of::<MemoryBasicInformation>()) } == 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        let information = unsafe { information.assume_init() };
-        Ok(Self {
-            stage,
-            entry_address: address as usize,
-            runtime_owned,
-            allocation_address: information.allocation_base as usize,
-            region_address: information.base_address as usize,
-            region_bytes: information.region_size,
-            allocation_protection: information.allocation_protect,
-            protection: information.protect,
-            state: information.state,
-            kind: information.kind,
-        })
-    }
-}
-impl Allocation {
-    fn place_code(cursor: &mut usize, code: &blanguage::native::NativeCode) -> (usize, usize) {
-        let begin = cursor.div_ceil(16) * 16;
-        let unwind = (begin + code.bytes.len()).div_ceil(4) * 4;
-        *cursor = unwind + code.unwind.len();
-        (begin, unwind)
-    }
-
-    fn register_functions(&mut self, table: NonNull<RuntimeFunction>, count: u32) -> Result<()> {
-        if count != 0 {
-            if unsafe { RtlAddFunctionTable(table.as_ptr(), count, self.address as u64) } == 0 {
-                return Err(error("Windows未接受CPU代码的原生展开信息"));
-            }
-            self.functions.push(table);
-        }
-        Ok(())
-    }
-
-    fn load<P>(
-        image: &blanguage::native::ProgramImage<P>, workers: usize,
-    ) -> Result<(Option<LoadedCode>, Option<crate::application::Definitions>)> {
-        const PAGE_BYTES: usize = 4096;
-        let module = image.module_code();
-        let mut size = 0usize;
-        let mut count = 0usize;
-        for code in image.code() {
-            let (_, unwind) = Self::place_code(&mut size, code);
-            // The aligned unwind offset also bounds the preceding code offset.
-            u32::try_from(unwind)?;
-            count += 1;
-        }
-        if count == 0 && module.is_none() { return Ok((None, None)); }
-        let root_bytes = size;
-        let mut sections = Vec::new();
-        let mut import_slots = BTreeMap::new();
-        if let Some(module) = module {
-            for section in &module.sections {
-                let alignment = (1usize << ((section.flags >> 20) & 15).saturating_sub(1)).max(PAGE_BYTES);
-                size = size.div_ceil(alignment) * alignment;
-                sections.push(size);
-                size += section.bytes.len();
-                for relocation in &section.relocations {
-                    if let blanguage::native::ModuleTarget::Import(name) = &relocation.target {
-                        import_slots.entry(name).or_insert(0usize);
-                    }
-                }
-            }
-            size = size.div_ceil(PAGE_BYTES) * PAGE_BYTES;
-        }
-        for offset in import_slots.values_mut() { *offset = size; size += 8; }
-        let table_offset = size.div_ceil(4) * 4;
-        let count = u32::try_from(count)?;
-        size = table_offset + count as usize * std::mem::size_of::<RuntimeFunction>();
-        let address = unsafe { VirtualAlloc(std::ptr::null_mut(), size, 0x3000, 0x04) };
-        if address.is_null() { return Err(std::io::Error::last_os_error().into()); }
-        let mut allocation = Self { address, functions: Vec::new(), _libraries: Vec::new() };
-        let table = unsafe { NonNull::new_unchecked(address.cast::<u8>().add(table_offset).cast::<RuntimeFunction>()) };
-        let mut cursor = 0;
-        for (index, code) in image.code().enumerate() {
-            let (begin, unwind) = Self::place_code(&mut cursor, code);
-            let begin_rva = begin as u32;
-            unsafe {
-                std::ptr::copy_nonoverlapping(code.bytes.as_ptr(), address.cast::<u8>().add(begin), code.bytes.len());
-                std::ptr::copy_nonoverlapping(code.unwind.as_ptr(), address.cast::<u8>().add(unwind), code.unwind.len());
-                table.as_ptr().add(index).write(RuntimeFunction {
-                    begin: begin_rva, end: begin_rva + u32::try_from(code.function_end)?, unwind: unwind as u32,
-                });
-            }
-        }
-        let root_table = NonNull::slice_from_raw_parts(table, count as usize);
-        let entries = unsafe { root_table.as_ref() };
-        let local_functions = image.functions().iter().zip(&entries[image.stage_code_count()..])
-            .map(|((name, _), row)| {
-                let entry = unsafe { address.cast::<u8>().add(row.begin as usize) }.cast::<c_void>();
-                (name.as_str(), entry)
-            }).collect::<BTreeMap<_, _>>();
-        let function_address = |name: &str| {
-            match module.and_then(|module| module.symbols.get(name)) {
-                Some(&(section, value)) => {
-                    let offset = sections[section] + value as usize;
-                    Some(unsafe { address.cast::<u8>().add(offset) }.cast())
-                }
-                None => local_functions.get(name).copied(),
-            }
-        };
-        let mut libraries = std::collections::BTreeMap::new();
-        for (&name, &offset) in &import_slots {
-            let symbol = external_symbol(&mut libraries, name)?;
-            unsafe { std::ptr::write_unaligned(address.cast::<u8>().add(offset).cast::<u64>(), symbol as u64); }
-        }
-        if let Some(module) = module {
-            for (section, &begin) in module.sections.iter().zip(&sections) {
-                let entry = unsafe { address.cast::<u8>().add(begin) };
-                unsafe { std::ptr::copy_nonoverlapping(section.bytes.as_ptr(), entry, section.bytes.len()); }
-                let bytes = unsafe { std::slice::from_raw_parts_mut(entry, section.bytes.len()) };
-                for relocation in &section.relocations {
-                    let target = match &relocation.target {
-                        blanguage::native::ModuleTarget::Section { section, value } => sections[*section] + *value as usize,
-                        blanguage::native::ModuleTarget::Import(name) => import_slots[name],
-                    };
-                    blanguage::native::coff_relocate(bytes, relocation.offset, relocation.kind,
-                        address as u64, (begin + relocation.offset) as u64, target as u64)
-                        .map_err(error)?;
-                }
-                if section.name == ".pdata" {
-                    let count = u32::try_from(section.bytes.len() / std::mem::size_of::<RuntimeFunction>())?;
-                    let table = entry.cast::<RuntimeFunction>();
-                    unsafe { std::slice::from_raw_parts_mut(table, count as usize) }.sort_unstable_by_key(|entry| entry.begin);
-                }
-            }
-        }
-        for (code, row) in image.code().zip(entries) {
-            let entry = unsafe { address.cast::<u8>().add(row.begin as usize) };
-            for relocation in &code.relocations {
-                let ptr = match &relocation.target {
-                    NativeSymbol::Function(name) => function_address(name)
-                        .ok_or_else(|| error(format!("范围映像缺少所属模块函数 {name}")))? as *const (),
-                    NativeSymbol::External(name) => match import_slots.entry(name) {
-                        Entry::Occupied(slot) => unsafe {
-                            address.cast::<u8>().add(*slot.get()).cast::<u64>().read_unaligned() as *const ()
-                        },
-                        Entry::Vacant(slot) => {
-                            let symbol = external_symbol(&mut libraries, name)?;
-                            // The common relocation write initializes this field before the next lookup.
-                            slot.insert(row.begin as usize + relocation.offset);
-                            symbol
-                        }
-                    },
-                    NativeSymbol::Print(scalar) => match scalar {
-                        Scalar::U8 | Scalar::U16 | Scalar::U32 => print_u32 as *const (),
-                        Scalar::I8 | Scalar::I16 | Scalar::I32 => print_i32 as *const (),
-                        Scalar::U64 => print_u64 as *const (),
-                        Scalar::I64 => print_i64 as *const (),
-                        Scalar::Bool => print_bool as *const (),
-                        Scalar::F32 | Scalar::F64 => print_float as *const (),
-                    },
-                };
-                unsafe {
-                    std::ptr::copy_nonoverlapping((ptr as u64).to_le_bytes().as_ptr(), entry.add(relocation.offset), 8);
-                }
-            }
-        }
-        allocation._libraries = libraries.into_values().collect();
-        let mut old = 0;
-        let mut protect_pages = |begin: usize, bytes, protection| -> Result<()> {
-            if bytes != 0 && unsafe {
-                VirtualProtect(address.cast::<u8>().add(begin).cast(), bytes, protection, &mut old)
-            } == 0 {
-                return Err(std::io::Error::last_os_error().into());
-            }
-            Ok(())
-        };
-        protect_pages(0, root_bytes, 0x20)?;
-        // Windows also protects the last partially used page of each range.
-        let mut protected_end = root_bytes.div_ceil(PAGE_BYTES) * PAGE_BYTES;
-        if let Some(module) = module {
-            for (section, &begin) in module.sections.iter().zip(&sections) {
-                if section.bytes.is_empty() { continue; }
-                protect_pages(protected_end, begin - protected_end, 0x02)?;
-                let protection = match section.flags & 0xe0000000 {
-                    0xe0000000 | 0xa0000000 => 0x40,
-                    0x60000000 => 0x20,
-                    0x20000000 => 0x10,
-                    0xc0000000 | 0x80000000 => 0x04,
-                    0x40000000 => 0x02,
-                    _ => 0x01,
-                };
-                protect_pages(begin, section.bytes.len(), protection)?;
-                protected_end = (begin + section.bytes.len()).div_ceil(PAGE_BYTES) * PAGE_BYTES;
-            }
-        }
-        if protected_end < size {
-            protect_pages(protected_end, size - protected_end, 0x02)?;
-        }
-        if unsafe { FlushInstructionCache(GetCurrentProcess(), address, size) } == 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        allocation.register_functions(table, count)?;
-        if let Some(module) = module {
-            for (section, &begin) in module.sections.iter().zip(&sections) {
-                if section.name == ".pdata" {
-                    // Relocation and sorting already checked this section's entry count.
-                    let count = (section.bytes.len() / std::mem::size_of::<RuntimeFunction>()) as u32;
-                    let table = unsafe { NonNull::new_unchecked(address.cast::<u8>().add(begin).cast::<RuntimeFunction>()) };
-                    allocation.register_functions(table, count)?;
-                }
-            }
-        }
-        let allocation = Arc::new(allocation);
-        // The compiler-produced table is already relocated in this allocation.
-        // Definitions consumes it synchronously while the code owner is live.
-        let factories = match function_address("__blink_module_count") {
-            Some(count) => unsafe {
-                let count = *count.cast::<usize>();
-                let table = function_address("__blink_module_factories").unwrap().cast::<blanguage::resource::ModuleFactory>();
-                std::slice::from_raw_parts(table, count)
-            },
-            None => &[],
-        };
-        let definitions = if factories.is_empty() {
-            None
-        } else {
-            Some(unsafe { crate::application::Definitions::linked(factories, |image, code| {
-                Ok(CpuTemplate { code: CpuCode::bind_indices(image, workers, code, Some(&allocation)) })
-            }) }?)
-        };
-        Ok((Some(LoadedCode { allocation, table: root_table }), definitions))
-    }
-}
-impl Drop for Allocation {
-    fn drop(&mut self) {
-        unsafe {
-            for table in &self.functions { RtlDeleteFunctionTable(table.as_ptr()); }
-            VirtualFree(self.address, 0, 0x8000);
-        }
-    }
-}
-
 // A summary word may contain both initialized field bytes and padding.
 // The selected scalar must be within the row and initialized by the producer.
 unsafe fn collective_bits(scalar: Scalar, words: &[MaybeUninit<u32>], byte: usize) -> Bits {
@@ -907,7 +617,7 @@ impl CpuCode {
         let mut result = Vec::new();
         let runtime_owned = self.allocation.is_some();
         let mut add = |stage, address| -> Result<()> {
-            result.push(CpuCodeMemory::query(stage, address, runtime_owned)?);
+            result.push(image::query(stage, address, runtime_owned)?);
             Ok(())
         };
         for (stage, code) in self.stages.iter().enumerate() {
@@ -934,7 +644,7 @@ impl CpuCode {
     }
     fn raw<P>(image: blanguage::native::ProgramImage<P>) -> std::result::Result<Self, (Box<dyn std::error::Error + Send + Sync>, blanguage::native::ProgramImage<P>)> {
         let workers=match std::thread::available_parallelism(){Ok(workers)=>workers.get(),Err(error)=>return Err((error.into(),image))};
-        let (loaded, definitions) = match Allocation::load(&image, workers) {
+        let (loaded, definitions) = match image::load(&image, workers) {
             Ok(code) => code,
             Err(error) => return Err((error, image)),
         };
@@ -944,9 +654,9 @@ impl CpuCode {
             let stages = Self::load_stages(stages, &mut |_| {
                 let (row, rest) = remaining.split_first().unwrap();
                 remaining = rest;
-                unsafe { allocation.unwrap().address.cast::<u8>().add(row.begin as usize) }.cast()
+                unsafe { loaded.as_ref().unwrap().base.add(row.begin as usize) }.cast()
             });
-            // These entries were already placed and resolved by Allocation::load.
+            // These entries were already placed and resolved by the native image loader.
             remaining = &remaining[functions..];
             stages
         }, definitions, allocation))

@@ -102,6 +102,16 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
         }
         jobs.push(compile(name, &format!("src/codec/{module}.b"), "src", object(name)));
     }
+    let image_source = "library/blink/windows/cpu_image";
+    for extension in ["b", "h"] {
+        println!("cargo:rerun-if-changed=../../{image_source}.{extension}");
+    }
+    jobs.push(compile(
+        "cpu_image",
+        &format!("../../{image_source}.b"),
+        "../../library",
+        object("cpu_image"),
+    ));
     let compiler_start = jobs.len();
     let compiler = env::var_os("CARGO_FEATURE_COMPILER").is_some();
     if compiler {
