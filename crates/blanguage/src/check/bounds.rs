@@ -3859,7 +3859,7 @@ enum EncodedClause<F> {
 fn condition_node_ids<'a>(
     roots: impl IntoIterator<Item = &'a Clause>,
     record: impl FnMut(&'a Clause, EncodedClause<&'a Facts>),
-) -> BTreeMap<usize, usize> {
+) -> HashMap<usize, usize> {
     codec::conditions::node_ids(roots, false, record)
 }
 

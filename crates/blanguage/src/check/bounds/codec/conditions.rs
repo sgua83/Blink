@@ -63,7 +63,7 @@ struct CanonicalHost {
 struct Canonical<'a, F> {
     pending: ClausePostorder<'a>,
     unique: BTreeMap<EncodedClause<&'a Facts>, usize>,
-    indices: BTreeMap<usize, usize>,
+    indices: HashMap<usize, usize>,
     record: F,
 }
 unsafe fn borrowed_node<'a>(
@@ -170,11 +170,11 @@ pub(in super::super) fn node_ids<'a, F: FnMut(&'a Clause, EncodedClause<&'a Fact
     roots: impl IntoIterator<Item = &'a Clause>,
     keep_pairs: bool,
     record: F,
-) -> BTreeMap<usize, usize> {
+) -> HashMap<usize, usize> {
     let mut state = Canonical {
         pending: ClausePostorder::new(roots),
         unique: BTreeMap::new(),
-        indices: BTreeMap::new(),
+        indices: HashMap::new(),
         record,
     };
     unsafe {
@@ -199,7 +199,7 @@ impl<'a> Conditions<'a>{fn len(&self)->usize{match self{Self::Components(v)=>v.l
 struct WriteContext<'a> {
     conditions: Conditions<'a>,
     nodes: Vec<EncodedClause<&'a Facts>>,
-    indices: BTreeMap<usize, usize>,
+    indices: HashMap<usize, usize>,
 }
 impl<'a> WriteContext<'a> {
     fn new(conditions: Conditions<'a>) -> Self {
