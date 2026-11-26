@@ -417,7 +417,7 @@ struct StructuredHost {
     cfn<ReturnTargets,address> exit_targets;
     cfn<void,address,u32> record_return;
 };
-enum BlockRejection:u32 { Print=0; CpuCall=1; CpuTexture=2; CpuAddress=3; CpuFunction=4; FloatMath=5; };
+enum BlockRejection:u32 { Print=0; CpuCall=1; CpuTexture=2; CpuAddress=3; CpuFunction=4; FloatMath=5; AtomicAddress=6; };
 struct BlockValues {
     address registers;
     ScalarHost scalars;
@@ -473,10 +473,6 @@ struct TileStorage {
 };
 struct TilePublication { usize tile; usize words; Span fields; Span registers; address ids; };
 // The emitter lends the placed cells, actual field spans and one workspace for field and packed IDs.
-extern "C" u32 tile_storage_pointer(TileStorage storage, TileKey key, u32 index, u32 offset, MemoryHost memory) on cpu
-    requires nonzero(storage.cell)
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
-    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body);
 extern "C" u32 tile_storage_read(TileStorage storage, TileKey key, u32 index, u32 offset,
     BuiltinScalar scalar, MemoryHost memory) on cpu
     requires nonzero(storage.cell)
@@ -497,7 +493,6 @@ struct BlockHost {
     cfn<BlockFlow,address,BlockRejection> reject;
     cfn<void,address,address,address,Span,usize> texture_sample;
     cfn<void,address,address> ray;
-    cfn<BlockFlow,address,address> atomic;
     cfn<void,address,usize,SubgroupOperation,Span,Span> subgroup;
     cfn<void,address> barrier;
     cfn<void,address,address> publish;
@@ -506,7 +501,7 @@ struct BlockHost {
 extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     StructuredHost host, BlockHost emit) on cpu
     requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
-    requires nonzero(emit.texture_sample) requires nonzero(emit.ray) requires nonzero(emit.atomic)
+    requires nonzero(emit.texture_sample) requires nonzero(emit.ray)
     requires nonzero(emit.subgroup) requires nonzero(emit.barrier)
     requires nonzero(emit.publish) requires nonzero(emit.collective)
     requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
@@ -584,32 +579,6 @@ struct TextureWords { u64 body; u64 decorations; u32 next; };
 // respectively. The emitter lends four result IDs and room for 46 body and
 // nine decoration words.
 extern "C" TextureWords encode_texture_sample(TextureSampleEmission input, address results, address body, address decorations) on cpu;
-
-enum AtomicOperation:u32 {
-    Load=0; Store=1; Add=2; Sub=3; Exchange=4; CompareExchange=5;
-    Min=6; Max=7; And=8; Or=9; Xor=10;
-};
-struct AtomicSource {
-    AtomicOperation operation;
-    BuiltinScalar scalar;
-    BuiltinScalar unit;
-    u32 result_type;
-    u32 pointer;
-    u32 workgroup;
-    u32 order;
-    u32 failure;
-    u64 value;
-    u64 compare;
-};
-struct AtomicHost {
-    cfn<u32,address,u32> constant;
-    cfn<u32,address> id;
-    cfn<u32,address,u64> bits;
-    cfn<address,address> body;
-};
-struct AtomicWords { u64 words; u32 result; };
-extern "C" AtomicWords emit_source_atomic(address context, AtomicSource input, AtomicHost host) on cpu
-    requires nonzero(host.constant) requires nonzero(host.id) requires nonzero(host.bits) requires nonzero(host.body);
 
 struct AppendEmission {
     u32 uint_type;

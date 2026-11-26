@@ -238,8 +238,6 @@ unsafe extern "C" fn tile_input_fragment(cursor: *mut c_void) -> TileInputFragme
 unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::emit_tile_input"]
     fn emit_tile_input(input: TileInputLayout, source: TileInputSource, memory: MemoryHost) -> TileInputRange;
-    #[link_name = "bootstrap.spirv_envelope::tile_storage_pointer"]
-    fn tile_storage_pointer(storage: TileStorage, key: TileKey, index: u32, offset: u32, memory: MemoryHost) -> u32;
     #[link_name = "bootstrap.spirv_envelope::tile_storage_read"]
     fn tile_storage_read(storage: TileStorage, key: TileKey, index: u32, offset: u32,
         scalar: ScalarCode, memory: MemoryHost) -> u32;
@@ -281,10 +279,6 @@ impl Emitter<'_> {
     pub(super) fn tile_storage(&self) -> TileStorage {
         TileStorage { cell: tile_cell, word: tile_word, width: self.workgroup_width,
             lane: self.tile_lane, length: self.tile_length }
-    }
-
-    pub(super) fn tile_word_pointer(&mut self, word: SharedWord, index: u32, offset: Option<u32>) -> u32 {
-        unsafe { tile_storage_pointer(self.tile_storage(), word.into(), index, offset.unwrap_or(0), self.memory_host()) }
     }
 
     pub(super) fn tile_read(

@@ -1957,7 +1957,7 @@ void block_private_storage(View instruction, BlockValues values, BlockLocals loc
 extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     StructuredHost host, BlockHost emit) on cpu
     requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
-    requires nonzero(emit.texture_sample) requires nonzero(emit.ray) requires nonzero(emit.atomic)
+    requires nonzero(emit.texture_sample) requires nonzero(emit.ray)
     requires nonzero(emit.subgroup) requires nonzero(emit.barrier)
     requires nonzero(emit.publish) requires nonzero(emit.collective)
     requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
@@ -1994,7 +1994,11 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
         } else if (kind == OP_APPEND) {
             block_append(value, emit.values, emit.paging, memory, host);
         } else if (kind == OP_ATOMIC) {
-            if (emit.atomic(context, instruction) == BlockFlow::Error) { return BlockFlow::Error; }
+            View target = emit.ir.inspect(value.left);
+            if (target.tag != INDEXED_DATA && target.tag != INDEXED_TILE) {
+                return emit.reject(context, BlockRejection::AtomicAddress);
+            }
+            block_atomic(value, target, emit.ir.inspect(value.right), emit, memory);
         } else if (kind == OP_TILE_BARRIER) {
             emit.barrier(context);
         } else if (kind == OP_TILE_PUBLISH) {
@@ -2219,6 +2223,10 @@ extern "C" TextureWords encode_texture_sample(TextureSampleEmission input, addre
     return TextureWords(at, annotated, sampled + 3);
 }
 
+enum AtomicOperation:u32 {
+    Load=0; Store=1; Add=2; Sub=3; Exchange=4; CompareExchange=5;
+    Min=6; Max=7; And=8; Or=9; Xor=10;
+};
 struct AtomicEmission {
     AtomicOperation operation;
     BuiltinScalar scalar;
@@ -2277,21 +2285,63 @@ u32 atomic_memory_semantics(u32 order, u32 storage) on cpu {
     return order == 0 ? 0 : storage | (u32(1) << order);
 }
 
-extern "C" AtomicWords emit_source_atomic(address context, AtomicSource input, AtomicHost host) on cpu
-    requires nonzero(host.constant) requires nonzero(host.id) requires nonzero(host.bits) requires nonzero(host.body) {
-    u32 scope = host.constant(context, input.workgroup != 0 ? 2 : 1);
-    u32 storage = input.workgroup != 0 ? 0x100 : 0x40;
-    u32 semantics = host.constant(context, atomic_memory_semantics(input.order, storage));
-    bool store_without_result = input.operation == AtomicOperation::Store && input.unit == BuiltinScalar::U32;
-    u32 result = store_without_result ? 0 : host.id(context);
-    bool compare_exchange = input.operation == AtomicOperation::CompareExchange;
-    u32 failure = compare_exchange ? host.constant(context, atomic_memory_semantics(input.failure, storage)) : 0;
-    u32 value = input.operation == AtomicOperation::Load ? 0 : host.bits(context, input.value);
-    u32 compare = compare_exchange ? host.bits(context, input.compare) : 0;
-    address body = host.body(context);
-    u64 words = atomic_instruction(AtomicEmission(input.operation, input.scalar, input.result_type, result,
-                                                  input.pointer, scope, semantics, value, compare, failure), body);
-    return AtomicWords(words, result);
+u32 atomic_operand(BlockValues values, usize reg, MemoryHost memory) on cpu
+    requires nonzero(values.scalar)
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
+    BuiltinScalar scalar = values.scalar(memory.scalars.context, reg);
+    return encode_raw_bits(scalar, block_register(values.registers, reg), memory);
+}
+
+void block_atomic(View instruction, View target, View op, BlockHost emit, MemoryHost memory) on cpu
+    requires nonzero(emit.values.scalar) requires nonzero(emit.tile.word) requires nonzero(emit.tile.cell)
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve)
+    requires nonzero(memory.pointer_type) requires nonzero(memory.finish_body) {
+    ScalarHost stream = memory.scalars;
+    address context = stream.context;
+    address registers = emit.values.registers;
+    u32 index = block_register(registers, target.b);
+    u32 offset = instruction.second.count == 0u64 ? 0 :
+        block_register(registers, unsafe_position<usize>(instruction.second.data));
+    bool wide = instruction.b == 8u64;
+    BuiltinScalar unit = wide ? BuiltinScalar::U64 : BuiltinScalar::U32;
+    BuiltinScalar scalar = instruction.c == 0u64 ? unit : (wide ? BuiltinScalar::I64 : BuiltinScalar::I32);
+    bool workgroup = target.tag == INDEXED_TILE;
+    u32 pointer;
+    if (workgroup) {
+        TileKey key = emit.tile.word(context, target.a, u32(instruction.a));
+        pointer = tile_storage_pointer(emit.tile, key, index, offset, memory);
+    } else {
+        PageInputs page = block_dataset_page(emit.paging, target.a);
+        page.index = index;
+        page.word = u32(instruction.a);
+        page.has_word = 1;
+        page.extra = offset;
+        PhysicalShape shape = PhysicalShape(unit, unit, u32(instruction.b), 1);
+        pointer = locate_scalar(page, shape, memory).pointer;
+    }
+
+    AtomicOperation operation = AtomicOperation(op.tag);
+    u32 result_type = stream.type_id(context, unit);
+    u32 scope = stream.constant(context, BuiltinScalar::U32, workgroup ? 2u64 : 1u64);
+    u32 storage = workgroup ? 0x100 : 0x40;
+    u32 semantics = stream.constant(context, BuiltinScalar::U32, u64(atomic_memory_semantics(u32(instruction.d), storage)));
+    u32 result = operation == AtomicOperation::Store && !wide ? 0 : stream.ids(context, 1);
+    bool cas = operation == AtomicOperation::CompareExchange;
+    u32 failure = cas ? stream.constant(context, BuiltinScalar::U32, u64(atomic_memory_semantics(u32(op.c), storage))) : 0;
+    u32 value = operation == AtomicOperation::Load ? 0 : atomic_operand(emit.values, cas ? op.b : op.a, memory);
+    u32 compare = cas ? atomic_operand(emit.values, op.a, memory) : 0;
+    address body = stream.reserve(context, 9u64, 0u64).body;
+    AtomicEmission emitted = AtomicEmission(operation, scalar, result_type, result,
+        pointer, scope, semantics, value, compare, failure);
+    memory.finish_body(context, atomic_instruction(emitted, body));
+    if (instruction.first.count != 0u64) {
+        usize dst = unsafe_position<usize>(instruction.first.data);
+        BuiltinScalar target_type = emit.values.scalar(context, dst);
+        emit_payload_load(PayloadShape(PayloadAccess::Words, target_type, unit, 1),
+            address_of(result), block_register(registers, dst), memory);
+    }
 }
 
 extern "C" u64 phi_two(address body, u64 at, u32 type, u32 result,
@@ -3444,7 +3494,7 @@ TileLocation tile_cell_address(TileCell cell, u32 index, u32 offset, u32 width, 
     return TileLocation(pointer, byte);
 }
 
-extern "C" u32 tile_storage_pointer(TileStorage storage, TileKey key, u32 index, u32 offset, MemoryHost memory) on cpu
+u32 tile_storage_pointer(TileStorage storage, TileKey key, u32 index, u32 offset, MemoryHost memory) on cpu
     requires nonzero(storage.cell)
     requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {

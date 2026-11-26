@@ -3,8 +3,6 @@ use crate::ir::*;
 use crate::ir::dataflow::{self, Span};
 use crate::builtin_types::{ScalarBinaryOp, ScalarCode};
 use super::{PAGE_BYTES, PREFIX_LEVELS, SCAN_WIDTH, ProgramImage, ShaderCode, StageCode};
-#[path = "atomic.rs"]
-mod atomic;
 #[path = "compact.rs"]
 mod compact;
 #[path = "custom_reduce.rs"]
@@ -683,7 +681,7 @@ unsafe extern "C" fn structured_finish_return(context: StructuredContext) {
 // payload or resolve its operands in the original emitter and invoke a single encoder.
 #[repr(u32)]
 #[allow(dead_code)] // Selected by the B block emitter.
-enum BlockRejection { Print, CpuCall, CpuTexture, CpuAddress, CpuFunction, FloatMath }
+enum BlockRejection { Print, CpuCall, CpuTexture, CpuAddress, CpuFunction, FloatMath, AtomicAddress }
 
 #[repr(C)]
 struct BlockValues {
@@ -761,7 +759,6 @@ struct BlockHost {
     reject: unsafe extern "C" fn(StructuredContext, BlockRejection) -> BlockFlow,
     texture_sample: unsafe extern "C" fn(StructuredContext, *const [Reg; 4], *const TextureSource, Span, Reg),
     ray: unsafe extern "C" fn(StructuredContext, *const Inst),
-    atomic: unsafe extern "C" fn(StructuredContext, *const Inst) -> BlockFlow,
     subgroup: unsafe extern "C" fn(StructuredContext, Reg, SubgroupOp, Span, Span),
     barrier: unsafe extern "C" fn(StructuredContext),
     publish: unsafe extern "C" fn(StructuredContext, *const Publication),
@@ -798,7 +795,6 @@ fn block_host(emitter: &mut Emitter<'_>) -> BlockHost {
         reject: block_reject,
         texture_sample: block_texture_sample,
         ray: block_ray,
-        atomic: block_atomic,
         subgroup: block_subgroup,
         barrier: block_barrier,
         publish: block_publish,
@@ -820,6 +816,7 @@ unsafe extern "C" fn block_reject(context: StructuredContext, rejection: BlockRe
         BlockRejection::CpuCall => "GPU 后端不能执行普通 CPU ABI 调用或其函数退出",
         BlockRejection::CpuTexture => "CPU纹理降低指令不能进入SPIR-V",
         BlockRejection::CpuAddress => "CPU原生位置地址不能在GPU内核中使用",
+        BlockRejection::AtomicAddress => "GPU原子不能使用CPU原生地址",
         BlockRejection::CpuFunction => "CPU函数符号地址不能在GPU内核中生成",
         BlockRejection::FloatMath => "GPU f64 超越函数尚未实现；GLSL.std.450 对应指令不接受64位浮点，不能隐式降低精度",
     });
@@ -836,18 +833,6 @@ unsafe extern "C" fn block_ray(context: StructuredContext, instruction: *const I
     let InstKind::RayQuery { scene, origin, direction, minimum, maximum, cull_back_faces, result } =
         &unsafe { &*instruction }.kind else { unreachable!() };
     unsafe { block_emitter(context) }.ray(*scene, origin, direction, *minimum, *maximum, *cull_back_faces, result);
-}
-
-unsafe extern "C" fn block_atomic(context: StructuredContext, instruction: *const Inst) -> BlockFlow {
-    let InstKind::Atomic(atomic) = &unsafe { &*instruction }.kind else { unreachable!() };
-    let emission = unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() };
-    match emission.emitter.atomic(atomic) {
-        Ok(()) => BlockFlow::Next,
-        Err(error) => {
-            emission.error = Some(error);
-            BlockFlow::Error
-        }
-    }
 }
 
 unsafe extern "C" fn block_subgroup(context: StructuredContext, dst: Reg, op: SubgroupOp, value: Span, argument: Span) {

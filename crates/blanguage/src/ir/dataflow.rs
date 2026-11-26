@@ -265,7 +265,9 @@ unsafe extern "C" fn inspect(node: Node) -> View {
                 AtomicOp::Min(a) => (6, *a, 0), AtomicOp::Max(a) => (7, *a, 0),
                 AtomicOp::And(a) => (8, *a, 0), AtomicOp::Or(a) => (9, *a, 0), AtomicOp::Xor(a) => (10, *a, 0),
             };
-            let mut view = View::tag(tag); view.a = a; view.b = b; view
+            let mut view = View::tag(tag); view.a = a; view.b = b;
+            if let AtomicOp::CompareExchange { failure, .. } = value { view.c = *failure as usize; }
+            view
         }
         Kind::Alias => match unsafe { &*node.data.cast::<MemoryAlias>() } {
             MemoryAlias::Local { base, len } => { let mut view = View::tag(0); view.a = *base; view.b = *len; view }
@@ -467,7 +469,7 @@ fn instruction(value: &Inst) -> View {
         }
         InstKind::Atomic(value) => {
             view.tag = 10; view.a = value.word as usize; view.b = value.scalar.size() as usize;
-            view.c = usize::from(value.scalar.is_signed());
+            view.c = usize::from(value.scalar.is_signed()); view.d = value.order as usize;
             view.first = Span::slice(value.result.as_slice()); view.second = Span::slice(value.offset.as_slice());
             view.left = Node::of(&value.target, Kind::Indexed); view.right = Node::of(&value.op, Kind::AtomicOp);
         }
