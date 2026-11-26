@@ -59,12 +59,25 @@ const BUFFER_BYTES: u32 = std::mem::size_of::<BufferAddress>() as u32;
 const BUFFER_STRIDE: u32 = std::mem::offset_of!(BufferAddress, stride) as u32;
 
 #[repr(C)]
-struct RangePrologue {
-    length: u64,
-    probe_field: u64,
+struct FrameOutput {
+    code: *mut u8,
+    operations: *mut UnwindOperation,
+    saved: *const allocation::SavedRegister,
+    count: usize,
+}
+
+#[repr(C)]
+struct FrameEntry {
+    length: usize,
+    probe_field: usize,
     operations: usize,
-    stack_bytes: u32,
     prolog: u8,
+}
+
+#[repr(C)]
+struct RangeFrameHost {
+    reserve: unsafe extern "C" fn(*mut std::ffi::c_void, usize, usize) -> FrameOutput,
+    publish: unsafe extern "C" fn(*mut std::ffi::c_void, FrameEntry),
 }
 
 #[repr(C)]
@@ -101,20 +114,12 @@ struct CodeTail {
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.x64_instruction::stack_register"]
-    fn encode_stack_register(register: u8, restore: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::tail_capacity"]
     fn tail_capacity(probe: usize, literal_count: usize) -> usize;
     #[link_name = "bootstrap.x64_instruction::write_tail"]
     fn write_tail(image: *mut u8, end: usize, probe: usize, literal_count: usize,
         regions: *mut super::Region, context: *mut std::ffi::c_void,
         next_literal: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> TailLiteral) -> CodeTail;
-    #[link_name = "bootstrap.frame_layout::range_prologue"]
-    fn range_prologue(frame: u32, saved: *const allocation::SavedRegister, count: usize,
-        operations: *mut UnwindOperation, output: *mut u8) -> RangePrologue;
-    #[link_name = "bootstrap.frame_layout::range_epilogue"]
-    fn range_epilogue(frame: u32, saved: *const allocation::SavedRegister, count: usize,
-        image: *mut u8, end: usize, exits: usize) -> usize;
     #[link_name = "bootstrap.x64_instruction::emit_map_range"]
     fn emit_map_range(input: MapRangeInput, host: MapRangeHost) -> u32;
 
@@ -264,41 +269,21 @@ impl Emitter<'_> {
             },
         }
     }
-    fn push_registers(&mut self, registers: &[u8]) {
-        for &register in registers {
-            self.emit_bytes(2, |output| unsafe { encode_stack_register(register, 0, output) });
-            let at = self.code.len() as u8;
-            self.unwind.push(UnwindOperation::push(at, register));
+    fn reserve_frame(&mut self, code_bytes: usize, operations: usize) -> FrameOutput {
+        self.code.reserve(code_bytes);
+        self.unwind.reserve(operations);
+        FrameOutput {
+            code: self.code.as_mut_ptr(), operations: self.unwind.as_mut_ptr(),
+            saved: self.frame.saved.as_ptr(), count: self.frame.saved.len(),
         }
-        self.prolog = self.code.len() as u8;
     }
-    fn enter(&mut self, frame: u32) -> u32 {
-        let saved = &self.frame.saved;
-        self.code.reserve(39 + 9 * saved.len());
-        self.unwind.reserve(6 + saved.len());
-        let entry = unsafe {
-            let entry = range_prologue(
-                frame, saved.as_ptr(), saved.len(), self.unwind.as_mut_ptr(), self.code.as_mut_ptr(),
-            );
-            self.code.set_len(entry.length as usize);
-            self.unwind.set_len(entry.operations);
-            entry
-        };
-        self.probe = (entry.probe_field != 0).then_some(entry.probe_field as usize);
-        self.prolog = entry.prolog;
-        entry.stack_bytes
-    }
-    fn leave(&mut self, frame: u32, exits: usize) {
-        let saved = &self.frame.saved;
-        let end = self.code.len();
-        self.code.reserve(20 + 9 * saved.len());
+    unsafe fn publish_frame(&mut self, entry: FrameEntry) {
         unsafe {
-            let bytes = range_epilogue(
-                frame, saved.as_ptr(), saved.len(), self.code.as_mut_ptr(), end,
-                exits,
-            );
-            self.code.set_len(end + bytes);
+            self.code.set_len(entry.length);
+            self.unwind.set_len(entry.operations);
         }
+        self.probe = (entry.probe_field != 0).then_some(entry.probe_field);
+        self.prolog = entry.prolog;
     }
     fn bytes(&mut self, b: &[u8]) {
         self.code.extend_from_slice(b);
@@ -337,6 +322,7 @@ struct MapRangeInput {
     stride_field: u32,
     tile_scope: u32,
     workgroup: u32,
+    saved: usize,
 }
 
 #[repr(u32)]
@@ -355,9 +341,6 @@ impl NativeCodeBuffer {
         Self { image: code.as_mut_ptr(), end: code.len() }
     }
 }
-
-#[repr(C)]
-struct MapRangeEntry { end: usize, stack_bytes: u32 }
 
 #[repr(C)]
 struct MapRangeObservation {
@@ -397,8 +380,7 @@ type MapRangeSlot = *mut std::ffi::c_void;
 #[repr(C)]
 struct MapRangeHost {
     context: MapRangeSlot,
-    enter: unsafe extern "C" fn(MapRangeSlot, u32) -> MapRangeEntry,
-    leave: unsafe extern "C" fn(MapRangeSlot, u32, usize) -> usize,
+    frame: RangeFrameHost,
     reserve: unsafe extern "C" fn(MapRangeSlot, usize) -> NativeCodeBuffer,
     commit: unsafe extern "C" fn(MapRangeSlot, usize),
     packet: unsafe extern "C" fn(MapRangeSlot, *const std::ffi::c_void, structure::ControlTargets),
@@ -423,16 +405,14 @@ struct MapRange<'a, 'b> {
     result: Result<(), &'static str>,
 }
 
-unsafe extern "C" fn map_range_enter(slot: MapRangeSlot, frame: u32) -> MapRangeEntry {
+unsafe extern "C" fn map_range_frame(slot: MapRangeSlot, code_bytes: usize, operations: usize) -> FrameOutput {
     let range = unsafe { &mut *slot.cast::<MapRange<'_, '_>>() };
-    let stack_bytes = range.emitter.enter(frame);
-    MapRangeEntry { end: range.emitter.code.len(), stack_bytes }
+    range.emitter.reserve_frame(code_bytes, operations)
 }
 
-unsafe extern "C" fn map_range_leave(slot: MapRangeSlot, frame: u32, exits: usize) -> usize {
+unsafe extern "C" fn map_range_publish_frame(slot: MapRangeSlot, entry: FrameEntry) {
     let range = unsafe { &mut *slot.cast::<MapRange<'_, '_>>() };
-    range.emitter.leave(frame, exits);
-    range.emitter.code.len()
+    unsafe { range.emitter.publish_frame(entry) };
 }
 
 impl Emitter<'_> {
@@ -636,7 +616,7 @@ fn emit_map(
         packet: packet.as_ref().map_or(std::ptr::null(), |packet| std::ptr::from_ref(packet).cast()),
         binding, word, selected, frame, slots: e.frame.end as u32,
         buffer_bytes: BUFFER_BYTES, stride_field: BUFFER_STRIDE,
-        tile_scope: u32::from(tile_scope), workgroup,
+        tile_scope: u32::from(tile_scope), workgroup, saved: e.frame.saved.len(),
     };
     let mut range = MapRange {
         emitter: &mut e,
@@ -652,7 +632,7 @@ fn emit_map(
     let stack_bytes = unsafe {
         emit_map_range(input, MapRangeHost {
             context: std::ptr::from_mut(&mut range).cast(),
-            enter: map_range_enter, leave: map_range_leave,
+            frame: RangeFrameHost { reserve: map_range_frame, publish: map_range_publish_frame },
             reserve: map_range_reserve, commit: map_range_commit,
             packet: map_range_packet, scalar: map_range_scalar,
             next_input: map_range_next_input, observe_input: map_range_observe_input,

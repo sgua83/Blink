@@ -10,9 +10,6 @@ pub(crate) struct Operation {
 }
 
 impl Operation {
-    pub(crate) fn push(offset: u8, reg: u8) -> Self {
-        Self { offset, reg, kind: 0, amount: 0 }
-    }
     pub(crate) fn allocate(offset: u8, frame: u32) -> Self {
         Self { offset, reg: 0, kind: 1, amount: frame }
     }

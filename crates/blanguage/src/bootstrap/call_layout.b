@@ -221,7 +221,7 @@ u64 move_function_parameter(address context, u64 index, u64 slot, u64 home, inou
     return cursor;
 }
 
-FunctionPrologue function_prologue(address context, u64 count, FunctionFrame frame,
+FrameEntry function_prologue(address context, u64 count, FunctionFrame frame,
     u32 flags, FrameOutput output, FunctionHost host) on cpu
     requires nonzero(host.parameter) requires nonzero(host.loan)
     requires nonzero(host.component) requires nonzero(host.publish) {
@@ -277,7 +277,7 @@ FunctionPrologue function_prologue(address context, u64 count, FunctionFrame fra
         index += 1u64;
     }
     u8 prolog = saved.operations != 0u64 ? u8(saved.end) : u8(0);
-    return FunctionPrologue(cursor, saved.probe_field, saved.operations, prolog);
+    return FrameEntry(cursor, saved.probe_field, saved.operations, prolog);
 }
 
 FunctionReturn function_result(FunctionFrame frame, u32 flags, CallValueLoan value,
@@ -322,7 +322,7 @@ extern "C" FunctionCode emit_function_code(address context, FunctionCodeInput in
     u64 entry_bytes = 2u64 + 17u64 + 9u64 * input.saved + 4u64 * 9u64 + 24u64
         + 16u64 * input.parameters + 24u64 * input.inputs;
     FrameOutput entry = host.entry(context, entry_bytes, 2u64 + input.saved);
-    FunctionPrologue prologue = function_prologue(context, input.parameters, frame, input.flags, entry, host.abi);
+    FrameEntry prologue = function_prologue(context, input.parameters, frame, input.flags, entry, host.abi);
     u64 exits = 0u64;
     ControlTargets targets = ControlTargets(address_of(exits), address_of(exits), address(), 0u64);
     if (host.body(context, prologue, targets) == 0) { return FunctionCode(0u64, 0); }

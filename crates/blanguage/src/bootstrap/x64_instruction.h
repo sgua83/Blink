@@ -1,6 +1,7 @@
 module bootstrap.x64_instruction;
 import bootstrap.scalar_fold;
 import bootstrap.ir_dataflow;
+import bootstrap.frame_layout;
 
 struct Encoding {
     u32 displacement;
@@ -734,8 +735,8 @@ struct MapRangeInput {
     u32 stride_field;
     u32 tile_scope;
     u32 workgroup;
+    u64 saved;
 };
-struct MapRangeEntry { u64 end; u32 stack_bytes; };
 struct MapRangeObservation { u64 start; u64 end; usize index; u32 value; MapRangePart part; };
 struct TilePhaseView { Span code; Node step; };
 // An exhausted input stream has zero unit bytes; an exhausted slot stream
@@ -751,8 +752,7 @@ struct TilePrivateSlot {
 };
 struct MapRangeHost {
     address context;
-    cfn<MapRangeEntry,address,u32> enter;
-    cfn<u64,address,u32,u64> leave;
+    RangeFrameHost frame;
     cfn<NativeCodeBuffer,address,u64> reserve;
     cfn<void,address,u64> commit;
     cfn<void,address,address,ControlTargets> packet;
@@ -769,7 +769,7 @@ struct MapRangeHost {
 // The emitter starts with an empty code buffer. A reserved image is lent only
 // until the bytes are committed. The original IR and phase slots remain borrowed.
 extern "C" u32 emit_map_range(MapRangeInput input, MapRangeHost host) on cpu
-    requires nonzero(host.enter) requires nonzero(host.leave) requires nonzero(host.reserve)
+    requires nonzero(host.frame.reserve) requires nonzero(host.frame.publish) requires nonzero(host.reserve)
     requires nonzero(host.commit) requires nonzero(host.observe)
     requires nonzero(host.packet) requires nonzero(host.scalar) requires nonzero(host.next_input) requires nonzero(host.observe_input)
     requires nonzero(host.ir.inspect) requires nonzero(host.phase)
@@ -826,21 +826,21 @@ struct CustomRangeInput {
     u32 publish;
     u64 summary_count;
     address summary;
+    u64 saved;
 };
 
 struct CustomRangeHost {
-    cfn<u32,address,u32> enter;
-    cfn<void,address,u32,u64> leave;
+    RangeFrameHost frame;
     cfn<AbiValueComponent,address,u64> summary_component;
 };
 
 struct CustomRangeProduct { u32 stack_bytes; u32 status; };
 
-// The original emitter lends its current byte buffer to each writer and owns
-// the active break scope, source observations and final native image.
+// B owns the frame and lexical control targets for this emission. The original
+// emitter lends its buffers and owns the final image and source observations.
 extern "C" CustomRangeProduct emit_custom_range(address emitter, CustomRangeInput input,
     ScalarBodyHost scalar, CustomRangeHost host) on cpu
-    requires nonzero(host.enter) requires nonzero(host.leave)
+    requires nonzero(host.frame.reserve) requires nonzero(host.frame.publish)
     requires nonzero(host.summary_component)
     requires nonzero(scalar.addresses.values.ir.inspect) requires nonzero(scalar.addresses.values.location)
     requires nonzero(scalar.addresses.values.scalar) requires nonzero(scalar.addresses.tile_stream)

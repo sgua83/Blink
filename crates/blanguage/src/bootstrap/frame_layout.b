@@ -116,16 +116,17 @@ extern "C" FramePrologue function_frame_prologue(u32 frame, bool scratch, u64 st
     return save_frame(frame, end, u64(scratch), output);
 }
 
-extern "C" RangePrologue range_prologue(u32 frame, address saved, u64 count,
-    address operations, address output) on cpu {
-    FrameOutput buffers = FrameOutput(output, operations, saved, count);
+extern "C" RangePrologue range_prologue(u32 frame, u64 count, address context, RangeFrameHost host) on cpu
+    requires nonzero(host.reserve) requires nonzero(host.publish) {
+    FrameOutput buffers = host.reserve(context, 39u64 + 9u64 * count, 6u64 + count);
     u64 cursor = 0u64;
     for (index in 0..RANGE_SAVE_COUNT) {
         cursor = save_stack_register(RANGE_SAVES[index], cursor, u64(index), buffers);
     }
     FramePrologue entry = save_frame(frame, cursor, u64(RANGE_SAVE_COUNT), buffers);
-    u64 args = range_arguments(unsafe_address(address_bits(output) + entry.end));
-    return RangePrologue(entry.end + args, entry.probe_field, entry.operations, frame + 8 * RANGE_SAVE_COUNT, u8(entry.end));
+    u64 end = entry.end + range_arguments(unsafe_address(address_bits(buffers.code) + entry.end));
+    host.publish(context, FrameEntry(end, entry.probe_field, entry.operations, u8(entry.end)));
+    return RangePrologue(end, buffers.saved, buffers.count, frame + 8 * RANGE_SAVE_COUNT);
 }
 
 struct RestoredFrame { u64 saved_end; u64 frame_end; };
@@ -148,18 +149,18 @@ extern "C" FunctionEpilogue function_epilogue(u32 frame, u32 scratch, address sa
         cursor - bytes, cursor + 1u64 - bytes);
 }
 
-extern "C" u64 range_epilogue(u32 frame, address saved, u64 count,
-    address image, u64 end, u64 exits) on cpu {
-    u64 start = address_bits(image) + end;
+extern "C" u64 range_epilogue(u32 frame, RangePrologue entry, address image, u64 end, u64 exits) on cpu {
+    u64 base = address_bits(image);
+    u64 start = base + end;
     unsafe_position<u8>(unsafe_address(start)) = u8(0x31);
     unsafe_position<u8>(unsafe_address(start + 1u64)) = u8(0xc0);
     u64 cursor = start + 2u64;
     patch_control_branches(image, end + 2u64, exits);
-    cursor = restore_frame(frame, saved, count, cursor).frame_end;
+    cursor = restore_frame(frame, entry.saved, entry.count, cursor).frame_end;
     for (index in 0..RANGE_SAVE_COUNT) {
         u8 register = RANGE_SAVES[RANGE_SAVE_COUNT - 1 - index];
         cursor += stack_register(register, true, unsafe_address(cursor));
     }
     unsafe_position<u8>(unsafe_address(cursor)) = u8(0xc3);
-    return cursor + 1u64 - start;
+    return cursor + 1u64 - base;
 }

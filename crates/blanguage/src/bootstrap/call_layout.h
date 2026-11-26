@@ -25,7 +25,6 @@ struct FunctionHost {
     cfn<AbiValueComponent,address,u64> component;
     cfn<void,address,FunctionRange> publish;
 };
-struct FunctionPrologue { u64 length; u64 probe_field; u64 operations; u8 prolog; };
 
 
 struct CallInput {
@@ -72,7 +71,7 @@ struct FunctionExitBuffer {
 struct FunctionCodeHost {
     FunctionHost abi;
     cfn<FrameOutput,address,u64,u64> entry;
-    cfn<u32,address,FunctionPrologue,ControlTargets> body;
+    cfn<u32,address,FrameEntry,ControlTargets> body;
     cfn<NativeCodeBuffer,address,u64> reserve;
     cfn<CallValueLoan,address> result;
     cfn<void,address,u64> commit;

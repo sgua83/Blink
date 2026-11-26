@@ -5491,15 +5491,24 @@ bool emit_map_tile_phases(MapRangeInput input, MapRangeHost host, ControlTargets
     return true;
 }
 
+u64 finish_range_frame(u32 frame, RangePrologue entry, u64 exits, address context,
+    cfn<NativeCodeBuffer,address,u64> reserve, cfn<void,address,u64> commit) on cpu
+    requires nonzero(reserve) requires nonzero(commit) {
+    NativeCodeBuffer buffer = reserve(context, 20u64 + 9u64 * entry.count);
+    u64 end = range_epilogue(frame, entry, buffer.image, buffer.end, exits);
+    commit(context, end);
+    return end;
+}
+
 extern "C" u32 emit_map_range(MapRangeInput input, MapRangeHost host) on cpu
-    requires nonzero(host.enter) requires nonzero(host.leave) requires nonzero(host.reserve)
+    requires nonzero(host.frame.reserve) requires nonzero(host.frame.publish) requires nonzero(host.reserve)
     requires nonzero(host.commit) requires nonzero(host.observe)
     requires nonzero(host.packet) requires nonzero(host.scalar) requires nonzero(host.next_input) requires nonzero(host.observe_input)
     requires nonzero(host.ir.inspect) requires nonzero(host.phase)
     requires nonzero(host.next_private) requires nonzero(host.observe_private) requires nonzero(host.tile_step) {
     u64 exits = 0u64;
     ControlTargets targets = ControlTargets(address_of(exits), address_of(exits), address(), 0u64);
-    MapRangeEntry entry = host.enter(host.context, input.frame);
+    RangePrologue entry = range_prologue(input.frame, input.saved, host.context, host.frame);
     host.observe(host.context, MapRangeObservation(0u64, entry.end, usize(0), input.frame, MapRangePart::Enter));
     u32 data = u32(input.binding) * input.buffer_bytes;
     u32 stride = data + input.stride_field;
@@ -5524,7 +5533,7 @@ extern "C" u32 emit_map_range(MapRangeInput input, MapRangeHost host) on cpu
     }
     u64 exit = close_map_loop(host, buffer.end, prefix.exit_field, prefix.skip_field, step,
         MapRangePart::ScalarAdvance, MapRangePart::ScalarBackEdge);
-    u64 end = host.leave(host.context, input.frame, exits);
+    u64 end = finish_range_frame(input.frame, entry, exits, host.context, host.reserve, host.commit);
     host.observe(host.context, MapRangeObservation(exit, end, usize(0), input.frame, MapRangePart::Exit));
     return entry.stack_bytes;
 }
@@ -5875,7 +5884,7 @@ u64 emit_append(View value, ScalarValueHost host, u32 buffer_bytes,
 
 extern "C" CustomRangeProduct emit_custom_range(address emitter, CustomRangeInput input,
     ScalarBodyHost scalar, CustomRangeHost host) on cpu
-    requires nonzero(host.enter) requires nonzero(host.leave)
+    requires nonzero(host.frame.reserve) requires nonzero(host.frame.publish)
     requires nonzero(host.summary_component)
     requires nonzero(scalar.addresses.values.ir.inspect) requires nonzero(scalar.addresses.values.location)
     requires nonzero(scalar.addresses.values.scalar) requires nonzero(scalar.addresses.tile_stream)
@@ -5884,7 +5893,8 @@ extern "C" CustomRangeProduct emit_custom_range(address emitter, CustomRangeInpu
     requires nonzero(scalar.mark) requires nonzero(scalar.publish) requires nonzero(scalar.emit)
     requires nonzero(scalar.control.emit) requires nonzero(scalar.control.load) requires nonzero(scalar.control.buffer)
     requires nonzero(scalar.control.commit) {
-    u32 stack_bytes = host.enter(emitter, input.frame);
+    RangePrologue entry = range_prologue(input.frame, input.saved, emitter, host.frame);
+    u32 stack_bytes = entry.stack_bytes;
     u64 exits = 0u64;
     ControlTargets targets = ControlTargets(address_of(exits), address_of(exits), address(), 0u64);
     ScalarBodyHost dispatch = scalar;
@@ -5919,6 +5929,6 @@ extern "C" CustomRangeProduct emit_custom_range(address emitter, CustomRangeInpu
             input.summary, host.summary_component, output);
         scalar.commit(emitter, buffer.end + bytes);
     }
-    host.leave(emitter, input.frame, exits);
+    finish_range_frame(input.frame, entry, exits, emitter, scalar.reserve, scalar.commit);
     return CustomRangeProduct(stack_bytes, 0);
 }

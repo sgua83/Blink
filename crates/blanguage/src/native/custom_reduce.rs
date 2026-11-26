@@ -242,12 +242,12 @@ struct CustomRangeInput {
     publish: u32,
     summary_count: usize,
     summary: *const c_void,
+    saved: usize,
 }
 
 #[repr(C)]
 struct CustomRangeHost {
-    enter: unsafe extern "C" fn(*mut c_void, u32) -> u32,
-    leave: unsafe extern "C" fn(*mut c_void, u32, usize),
+    frame: RangeFrameHost,
     summary_component: AbiComponent,
 }
 
@@ -286,12 +286,12 @@ unsafe extern "C" fn summary_component(context: *const c_void, index: u64) -> Ab
     }
 }
 
-unsafe extern "C" fn enter_range(slot: *mut c_void, frame: u32) -> u32 {
-    unsafe { &mut *slot.cast::<Emitter<'_>>() }.enter(frame)
+unsafe extern "C" fn range_frame(slot: *mut c_void, code_bytes: usize, operations: usize) -> FrameOutput {
+    unsafe { &mut *slot.cast::<Emitter<'_>>() }.reserve_frame(code_bytes, operations)
 }
 
-unsafe extern "C" fn leave_range(slot: *mut c_void, frame: u32, exits: usize) {
-    unsafe { &mut *slot.cast::<Emitter<'_>>() }.leave(frame, exits);
+unsafe extern "C" fn publish_range_frame(slot: *mut c_void, entry: FrameEntry) {
+    unsafe { (&mut *slot.cast::<Emitter<'_>>()).publish_frame(entry) };
 }
 
 pub(super) fn emit(
@@ -388,6 +388,7 @@ pub(super) fn emit(
         allocation,
         frame: layout,
     };
+    let saved = e.frame.saved.len();
     let emitter = std::ptr::from_mut(&mut e);
     let summary = RangeSummary {
         emitter, first_slot: carry, fields: &r.ty.components, payload_words: k,
@@ -401,10 +402,14 @@ pub(super) fn emit(
         publish: plan.publish,
         summary_count: fields + (plan.summary - k),
         summary: std::ptr::from_ref(&summary).cast(),
+        saved,
     };
     let emitted = unsafe {
         emit_custom_range(emitter.cast(), input, ScalarHost::new(emitter.cast(), Stage::DEFAULT_WORKGROUP_WIDTH),
-            CustomRangeHost { enter: enter_range, leave: leave_range, summary_component })
+            CustomRangeHost {
+                frame: RangeFrameHost { reserve: range_frame, publish: publish_range_frame },
+                summary_component,
+            })
     };
     emitted.status.result()?;
     Ok(e.finish(emitted.stack_bytes, true))

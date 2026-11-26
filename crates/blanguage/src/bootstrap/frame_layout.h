@@ -28,22 +28,21 @@ struct FrameOutput { address code; address operations; address saved; u64 count;
 struct FramePrologue { u64 push_end; u64 allocate_end; u64 end; u64 probe_field; u64 operations; };
 extern "C" FramePrologue function_frame_prologue(u32 frame, bool scratch, u64 start, FrameOutput output) on cpu;
 
-// Range entry starts at image offset zero. Lend 39 + 9 * count bytes and
-// 6 + count unwind rows. stack_bytes includes the five fixed pushes.
-struct RangePrologue {
-    u64 length;
-    u64 probe_field;
-    u64 operations;
-    u32 stack_bytes;
-    u8 prolog;
-};
-extern "C" RangePrologue range_prologue(u32 frame, address saved, u64 count,
-    address operations, address output) on cpu;
+// Committed prefix length, probe displacement and initialized unwind rows.
+struct FrameEntry { u64 length; u64 probe_field; u64 operations; u8 prolog; };
 
-// The caller lends 20 + 9 * count bytes at end. Exit rel32 fields point to
-// restoration after the success status write.
-extern "C" u64 range_epilogue(u32 frame, address saved, u64 count,
-    address image, u64 end, u64 exits) on cpu;
+struct RangeFrameHost {
+    cfn<FrameOutput,address,u64,u64> reserve;
+    cfn<void,address,FrameEntry> publish;
+};
+// Saved registers are borrowed from the original frame through the epilogue.
+struct RangePrologue { u64 end; address saved; u64 count; u32 stack_bytes; };
+extern "C" RangePrologue range_prologue(u32 frame, u64 count, address context, RangeFrameHost host) on cpu
+    requires nonzero(host.reserve) requires nonzero(host.publish);
+
+// The caller lends 20 + 9 * entry.count bytes at end. Exit rel32 fields point to
+// restoration after the success status write. The result is the final image end.
+extern "C" u64 range_epilogue(u32 frame, RangePrologue entry, address image, u64 end, u64 exits) on cpu;
 
 // The caller lends 10 + 9 * count bytes at end. Offsets refer to the
 // actual restored ranges and return in the original image.

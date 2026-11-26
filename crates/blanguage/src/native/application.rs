@@ -56,22 +56,6 @@ const FUNCTION_HOST: FunctionHost = FunctionHost {
 };
 
 #[repr(C)]
-struct FrameOutput {
-    code: *mut u8,
-    operations: *mut UnwindOperation,
-    saved: *const allocation::SavedRegister,
-    count: usize,
-}
-
-#[repr(C)]
-struct FunctionPrologue {
-    length: usize,
-    probe_field: usize,
-    operations: usize,
-    prolog: u8,
-}
-
-#[repr(C)]
 struct FunctionCodeInput {
     data_end: u64,
     result: AbiType,
@@ -94,7 +78,7 @@ struct FunctionExitBuffer {
 struct FunctionCodeHost {
     abi: FunctionHost,
     entry: unsafe extern "C" fn(*mut c_void, usize, usize) -> FrameOutput,
-    body: unsafe extern "C" fn(*mut c_void, FunctionPrologue, structure::ControlTargets) -> u32,
+    body: unsafe extern "C" fn(*mut c_void, FrameEntry, structure::ControlTargets) -> u32,
     reserve: unsafe extern "C" fn(*mut c_void, usize) -> NativeCodeBuffer,
     result: unsafe extern "C" fn(*const c_void) -> CallValueLoan,
     commit: unsafe extern "C" fn(*mut c_void, usize),
@@ -172,24 +156,13 @@ unsafe extern "C" fn publish_function(context: *mut c_void, range: FunctionRange
 
 unsafe extern "C" fn entry_buffer(context: *mut c_void, code_bytes: usize, operations: usize) -> FrameOutput {
     let state = unsafe { &mut *context.cast::<FunctionEmission<'_, '_>>() };
-    let e = &mut *state.emitter;
-    e.code.reserve(code_bytes);
-    e.unwind.reserve(operations);
-    FrameOutput {
-        code: e.code.as_mut_ptr(), operations: e.unwind.as_mut_ptr(),
-        saved: e.frame.saved.as_ptr(), count: e.frame.saved.len(),
-    }
+    state.emitter.reserve_frame(code_bytes, operations)
 }
 
-unsafe extern "C" fn emit_body(context: *mut c_void, entry: FunctionPrologue, targets: structure::ControlTargets) -> u32 {
+unsafe extern "C" fn emit_body(context: *mut c_void, entry: FrameEntry, targets: structure::ControlTargets) -> u32 {
     let state = unsafe { &mut *context.cast::<FunctionEmission<'_, '_>>() };
     let e = &mut *state.emitter;
-    unsafe {
-        e.code.set_len(entry.length);
-        e.unwind.set_len(entry.operations);
-    }
-    e.probe = (entry.probe_field != 0).then_some(entry.probe_field);
-    e.prolog = entry.prolog;
+    unsafe { e.publish_frame(entry) };
     state.body_result = e.block(state.code, targets);
     u32::from(state.body_result.is_ok())
 }
