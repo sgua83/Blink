@@ -1,99 +1,272 @@
-//! B owns shared callback lifetime and actual output ready selection.
+//! B generates callback inputs and selection writes through the native Builder.
 use super::*;
 use crate::check::application::TaskOutputSelection;
-#[derive(Clone,Copy)]
-#[repr(C)] struct Cursor{phase:u32,index:u64,part:u64}
-#[repr(C)] struct Step<T>{cursor:Cursor,need:T}
-#[repr(u32)] enum CallbackNeed{Builder=0,Frame=1,Registers=2,Inputs=3,Abi=4,Functions=5,Emit=6,Finish=7,Publish=8,RuntimeContract=9,Complete=10,Next=11}
-#[repr(u32)] enum SelectionNeed{Zero=0,Packet=1,Result=2,Returned=3,Guard=4,Owners=5,Ready=6,Complete=7,Next=8}
-#[derive(Clone,Copy)]
-#[repr(C)] struct SelectionFacts{packet_components:u64,packet_registers:u64,result_components:u64,outputs:u64,owners:u64}
-unsafe extern "C"{
- #[link_name="bootstrap.task_callbacks::start"]fn start()->Cursor;
- #[link_name="bootstrap.task_callbacks::callback_step"]fn callback_step(state:Cursor,frame:u32)->Step<CallbackNeed>;
- #[link_name="bootstrap.task_callbacks::selection_step"]fn selection_step(state:Cursor,facts:SelectionFacts)->Step<SelectionNeed>;
+use std::{ffi::c_void, ptr};
+
+#[repr(C)]
+struct InputHost {
+    frame: unsafe extern "C" fn(*mut c_void) -> u32,
+    parameter: unsafe extern "C" fn(*mut c_void, usize),
 }
-impl Builder<'_>{
- pub(in crate::check::native_function) async fn task_callback(
-  &mut self,name:String,arguments:&[(&str,Ty)],frame:bool,span:Span,
-  emit:impl std::ops::AsyncFnOnce(&mut Builder<'_>,&[Reg])->Result<()>,
- )->Result<String>{
-  let parameters:Arc<[Param]>=arguments.iter().map(|(name,ty)|Param{name:(*name).into(),ty:ty.syntax(),access:Access::Value,span}).collect::<Vec<_>>().into();
-  let lexical=LexicalScope::Values{
-   source:self.scope.source().clone(),module:self.scope.module().into(),imports:self.scope.imports().to_vec(),bindings:self.scope.bindings().clone(),
-   span,parameters:parameters.clone(),source_definition:None,
-   source_context:Arc::new(SourceContext{instance:Some(Arc::from(name.as_str())),inlined_at:Box::default(),domain_path:Arc::from([])}),
-  };
-  let program=Arc::new(unsafe{self.world.call(function_program(self.world,&name,parameters.iter().map(|parameter| std::future::ready(Ok(parameter))),
-   (lexical.source(),lexical.module(),lexical.imports(),FunctionKind::Value),Target::Cpu,None, |_| {})).await}?);
-  let mut cursor=unsafe{start()};let mut b:Option<Box<Builder<'_>>>=None;let mut frame_value:Option<Value>=None;
-  let mut registers=Vec::new();let mut inputs=Vec::new();let mut abi=Vec::new();let mut emit=Some(emit);let mut checked=None;
-  loop{let next=unsafe{callback_step(cursor,u32::from(frame))};cursor=next.cursor;match next.need{
-   CallbackNeed::Builder=>{
-    let(definition,context)=lexical.syntax_context(Some(&name));
-    let mut builder=Box::new(Builder::from_checked(self.world,&lexical,&program,0,definition,context,BindingUses::default()));
-    builder.in_function=true;b=Some(builder);
-   }
-   CallbackNeed::Frame=>{let builder=unsafe{b.as_mut().unwrap_unchecked()};builder.application=Some(application::Context::default());frame_value=Some(builder.application_frame(span)?);}
-   CallbackNeed::Registers=>{let builder=unsafe{b.as_mut().unwrap_unchecked()};registers=arguments.iter().flat_map(|(_,ty)|&ty.components).map(|&(scalar,_)|builder.reg(scalar)).collect();}
-   CallbackNeed::Inputs=>{inputs=frame_value.iter().flat_map(|frame|frame.regs.iter().copied()).chain(registers.iter().copied()).collect();}
-   CallbackNeed::Abi=>{
-    abi=frame_value.take().into_iter().map(|frame|CallParameter::value(frame.ty).with_origin(Some(Arc::new(ParameterOrigin::Frame))))
-     .chain(arguments.iter().map(|(_,ty)|CallParameter::value(ty.clone()))).collect();
-   }
-   CallbackNeed::Functions=>{unsafe{b.as_mut().unwrap_unchecked()}.functions=std::mem::take(&mut self.functions);}
-   CallbackNeed::Emit=>{(unsafe{emit.take().unwrap_unchecked()})(unsafe{b.as_mut().unwrap_unchecked()},&registers).await?;}
-   CallbackNeed::Finish=>{
-    checked=Some(unsafe{self.world.call(finish_checked_function(b.take().unwrap_unchecked(),program.clone(),&name,span,None,None,std::mem::take(&mut abi),std::mem::take(&mut inputs),BTreeSet::new(),None,vec![None;parameters.len()])).await}?);
-   }
-   CallbackNeed::Publish=>{self.functions=finish_declaration(self.world,&lexical,false,unsafe{checked.take().unwrap_unchecked()})?;}
-   CallbackNeed::RuntimeContract=>{
-    let contract=&mut self.functions.units.get_mut(&name).unwrap().as_mut().unwrap().contract;contract.frame=true;contract.fallible=true;
-   }
-   CallbackNeed::Complete=>return Ok(name),
-   CallbackNeed::Next=>{},
-  }}
- }
- pub(in crate::check) async fn task_selection(&mut self,packet:&Value,result:&Ty,outputs:&[TaskOutputSelection<'_>],span:Span)->Result<String>{
-  let name=format!("{}::@task_selection{}",self.scope.module(),self.functions.units.len());let pointer=Ty::vector(Scalar::U32,2);
-  unsafe{self.world.call(self.task_callback(name,&[("input",pointer.clone()),("output",pointer)],false,span,async |b,registers|{
-   let[a,b0,c,d]=*registers else{unreachable!()};let(input,output)=([a,b0],[c,d]);
-   let mut cursor=unsafe{start()};let mut facts=SelectionFacts{packet_components:packet.ty.components.len()as u64,packet_registers:packet.regs.len()as u64,result_components:result.components.len()as u64,outputs:outputs.len()as u64,owners:0};
-   let mut zero=None;let mut snapshot=BTreeMap::new();let mut regs=Vec::new();let mut returned=None;let mut selected=Vec::new();
-   let load=|b:&mut Builder<'_>,zero,address,scalar,word|{
-    let dst=b.reg(scalar);b.emit(InstKind::LoadIndexed{dst,source:IndexedSource::Pointer{address,index:zero,stride:1,aliases:Vec::new()},offset:zero,word});dst
-   };
-   loop{let next=unsafe{selection_step(cursor,facts)};cursor=next.cursor;match next.need{
-    SelectionNeed::Zero=>{zero=Some(b.constant(Scalar::U32,0).regs[0]);}
-    SelectionNeed::Packet=>{
-     let index=cursor.index as usize;let(scalar,offset)=packet.ty.components[index];snapshot.insert(packet.regs[index],load(b,unsafe{zero.unwrap_unchecked()},input,scalar,offset));
+
+#[repr(C)]
+struct SelectionCounts {
+    packet_components: usize,
+    packet_registers: usize,
+    result_components: usize,
+}
+
+#[repr(C)]
+struct SelectionHost {
+    packet: unsafe extern "C" fn(*mut c_void, usize),
+    result: unsafe extern "C" fn(*mut c_void, usize),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.task_callbacks::callback_inputs"]
+    fn callback_inputs(frame: u32, count: usize, context: *mut c_void, host: InputHost) -> u32;
+    #[link_name = "bootstrap.task_callbacks::selection_inputs"]
+    fn selection_inputs(counts: SelectionCounts, context: *mut c_void, host: SelectionHost);
+    #[link_name = "bootstrap.task_callbacks::selection_ready"]
+    fn selection_ready(
+        owners: usize,
+        base: u32,
+        stride: u32,
+        context: *mut c_void,
+        emit: unsafe extern "C" fn(*mut c_void, usize, u32),
+    );
+}
+
+struct CallbackInputs<'a, 'b> {
+    builder: &'a mut Builder<'b>,
+    arguments: &'a [(&'a str, Ty)],
+    span: Span,
+    inputs: Vec<Reg>,
+    abi: Vec<CallParameter>,
+    frame_inputs: usize,
+    error: Option<crate::ast::Diagnostic>,
+}
+
+unsafe extern "C" fn frame_input(context: *mut c_void) -> u32 {
+    let context = unsafe { &mut *context.cast::<CallbackInputs<'_, '_>>() };
+    context.builder.application = Some(application::Context::default());
+    match context.builder.application_frame(context.span) {
+        Ok(frame) => {
+            context.inputs.extend(frame.regs);
+            context.frame_inputs = context.inputs.len();
+            context.abi.push(CallParameter::value(frame.ty)
+                .with_origin(Some(Arc::new(ParameterOrigin::Frame))));
+            0
+        }
+        Err(error) => {
+            context.error = Some(error);
+            1
+        }
     }
-    SelectionNeed::Result=>{let(scalar,offset)=result.components[cursor.index as usize];regs.push(load(b,unsafe{zero.unwrap_unchecked()},output,scalar,offset));}
-    SelectionNeed::Returned=>{returned=Some(Value{ty:result.clone(),regs:std::mem::take(&mut regs),proof:bounds::Proof::default(),uniform:false,literal:false,constant:None});}
-    SelectionNeed::Guard=>{
-     selected=unsafe{b.world.call(outputs[cursor.index as usize].guard.guards(b,returned.as_ref(),span,|operand|match operand{
-      bounds::Operand::Value(ValueIdentity::Register(reg))=>snapshot.get(&reg).map(|reg|bounds::Operand::Value(ValueIdentity::Register(*reg))),
-      _=>Some(operand),
-     })).await}?;
+}
+
+unsafe extern "C" fn parameter_input(context: *mut c_void, index: usize) {
+    let context = unsafe { &mut *context.cast::<CallbackInputs<'_, '_>>() };
+    let ty = &context.arguments[index].1;
+    context.inputs.extend(ty.components.iter().map(|&(scalar, _)| context.builder.reg(scalar)));
+    context.abi.push(CallParameter::value(ty.clone()));
+}
+
+struct SelectionInputs<'a, 'b> {
+    builder: &'a mut Builder<'b>,
+    packet: &'a Value,
+    result: &'a Ty,
+    input: [Reg; 2],
+    output: [Reg; 2],
+    zero: Reg,
+    snapshot: BTreeMap<Reg, Reg>,
+    returned_regs: Vec<Reg>,
+}
+
+impl SelectionInputs<'_, '_> {
+    fn load(&mut self, address: [Reg; 2], (scalar, word): (Scalar, u32)) -> Reg {
+        let dst = self.builder.reg(scalar);
+        self.builder.emit(InstKind::LoadIndexed {
+            dst,
+            source: IndexedSource::Pointer { address, index: self.zero, stride: 1, aliases: Vec::new() },
+            offset: self.zero,
+            word,
+        });
+        dst
     }
-    SelectionNeed::Owners => {
-     facts.owners = outputs[cursor.index as usize].owners.len() as u64;
+}
+
+unsafe extern "C" fn snapshot_input(context: *mut c_void, index: usize) {
+    let context = unsafe { &mut *context.cast::<SelectionInputs<'_, '_>>() };
+    let loaded = context.load(context.input, context.packet.ty.components[index]);
+    context.snapshot.insert(context.packet.regs[index], loaded);
+}
+
+unsafe extern "C" fn snapshot_result(context: *mut c_void, index: usize) {
+    let context = unsafe { &mut *context.cast::<SelectionInputs<'_, '_>>() };
+    let loaded = context.load(context.output, context.result.components[index]);
+    context.returned_regs.push(loaded);
+}
+
+struct ReadyOutput<'a, 'b, 'c> {
+    builder: &'a mut Builder<'b>,
+    item: &'a TaskOutputSelection<'c>,
+    selected: &'a [owned_presence::Presence],
+    output: [Reg; 2],
+    zero: Reg,
+}
+
+unsafe extern "C" fn ready_output(context: *mut c_void, owner: usize, word: u32) {
+    let context = unsafe { &mut *context.cast::<ReadyOutput<'_, '_, '_>>() };
+    let offset = context.item.owners[owner].0;
+    let ready = outputs::resource_guard(&context.item.guard.ty, offset, context.selected);
+    let value = context.builder.presence_register(&ready, None);
+    context.builder.emit(InstKind::StoreIndexed {
+        source: IndexedSource::Pointer {
+            address: context.output,
+            index: context.zero,
+            stride: 1,
+            aliases: Vec::new(),
+        },
+        offset: context.zero,
+        word,
+        value,
+    });
+}
+
+impl Builder<'_> {
+    pub(in crate::check::native_function) async fn task_callback(
+        &mut self,
+        name: String,
+        arguments: &[(&str, Ty)],
+        frame: bool,
+        span: Span,
+        emit: impl std::ops::AsyncFnOnce(&mut Builder<'_>, &[Reg]) -> Result<()>,
+    ) -> Result<String> {
+        let parameters: Arc<[Param]> = arguments.iter().map(|(name, ty)| Param {
+            name: (*name).into(),
+            ty: ty.syntax(),
+            access: Access::Value,
+            span,
+        }).collect::<Vec<_>>().into();
+        let lexical = LexicalScope::Values {
+            source: self.scope.source().clone(),
+            module: self.scope.module().into(),
+            imports: self.scope.imports().to_vec(),
+            bindings: self.scope.bindings().clone(),
+            span,
+            parameters: parameters.clone(),
+            source_definition: None,
+            source_context: Arc::new(SourceContext {
+                instance: Some(Arc::from(name.as_str())),
+                inlined_at: Box::default(),
+                domain_path: Arc::from([]),
+            }),
+        };
+        let program = Arc::new(unsafe {
+            self.world.call(function_program(
+                self.world,
+                &name,
+                parameters.iter().map(|parameter| std::future::ready(Ok(parameter))),
+                (lexical.source(), lexical.module(), lexical.imports(), FunctionKind::Value),
+                Target::Cpu,
+                None,
+                |_| {},
+            )).await
+        }?);
+        let (definition, context) = lexical.syntax_context(Some(&name));
+        let mut builder = Box::new(Builder::from_checked(
+            self.world, &lexical, &program, 0, definition, context, BindingUses::default(),
+        ));
+        builder.in_function = true;
+        let mut context = CallbackInputs {
+            builder: &mut builder,
+            arguments,
+            span,
+            inputs: Vec::new(),
+            abi: Vec::new(),
+            frame_inputs: 0,
+            error: None,
+        };
+        let host = InputHost { frame: frame_input, parameter: parameter_input };
+        unsafe {
+            callback_inputs(u32::from(frame), arguments.len(), ptr::from_mut(&mut context).cast(), host);
+        }
+        let CallbackInputs { inputs, abi, frame_inputs, error, .. } = context;
+        if let Some(error) = error {
+            return Err(error);
+        }
+        builder.functions = std::mem::take(&mut self.functions);
+        emit(&mut builder, &inputs[frame_inputs..]).await?;
+        let checked = unsafe {
+            self.world.call(finish_checked_function(
+                builder, program.clone(), &name, span, None, None, abi, inputs, BTreeSet::new(),
+                None, vec![None; parameters.len()],
+            )).await
+        }?;
+        self.functions = finish_declaration(self.world, &lexical, false, checked)?;
+        if frame {
+            let contract = &mut self.functions.units.get_mut(&name).unwrap().as_mut().unwrap().contract;
+            contract.frame = true;
+            contract.fallible = true;
+        }
+        Ok(name)
     }
-    SelectionNeed::Ready => {
-     let item = &outputs[cursor.index as usize];
-     let offset = item.owners[cursor.part as usize].0;
-     let ready = outputs::resource_guard(&item.guard.ty, offset, &selected);
-     let value = b.presence_register(&ready, None);
-     b.emit(InstKind::StoreIndexed {
-      source: IndexedSource::Pointer { address: output, index: unsafe { zero.unwrap_unchecked() }, stride: 1, aliases: Vec::new() },
-      offset: unsafe { zero.unwrap_unchecked() },
-      word: item.base + cursor.part as u32 * Scalar::Bool.size(),
-      value,
-     });
+
+    pub(in crate::check) async fn task_selection(
+        &mut self,
+        packet: &Value,
+        result: &Ty,
+        outputs: &[TaskOutputSelection<'_>],
+        span: Span,
+    ) -> Result<String> {
+        let name = format!("{}::@task_selection{}", self.scope.module(), self.functions.units.len());
+        let pointer = Ty::vector(Scalar::U32, 2);
+        unsafe {
+            self.world.call(self.task_callback(
+                name, &[("input", pointer.clone()), ("output", pointer)], false, span,
+                async |builder, registers| {
+                    let [a, b, c, d] = *registers else { unreachable!() };
+                    let (input, output) = ([a, b], [c, d]);
+                    let zero = builder.constant(Scalar::U32, 0).regs[0];
+                    let counts = SelectionCounts {
+                        packet_components: packet.ty.components.len(),
+                        packet_registers: packet.regs.len(),
+                        result_components: result.components.len(),
+                    };
+                    let mut context = SelectionInputs {
+                        builder, packet, result, input, output, zero,
+                        snapshot: BTreeMap::new(),
+                        returned_regs: Vec::new(),
+                    };
+                    let host = SelectionHost { packet: snapshot_input, result: snapshot_result };
+                    selection_inputs(counts, ptr::from_mut(&mut context).cast(), host);
+                    let SelectionInputs { snapshot, returned_regs, .. } = context;
+                    let returned = Value {
+                        ty: result.clone(),
+                        regs: returned_regs,
+                        proof: bounds::Proof::default(),
+                        uniform: false,
+                        literal: false,
+                        constant: None,
+                    };
+                    for item in outputs {
+                        let selected = builder.world.call(item.guard.guards(
+                            builder, Some(&returned), span, |operand| match operand {
+                                bounds::Operand::Value(ValueIdentity::Register(reg)) => snapshot.get(&reg)
+                                    .map(|reg| bounds::Operand::Value(ValueIdentity::Register(*reg))),
+                                _ => Some(operand),
+                            },
+                        )).await?;
+                        let mut context = ReadyOutput { builder, item, selected: &selected, output, zero };
+                        selection_ready(
+                            item.owners.len(), item.base, Scalar::Bool.size(),
+                            ptr::from_mut(&mut context).cast(), ready_output,
+                        );
+                    }
+                    Ok(())
+                },
+            )).await
+        }
     }
-    SelectionNeed::Complete=>return Ok(()),
-    SelectionNeed::Next=>{},
-   }}
-  })).await}
- }
 }
