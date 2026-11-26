@@ -1795,7 +1795,7 @@ u32 float_kind(u32 kind) on cpu { return u32(1)<<kind; }
 u32 float_instruction_remaining(View value,Span registers,u32 requested,RegisterHost host) on cpu
  requires nonzero(host.scalar) {
  u32 remaining=requested;
- if(value.tag==OP_MATH && value.b!=0u64) {
+ if(value.tag==OP_MATH && value.b!=0u64 && value.d!=0u64) {
   remaining&=~float_kind(host.scalar(registers,value.a).kind);
  }else if(value.tag==OP_BINARY && value.d!=0u64) {
   remaining&=~float_kind(host.scalar(registers,value.b).kind);

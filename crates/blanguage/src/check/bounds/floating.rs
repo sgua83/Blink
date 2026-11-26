@@ -4,32 +4,41 @@ use super::*;
 mod scalar;
 pub(super) use scalar::{order,bits,comparison_possible,finite,interval,bitcast,cast,arithmetic,math,sum,negate,add_up,multiply_up,divide_up,integer_bound,conversion_error};
 
+fn requires_float_preserve(scalar: Scalar, ranges: &ScalarRanges, domains: Option<&Domains>) -> bool {
+    // An unsigned integer conversion to f32 can only produce +0 or a normal value.
+    if scalar == Scalar::F32 && domains.into_iter().flatten().any(|domain|
+        matches!(domain, IndexDomain::Floating(FloatingBound { form: FloatingForm::Cast, .. }))) {
+        return false;
+    }
+    let (minimum, maximum) = if scalar == Scalar::F32 {
+        (f32::MIN_POSITIVE.to_bits() as Bits, f32::MAX.to_bits() as Bits)
+    } else {
+        (f64::MIN_POSITIVE.to_bits(), f64::MAX.to_bits())
+    };
+    let sign = 1 << (scalar.bit_width() - 1);
+    let ordinary = [
+        (order(scalar, maximum | sign), order(scalar, minimum | sign)),
+        (order(scalar, 0), order(scalar, 0)),
+        (order(scalar, minimum), order(scalar, maximum)),
+    ];
+    ranges.0.iter().any(|&(lower, upper)|
+        !ordinary.iter().any(|&(first, last)| first <= lower && upper <= last))
+}
+
+impl Value {
+    pub(in crate::check) fn requires_float_preserve(&self, component: usize) -> bool {
+        let component = component % self.regs.len();
+        requires_float_preserve(self.ty.components[component].0,
+            &ranges(self, component), self.proof.domains.get(component))
+    }
+}
+
 impl Proof {
     pub(in crate::check) fn binary_requires_float_preserve(
         &self, scalar: Scalar, component: usize, a: &Value, b: &Value, comparison: bool,
     ) -> bool {
-        let (minimum, maximum) = if scalar == Scalar::F32 {
-            (f32::MIN_POSITIVE.to_bits() as Bits, f32::MAX.to_bits() as Bits)
-        } else { (f64::MIN_POSITIVE.to_bits(), f64::MAX.to_bits()) };
-        let sign = 1 << (scalar.bit_width() - 1);
-        let ordinary = [
-            (order(scalar, maximum | sign), order(scalar, minimum | sign)),
-            (order(scalar, 0), order(scalar, 0)),
-            (order(scalar, minimum), order(scalar, maximum)),
-        ];
-        let requires = |ranges: &ScalarRanges, domains: Option<&Domains>| {
-            // Cast names the original unsigned integer -> F32 conversion: +0 or finite normal.
-            if scalar == Scalar::F32 && domains.into_iter().flatten().any(|domain|
-                matches!(domain, IndexDomain::Floating(FloatingBound { form: FloatingForm::Cast, .. }))) {
-                return false;
-            }
-            ranges.0.iter().any(|&(lower, upper)|
-                !ordinary.iter().any(|&(first, last)| first <= lower && upper <= last))
-        };
-        let (ai, bi) = (component % a.regs.len(), component % b.regs.len());
-        requires(&ranges(a, ai), a.proof.domains.get(ai))
-            || requires(&ranges(b, bi), b.proof.domains.get(bi))
-            || (!comparison && requires(&self.range_set(component), self.domains.get(component)))
+        a.requires_float_preserve(component) || b.requires_float_preserve(component)
+            || (!comparison && requires_float_preserve(scalar, &self.range_set(component), self.domains.get(component)))
     }
 }
 

@@ -712,8 +712,14 @@ unsafe extern "C" fn math_action(context:*mut MathValues<'_,'_>,step:MathStep)->
         },
         MathAction::FloatInput=>values.current.push(values.args[step.left].regs[step.right]),
         MathAction::FloatEnd=>{
-            let dst=values.pending.take().unwrap();
-            values.builder.emit(InstKind::Math { dst,op:values.operation.unwrap(),args:std::mem::take(&mut values.current) });
+            let dst = values.pending.take().unwrap();
+            let op = values.operation.unwrap();
+            let instruction = values.builder.code.len();
+            values.builder.emit(InstKind::Math { dst, op, args: std::mem::take(&mut values.current) });
+            // Floor maps normal finite inputs to finite integers, including positive zero.
+            if op == MathOp::Floor {
+                values.builder.code[instruction].float_preserve = values.args[0].requires_float_preserve(step.component);
+            }
             values.registers.push(dst);
         },
         MathAction::FloatingProof=>values.proof=Some(bounds::math(values.operation.unwrap(),&values.args)),

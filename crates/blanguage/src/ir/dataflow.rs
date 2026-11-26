@@ -534,7 +534,11 @@ fn instruction(value: &Inst) -> View {
             view.tag = 37; view.a = *src; view.left = Node::of(divisor, Kind::Divisor); view.right = Node::of(result, Kind::Division);
         }
         InstKind::Cast { dst, src } => { view.tag = 38; view.a = *dst; view.b = *src; }
-        InstKind::Math { dst, args, op } => { view.tag = 39; view.a = *dst; view.b = *op as usize; view.first = Span::slice(args); }
+        InstKind::Math { dst, args, op } => {
+            view.tag = 39; view.a = *dst; view.b = *op as usize;
+            view.d = usize::from(value.float_preserve);
+            view.first = Span::slice(args);
+        }
         InstKind::Select { dst, condition, a, b } => { view.tag = 40; view.a = *dst; view.b = *condition; view.c = *a; view.d = *b; }
         InstKind::If { condition, yes, no } => { view.tag = 41; view.a = *condition; view.first = Span::slice(yes); view.second = Span::slice(no); }
         InstKind::Loop { test, condition, body } => { view.tag = 42; view.a = *test; view.first = Span::slice(condition); view.second = Span::slice(body); }

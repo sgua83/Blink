@@ -1470,7 +1470,7 @@ impl Stage {
         {
         fn arithmetic(code: &[Inst], registers: &[Scalar], scalar: Scalar) -> bool {
             code.iter().any(|inst| match &(inst).kind {
-                InstKind::Math { dst, op, .. } => registers[*dst] == scalar && *op != MathOp::Abs,
+                InstKind::Math { dst, op, .. } => inst.float_preserve && registers[*dst] == scalar && *op != MathOp::Abs,
                 InstKind::Binary { a, .. } => inst.float_preserve && registers[*a] == scalar,
                 InstKind::Cast { dst, src } => {
                     registers[*src].is_float() && !registers[*dst].is_integer() && ((registers[*dst] == scalar) != (registers[*src] == scalar))
