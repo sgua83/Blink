@@ -277,3 +277,45 @@ extern "C" u32 resolve_resource_origins(address cursor,u32 collect,ResourceOrigi
     }
     return 0;
 }
+
+void walk_residency_dependency(address names,address value,DependencyHost host) on cpu
+    requires nonzero(host.residency) requires nonzero(host.walk) {
+    ResidencyCheckNode shape=host.residency(value);
+    if(address_bits(shape.branch.condition)!=0u64){
+        walk_residency_dependency(names,shape.branch.yes,host);
+        walk_residency_dependency(names,shape.branch.no,host);
+    }else if(address_bits(shape.origins)!=0u64){
+        host.walk(names,DependencyList::Origins,shape.origins);
+    }
+}
+
+void walk_dependency_model(address names,address value,DependencyHost host) on cpu
+    requires nonzero(host.model) requires nonzero(host.residency) requires nonzero(host.walk) {
+    DependencyModel model=host.model(value);
+    if(address_bits(model.residency)!=0u64){
+        walk_residency_dependency(names,model.residency,host);
+        if(model.maximum!=0u64 && address_bits(model.elements)!=0u64){
+            walk_dependency_model(names,model.elements,host);
+        }
+    }else if(address_bits(model.payloads)!=0u64){
+        host.walk(names,DependencyList::Payloads,model.payloads);
+    }
+}
+
+extern "C" void collect_residency_dependencies(address names,address cursor,DependencyHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.insert)
+    requires nonzero(host.model) requires nonzero(host.residency)
+    requires nonzero(host.walk) {
+    DependencyItem item=host.next(cursor);
+    while(item.kind!=DependencyItemKind::End){
+        if(item.kind==DependencyItemKind::Reference){
+            host.insert(names,item.value);
+            host.walk(names,DependencyList::Arguments,item.arguments);
+        }else if(item.kind==DependencyItemKind::Model){
+            walk_dependency_model(names,item.value,host);
+        }else if(item.kind==DependencyItemKind::Residency){
+            walk_residency_dependency(names,item.value,host);
+        }
+        item=host.next(cursor);
+    }
+}

@@ -138,3 +138,19 @@ extern "C" u32 resolve_resource_origins(address cursor,u32 collect,ResourceOrigi
     requires nonzero(host.next)
     requires nonzero(host.append)
     requires nonzero(host.output);
+
+enum DependencyItemKind:u32 { End=0; Reference=1; Model=2; Residency=3; Concrete=4; };
+enum DependencyList:u32 { Arguments=0; Origins=1; Payloads=2; };
+struct DependencyItem { DependencyItemKind kind; address value; address arguments; };
+struct DependencyModel { address residency; address elements; address payloads; u64 maximum; };
+struct DependencyHost {
+    cfn<DependencyItem,address> next;
+    cfn<void,address,address> insert;
+    cfn<DependencyModel,address> model;
+    cfn<ResidencyCheckNode,address> residency;
+    cfn<void,address,DependencyList,address> walk;
+};
+extern "C" void collect_residency_dependencies(address names,address cursor,DependencyHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.insert)
+    requires nonzero(host.model) requires nonzero(host.residency)
+    requires nonzero(host.walk);

@@ -1312,25 +1312,122 @@ pub(super) enum Use {
 }
 
 pub(super) type Outputs=BTreeMap<String,BTreeMap<(OutputKind,Vec<Part>),Residency>>;
-pub(super) fn dependencies<'a>(contract:&Contract,models:impl Iterator<Item=&'a Returned>)->BTreeSet<String>{
-    fn collect(value:&Residency,names:&mut BTreeSet<String>){match value{
-        Residency::Selected(_,a,b)=>{collect(a,names);collect(b,names);},
-        Residency::Origins(origins)=>for origin in origins{if let Origin::Output(output)=origin{
-            names.insert(output.function.clone());for argument in output.arguments.values(){collect(argument,names);}
-        }},
-        Residency::Absent=>{},
-    }}
-    fn returned(value:&Returned,names:&mut BTreeSet<String>){match value{
-        Returned::Dataset(data)=>{
-            collect(&data.residency,names);
-            if data.length.maximum()!=0 && let Some(elements)=data.elements.known(){returned(elements,names);}
-        },
-        Returned::OwnedValue(value)=>for payload in value.payloads.iter().flatten(){returned(payload,names);},
-        _=>{},
-    }}
-    let mut names=BTreeSet::new();
-    for call in &contract.calls{names.insert(call.function.clone());for argument in call.arguments.values(){collect(argument,&mut names);}}
-    for model in models{returned(model,&mut names);}
+#[repr(u32)]
+enum DependencyItemKind { End, Reference, Model, Residency, Concrete }
+
+#[repr(C)]
+struct DependencyItem {
+    kind: DependencyItemKind,
+    value: Borrowed,
+    arguments: Borrowed,
+}
+
+impl DependencyItem {
+    fn node<T>(kind: DependencyItemKind, value: &T) -> Self {
+        Self { kind, value: ptr::from_ref(value).cast(), arguments: ptr::null() }
+    }
+
+    fn reference(name: &String, arguments: &Arguments) -> Self {
+        Self {
+            kind: DependencyItemKind::Reference,
+            value: ptr::from_ref(name).cast(),
+            arguments: ptr::from_ref(arguments).cast(),
+        }
+    }
+}
+
+#[repr(u32)]
+enum DependencyList { Arguments, Origins, Payloads }
+
+#[repr(C)]
+struct DependencyModel {
+    residency: Borrowed,
+    elements: Borrowed,
+    payloads: Borrowed,
+    maximum: u64,
+}
+
+#[repr(C)]
+struct DependencyHost {
+    next: unsafe extern "C" fn(Context) -> DependencyItem,
+    insert: unsafe extern "C" fn(Context, Borrowed),
+    model: unsafe extern "C" fn(Borrowed) -> DependencyModel,
+    residency: unsafe extern "C" fn(Borrowed) -> ResidencyCheckNode,
+    walk: unsafe extern "C" fn(Context, DependencyList, Borrowed),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ownership_path::collect_residency_dependencies"]
+    fn collect_residency_dependencies(names: Context, cursor: Context, host: DependencyHost);
+}
+
+type DependencyCursor<'a> = &'a mut dyn Iterator<Item = DependencyItem>;
+
+unsafe extern "C" fn next_dependency(cursor: Context) -> DependencyItem {
+    let cursor = unsafe { &mut *cursor.cast::<DependencyCursor<'_>>() };
+    cursor.next().unwrap_or(DependencyItem {
+        kind: DependencyItemKind::End, value: ptr::null(), arguments: ptr::null(),
+    })
+}
+
+unsafe extern "C" fn insert_dependency(names: Context, name: Borrowed) {
+    let names = unsafe { &mut *names.cast::<BTreeSet<String>>() };
+    names.insert(unsafe { &*name.cast::<String>() }.clone());
+}
+
+unsafe extern "C" fn dependency_model(model: Borrowed) -> DependencyModel {
+    let mut result = DependencyModel {
+        residency: ptr::null(), elements: ptr::null(), payloads: ptr::null(), maximum: 0,
+    };
+    match unsafe { &*model.cast::<Returned>() } {
+        Returned::Dataset(data) => {
+            result.residency = ptr::from_ref(&data.residency).cast();
+            result.elements = data.elements.known().map_or(ptr::null(), |element| ptr::from_ref(element).cast());
+            result.maximum = u64::from(data.length.maximum());
+        }
+        Returned::OwnedValue(value) => result.payloads = ptr::from_ref(value).cast(),
+        _ => {}
+    }
+    result
+}
+
+unsafe extern "C" fn walk_dependency_list(names: Context, list: DependencyList, value: Borrowed) {
+    match list {
+        DependencyList::Arguments => {
+            let arguments = unsafe { &*value.cast::<Arguments>() };
+            walk_dependencies(names, arguments.values().map(|value| DependencyItem::node(DependencyItemKind::Residency, value)));
+        }
+        DependencyList::Origins => {
+            let origins = unsafe { &*value.cast::<BTreeSet<Origin>>() };
+            walk_dependencies(names, origins.iter().map(|origin| match origin {
+                Origin::Output(output) => DependencyItem::reference(&output.function, &output.arguments),
+                _ => DependencyItem::node(DependencyItemKind::Concrete, origin),
+            }));
+        }
+        DependencyList::Payloads => {
+            let owned = unsafe { &*value.cast::<owned_values::OwnedValue>() };
+            walk_dependencies(names, owned.payloads.iter().filter_map(|payload| {
+                payload.as_deref().map(|model| DependencyItem::node(DependencyItemKind::Model, model))
+            }));
+        }
+    }
+}
+
+fn walk_dependencies(names: Context, mut items: impl Iterator<Item = DependencyItem>) {
+    let mut cursor: DependencyCursor<'_> = &mut items;
+    let host = DependencyHost {
+        next: next_dependency, insert: insert_dependency, model: dependency_model,
+        residency: inspect_residency_visit, walk: walk_dependency_list,
+    };
+    // The B walk completes while the typed iterators and original contracts are borrowed.
+    unsafe { collect_residency_dependencies(names, ptr::from_mut(&mut cursor).cast(), host) }
+}
+
+pub(super) fn dependencies<'a>(contract: &Contract, models: impl Iterator<Item = &'a Returned>) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    let calls = contract.calls.iter().map(|call| DependencyItem::reference(&call.function, &call.arguments));
+    let models = models.map(|model| DependencyItem::node(DependencyItemKind::Model, model));
+    walk_dependencies(ptr::from_mut(&mut names).cast(), calls.chain(models));
     names
 }
 // Project the requested resource through its original output definition.
