@@ -2564,7 +2564,7 @@ bool binding_written(Span writes,usize binding) on cpu {
 
 extern "C" void place_read_block(address input,address pending,address scratch,Span writes,usize tail,ReadHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.math_outgoing)
- requires nonzero(host.next) requires nonzero(host.sample) requires nonzero(host.child)
+ requires nonzero(host.next) requires nonzero(host.sample) requires nonzero(host.children)
  requires nonzero(host.store) requires nonzero(host.queued) requires nonzero(host.emit) requires nonzero(host.clear) {
  while(true){
   Node node=host.next(input,tail);
@@ -2604,11 +2604,8 @@ extern "C" void place_read_block(address input,address pending,address scratch,S
    }else if(tag!=OP_UNIFORM){
     // A child borrows the emptied scheduler after the parent finishes every producer.
     read_finish(pending,scratch,host);
-    if(tag==OP_BRANCH||tag==OP_LOOP_VALUE){
-     host.child(input,0,scratch);
-     host.child(input,1,scratch);
-    }else if(tag==OP_SCOPE){
-     host.child(input,0,scratch);
+    if(tag==OP_BRANCH||tag==OP_LOOP_VALUE||tag==OP_SCOPE){
+     host.children(input,scratch);
     }
    }
    host.store(input,pending,false);
@@ -2619,7 +2616,7 @@ extern "C" void place_read_block(address input,address pending,address scratch,S
 
 extern "C" void place_reads(address input,address pending,Span writes,ReadPhases phases,ReadHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.math_outgoing)
- requires nonzero(host.next) requires nonzero(host.sample) requires nonzero(host.child)
+ requires nonzero(host.next) requires nonzero(host.sample) requires nonzero(host.children)
  requires nonzero(host.store) requires nonzero(host.queued) requires nonzero(host.emit)
  requires nonzero(host.clear) requires nonzero(host.written) {
  ReadStorage empty=ReadStorage(address(),0u64);

@@ -217,9 +217,7 @@ fn emit_value(
     definition: Option<&SourceOrigin>,
     instance: Option<&str>,
 ) -> Result<NativeCode, &'static str> {
-    let mut code = body.code.clone();
-    let mut registers = body.registers.clone();
-    reads::place(&mut code, &mut registers, &[]);
+    let (code, registers) = reads::place(&body.code, &body.registers, &[]);
     let mut graph = allocation::Graph::with_live(
         &code,
         &registers,

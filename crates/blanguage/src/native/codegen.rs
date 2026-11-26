@@ -555,9 +555,7 @@ fn emit_map(
     used: &std::collections::BTreeSet<SharedWord>, layout: crate::ir::dataflow::TileLayout,
 ) -> Result<NativeCode, &'static str> {
     let stage = &program.stages[index];
-    let mut code = stage.code.clone();
-    let mut registers = stage.registers.clone();
-    reads::place(&mut code, &mut registers, &stage.writes);
+    let (code, registers) = reads::place(&stage.code, &stage.registers, &stage.writes);
     let tile_width = stage.tile_workgroup_width_for(&code);
     let tile_scope = tile_width.is_some();
     let workgroup = tile_width.unwrap_or(Stage::DEFAULT_WORKGROUP_WIDTH);
