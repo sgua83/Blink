@@ -2155,13 +2155,7 @@ fn stored_outputs<'p>(
     parameters: impl Fn() -> &'p BTreeMap<ValueIdentity, bounds::Proof>,
 ) -> std::result::Result<BTreeSet<Access>, crate::parallel::Error<crate::ast::Diagnostic>> {
     let BorrowEvaluation { function, state, known, .. } = *evaluation;
-    let exits: Vec<_> = function.uses.iter().filter_map(|usage| match &usage.requirement {
-        Requirement::Return { borrow, .. } => Some(&borrow.reads),
-        _ => None,
-    }).flat_map(|reads| reads.iter()).filter_map(|read| match read {
-        ContentRead::Returned { memory } => Some(*memory),
-        _ => None,
-    }).collect();
+    let exits = function.stored_return_sites();
     if exits.is_empty() {
         return Ok(BTreeSet::new());
     }
@@ -2603,18 +2597,7 @@ fn prepare_returned_writes(
     worker: &crate::compiler::Worker, function: &Function, state: &State, known: &States<'_>,
     paths: &CallWritePaths,
 ) -> Result<Option<ReturnedWrites>> {
-    let mut latest = None;
-    let mut exits = 0;
-    for usage in &function.uses {
-        let Requirement::Return { borrow, .. } = &usage.requirement else { continue; };
-        for read in borrow.reads.iter() {
-            if let ContentRead::Returned { memory } = read {
-                latest = Some(latest.map_or(*memory, |at: usize| at.max(*memory)));
-                exits += 1;
-            }
-        }
-    }
-    let Some(latest) = latest.filter(|_| exits > 1) else { return Ok(None); };
+    let Some(latest) = function.latest_shared_stored_return() else { return Ok(None); };
     let evaluation = || BorrowEvaluation {
         function, state: state.loop_scope(), known, expand_loops: true, deferred_reads: false,
         loop_bindings: None, values: BTreeMap::new(), stored: None, exit_writes: None,

@@ -898,6 +898,32 @@ extern "C" void visit_content_history(WalkSlice uses, WalkSlice calls, usize lim
     }
 }
 
+extern "C" void collect_stored_returns(WalkSlice uses, address context,
+    cfn<u32,address,usize> marked, cfn<void,address,usize> accept) on cpu
+    requires nonzero(marked) requires nonzero(accept)
+{
+    usize at = 0u64;
+    while (at < uses.count) {
+        if (marked(uses.data,at) != 0) { accept(context,at); }
+        at += 1u64;
+    }
+}
+
+extern "C" usize latest_multiple_stored_return(WalkSlice uses,
+    cfn<u32,address,usize> marked) on cpu requires nonzero(marked)
+{
+    usize at = uses.count;
+    usize latest = WALK_END;
+    while (at != 0u64) {
+        at -= 1u64;
+        if (marked(uses.data,at) != 0) {
+            if (latest != WALK_END) { return latest; }
+            latest = at;
+        }
+    }
+    return WALK_END;
+}
+
 PrefixBoundary prefix_boundary(WalkSlice runs, usize index) on cpu {
     return unsafe_position<PrefixBoundary>(cell(runs.data,index,16u64));
 }

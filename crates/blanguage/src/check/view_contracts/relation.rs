@@ -1127,6 +1127,46 @@ impl Function {
     }
 }
 
+unsafe extern "C" {
+    #[link_name = "bootstrap.relation_order::collect_stored_returns"]
+    fn collect_stored_returns(uses: WalkSlice, context: Slot,
+        marked: unsafe extern "C" fn(Borrowed, usize) -> u32,
+        accept: unsafe extern "C" fn(Slot, usize));
+    #[link_name = "bootstrap.relation_order::latest_multiple_stored_return"]
+    fn latest_multiple_stored_return(uses: WalkSlice,
+        marked: unsafe extern "C" fn(Borrowed, usize) -> u32) -> usize;
+}
+
+unsafe extern "C" fn stored_return_marked(uses: Borrowed, at: usize) -> u32 {
+    let usage = unsafe { &*uses.cast::<Use>().add(at) };
+    match &usage.requirement {
+        Requirement::Return { borrow, .. } => u32::from(borrow.reads_returned_at(at)),
+        _ => 0,
+    }
+}
+
+impl Function {
+    pub(super) fn stored_return_sites(&self) -> Vec<usize> {
+        unsafe extern "C" fn accept(context: Slot, at: usize) {
+            let exits = unsafe { &mut *context.cast::<Vec<usize>>() };
+            exits.push(at);
+        }
+        let mut exits = Vec::new();
+        unsafe {
+            collect_stored_returns(WalkSlice::of(&self.uses), ptr::from_mut(&mut exits).cast(),
+                stored_return_marked, accept);
+        }
+        exits
+    }
+
+    pub(super) fn latest_shared_stored_return(&self) -> Option<usize> {
+        let latest = unsafe {
+            latest_multiple_stored_return(WalkSlice::of(&self.uses), stored_return_marked)
+        };
+        (latest != usize::MAX).then_some(latest)
+    }
+}
+
 struct Builder<'a> { function:&'a Function,state:LoopScope<'a>,known:&'a States<'a>,keys:BTreeMap<Key,usize>,prefix:FramePrefix,graph:Graph,parameters:BTreeMap<ValueIdentity,usize> }
 impl Builder<'_> {
     fn empty(&mut self)->usize{let id=self.graph.nodes.len();self.graph.nodes.push(Node::default());id}

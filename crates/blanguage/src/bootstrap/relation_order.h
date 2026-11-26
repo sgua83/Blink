@@ -243,6 +243,13 @@ extern "C" void visit_content_history(WalkSlice uses, WalkSlice calls, usize lim
     address context, MemoryEventHost host, cfn<void,address,usize,usize> project) on cpu
     requires nonzero(host.usage) requires nonzero(host.call) requires nonzero(project);
 
+extern "C" void collect_stored_returns(WalkSlice uses, address context,
+    cfn<u32,address,usize> marked, cfn<void,address,usize> accept) on cpu
+    requires nonzero(marked) requires nonzero(accept);
+
+extern "C" usize latest_multiple_stored_return(WalkSlice uses,
+    cfn<u32,address,usize> marked) on cpu requires nonzero(marked);
+
 struct PrefixBoundary {
     usize memory;
     usize frame;

@@ -453,6 +453,10 @@ impl Borrow{
     }
 
     pub fn joined(mut self,other:Self)->Self{self.union(&other);self}
+    pub(super) fn reads_returned_at(&self, memory: usize) -> bool {
+        self.reads.0.contains_key(&view_contracts::ContentRead::Returned { memory })
+    }
+
     pub fn pending(&self) -> bool {
         !self.inputs.is_empty() || !self.calls.is_empty() || !self.reads.is_empty()
             || self.sources.iter().any(Source::pending)
