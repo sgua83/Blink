@@ -1,54 +1,62 @@
 module bootstrap.task_completion;
-extern "C" Cursor start() on cpu {return Cursor(0,0u64,0u64);}
-extern "C" Step step(Cursor state,Facts facts) on cpu {
+
+extern "C" Release next_release(Cursor state,Completion completion,address context,Host host) on cpu
+ requires nonzero(host.begin_scope) requires nonzero(host.end_scope) requires nonzero(host.position)
+ requires nonzero(host.begin_owner) requires nonzero(host.end_owner) requires nonzero(host.dataset)
+ requires nonzero(host.descriptor) requires nonzero(host.guard) {
  Cursor cursor=state;
- if(cursor.phase==0){cursor.phase=1;return Step(cursor,Need::Status);}
- if(cursor.phase==1){cursor.phase=2;return Step(cursor,Need::Zero);}
- if(cursor.phase==2){
-  if(facts.result_owns!=0||facts.positions!=0u64){cursor.phase=3;return Step(cursor,Need::BeginCompleted);}
-  cursor.phase=20;return Step(cursor,Need::Next);
+ while(true){
+  if(cursor.phase==Phase::Begin){
+   if(completion.result_owns!=0 || completion.positions!=0u64){
+    host.begin_scope(context);
+    cursor.phase=Phase::Position;
+    if(completion.result_owns!=0){return Release(cursor,Need::Result);}
+   }else{cursor.phase=Phase::Dataset;}
+  }else if(cursor.phase==Phase::Position){
+   if(cursor.index==completion.positions){
+    host.end_scope(context,1);
+    cursor.index=0u64;
+    cursor.phase=Phase::Dataset;
+   }else{
+    Ready ready=host.position(context,cursor.index);
+    if(ready.present==0){
+     cursor.phase=Phase::AfterPosition;
+     return Release(cursor,Need::Position);
+    }
+    cursor.owner=ready.owners;
+    cursor.phase=Phase::Owner;
+   }
+  }else if(cursor.phase==Phase::AfterPosition){
+   cursor.index+=1u64;
+   cursor.phase=Phase::Position;
+  }else if(cursor.phase==Phase::Owner){
+   if(cursor.owner==0u64){
+    cursor.phase=Phase::AfterPosition;
+   }else{
+    cursor.owner-=1u64;
+    host.begin_owner(context,cursor.owner);
+    cursor.phase=Phase::AfterOwner;
+    return Release(cursor,Need::Owner);
+   }
+  }else if(cursor.phase==Phase::AfterOwner){
+   host.end_owner(context);
+   cursor.phase=Phase::Owner;
+  }else if(cursor.phase==Phase::Dataset){
+   if(cursor.index==completion.datasets){return Release(cursor,Need::Complete);}
+   Dataset dataset=host.dataset(context,cursor.index);
+   if(dataset.writes!=0){host.begin_scope(context);}
+   host.descriptor(context,cursor.index);
+   usize owner=0u64;
+   while(owner<dataset.owners){
+    host.guard(context,cursor.index,owner);
+    owner+=1u64;
+   }
+   cursor.phase=dataset.writes!=0 ? Phase::CloseDataset : Phase::AfterDataset;
+   return Release(cursor,Need::Dataset);
+  }else{
+   if(cursor.phase==Phase::CloseDataset){host.end_scope(context,0);}
+   cursor.index+=1u64;
+   cursor.phase=Phase::Dataset;
+  }
  }
- if(cursor.phase==3){cursor.phase=5;if(facts.result_owns!=0){return Step(cursor,Need::DropResult);}return Step(cursor,Need::Next);}
- if(cursor.phase==5){
-  if(cursor.index<facts.positions){cursor.phase=6;return Step(cursor,Need::Position);}
-  cursor.phase=15;return Step(cursor,Need::EndCompleted);
- }
- if(cursor.phase==6){cursor.phase=7;return Step(cursor,Need::Address);}
- if(cursor.phase==7){
-  if(facts.ready!=0){cursor.phase=8;return Step(cursor,Need::PositionOwners);}
-  cursor.phase=14;return Step(cursor,Need::DropPosition);
- }
- if(cursor.phase==8){cursor.owner=facts.owners;cursor.phase=9;return Step(cursor,Need::Next);}
- if(cursor.phase==9){
-  if(cursor.owner!=0u64){cursor.owner-=1u64;cursor.phase=10;return Step(cursor,Need::OwnerGuard);}
-  cursor.index+=1u64;cursor.phase=5;return Step(cursor,Need::Next);
- }
- if(cursor.phase==10){cursor.phase=11;return Step(cursor,Need::DropOwner);}
- if(cursor.phase==11){cursor.phase=9;return Step(cursor,Need::EndOwner);}
- if(cursor.phase==14){cursor.index+=1u64;cursor.phase=5;return Step(cursor,Need::Next);}
- if(cursor.phase==15){cursor.phase=16;if(facts.nonempty!=0){return Step(cursor,Need::CompletedIf);}return Step(cursor,Need::Next);}
- if(cursor.phase==16){cursor.index=0u64;cursor.phase=20;return Step(cursor,Need::Next);}
- if(cursor.phase==20){
-  if(cursor.index<facts.datasets){cursor.phase=21;return Step(cursor,Need::Dataset);}
-  cursor.phase=40;return Step(cursor,Need::Next);
- }
- if(cursor.phase==21){cursor.phase=22;if(facts.writes!=0){return Step(cursor,Need::BeginDataset);}return Step(cursor,Need::Next);}
- if(cursor.phase==22){cursor.phase=23;return Step(cursor,Need::Descriptor);}
- if(cursor.phase==23){cursor.phase=24;return Step(cursor,Need::Guards);}
- if(cursor.phase==24){
-  if(facts.ready!=0){cursor.phase=25;return Step(cursor,Need::DatasetOwners);}
-  cursor.phase=30;return Step(cursor,Need::Next);
- }
- if(cursor.phase==25){cursor.owner=0u64;cursor.phase=26;return Step(cursor,Need::Next);}
- if(cursor.phase==26){
-  if(cursor.owner<facts.owners){cursor.phase=27;return Step(cursor,Need::Guard);}
-  cursor.phase=30;return Step(cursor,Need::Next);
- }
- if(cursor.phase==27){cursor.owner+=1u64;cursor.phase=26;return Step(cursor,Need::Next);}
- if(cursor.phase==30){cursor.phase=31;return Step(cursor,Need::DropDataset);}
- if(cursor.phase==31){cursor.phase=32;if(facts.writes!=0){return Step(cursor,Need::EndDataset);}return Step(cursor,Need::Next);}
- if(cursor.phase==32){cursor.index+=1u64;cursor.phase=20;return Step(cursor,Need::Next);}
- if(cursor.phase==40){cursor.phase=41;return Step(cursor,Need::Error);}
- if(cursor.phase==41){cursor.phase=42;return Step(cursor,Need::Raise);}
- return Step(cursor,Need::Complete);
 }

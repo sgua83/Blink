@@ -1,7 +1,23 @@
 module bootstrap.task_completion;
-struct Cursor {u32 phase;u64 index;u64 owner;};
-struct Facts {u32 result_owns;u64 positions;u64 datasets;u32 ready;u64 owners;u32 writes;u32 nonempty;};
-enum Need:u32 {Status=0;Zero=1;BeginCompleted=2;DropResult=3;Position=4;Address=5;PositionOwners=6;OwnerGuard=7;DropOwner=8;EndOwner=9;DropPosition=10;EndCompleted=11;CompletedIf=12;Dataset=13;BeginDataset=14;Descriptor=15;Guards=16;DatasetOwners=17;Guard=18;DropDataset=19;EndDataset=20;Error=21;Raise=22;Complete=23;Next=24;};
-struct Step {Cursor cursor;Need need;};
-extern "C" Cursor start() on cpu;
-extern "C" Step step(Cursor state,Facts facts) on cpu;
+
+enum Phase:u32 { Begin=0; Position=1; AfterPosition=2; Owner=3; AfterOwner=4; Dataset=5; AfterDataset=6; CloseDataset=7; };
+struct Cursor { Phase phase; usize index; usize owner; };
+struct Completion { u32 result_owns; usize positions; usize datasets; };
+struct Ready { u32 present; usize owners; };
+struct Dataset { u32 writes; usize owners; };
+enum Need:u32 { Result=0; Position=1; Owner=2; Dataset=3; Complete=4; };
+struct Release { Cursor cursor; Need need; };
+struct Host {
+ cfn<void,address> begin_scope;
+ cfn<void,address,u32> end_scope;
+ cfn<Ready,address,usize> position;
+ cfn<void,address,usize> begin_owner;
+ cfn<void,address> end_owner;
+ cfn<Dataset,address,usize> dataset;
+ cfn<void,address,usize> descriptor;
+ cfn<void,address,usize,usize> guard;
+};
+extern "C" Release next_release(Cursor state,Completion completion,address context,Host host) on cpu
+ requires nonzero(host.begin_scope) requires nonzero(host.end_scope) requires nonzero(host.position)
+ requires nonzero(host.begin_owner) requires nonzero(host.end_owner) requires nonzero(host.dataset)
+ requires nonzero(host.descriptor) requires nonzero(host.guard);
