@@ -1,9 +1,10 @@
 module bootstrap.ownership_position;
 // mode bit 0 applies application_complete; bit 1 applies application_word first.
+// Bit 2 gives that projection's cursor a fixed index on the current edge.
 // These are stack views of existing nodes, never a materialized projection tree.
-struct Projection { address node; u32 mode; PositionIndex index; u32 word; };
+struct Projection { address node; u32 mode; u32 fixed; PositionIndex index; u32 word; };
 PositionIndex absent_index() on cpu { return PositionIndex(0,0,unsafe_address(0u64),0u64);}
-Projection original(address node) on cpu { return Projection(node,0,absent_index(),0);}
+Projection original(address node) on cpu { return Projection(node,0,0,absent_index(),0);}
 Projection child(Projection value,u64 at,Host host) on cpu
     requires nonzero(host.child) { Projection result=value;result.node=host.child(value.node,at);return result;}
 bool same_index(PositionIndex a,PositionIndex b,Host host) on cpu
@@ -12,6 +13,19 @@ bool same_index(PositionIndex a,PositionIndex b,Host host) on cpu
     if(a.kind==0){return true;}
     if(a.kind==1){return a.value==b.value;}
     return host.identity_equal(a.identity,b.identity)!=0;
+}
+PositionIndex fixed_index(Projection value, PositionIndex index, Host host) on cpu
+    requires nonzero(host.identity_equal) {
+    if ((value.mode & 4) != 0 && index.kind == 2 && same_index(value.index, index, host)) {
+        return PositionIndex(1, value.fixed, unsafe_address(0u64), 0u64);
+    }
+    return index;
+}
+bool same_projected_index(Projection a, PositionIndex left, Projection b, PositionIndex right, Host host) on cpu
+    requires nonzero(host.identity_equal) {
+    return same_index(left, right, host)
+        || (((a.mode | b.mode) & 4) != 0
+            && same_index(fixed_index(a, left, host), fixed_index(b, right, host), host));
 }
 PositionNode node(Projection value,Host host) on cpu
     requires nonzero(host.inspect) { 
@@ -63,11 +77,11 @@ bool equal_ready(Projection left_view,Projection right_view,Host host) on cpu
     if(left.kind!=right.kind){return false;}
     if(left.kind==0){return true;}
     if(left.kind==7){return left.owner==right.owner&&left.word==right.word;}
-    if(left.kind==8){return left.owner==right.owner&&left.word==right.word&&same_index(left.index,right.index,host);}
-    if(left.kind==9){return left.owner==right.owner&&left.member==right.member&&left.word==right.word&&same_index(left.index,right.index,host);}
+    if(left.kind==8){return left.owner==right.owner&&left.word==right.word&&same_projected_index(left_view,left.index,right_view,right.index,host);}
+    if(left.kind==9){return left.owner==right.owner&&left.member==right.member&&left.word==right.word&&same_projected_index(left_view,left.index,right_view,right.index,host);}
     if(left.kind==10||left.kind==11||left.kind==12){
         if(left.count!=right.count){return false;}
-        if(left.kind==10&&!same_index(left.index,right.index,host)){return false;}
+        if(left.kind==10&&!same_projected_index(left_view,left.index,right_view,right.index,host)){return false;}
         if(left.kind==11&&host.presence_equal(left.condition,right.condition)==0){return false;}
         u64 i=0u64;while(i<left.count){if(!equivalent(child(left_view,i,host),child(right_view,i,host),host)){return false;}i+=1u64;}
         return true;
@@ -119,8 +133,16 @@ bool contained(Projection value,address initialized,Host host) on cpu
     PositionNode shape=node(actual,host);
     if(shape.kind==0){return host.contains(initialized,actual.node)!=0;}
     if(shape.kind==7){return host.contains_parameter(initialized,shape.owner,shape.word)!=0;}
-    if(shape.kind==8){return host.contains_element(initialized,shape.owner,shape.index,u32(shape.word))!=0;}
-    if(shape.kind==9){return host.contains_input(initialized,shape.owner,shape.member,shape.index,u32(shape.word))!=0;}
+    if (shape.kind == 8) {
+        if (host.contains_element(initialized, shape.owner, shape.index, u32(shape.word)) != 0) { return true; }
+        PositionIndex fixed = fixed_index(actual, shape.index, host);
+        return fixed.kind != shape.index.kind && host.contains_element(initialized, shape.owner, fixed, u32(shape.word)) != 0;
+    }
+    if (shape.kind == 9) {
+        if (host.contains_input(initialized, shape.owner, shape.member, shape.index, u32(shape.word)) != 0) { return true; }
+        PositionIndex fixed = fixed_index(actual, shape.index, host);
+        return fixed.kind != shape.index.kind && host.contains_input(initialized, shape.owner, shape.member, fixed, u32(shape.word)) != 0;
+    }
     address iterator=host.iterate(initialized,unsafe_address(0u64));bool found=false;
     while(true){PositionItem item=host.next(iterator);if(item.present==0){break;}if(equivalent(actual,original(item.node),host)){found=true;break;}}
     host.drop_iterator(iterator);return found;
@@ -197,7 +219,7 @@ bool prefix(address value,u32 length,u32 word,address known,Host host) on cpu
     requires nonzero(host.iterate)
     requires nonzero(host.next)
     requires nonzero(host.drop_iterator) { 
-    Projection whole=Projection(value,2,absent_index(),word);if(initialized(whole,known,host)){return true;}
+    Projection whole=Projection(value,2,0,absent_index(),word);if(initialized(whole,known,host)){return true;}
     PositionNode shape=host.inspect(value);
     if(shape.kind==10||shape.kind==11||shape.kind==12){
         bool all=true;u64 i=0u64;while(i<shape.count){if(!prefix(host.child(value,i),length,word,known,host)){all=false;break;}i+=1u64;}
@@ -209,7 +231,7 @@ bool prefix(address value,u32 length,u32 word,address known,Host host) on cpu
     while(true){
         PositionItem item=host.next(iterator);if(item.present==0){break;}
         PositionIndex index=element_index(item.node,host);
-        if(index.kind==1&&index.value<length&&equivalent(Projection(value,2,index,word),original(item.node),host)){count+=1u64;}
+        if(index.kind==1&&index.value<length&&equivalent(Projection(value,2,0,index,word),original(item.node),host)){count+=1u64;}
     }
     host.drop_iterator(iterator);return count==u64(length);
 }
@@ -276,7 +298,7 @@ extern "C" address word(address value,PositionIndex selected,u32 field,Host host
     requires nonzero(host.fresh_vector)
     requires nonzero(host.push_vector)
     requires nonzero(host.make_position)
-    requires nonzero(host.clone_position) { return materialize(Projection(value,2,selected,field),host);}
+    requires nonzero(host.clone_position) { return materialize(Projection(value,2,0,selected,field),host);}
 extern "C" u32 ready(address value,address known,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.child)
@@ -305,7 +327,7 @@ extern "C" u32 word_ready(address value,PositionIndex selected,u32 field,address
     requires nonzero(host.iterate)
     requires nonzero(host.next)
     requires nonzero(host.drop_iterator) {
-    return initialized(Projection(value,2,selected,field),known,host) ? 1 : 0;
+    return initialized(Projection(value,2,0,selected,field),known,host) ? 1 : 0;
 }
 extern "C" u32 prefix_ready(address value,u32 length,u32 field,address known,Host host) on cpu
     requires nonzero(host.inspect)
@@ -427,7 +449,7 @@ extern "C" void loop_field_initialization(address context, address output, usize
     requires nonzero(host.make_position)
     requires nonzero(host.clone_position)
     requires nonzero(exit.row)
-    requires nonzero(exit.known)
+    requires nonzero(exit.edge)
     requires nonzero(exit.publish) {
     PositionIndex whole = absent_index();
     usize row_index = 0u64;
@@ -436,13 +458,15 @@ extern "C" void loop_field_initialization(address context, address output, usize
         usize field = 0u64;
         while (field < row.count) {
             u32 offset = unsafe_position<u32>(unsafe_address(address_bits(row.words) + field * 4u64));
-            Projection element = Projection(row.position, 2, selected, offset);
             usize edge = 0u64;
-            while (edge < states && initialized(element, exit.known(context, edge), host)) {
+            while (edge < states) {
+                LoopFieldState state = exit.edge(context, edge);
+                u32 mode = state.fixed != 0 ? 6 : 2;
+                if (!initialized(Projection(row.position, mode, state.value, selected, offset), state.known, host)) { break; }
                 edge += 1u64;
             }
             if (edge == states) {
-                exit.publish(output, materialize(Projection(row.position, 2, whole, offset), host));
+                exit.publish(output, materialize(Projection(row.position, 2, 0, whole, offset), host));
             }
             field += 1u64;
         }

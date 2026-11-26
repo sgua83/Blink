@@ -127,9 +127,10 @@ extern "C" address merge_initialization(address exits, usize count, usize condit
     requires nonzero(initialization.drop_positions);
 
 struct LoopFieldRow { address position; address words; usize count; };
+struct LoopFieldState { address known; u32 fixed; u32 value; };
 struct LoopFieldHost {
     cfn<LoopFieldRow,address,usize> ensures memory(read) row;
-    cfn<address,address,usize> ensures memory(read) known;
+    cfn<LoopFieldState,address,usize> ensures memory(read) edge;
     cfn<void,address,address> publish;
 };
 extern "C" void loop_field_initialization(address context, address output, usize rows, usize states,
@@ -152,7 +153,7 @@ extern "C" void loop_field_initialization(address context, address output, usize
     requires nonzero(host.make_position)
     requires nonzero(host.clone_position)
     requires nonzero(exit.row)
-    requires nonzero(exit.known)
+    requires nonzero(exit.edge)
     requires nonzero(exit.publish);
 
 struct ArrayRange { u32 begin; u32 limit; u32 nonempty; };

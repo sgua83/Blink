@@ -361,11 +361,16 @@ impl Builder<'_> {
     fn defer_iteration_exit(
         &self,exit:&mut LoopState,begin:&Value,limit:&Value,outputs:&[(application::Data,Vec<u32>)],
         index:ownership::ApplicationIndex,
+        field_states: &[(&BTreeSet<Position>, Option<u32>)],
     ) {
         let states=&self.loop_contexts.last().unwrap().continues;
         if !states.iter().any(|state| address::has_pending_initialization(&state.initialized)) { return; }
         let iteration=address::Iteration{
-            states:states.iter().map(|state|address::InitializationState{initialized:state.initialized.clone(),path:bounds::Condition::execution(&state.path)}).collect(),
+            states: states.iter().zip(field_states).map(|(state, (_, fixed_index))| address::InitializationState {
+                initialized: state.initialized.clone(),
+                path: bounds::Condition::execution(&state.path),
+                fixed_index: *fixed_index,
+            }).collect(),
             index,
             range:(begin.minimum()==begin.maximum()&&limit.minimum()==limit.maximum()).then(||(begin.minimum(),limit.minimum())),
             nonempty:begin.maximum()<limit.minimum(),
@@ -1591,14 +1596,17 @@ where
 }
 
 
-pub(super) fn iteration_positions(iteration:&address::Iteration,states:&[BTreeSet<Position>])->BTreeSet<Position> {
+pub(super) fn iteration_positions(
+    iteration: &address::Iteration,
+    states: &[(BTreeSet<Position>, Option<u32>)],
+) -> BTreeSet<Position> {
     let mut result=BTreeSet::new();
     Position::initialize_loop_fields(
         &iteration.outputs, |(scope, words)| (scope, words),
-        states, |state| state, &mut result, iteration.index,
+        states, |(positions, fixed)| (positions, *fixed), &mut result, iteration.index,
     );
     Position::initialize_array_exits(
-        states, |state| state, None, &mut result,
+        states, |(positions, _)| positions, None, &mut result,
         iteration.index, iteration.range, iteration.nonempty,
     );
     result
@@ -1778,14 +1786,25 @@ impl Builder<'_> {
     },
     ForNeed::ExitInitialization=>{
      code=Some(std::mem::take(&mut self.code));let natural=natural.as_mut().unwrap();let iteration=iteration.unwrap();let limit=limit.as_ref().unwrap();
-     let states = if initial { &[] } else { self.loop_contexts.last().unwrap().continues.as_slice() };
+     let context = self.loop_contexts.last().unwrap();
+     let states = if initial { &[] } else { context.continues.as_slice() };
+     let cursor = (matches!(iteration, ownership::ApplicationIndex::Value(..))
+        && initialization.iter().any(|(_, words)| !words.is_empty()))
+        .then(|| &context.iterator.as_ref().unwrap().1);
+     let field_states = states.iter().map(|state| {
+        let fixed = cursor.and_then(|cursor| {
+            bounds::scoped_proof(&cursor.ty, bounds::Proof::capture(cursor), &state.path, &state.env)
+                .known_integer_component(Scalar::U32, 0).map(|(bits, _)| bits as u32)
+        });
+        (&state.initialized, fixed)
+     }).collect::<Vec<_>>();
      Position::initialize_loop_fields(
         &initialization, |(data, words)| (data.initialization.as_ref().unwrap(), words),
-        states, |state| &state.initialized, &mut natural.initialized, iteration,
+        &field_states, |&(positions, fixed)| (positions, fixed), &mut natural.initialized, iteration,
      );
      if !initial && facts.seeks == 0 {
       self.initialize_array_iteration_exit(natural, &begin, limit, iteration);
-      self.defer_iteration_exit(natural, &begin, limit, &initialization, iteration);
+      self.defer_iteration_exit(natural, &begin, limit, &initialization, iteration, &field_states);
      }
     },
     ForNeed::TestEntry=>{test.as_mut().unwrap().proof=bounds::Proof::condition(bounds::Condition::comparison(Comparison::Less,&begin,limit.as_ref().unwrap()));},

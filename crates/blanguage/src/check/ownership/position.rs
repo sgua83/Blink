@@ -221,9 +221,12 @@ pub(in crate::check) fn merge_initialization<T>(
 struct LoopFieldRow { position: Address, words: *const u32, count: usize }
 
 #[repr(C)]
+struct LoopFieldState { known: Address, fixed: u32, value: u32 }
+
+#[repr(C)]
 struct LoopFieldHost {
     row: unsafe extern "C" fn(Address, usize) -> LoopFieldRow,
-    known: unsafe extern "C" fn(Address, usize) -> Address,
+    edge: unsafe extern "C" fn(Address, usize) -> LoopFieldState,
     publish: unsafe extern "C" fn(Address, Address),
 }
 
@@ -231,7 +234,7 @@ struct LoopFieldExit<'a, R, T> {
     rows: &'a [R],
     fields: fn(&R) -> (&Position, &[u32]),
     states: &'a [T],
-    known: fn(&T) -> &BTreeSet<Position>,
+    edge: fn(&T) -> (&BTreeSet<Position>, Option<u32>),
 }
 
 unsafe extern "C" fn loop_field_row<R, T>(context: Address, at: usize) -> LoopFieldRow {
@@ -240,9 +243,10 @@ unsafe extern "C" fn loop_field_row<R, T>(context: Address, at: usize) -> LoopFi
     LoopFieldRow { position: pointer(position), words: words.as_ptr(), count: words.len() }
 }
 
-unsafe extern "C" fn loop_field_state<R, T>(context: Address, at: usize) -> Address {
+unsafe extern "C" fn loop_field_state<R, T>(context: Address, at: usize) -> LoopFieldState {
     let context = unsafe { &*context.cast::<LoopFieldExit<'_, R, T>>() };
-    pointer((context.known)(&context.states[at]))
+    let (known, fixed) = (context.edge)(&context.states[at]);
+    LoopFieldState { known: pointer(known), fixed: u32::from(fixed.is_some()), value: fixed.unwrap_or(0) }
 }
 
 unsafe extern "C" fn publish_loop_field(output: Address, value: Address) {
@@ -313,14 +317,14 @@ impl Position {
         rows: &[R],
         fields: fn(&R) -> (&Self, &[u32]),
         states: &[T],
-        known: fn(&T) -> &BTreeSet<Self>,
+        edge: fn(&T) -> (&BTreeSet<Self>, Option<u32>),
         output: &mut BTreeSet<Self>,
         at: ApplicationIndex,
     ) {
-        let context = LoopFieldExit { rows, fields, states, known };
+        let context = LoopFieldExit { rows, fields, states, edge };
         let exit = LoopFieldHost {
             row: loop_field_row::<R, T>,
-            known: loop_field_state::<R, T>,
+            edge: loop_field_state::<R, T>,
             publish: publish_loop_field,
         };
         unsafe {

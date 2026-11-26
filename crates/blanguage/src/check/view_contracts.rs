@@ -1519,8 +1519,11 @@ impl InitializedEffects {
     }
 }
 fn iteration_positions(iteration:&address::Iteration,function:&Function,state:&State,known:&States)->BTreeSet<Position> {
-    let states=iteration.states.iter().map(|entry|resolved_initialization(&entry.initialized,&entry.path.assume(&bounds::Clause::default(),true),function,state,known)).collect::<Vec<_>>();
-    flow::iteration_positions(iteration,&states)
+    let states = iteration.states.iter().map(|entry| {
+        let path = entry.path.assume(&bounds::Clause::default(), true);
+        (resolved_initialization(&entry.initialized, &path, function, state, known), entry.fixed_index)
+    }).collect::<Vec<_>>();
+    flow::iteration_positions(iteration, &states)
 }
 fn initialization_effects(effects:&[address::InitializationEffect],function:&Function,state:&State,known:&States)->InitializedEffects {
     let mut facts=Vec::new();
