@@ -1092,6 +1092,41 @@ unsafe extern "C" fn stored_use(uses: Borrowed, index: usize) -> StoredUse {
     event
 }
 
+unsafe extern "C" {
+    #[link_name = "bootstrap.relation_order::visit_content_history"]
+    fn visit_content_history(
+        uses: WalkSlice, calls: WalkSlice, limit: usize, context: Slot, host: MemoryEventHost,
+        project: unsafe extern "C" fn(Slot, usize, usize),
+    );
+}
+
+impl Function {
+    pub(super) fn visit_content_history<F>(&self, limit: usize, project: F)
+    where
+        F: FnMut(usize, Option<(usize, &Call)>),
+    {
+        struct Projection<'a, F> {
+            calls: &'a [Call],
+            apply: F,
+        }
+        unsafe extern "C" fn project_at<F: FnMut(usize, Option<(usize, &Call)>)>(
+            context: Slot, memory: usize, index: usize,
+        ) {
+            let context = unsafe { &mut *context.cast::<Projection<'_, F>>() };
+            let call = context.calls.get(index).map(|call| (index, call));
+            (context.apply)(memory, call);
+        }
+
+        let mut context = Projection { calls: &self.calls, apply: project };
+        unsafe {
+            visit_content_history(WalkSlice::of(&self.uses), WalkSlice::of(&self.calls), limit,
+                ptr::from_mut(&mut context).cast(), MemoryEventHost {
+                    usage: memory_use_facts, call: Function::memory_call_facts,
+                }, project_at::<F>);
+        }
+    }
+}
+
 struct Builder<'a> { function:&'a Function,state:LoopScope<'a>,known:&'a States<'a>,keys:BTreeMap<Key,usize>,prefix:FramePrefix,graph:Graph,parameters:BTreeMap<ValueIdentity,usize> }
 impl Builder<'_> {
     fn empty(&mut self)->usize{let id=self.graph.nodes.len();self.graph.nodes.push(Node::default());id}

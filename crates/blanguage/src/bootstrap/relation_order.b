@@ -754,7 +754,7 @@ extern "C" void write_history_bindings(address function, address output, address
     }
 }
 
-extern "C" usize find_memory_call(WalkSlice calls, usize memory, u32 immediate,
+usize first_memory_call(WalkSlice calls, usize memory,
     cfn<MemoryCallFacts,address,usize> facts) on cpu
     requires nonzero(facts)
 {
@@ -768,6 +768,14 @@ extern "C" usize find_memory_call(WalkSlice calls, usize memory, u32 immediate,
             end = middle;
         }
     }
+    return first;
+}
+
+extern "C" usize find_memory_call(WalkSlice calls, usize memory, u32 immediate,
+    cfn<MemoryCallFacts,address,usize> facts) on cpu
+    requires nonzero(facts)
+{
+    usize first = first_memory_call(calls,memory,facts);
 
     while (first < calls.count) {
         MemoryCallFacts call = facts(calls.data,first);
@@ -860,6 +868,33 @@ extern "C" void visit_stored_locations(WalkSlice uses, WalkSlice calls, address 
             }
         }
         memory += 1u64;
+    }
+}
+
+extern "C" void visit_content_history(WalkSlice uses, WalkSlice calls, usize limit,
+    address context, MemoryEventHost host, cfn<void,address,usize,usize> project) on cpu
+    requires nonzero(host.usage) requires nonzero(host.call) requires nonzero(project)
+{
+    if (limit == 0u64) { return; }
+    usize memory = limit;
+    usize end = first_memory_call(calls,limit,host.call);
+    MemoryCallFacts previous = MemoryCallFacts(WALK_END,0);
+    while (memory != 0u64) {
+        memory -= 1u64;
+        if (host.usage(uses.data,memory).kind == NON_MEMORY_USE) { continue; }
+        usize matched = WALK_END;
+        while (end != 0u64) {
+            if (previous.memory == WALK_END) {
+                previous = host.call(calls.data,end - 1u64);
+            }
+            if (previous.memory < memory) { break; }
+            end -= 1u64;
+            if (previous.memory == memory && previous.deferred == 0) {
+                matched = end;
+            }
+            previous.memory = WALK_END;
+        }
+        project(context,memory,matched);
     }
 }
 

@@ -239,6 +239,10 @@ struct StoredLocationHost {
 extern "C" void visit_stored_locations(WalkSlice uses, WalkSlice calls, address context, StoredLocationHost host) on cpu
     requires nonzero(host.usage) requires nonzero(host.call) requires nonzero(host.project);
 
+extern "C" void visit_content_history(WalkSlice uses, WalkSlice calls, usize limit,
+    address context, MemoryEventHost host, cfn<void,address,usize,usize> project) on cpu
+    requires nonzero(host.usage) requires nonzero(host.call) requires nonzero(project);
+
 struct PrefixBoundary {
     usize memory;
     usize frame;

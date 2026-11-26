@@ -998,12 +998,13 @@ impl Function {
 }
 
 impl BorrowEvaluation<'_>{
-    fn content_event(&mut self, query: Option<(&address::Origin,u32)>, position: Option<&Position>, memory: usize,
+    fn content_event<'call>(&mut self, query: Option<(&address::Origin, u32)>, position: Option<&Position>,
+        memory: usize, call: impl FnOnce() -> Option<(usize, &'call Call)>,
         mut write: impl FnMut(&Borrow, &bounds::Condition, bool)) {
         let(function,known)=(self.function,self.known);
         let usage=&function.uses[memory];
         let Requirement::Memory{borrow,access,written,address_fields,..}=&usage.requirement else{return;};
-        if let Some((call_index, call)) = function.call_at_memory(memory, true) {
+        if let Some((call_index, call)) = call() {
             for (index, access) in known[&call.function].interface.access.iter().enumerate().rev() {
                 let Access::Stored { borrows, word, value, when } = access else { continue; };
                 let target = self.evaluate(&call_content_sources(borrows, call, &call.arguments).at_call(&call.arguments));
@@ -1112,11 +1113,11 @@ impl BorrowEvaluation<'_>{
         }
         let mut result=ContentAtRead::default();
         let function = self.function;
-        for at in (0..memory).rev() {
+        function.visit_content_history(memory, |at, call| {
             let names = std::cell::LazyCell::new(|| function.history_names(at, memory, None));
-            self.content_event(Some((origin,word)), position.as_ref(), at,
+            self.content_event(Some((origin, word)), position.as_ref(), at, || call,
                 |borrow, when, complete| result.write_with_history(borrow, when, complete, &names));
-        }
+        });
         result.with_initial(input_contents(origin,word))
     }
 
@@ -1230,7 +1231,9 @@ impl BorrowEvaluation<'_>{
                     }),
                     _=>None,
                 };
-                self.content_event(query.as_ref().map(|origin|(origin,0)), Some(position), *memory,
+                let function = self.function;
+                self.content_event(query.as_ref().map(|origin| (origin, 0)), Some(position), *memory,
+                    || function.call_at_memory(*memory, true),
                     |borrow, when, complete| result.write(borrow, when, complete));
                 result.with_initial(value).restricted_by(&function.uses[*memory].path)
             },
@@ -2624,14 +2627,14 @@ fn prepare_returned_writes(
         |evaluation, (origin, word)| {
             let position = content_position(origin, *word);
             let mut events = Vec::new();
-            for at in (0..latest).rev() {
+            function.visit_content_history(latest, |at, call| {
                 let mut writes = Vec::new();
-                evaluation.content_event(Some((origin, *word)), position.as_ref(), at,
+                evaluation.content_event(Some((origin, *word)), position.as_ref(), at, || call,
                     |borrow, when, complete| writes.push(ExitWrite { borrow: borrow.clone(), when: when.clone(), complete }));
                 if !writes.is_empty() {
                     events.push(ExitEvent { at, writes });
                 }
-            }
+            });
             Ok::<_, crate::ast::Diagnostic>(ExitContents { origin: origin.clone(), word: *word, events })
         }).map_err(|error| match error {
             crate::parallel::Error::Work(error) => error,
