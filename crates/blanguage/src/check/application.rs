@@ -1351,20 +1351,7 @@ fn live_resources(
     entry_anchor: &GenerationAnchor,
 ) -> Option<crate::application::Resources> {
     let frame = frame?;
-    fn uses(code: &[Inst], registers: &[Reg]) -> bool {
-        code.iter().any(|inst| {
-            !inst.all_operands(&mut |reg| !registers.contains(&reg))
-                || match &(inst).kind {
-                    InstKind::Scope(code) => uses(code, registers),
-                    InstKind::If { yes, no, .. } => uses(yes, registers) || uses(no, registers),
-                    InstKind::Loop {
-                        condition, body, ..
-                    } => uses(condition, registers) || uses(body, registers),
-                    _ => false,
-                }
-        })
-    }
-    if !uses(&body.code, &frame) {
+    if !dataflow::parallel_frame_used(&body.code, &frame) {
         return None;
     }
     let mut codes = std::iter::once(&mut body.code)
