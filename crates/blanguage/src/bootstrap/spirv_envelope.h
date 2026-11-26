@@ -352,7 +352,6 @@ extern "C" void emit_payload_store(PayloadShape shape, u32 value, address pointe
     requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
     requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.finish_body);
 
-extern "C" u64 copy_shader_value(address body, u64 at, u32 type_id, u32 result, u32 value) on cpu;
 extern "C" u64 plain_load(address body, u64 at, u32 type_id, u32 result, u32 pointer) on cpu;
 extern "C" u64 plain_store(address body, u64 at, u32 pointer, u32 value) on cpu;
 extern "C" u64 aligned_load(address body, u64 at, u32 type_id, u32 result, u32 pointer, u32 alignment) on cpu;
@@ -440,11 +439,39 @@ struct BlockPaging {
 };
 struct PrivateField { u32 variable; u32 pointer_type; BuiltinScalar unit; u32 offset; };
 struct BlockLocals { address slots; cfn<PrivateField,address,usize> array; };
+enum TileKeyKind : u32 { Input = 0; Published = 1; };
+struct TileKey { usize owner; u32 word; TileKeyKind kind; };
+struct TileCell { BuiltinScalar unit; u32 slot; u32 byte; u32 variable; u32 pointer_type; };
+struct TileStorage {
+    cfn<TileCell,address,TileKey> cell;
+    cfn<TileKey,address,usize,u32> word;
+    u32 width;
+    u32 lane;
+    u32 length;
+};
+struct TilePublication { usize tile; usize words; Span fields; Span registers; address ids; };
+// The emitter lends the placed cells, actual field spans and one workspace for field and packed IDs.
+extern "C" u32 tile_storage_pointer(TileStorage storage, TileKey key, u32 index, u32 offset, MemoryHost memory) on cpu
+    requires nonzero(storage.cell)
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body);
+extern "C" u32 tile_storage_read(TileStorage storage, TileKey key, u32 index, u32 offset,
+    BuiltinScalar scalar, MemoryHost memory) on cpu
+    requires nonzero(storage.cell)
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body);
+extern "C" void emit_tile_publication(TilePublication input, TileStorage storage, address workspace,
+    cfn<BuiltinScalar,address,usize> scalar, MemoryHost memory) on cpu
+    requires nonzero(storage.cell) requires nonzero(scalar)
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body);
+
 struct BlockHost {
     Host ir;
     BlockValues values;
     BlockPaging paging;
     BlockLocals locals;
+    TileStorage tile;
     cfn<BlockFlow,address,BlockRejection> reject;
     cfn<void,address,address,address,Span,usize> texture_sample;
     cfn<void,address,address> ray;
@@ -453,10 +480,6 @@ struct BlockHost {
     cfn<void,address> barrier;
     cfn<void,address,address> publish;
     cfn<void,address,address> collective;
-    cfn<void,address,usize> tile_length;
-    cfn<void,address,usize> tile_lane;
-    cfn<void,address,usize,usize,usize,u32,usize,u32> tile_load;
-    cfn<void,address,usize,usize,usize,u32,usize> tile_store;
 };
 extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     StructuredHost host, BlockHost emit) on cpu
@@ -464,8 +487,7 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     requires nonzero(emit.texture_sample) requires nonzero(emit.ray) requires nonzero(emit.atomic)
     requires nonzero(emit.subgroup) requires nonzero(emit.barrier)
     requires nonzero(emit.publish) requires nonzero(emit.collective)
-    requires nonzero(emit.tile_length) requires nonzero(emit.tile_lane)
-    requires nonzero(emit.tile_load) requires nonzero(emit.tile_store)
+    requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
     requires nonzero(emit.paging.pointer_type) requires nonzero(emit.paging.finish_body)
     requires nonzero(emit.paging.current_label)
     requires nonzero(emit.values.scalar) requires nonzero(emit.values.binary) requires nonzero(emit.values.finish)
@@ -1016,38 +1038,6 @@ struct RayWords { u64 words; u32 next; u32 label; };
 // Optional aggregate type IDs are zero when the field group is unused.
 // The body has room for 61 words for Any or 587 for full Closest.
 extern "C" RayWords encode_ray(RayEmission input, address results, address body) on cpu;
-
-struct TileAddress {
-    u32 index_type;
-    u32 pointer_type;
-    u32 shared;
-    u32 index;
-    u32 offset;
-    u32 bias;
-    u32 cell_bytes;
-    u32 width;
-    u32 base;
-    u32 next;
-};
-struct TileAddressWords { u64 words; u32 next; u32 pointer; u32 byte; };
-// The emitter resolves the selected plane and the actual constant IDs.
-// Zero offset selects a fixed cell; zero bias or base omits an addition.
-// The body has room for thirty words.
-extern "C" TileAddressWords tile_address(TileAddress input, address body) on cpu;
-
-struct TileExtract {
-    u32 index_type;
-    u32 cell_type;
-    u32 pointer;
-    u32 byte;
-    u32 cell_bytes;
-    u32 bits_per_byte;
-    u32 shift;
-    u32 next;
-};
-// A dynamic byte ID computes the shift. Otherwise the caller supplies a
-// fixed shift ID, or zero for the low bits. The body has room for 19 words.
-extern "C" PayloadRead tile_extract(TileExtract input, address body) on cpu;
 
 struct DispatchLayout {
     u32 table_pointer;

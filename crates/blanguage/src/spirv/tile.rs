@@ -116,9 +116,82 @@ unsafe extern "C" fn tile_phase_bind(context: StructuredContext, register: Reg, 
     unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() }.emitter.regs[register] = value;
 }
 
-pub(super) enum TileByte {
-    Fixed(u32),
-    Dynamic(u32),
+#[repr(u32)]
+enum TileKeyKind { Input, Published }
+
+#[repr(C)]
+struct TileKey {
+    owner: usize,
+    word: u32,
+    kind: TileKeyKind,
+}
+
+impl From<SharedWord> for TileKey {
+    fn from(value: SharedWord) -> Self {
+        match value {
+            SharedWord::Input { binding, word } => Self { owner: binding, word, kind: TileKeyKind::Input },
+            SharedWord::Published { tile, word } => Self { owner: tile, word, kind: TileKeyKind::Published },
+        }
+    }
+}
+
+#[repr(C)]
+struct TileCell {
+    unit: ScalarCode,
+    slot: u32,
+    byte: u32,
+    variable: u32,
+    pointer_type: u32,
+}
+
+#[repr(C)]
+pub(super) struct TileStorage {
+    cell: unsafe extern "C" fn(*mut c_void, TileKey) -> TileCell,
+    word: unsafe extern "C" fn(*mut c_void, usize, u32) -> TileKey,
+    width: u32,
+    lane: u32,
+    length: u32,
+}
+
+#[repr(C)]
+struct TilePublication {
+    tile: usize,
+    words: usize,
+    fields: Span,
+    registers: Span,
+    ids: *const u32,
+}
+
+unsafe extern "C" fn tile_cell(context: *mut c_void, key: TileKey) -> TileCell {
+    let emitter = unsafe { &*context.cast::<Emitter<'_>>() };
+    let shared = match key.kind {
+        TileKeyKind::Input => SharedWord::Input { binding: key.owner, word: key.word },
+        TileKeyKind::Published => SharedWord::Published { tile: key.owner, word: key.word },
+    };
+    let Some(&(unit, slot, part)) = emitter.tile_layout.get(&shared.aligned()) else {
+        return TileCell { unit: ScalarCode::U32, slot: 0, byte: 0, variable: 0, pointer_type: 0 };
+    };
+    let (pointer_type, variable) = if unit == Scalar::U64 {
+        (emitter.tile_pointer64, emitter.tile_shared64)
+    } else {
+        (emitter.tile_pointer, emitter.tile_shared)
+    };
+    TileCell { unit: unit.into(), slot: slot as u32, byte: part + key.word % 4, variable, pointer_type }
+}
+
+unsafe extern "C" fn tile_word(context: *mut c_void, tile: usize, word: u32) -> TileKey {
+    unsafe { &*context.cast::<Emitter<'_>>() }.stage.shared_word(tile, word).into()
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::tile_storage_pointer"]
+    fn tile_storage_pointer(storage: TileStorage, key: TileKey, index: u32, offset: u32, memory: MemoryHost) -> u32;
+    #[link_name = "bootstrap.spirv_envelope::tile_storage_read"]
+    fn tile_storage_read(storage: TileStorage, key: TileKey, index: u32, offset: u32,
+        scalar: ScalarCode, memory: MemoryHost) -> u32;
+    #[link_name = "bootstrap.spirv_envelope::emit_tile_publication"]
+    fn emit_tile_publication(input: TilePublication, storage: TileStorage, workspace: *mut u32,
+        scalar: unsafe extern "C" fn(*mut c_void, Reg) -> ScalarCode, memory: MemoryHost);
 }
 
 impl Emitter<'_> {
@@ -158,7 +231,7 @@ impl Emitter<'_> {
             if unit == Scalar::U64 {
                 if part == 0 {
                     let raw = self.load_raw_buffer(unit, source, self.index, word);
-                    let at = self.tile_word_address(key, self.tile_lane, None).0;
+                    let at = self.tile_word_pointer(key, self.tile_lane, None);
                     self.store_pointer(at, raw);
                 }
                 continue;
@@ -168,7 +241,7 @@ impl Emitter<'_> {
                 (unit, byte % 4, raw)
             }).collect();
             let raw = self.pack_words(4, components)[0];
-            let target = self.tile_word_address(
+            let target = self.tile_word_pointer(
                 SharedWord::Input {
                     binding: source,
                     word,
@@ -176,120 +249,40 @@ impl Emitter<'_> {
                 self.tile_lane,
                 None,
             );
-            self.store_pointer(target.0, raw);
+            self.store_pointer(target, raw);
         }
         self.merge_active(end, true);
         self.tile_barrier();
     }
-    pub(super) fn tile_word_address(
-        &mut self, word: SharedWord, index: u32, offset: Option<u32>,
-    ) -> (u32, TileByte) {
-        let (unit, slot, part) = self.tile_layout[&word.aligned()];
-        let byte = part + match word {
-            SharedWord::Input { word, .. } | SharedWord::Published { word, .. } => word % 4,
-        };
-        let (pointer_type, shared) = if unit == Scalar::U64 {
-            (self.tile_pointer64, self.tile_shared64)
-        } else {
-            (self.tile_pointer, self.tile_shared)
-        };
-        let (offset_id, bias, cell_bytes, width) = if let Some(offset) = offset {
-            let bias = if byte == 0 { 0 } else { self.constant(Scalar::U32, byte) };
-            (offset, bias, self.constant(Scalar::U32, unit.size()),
-             self.constant(Scalar::U32, self.workgroup_width))
-        } else {
-            (0, 0, 0, 0)
-        };
-        let base = if slot == 0 { 0 } else {
-            self.constant(Scalar::U32, slot as u32 * self.workgroup_width)
-        };
-        let input = TileAddress {
-            index_type: self.types[&Scalar::U32], pointer_type, shared, index,
-            offset: offset_id, bias, cell_bytes, width, base, next: self.next,
-        };
-        let at = self.body.len();
-        self.body.reserve(30);
-        let emitted = unsafe {
-            let emitted = emit_tile_address(input, self.body.as_mut_ptr().add(at));
-            self.body.set_len(at + emitted.words as usize);
-            emitted
-        };
-        self.next = emitted.next;
-        let byte = if offset.is_some() { TileByte::Dynamic(emitted.byte) } else { TileByte::Fixed(byte) };
-        (emitted.pointer, byte)
+    pub(super) fn tile_storage(&self) -> TileStorage {
+        TileStorage { cell: tile_cell, word: tile_word, width: self.workgroup_width,
+            lane: self.tile_lane, length: self.tile_length }
     }
 
-    fn read_tile_part(&mut self, scalar: Scalar, unit: Scalar, pointer: u32, byte: TileByte) -> u32 {
-        let (byte, cell_bytes, bits_per_byte, shift) = match byte {
-            TileByte::Fixed(byte) => {
-                let bits = (byte % unit.size()) * 8;
-                let shift = if bits == 0 { 0 } else { self.constant(Scalar::U32, bits) };
-                (0, 0, 0, shift)
-            }
-            TileByte::Dynamic(byte) => (
-                byte, self.constant(Scalar::U32, unit.size()), self.constant(Scalar::U32, 8), 0,
-            ),
-        };
-        let input = TileExtract {
-            index_type: self.types[&Scalar::U32], cell_type: self.types[&unit], pointer,
-            byte, cell_bytes, bits_per_byte, shift, next: self.next,
-        };
-        let at = self.body.len();
-        self.body.reserve(19);
-        let emitted = unsafe {
-            let emitted = emit_tile_extract(input, self.body.as_mut_ptr().add(at));
-            self.body.set_len(at + emitted.words as usize);
-            emitted
-        };
-        self.next = emitted.next;
-        self.join_words(scalar, &[emitted.value], unit)
+    pub(super) fn tile_word_pointer(&mut self, word: SharedWord, index: u32, offset: Option<u32>) -> u32 {
+        unsafe { tile_storage_pointer(self.tile_storage(), word.into(), index, offset.unwrap_or(0), self.memory_host()) }
     }
 
     pub(super) fn tile_read(
         &mut self, scalar: Scalar, tile: usize, index: u32, word: u32, offset: Option<u32>,
     ) -> u32 {
-        let key = self.stage.shared_word(tile, word);
-        let unit = self.tile_layout[&key.aligned()].0;
-        let (pointer, byte) = self.tile_word_address(key, index, offset);
-        if scalar.size() < unit.size() {
-            return self.read_tile_part(scalar, unit, pointer, byte);
-        }
-        if scalar.size() > unit.size() {
-            let high = self.tile_word_address(self.stage.shared_word(tile, word + 4), index, offset).0;
-            return self.load_raw(scalar, unit, &[pointer, high]);
-        }
-        self.load_raw(scalar, unit, &[pointer])
+        let key = self.stage.shared_word(tile, word).into();
+        unsafe { tile_storage_read(self.tile_storage(), key, index, offset.unwrap_or(0), scalar.into(), self.memory_host()) }
     }
+
     pub(super) fn tile_barrier(&mut self) {
         self.workgroup_barrier(0x148);
     }
     pub(super) fn publish_values(&mut self, publication: &Publication) {
-        let mut components = Vec::new();
-        for (word, value) in &publication.values {
-            let scalar = self.stage.registers[*value];
-            let raw = self.raw_bits(*value);
-            if scalar.size() == 8 {
-                let key = self.stage.shared_word(publication.tile, *word);
-                if self.tile_layout.contains_key(&key.aligned()) {
-                    let at = self.tile_word_address(key, self.tile_lane, None).0;
-                    self.store_pointer(at, raw);
-                }
-            } else {
-                components.push((scalar, *word, raw));
-            }
-        }
-        let cells: std::collections::BTreeSet<_> = components.iter().map(|(_, word, _)| word / 4).collect();
-        let packed = self.pack_words(self.stage.tiles[publication.tile].ty.size, components);
-        for word in cells {
-            let at = self.tile_word_address(
-                SharedWord::Published {
-                    tile: publication.tile,
-                    word: word * 4,
-                },
-                self.tile_lane,
-                None,
-            );
-            self.store_pointer(at.0, packed[word as usize]);
+        let words = self.stage.tiles[publication.tile].ty.size.div_ceil(4) as usize;
+        let input = TilePublication {
+            tile: publication.tile, words, ids: self.regs.as_ptr(),
+            fields: Span::field(&publication.values, |field| &field.0),
+            registers: Span::field(&publication.values, |field| &field.1),
+        };
+        let mut workspace = vec![0; publication.values.len() + words];
+        unsafe {
+            emit_tile_publication(input, self.tile_storage(), workspace.as_mut_ptr(), value_scalar, self.memory_host());
         }
     }
     pub(super) fn tile_phases(&mut self, active: u32, phases: Vec<TilePhase<'_>>) -> Result<(), &'static str> {

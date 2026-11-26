@@ -1065,7 +1065,7 @@ u32 read_word(address words, u32 part) on cpu {
     return unsafe_position<u32>(word_at(words, u64(part)));
 }
 
-extern "C" u64 copy_shader_value(address body, u64 at, u32 type_id, u32 result, u32 value) on cpu {
+u64 copy_shader_value(address body, u64 at, u32 type_id, u32 result, u32 value) on cpu {
     return words_three(body, at, 83, type_id, result, value);
 }
 
@@ -1378,29 +1378,34 @@ u32 packing_shift(inout StageCursor out, PackingHost host, u32 bits) on cpu
     return shift.id;
 }
 
+void pack_field(inout StageCursor out, PackedField field, u32 word_type, u32 zero,
+    u32 byte_shift, u32 high_shift, address packed) on cpu {
+    u32 first = field.offset / 4;
+    u32 parts = (field.bytes + 3) / 4;
+    PayloadEmission input = PayloadEmission(PayloadAccess::Words, field.raw_type, word_type, 4, parts, out.next);
+    for (part in 0..parts) {
+        u32 word = payload_word(out, input, field.value, part == 0 ? 0 : high_shift);
+        if (byte_shift != 0) {
+            word = stage_op(out, 196, word_type, word, byte_shift);
+        }
+        u32 slot = first + part;
+        u32 previous = read_word(packed, slot);
+        if (previous != zero) {
+            word = stage_op(out, 197, word_type, previous, word);
+        }
+        put(packed, u64(slot), word);
+    }
+}
+
 extern "C" PayloadWrite pack_record(PackingHost host, u32 word_type, u32 zero, u32 next, address packed, address body) on cpu
     requires nonzero(host.field) requires nonzero(host.constant) {
     StageCursor out = StageCursor(body, 0u64, next);
     PackedField field = PackedField(0, 0, 0, 0);
     while (host.field(host.context, address_of(field)) != 0) {
-        u32 first = field.offset / 4;
         u32 bit_offset = field.offset % 4 * 8;
         u32 byte_shift = bit_offset == 0 ? 0 : packing_shift(out, host, bit_offset);
-        u32 parts = (field.bytes + 3) / 4;
-        u32 high_shift = parts == 2 ? packing_shift(out, host, 32) : 0;
-        PayloadEmission input = PayloadEmission(PayloadAccess::Words, field.raw_type, word_type, 4, parts, out.next);
-        for (part in 0..parts) {
-            u32 word = payload_word(out, input, field.value, part == 0 ? 0 : high_shift);
-            if (byte_shift != 0) {
-                word = stage_op(out, 196, word_type, word, byte_shift);
-            }
-            u32 slot = first + part;
-            u32 previous = read_word(packed, slot);
-            if (previous != zero) {
-                word = stage_op(out, 197, word_type, previous, word);
-            }
-            put(packed, u64(slot), word);
-        }
+        u32 high_shift = field.bytes > 4 ? packing_shift(out, host, 32) : 0;
+        pack_field(out, field, word_type, zero, byte_shift, high_shift, packed);
     }
     return PayloadWrite(out.words, out.next);
 }
@@ -1955,8 +1960,7 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     requires nonzero(emit.texture_sample) requires nonzero(emit.ray) requires nonzero(emit.atomic)
     requires nonzero(emit.subgroup) requires nonzero(emit.barrier)
     requires nonzero(emit.publish) requires nonzero(emit.collective)
-    requires nonzero(emit.tile_length) requires nonzero(emit.tile_lane)
-    requires nonzero(emit.tile_load) requires nonzero(emit.tile_store)
+    requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
     requires nonzero(emit.paging.pointer_type) requires nonzero(emit.paging.finish_body)
     requires nonzero(emit.paging.current_label)
     requires nonzero(emit.values.scalar) requires nonzero(emit.values.binary) requires nonzero(emit.values.finish)
@@ -1997,12 +2001,17 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
             emit.publish(context, value.left.data);
         } else if (kind == OP_TILE_COLLECTIVE) {
             emit.collective(context, value.left.data);
-        } else if (kind == OP_TILE_LENGTH) {
-            emit.tile_length(context, value.a);
-        } else if (kind == OP_TILE_LANE) {
-            emit.tile_lane(context, value.a);
+        } else if (kind == OP_TILE_LENGTH || kind == OP_TILE_LANE) {
+            ScalarHost stream = memory.scalars;
+            u32 type_id = stream.type_id(stream.context, emit.values.scalar(stream.context, value.a));
+            u32 result = block_register(emit.values.registers, value.a);
+            u32 id = kind == OP_TILE_LANE ? emit.tile.lane : emit.tile.length;
+            address body = stream.reserve(stream.context, 4u64, 0u64).body;
+            memory.finish_body(stream.context, copy_shader_value(body, 0u64, type_id, result, id));
         } else if (kind == OP_TILE_LOAD) {
-            emit.tile_load(context, value.a, value.b, value.c, u32(value.d), 0u64, 0);
+            TileKey key = emit.tile.word(memory.scalars.context, value.b, u32(value.d));
+            u32 index = block_register(emit.values.registers, value.c);
+            block_tile_read(emit.values, emit.tile, key, index, 0, value.a, memory);
         } else if (kind == OP_SUBGROUP) {
             emit.subgroup(context, value.a, SubgroupOperation(u32(value.c)), value.first, value.second);
         } else if (kind == OP_VIEW_LOAD) {
@@ -2023,10 +2032,13 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
             }
             bool write = kind == OP_STORE_INDEXED;
             if (source.tag == INDEXED_TILE) {
+                TileKey key = emit.tile.word(memory.scalars.context, source.a, u32(value.c));
+                u32 index = block_register(emit.values.registers, source.b);
+                u32 offset = block_register(emit.values.registers, write ? value.a : value.b);
                 if (write) {
-                    emit.tile_store(context, source.a, source.b, value.a, u32(value.c), value.b);
+                    block_tile_write(emit.values, emit.tile, key, index, offset, value.b, memory);
                 } else {
-                    emit.tile_load(context, value.a, source.a, source.b, u32(value.c), value.b, 1);
+                    block_tile_read(emit.values, emit.tile, key, index, offset, value.a, memory);
                 }
             } else {
                 address registers = emit.values.registers;
@@ -3396,34 +3408,183 @@ extern "C" RayWords encode_ray(RayEmission input, address results, address body)
     return RayWords(at, next, end);
 }
 
-extern "C" TileAddressWords tile_address(TileAddress input, address body) on cpu {
-    u64 at = 0u64;
-    u32 next = input.next;
-    u32 index = input.index;
-    u32 byte = input.offset;
-    u32 u = input.index_type;
-    if (input.offset != 0) {
-        if (input.bias != 0) {
-            at = words_four(body, at, 128, u, next, byte, input.bias);
-            byte = next;
-            next += 1;
+struct TileLocation { u32 pointer; u32 byte; };
+
+TileLocation tile_cell_address(TileCell cell, u32 index, u32 offset, u32 width, MemoryHost memory) on cpu
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
+    ScalarHost stream = memory.scalars;
+    address context = stream.context;
+    u32 bias = 0;
+    u32 bytes = 0;
+    u32 lanes = 0;
+    if (offset != 0) {
+        if (cell.byte != 0) { bias = stream.constant(context, BuiltinScalar::U32, u64(cell.byte)); }
+        bytes = stream.constant(context, BuiltinScalar::U32, u64(scalar_definition(cell.unit).width / 8));
+        lanes = stream.constant(context, BuiltinScalar::U32, u64(width));
+    }
+    u32 base = cell.slot == 0 ? 0 : stream.constant(context, BuiltinScalar::U32, u64(cell.slot * width));
+    u32 next = stream.ids(context, 0);
+    StageCursor out = StageCursor(stream.reserve(context, 30u64, 0u64).body, 0u64, next);
+    u32 ty = stream.type_id(context, BuiltinScalar::U32);
+    u32 at = index;
+    u32 byte = cell.byte;
+    if (offset != 0) {
+        byte = bias == 0 ? offset : stage_op(out, 128, ty, offset, bias);
+        u32 cell_index = stage_op(out, 134, ty, byte, bytes);
+        u32 lane_offset = stage_op(out, 132, ty, cell_index, lanes);
+        at = stage_op(out, 128, ty, index, lane_offset);
+    }
+    if (base != 0) { at = stage_op(out, 128, ty, at, base); }
+    u32 pointer = stage_op(out, 65, cell.pointer_type, cell.variable, at);
+    memory.finish_body(context, out.words);
+    stream.ids(context, out.next - next);
+    return TileLocation(pointer, byte);
+}
+
+extern "C" u32 tile_storage_pointer(TileStorage storage, TileKey key, u32 index, u32 offset, MemoryHost memory) on cpu
+    requires nonzero(storage.cell)
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
+    TileCell cell = storage.cell(memory.scalars.context, key);
+    return tile_cell_address(cell, index, offset, storage.width, memory).pointer;
+}
+
+extern "C" u32 tile_storage_read(TileStorage storage, TileKey key, u32 index, u32 offset,
+    BuiltinScalar scalar, MemoryHost memory) on cpu
+    requires nonzero(storage.cell)
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
+    ScalarHost stream = memory.scalars;
+    address context = stream.context;
+    TileCell cell = storage.cell(context, key);
+    TileLocation at = tile_cell_address(cell, index, offset, storage.width, memory);
+    u32 width = scalar_definition(scalar).width;
+    u32 cell_width = scalar_definition(cell.unit).width;
+    if (width < cell_width) {
+        u32 bytes = cell_width / 8;
+        u32 ty = stream.type_id(context, BuiltinScalar::U32);
+        u32 cell_type = stream.type_id(context, cell.unit);
+        u32 shift = 0;
+        u32 cell_bytes = 0;
+        u32 bits_per_byte = 0;
+        if (offset == 0) {
+            u32 bits = at.byte % bytes * 8;
+            if (bits != 0) { shift = stream.constant(context, BuiltinScalar::U32, u64(bits)); }
+        } else {
+            cell_bytes = stream.constant(context, BuiltinScalar::U32, u64(bytes));
+            bits_per_byte = stream.constant(context, BuiltinScalar::U32, 8u64);
         }
-        u32 cell = next;
-        u32 lane_offset = next + 1;
-        u32 lane = next + 2;
-        next += 3;
-        at = words_four(body, at, 134, u, cell, byte, input.cell_bytes);
-        at = words_four(body, at, 132, u, lane_offset, cell, input.width);
-        at = words_four(body, at, 128, u, lane, index, lane_offset);
-        index = lane;
+        u32 next = stream.ids(context, 0);
+        StageCursor out = StageCursor(stream.reserve(context, 19u64, 0u64).body, 0u64, next);
+        u32 raw = stage_load(out, cell_type, at.pointer, false);
+        if (offset != 0) {
+            u32 byte = stage_op(out, 137, ty, at.byte, cell_bytes);
+            shift = stage_op(out, 132, ty, byte, bits_per_byte);
+        }
+        if (shift != 0) { raw = stage_op(out, 194, cell_type, raw, shift); }
+        memory.finish_body(context, out.words);
+        stream.ids(context, out.next - next);
+        return emit_payload_load(PayloadShape(PayloadAccess::Words, scalar, cell.unit, 1), address_of(raw), 0, memory);
     }
-    if (input.base != 0) {
-        at = words_four(body, at, 128, u, next, index, input.base);
-        index = next;
-        next += 1;
+    array<u32,2> pointers = array<u32,2>(at.pointer, 0);
+    u32 count = 1;
+    if (width > cell_width) {
+        TileKey high = TileKey(key.owner, key.word + 4, key.kind);
+        pointers[1] = tile_storage_pointer(storage, high, index, offset, memory);
+        count = 2;
     }
-    at = words_four(body, at, 65, input.pointer_type, next, input.shared, index);
-    return TileAddressWords(at, next + 1, next, byte);
+    return emit_payload_load(PayloadShape(PayloadAccess::Local, scalar, cell.unit, count), address_of(pointers[0]), 0, memory);
+}
+
+void block_tile_read(BlockValues values, TileStorage storage, TileKey key, u32 index, u32 offset,
+    usize dst, MemoryHost memory) on cpu
+    requires nonzero(values.scalar) requires nonzero(storage.cell)
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
+    BuiltinScalar scalar = values.scalar(memory.scalars.context, dst);
+    u32 raw = tile_storage_read(storage, key, index, offset, scalar, memory);
+    PayloadShape shape = PayloadShape(PayloadAccess::Words, scalar, unsigned_scalar(scalar_definition(scalar).width), 1);
+    emit_payload_load(shape, address_of(raw), block_register(values.registers, dst), memory);
+}
+
+void block_tile_write(BlockValues values, TileStorage storage, TileKey key, u32 index, u32 offset,
+    usize src, MemoryHost memory) on cpu
+    requires nonzero(values.scalar) requires nonzero(storage.cell)
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
+    BuiltinScalar scalar = values.scalar(memory.scalars.context, src);
+    PhysicalShape shape = physical_shape(scalar);
+    array<u32,2> pointers = array<u32,2>(0);
+    for (part in 0..shape.count) {
+        TileKey word = TileKey(key.owner, key.word + part * 4, key.kind);
+        pointers[part] = tile_storage_pointer(storage, word, index, offset, memory);
+    }
+    u32 raw = encode_raw_bits(scalar, block_register(values.registers, src), memory);
+    emit_payload_store(PayloadShape(PayloadAccess::Physical, scalar, shape.unit, shape.count),
+        raw, address_of(pointers[0]), address(), memory);
+}
+
+void store_tile_word(TileCell cell, u32 raw, TileStorage storage, MemoryHost memory) on cpu
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
+    u32 pointer = tile_cell_address(cell, storage.lane, 0, storage.width, memory).pointer;
+    ScalarHost stream = memory.scalars;
+    address body = stream.reserve(stream.context, 3u64, 0u64).body;
+    memory.finish_body(stream.context, plain_store(body, 0u64, pointer, raw));
+}
+
+extern "C" void emit_tile_publication(TilePublication input, TileStorage storage, address workspace,
+    cfn<BuiltinScalar,address,usize> scalar, MemoryHost memory) on cpu
+    requires nonzero(storage.cell) requires nonzero(scalar)
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
+    ScalarHost stream = memory.scalars;
+    address context = stream.context;
+    address packed = word_at(workspace, input.fields.count);
+    for (i in 0..u32(input.fields.count)) {
+        address reg = unsafe_address(address_bits(input.registers.data) + u64(i) * input.registers.stride);
+        usize source = unsafe_position<usize>(reg);
+        BuiltinScalar type = scalar(context, source);
+        u32 raw = encode_raw_bits(type, block_register(input.ids, source), memory);
+        if (scalar_definition(type).width == 64) {
+            address field = unsafe_address(address_bits(input.fields.data) + u64(i) * input.fields.stride);
+            TileKey key = TileKey(input.tile, unsafe_position<u32>(field), TileKeyKind::Published);
+            TileCell cell = storage.cell(context, key);
+            if (cell.variable != 0) { store_tile_word(cell, raw, storage, memory); }
+        } else {
+            put(workspace, u64(i), raw);
+        }
+    }
+
+    u32 zero = stream.constant(context, BuiltinScalar::U32, 0u64);
+    u32 word_type = stream.type_id(context, BuiltinScalar::U32);
+    for (i in 0..u32(input.fields.count)) {
+        u32 raw = read_word(workspace, i);
+        if (raw != 0) {
+            address reg = unsafe_address(address_bits(input.registers.data) + u64(i) * input.registers.stride);
+            address field = unsafe_address(address_bits(input.fields.data) + u64(i) * input.fields.stride);
+            u32 offset = unsafe_position<u32>(field);
+            u32 width = scalar_definition(scalar(context, unsafe_position<usize>(reg))).width;
+            u32 raw_type = stream.type_id(context, unsigned_scalar(width));
+            u32 bits = offset % 4 * 8;
+            u32 shift = bits == 0 ? 0 : stream.constant(context, BuiltinScalar::U32, u64(bits));
+            u32 slot = offset / 4;
+            if (read_word(packed, slot) == 0) { put(packed, u64(slot), zero); }
+            u32 next = stream.ids(context, 0);
+            StageCursor out = StageCursor(stream.reserve(context, 33u64, 0u64).body, 0u64, next);
+            pack_field(out, PackedField(raw, offset, raw_type, width / 8), word_type, zero, shift, 0, packed);
+            memory.finish_body(context, out.words);
+            stream.ids(context, out.next - next);
+        }
+    }
+    for (i in 0..u32(input.words)) {
+        u32 raw = read_word(packed, i);
+        if (raw != 0) {
+            TileKey key = TileKey(input.tile, i * 4, TileKeyKind::Published);
+            store_tile_word(storage.cell(context, key), raw, storage, memory);
+        }
+    }
 }
 
 array<u32,2> stage_field_pointers(inout StageCursor out, u32 record, u32 offset, u32 pointer, u32 wide_type, u32 step) on cpu {
@@ -4686,26 +4847,6 @@ extern "C" TreeWords segment_group(SegmentGroup input, address levels, address f
     return TreeWords(out.words, decorated, out.next, label);
 }
 
-
-extern "C" PayloadRead tile_extract(TileExtract input, address body) on cpu {
-    u32 value = input.next;
-    u32 next = value + 1;
-    u64 at = words_three(body, 0u64, 61, input.cell_type, value, input.pointer);
-    u32 shift = input.shift;
-    if (input.byte != 0) {
-        u32 part = next;
-        shift = next + 1;
-        next += 2;
-        at = words_four(body, at, 137, input.index_type, part, input.byte, input.cell_bytes);
-        at = words_four(body, at, 132, input.index_type, shift, part, input.bits_per_byte);
-    }
-    if (shift != 0) {
-        at = words_four(body, at, 194, input.cell_type, next, value, shift);
-        value = next;
-        next += 1;
-    }
-    return PayloadRead(at, next, value);
-}
 
 const u32 ENTRY_MAP=0;
 const u32 ENTRY_REDUCE=1;

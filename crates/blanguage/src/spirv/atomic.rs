@@ -73,11 +73,11 @@ impl Emitter<'_> {
                 (pointer, 0)
             }
             IndexedSource::Tile { tile, index } => (
-                self.tile_word_address(
+                self.tile_word_pointer(
                     self.stage.shared_word(tile, atomic.word),
                     self.value(index),
                     atomic.offset.map(|reg| self.value(reg)),
-                ).0,
+                ),
                 1,
             ),
             IndexedSource::View { .. } | IndexedSource::Pointer { .. } => return Err("GPU原子不能使用CPU原生地址".into()),

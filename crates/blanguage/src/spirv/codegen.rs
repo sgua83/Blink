@@ -757,6 +757,7 @@ struct BlockHost {
     values: BlockValues,
     paging: BlockPaging,
     locals: BlockLocals,
+    tile: tile::TileStorage,
     reject: unsafe extern "C" fn(StructuredContext, BlockRejection) -> BlockFlow,
     texture_sample: unsafe extern "C" fn(StructuredContext, *const [Reg; 4], *const TextureSource, Span, Reg),
     ray: unsafe extern "C" fn(StructuredContext, *const Inst),
@@ -765,10 +766,6 @@ struct BlockHost {
     barrier: unsafe extern "C" fn(StructuredContext),
     publish: unsafe extern "C" fn(StructuredContext, *const Publication),
     collective: unsafe extern "C" fn(StructuredContext, *const TileCollective),
-    tile_length: unsafe extern "C" fn(StructuredContext, Reg),
-    tile_lane: unsafe extern "C" fn(StructuredContext, Reg),
-    tile_load: unsafe extern "C" fn(StructuredContext, Reg, usize, Reg, u32, Reg, u32),
-    tile_store: unsafe extern "C" fn(StructuredContext, usize, Reg, Reg, u32, Reg),
 }
 
 fn block_host(emitter: &mut Emitter<'_>) -> BlockHost {
@@ -797,6 +794,7 @@ fn block_host(emitter: &mut Emitter<'_>) -> BlockHost {
             slots: emitter.locals.as_ptr(),
             array: private_array_field,
         },
+        tile: emitter.tile_storage(),
         reject: block_reject,
         texture_sample: block_texture_sample,
         ray: block_ray,
@@ -805,10 +803,6 @@ fn block_host(emitter: &mut Emitter<'_>) -> BlockHost {
         barrier: block_barrier,
         publish: block_publish,
         collective: block_collective,
-        tile_length: block_tile_length,
-        tile_lane: block_tile_lane,
-        tile_load: block_tile_load,
-        tile_store: block_tile_store,
     }
 }
 
@@ -872,43 +866,6 @@ unsafe extern "C" fn block_publish(context: StructuredContext, publication: *con
 
 unsafe extern "C" fn block_collective(context: StructuredContext, collective: *const TileCollective) {
     unsafe { block_emitter(context).tile_collective(&*collective) };
-}
-
-unsafe extern "C" fn block_tile_length(context: StructuredContext, dst: Reg) {
-    let e = unsafe { block_emitter(context) };
-    e.copy_register(dst, e.tile_length);
-}
-
-unsafe extern "C" fn block_tile_lane(context: StructuredContext, dst: Reg) {
-    let e = unsafe { block_emitter(context) };
-    e.copy_register(dst, e.tile_lane);
-}
-
-unsafe extern "C" fn block_tile_load(context: StructuredContext, dst: Reg, tile: usize, index: Reg,
-    word: u32, offset: Reg, indexed: u32,
-) {
-    let e = unsafe { block_emitter(context) };
-    let offset = (indexed != 0).then(|| e.value(offset));
-    let scalar = e.stage.registers[dst];
-    let raw = e.tile_read(scalar, tile, e.value(index), word, offset);
-    e.from_words(dst, &[raw], Emitter::raw_scalar(scalar));
-}
-
-unsafe extern "C" fn block_tile_store(context: StructuredContext, tile: usize, index: Reg,
-    offset: Reg, word: u32, value: Reg,
-) {
-    let e = unsafe { block_emitter(context) };
-    let offset = e.value(offset);
-    let scalar = e.stage.registers[value];
-    let unit = Emitter::physical_unit(scalar);
-    let count = scalar.size().div_ceil(4) as usize;
-    let mut pointers = [0; 2];
-    for (part, pointer) in pointers[..count].iter_mut().enumerate() {
-        let slot = e.stage.shared_word(tile, word + part as u32 * 4);
-        *pointer = e.tile_word_address(slot, e.value(index), Some(offset)).0;
-    }
-    let raw = e.raw_bits(value);
-    e.store_raw(scalar, unit, &pointers[..count], raw, true);
 }
 
 #[repr(C)]
@@ -1081,45 +1038,7 @@ struct RayWords {
     label: u32,
 }
 
-#[repr(C)]
-struct TileAddress {
-    index_type: u32,
-    pointer_type: u32,
-    shared: u32,
-    index: u32,
-    offset: u32,
-    bias: u32,
-    cell_bytes: u32,
-    width: u32,
-    base: u32,
-    next: u32,
-}
-
-#[repr(C)]
-struct TileAddressWords {
-    words: u64,
-    next: u32,
-    pointer: u32,
-    byte: u32,
-}
-
-#[repr(C)]
-struct TileExtract {
-    index_type: u32,
-    cell_type: u32,
-    pointer: u32,
-    byte: u32,
-    cell_bytes: u32,
-    bits_per_byte: u32,
-    shift: u32,
-    next: u32,
-}
-
 unsafe extern "C" {
-    #[link_name = "bootstrap.spirv_envelope::tile_address"]
-    fn emit_tile_address(input: TileAddress, body: *mut u32) -> TileAddressWords;
-    #[link_name = "bootstrap.spirv_envelope::tile_extract"]
-    fn emit_tile_extract(input: TileExtract, body: *mut u32) -> PayloadRead;
     #[link_name = "bootstrap.spirv_envelope::encode_ray"]
     fn encode_ray(input: RayEmission, results: *const u32, body: *mut u32) -> RayWords;
     #[link_name = "bootstrap.spirv_envelope::workgroup_barrier"]
@@ -1199,8 +1118,6 @@ unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::open_tile_padding"]
     fn open_tile_padding(uint_type: u32, bool_type: u32, lane: u32, width: u32,
         capacity: u32, index: u32, test: u32, run: u32, end: u32, body: *mut u32) -> ControlWords;
-    #[link_name = "bootstrap.spirv_envelope::copy_shader_value"]
-    fn copy_shader_value(body: *mut u32, at: u64, type_id: u32, result: u32, value: u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::plain_load"]
     fn plain_load(body: *mut u32, at: u64, type_id: u32, result: u32, pointer: u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::plain_store"]
@@ -1583,10 +1500,6 @@ impl Emitter<'_> {
             self.body.set_len(start + words as usize);
         }
     }
-    fn copy_register(&mut self, dst: Reg, source: u32) {
-        let (ty, dst) = (self.ty(dst), self.value(dst));
-        self.emit_body(4, |body| unsafe { copy_shader_value(body, 0, ty, dst, source) });
-    }
     fn read_pointer(&mut self, ty: u32, result: u32, pointer: u32) {
         self.emit_body(4, |body| unsafe { plain_load(body, 0, ty, result, pointer) });
     }
@@ -1861,10 +1774,6 @@ impl Emitter<'_> {
     fn read_payload(&mut self, scalar: Scalar, unit: Scalar, operands: &[u32], access: PayloadAccess) -> u32 {
         let input = PayloadShape { access, scalar: scalar.into(), unit: unit.into(), count: operands.len() as u32 };
         unsafe { emit_payload_load(input, operands.as_ptr(), 0, self.memory_host()) }
-    }
-
-    fn join_words(&mut self, scalar: Scalar, words: &[u32], unit: Scalar) -> u32 {
-        self.read_payload(scalar, unit, words, PayloadAccess::Words)
     }
 
     fn raw_bits(&mut self, value: Reg) -> u32 {
