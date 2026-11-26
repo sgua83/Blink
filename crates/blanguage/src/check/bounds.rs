@@ -3783,19 +3783,12 @@ enum EncodedClause<F> {
     Either(usize, usize),
 }
 
-fn condition_node_ids<'a>(
-    roots: impl IntoIterator<Item = &'a Clause>,
-    record: impl FnMut(&'a Clause, EncodedClause<&'a Facts>),
-) -> HashMap<usize, usize> {
-    codec::conditions::node_ids(roots, false, record)
-}
-
 fn same_condition_roots<const N: usize>(left: [&Clause; N], right: [&Clause; N]) -> bool {
     if left.iter().zip(&right).all(|(a, b)| Arc::ptr_eq(&a.0, &b.0)) {
         return true;
     }
-    let indices = condition_node_ids(left.into_iter().chain(right), |_, _| {});
-    left.map(|root| indices[&root.key()]) == right.map(|root| indices[&root.key()])
+    let graph = codec::conditions::node_ids(left.into_iter().chain(right), false);
+    left.map(|root| graph.index(root.key())) == right.map(|root| graph.index(root.key()))
 }
 
 

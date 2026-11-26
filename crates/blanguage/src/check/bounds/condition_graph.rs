@@ -204,7 +204,7 @@ struct Context<'a> {
     next_fact: Option<(Fact, Option<facts::Iter<'a>>)>,
 }
 impl<'a> Context<'a> {
-    fn new(sources: Vec<EncodedClause<&'a Facts>>) -> Self {
+    fn new(sources: impl ExactSizeIterator<Item = EncodedClause<&'a Facts>>) -> Self {
         let mut nodes = Vec::<Node<'a>>::with_capacity(sources.len());
         for source in sources {
             let (kind, facts, left, right) = match source {
@@ -976,16 +976,18 @@ unsafe extern "C" {
     ) -> u32;
 }
 
-fn query_sources<'a>(left: &'a Clause, right: &'a Clause) -> (usize, usize, Vec<EncodedClause<&'a Facts>>) {
-    let mut sources = Vec::new();
-    let indices = super::condition_node_ids([left, right], |_, source| sources.push(source));
-    (indices[&left.key()], indices[&right.key()], sources)
+fn query_sources<'a>(
+    left: &'a Clause,
+    right: &'a Clause,
+) -> (usize, usize, super::codec::conditions::CanonicalGraph<'a>) {
+    let graph = super::codec::conditions::node_ids([left, right], false);
+    (graph.index(left.key()), graph.index(right.key()), graph)
 }
 
 pub(super) fn overlap(left: &Clause, right: &Clause, truth: bool) -> bool {
     let unsigned32 = super::Scalar::U32;
     let (first, second, sources) = query_sources(left, right);
-    let mut context = Context::new(sources);
+    let mut context = Context::new(sources.nodes());
     let graph = context.graph();
     unsafe {
         query(first, second, u32::from(truth), (&mut context as *mut Context<'_>).cast(),
@@ -1130,7 +1132,7 @@ unsafe extern "C" fn plan_build(slot: Slot, search: Slot, count: usize) -> Graph
     let Equivalence { mut sources, .. } = std::mem::take(unsafe { equivalence(slot) });
     sources.truncate(count);
     let search = unsafe { context(search) };
-    *search = Context::new(sources);
+    *search = Context::new(sources.into_iter());
     search.graph()
 }
 
@@ -1164,7 +1166,7 @@ pub(super) fn equivalent(left: &Clause, right: &Clause) -> bool {
     }
     let (first, second, sources) = query_sources(left, right);
     let count = sources.len();
-    let mut plan = Equivalence { sources, ..Equivalence::default() };
+    let mut plan = Equivalence { sources: sources.nodes().collect(), ..Equivalence::default() };
     let mut search = Context::default();
     let unsigned32 = super::Scalar::U32;
     let preparation = EquivalenceHost {
@@ -1383,7 +1385,8 @@ impl<'a> RequiredQuery<'a> {
     pub(super) fn new(root: &'a Clause) -> Self {
         use super::EncodedClause;
         let mut nodes = Vec::<RequiredResult<'a>>::new();
-        let indices = super::codec::conditions::node_ids([root], true, |_, shape| {
+        let graph = super::codec::conditions::node_ids([root], true);
+        for shape in graph.nodes() {
             let (kind, facts, left, right) = match shape {
                 EncodedClause::Impossible => (0, None, 0, 0),
                 EncodedClause::Facts(facts) => (1, Some(facts), 0, 0),
@@ -1400,8 +1403,8 @@ impl<'a> RequiredQuery<'a> {
                 value: None,
                 valid_additions: None,
             });
-        });
-        let root = indices[&root.key()];
+        }
+        let root = graph.index(root.key());
         nodes[root].node.users += 1;
         Self { nodes, root, pending: Vec::new() }
     }

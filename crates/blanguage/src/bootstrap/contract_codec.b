@@ -730,24 +730,9 @@ extern "C" ReadStatus numeric_read_ranges(Bytes input,inout u64 position,address
     return ReadStatus::Success;
 }
 
-extern "C" void condition_node_ids(address context,CanonicalHost host,u32 keep_pairs) on cpu requires nonzero(host.next) requires nonzero(host.index) requires nonzero(host.len) requires nonzero(host.intern) requires nonzero(host.record) requires nonzero(host.bind) {
- ClauseFields value=host.next(context);
- while(value.present!=0){
-  NodeKind kind=NodeKind::Impossible;u64 a=0u64;u64 b=0u64;
-  if(value.kind==ClauseKind::Facts){kind=NodeKind::Facts;}
-  else if(value.kind==ClauseKind::Both||value.kind==ClauseKind::Branch){kind=NodeKind::Both;a=host.index(context,value.first);b=host.index(context,value.second);}
-  else if(value.kind==ClauseKind::Either){kind=NodeKind::Either;a=host.index(context,value.first);b=host.index(context,value.second);}
-  u64 index=0u64;
-  if(keep_pairs==0&&(kind==NodeKind::Both||kind==NodeKind::Either)&&a==b){index=a;}
-  else{
-   u64 next=host.len(context);Inserted found=host.intern(context,kind,value.facts,a,b,next);index=found.index;
-   if(found.inserted!=0){host.record(context,value.source,kind,value.facts,a,b);}
-  }
-  host.bind(context,value.source,index);value=host.next(context);
- }
-}
-
-extern "C" void write_proof_conditions(address context,u64 length,u64 count,address output,ConditionWriter host) on cpu requires nonzero(host.append) requires nonzero(host.condition) requires nonzero(host.node) requires nonzero(host.index) {
+extern "C" void write_proof_conditions(address context,u64 length,address graph,address output,ConditionWriter host) on cpu
+ requires nonzero(host.append) requires nonzero(host.condition) {
+ u64 count=unsafe_position<CanonicalGraph>(graph).nodes.count;
  u64 width=length;
  while(width!=0u64){RootFields last=host.condition(context,width-1u64);if(last.present!=0){break;}width-=1u64;}
  byte(width!=0u64?u8(1):u8(0),output,host.append);
@@ -755,7 +740,7 @@ extern "C" void write_proof_conditions(address context,u64 length,u64 count,addr
  byte(u8(3),output,host.append);wide(count,output,host.append);
  u64 index=0u64;
  while(index<count){
-  NodeFields value=host.node(context,index);
+  NodeFields value=condition_node_at(graph,index);
   word(u32(value.kind),output,host.append);
   if(value.kind==NodeKind::Facts){write_fact_sequence(value.facts,output,host.append);}
   else if(value.kind==NodeKind::Both||value.kind==NodeKind::Either){
@@ -766,7 +751,7 @@ extern "C" void write_proof_conditions(address context,u64 length,u64 count,addr
  wide(width,output,host.append);index=0u64;
  while(index<width){
   RootFields value=host.condition(context,index);byte(value.present!=0?u8(1):u8(0),output,host.append);
-  if(value.present!=0){wide(host.index(context,value.first),output,host.append);wide(host.index(context,value.second),output,host.append);}
+  if(value.present!=0){wide(condition_node_index(graph,value.first),output,host.append);wide(condition_node_index(graph,value.second),output,host.append);}
   index+=1u64;
  }
 }
@@ -781,16 +766,17 @@ i32 compare_condition_index(u64 left,u64 right) on cpu {
  return i32(0);
 }
 
-extern "C" i32 compare_proof_condition(address left,address right,u64 left_count,u64 right_count,
- cfn<NodeFields,address,u64> node,cfn<RootFields,address,u64> root,cfn<u64,address,u64> index,
- cfn<i32,address,address> compare_facts) on cpu
- requires nonzero(node) requires nonzero(root) requires nonzero(index) requires nonzero(compare_facts) {
+extern "C" i32 compare_proof_condition(address left,address right,address left_graph,address right_graph,
+ cfn<RootFields,address,u64> root,cfn<i32,address,address> compare_facts) on cpu
+ requires nonzero(root) requires nonzero(compare_facts) {
+ u64 left_count=unsafe_position<CanonicalGraph>(left_graph).nodes.count;
+ u64 right_count=unsafe_position<CanonicalGraph>(right_graph).nodes.count;
  // One condition on each side. The presence, format, and root-count bytes match.
  i32 order=compare_condition_index(left_count,right_count);
  if(order!=i32(0)){return order;}
  u64 i=0u64;
  while(i<left_count){
-  NodeFields a=node(left,i);NodeFields b=node(right,i);
+  NodeFields a=condition_node_at(left_graph,i);NodeFields b=condition_node_at(right_graph,i);
   u32 a_kind=u32(a.kind);u32 b_kind=u32(b.kind);
   if(a_kind!=b_kind){return a_kind<b_kind?-i32(1):i32(1);}
   if(a.kind==NodeKind::Facts){
@@ -805,13 +791,13 @@ extern "C" i32 compare_proof_condition(address left,address right,u64 left_count
   i+=1u64;
  }
  RootFields a=root(left,0u64);RootFields b=root(right,0u64);
- order=compare_condition_index(index(left,a.first),index(right,b.first));
+ order=compare_condition_index(condition_node_index(left_graph,a.first),condition_node_index(right_graph,b.first));
  if(order!=i32(0)){return order;}
- return compare_condition_index(index(left,a.second),index(right,b.second));
+ return compare_condition_index(condition_node_index(left_graph,a.second),condition_node_index(right_graph,b.second));
 }
 
 extern "C" void write_fact_sequence(address facts,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
-    u64 count = unsafe_position<FactTree>(facts).count;
+    u64 count = unsafe_position<OrderedTree>(facts).count;
     wide(count,output,append);
     FactCursor cursor = fact_tree_cursor(facts);
     u64 index = 0u64;
@@ -838,7 +824,7 @@ ReadStatus read_fact_sequence(Bytes input,inout u64 position,address output) on 
 
 ReadStatus read_condition_facts(Bytes input,inout u64 position,address output,
     cfn<void,address,address> take) on cpu requires nonzero(take) {
-    FactTree facts = FactTree(address(),0u64,0u64,0u64);
+    OrderedTree facts = OrderedTree(address(),0u64,0u64,0u64);
     ReadStatus status = read_fact_sequence(input,position,address_of(facts));
     if (status != ReadStatus::Success) {
         fact_tree_clear(address_of(facts));
