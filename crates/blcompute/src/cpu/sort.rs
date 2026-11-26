@@ -1,4 +1,4 @@
-//! CPU 范围私有直方图、桶／范围前缀与稳定散写；大记录只在最后 gather 一次。
+//! Native CPU stable-sort image bindings and range completion.
 use super::*;
 pub(super) struct Code {
     source: usize,
@@ -27,6 +27,69 @@ impl Code {
         }
     }
 }
+#[repr(C)]
+struct SortPass {
+    entry: *mut c_void,
+    buffers: *const BufferAddress,
+    plan: work::RangePlan,
+    parameters: *const u32,
+    parameter_slot: usize,
+    parameter_words: usize,
+}
+
+#[repr(C)]
+struct SortInput {
+    source: BufferAddress,
+    target: BufferAddress,
+    count: u32,
+    workers: u32,
+    initializers: *const *mut c_void,
+    keys: usize,
+    histogram: *mut c_void,
+    scatter: *mut c_void,
+    gather: *mut c_void,
+    context: *mut c_void,
+    execute: unsafe extern "C" fn(*mut c_void, SortPass) -> u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "blink.windows.cpu_sort::sort_records"]
+    fn sort_records(input: SortInput) -> u32;
+}
+
+struct PassContext<'a, 'timing> {
+    host: &'a CpuCode,
+    stage: usize,
+    errors: &'a mut Vec<*mut c_void>,
+    timings: &'a mut Option<&'timing mut CpuRangeTimings>,
+    failure: Option<Box<dyn std::error::Error + Send + Sync>>,
+}
+
+unsafe extern "C" fn execute_pass(context: *mut c_void, pass: SortPass) -> u32 {
+    let context = unsafe { &mut *context.cast::<PassContext<'_, '_>>() };
+    let mut work = RangeWork {
+        frame: None,
+        entry: pass.entry,
+        buffers: pass.buffers,
+        range_parameter_slot: pass.parameter_slot,
+        uniforms: std::ptr::null(),
+        plan: pass.plan,
+        result: RangeResult::None,
+        partials: std::ptr::null_mut(),
+        range_parameters: pass.parameters,
+        range_parameter_words: pass.parameter_words,
+        stage: context.stage,
+        timing: None,
+    };
+    match context.host.execute(&mut work, context.errors, context.timings) {
+        Ok(()) => 0,
+        Err(error) => {
+            context.failure = Some(error);
+            1
+        }
+    }
+}
+
 pub(super) fn run(
     host: &CpuCode,
     code: &Code,
@@ -36,79 +99,32 @@ pub(super) fn run(
     errors: &mut Vec<*mut c_void>,
     timings: &mut Option<&mut CpuRangeTimings>,
 ) -> Result<()> {
-    if count == 0 {
-        return Ok(());
-    }
-    // 原生初始化／scatter在首次读取前完整写入；这里只持有容量，不形成未初始化值切片。
-    let mut a = Vec::<u32>::new();
-    a.try_reserve_exact(count as usize * 2)?;
-    let mut b = Vec::<u32>::new();
-    b.try_reserve_exact(count as usize * 2)?;
-    let plan = work::plan(count, host.workers, 1);
-    let chunks = plan.ranges;
-    let mut rows = words(chunks * 17)?;
-    let mut buffers = [
-        pointers[code.source],
-        pointers[code.target],
-        BufferAddress { address: a.as_mut_ptr(), stride: 8 },
-        BufferAddress { address: a.as_mut_ptr(), stride: 8 },
-    ];
-    let mut work = RangeWork {
-        frame: None,
-        entry: code.initialize[0],
-        buffers: buffers.as_ptr(),
-        range_parameter_slot: buffers.len(),
-        uniforms: std::ptr::null(),
-        plan,
-        result: RangeResult::None,
-        partials: std::ptr::null_mut(),
-        range_parameters: std::ptr::null(),
-        range_parameter_words: 17,
+    let mut context = PassContext {
+        host,
         stage,
-        timing: None,
+        errors,
+        timings,
+        failure: None,
     };
-    for key in &code.initialize {
-        buffers[2].address = a.as_mut_ptr();
-        buffers[3].address = a.as_mut_ptr();
-        work.buffers = buffers.as_ptr();
-        work.entry = *key;
-        work.range_parameters = std::ptr::null();
-        host.execute(&mut work, errors, timings)?;
-        for shift in (0..32).step_by(4) {
-            rows.fill(0);
-            for row in rows.chunks_exact_mut(17) {
-                row[0] = shift;
-            }
-            buffers[2].address = a.as_mut_ptr();
-            buffers[3].address = b.as_mut_ptr();
-            work.buffers = buffers.as_ptr();
-            work.entry = code.histogram;
-            work.range_parameters = rows.as_mut_ptr();
-            host.execute(&mut work, errors, timings)?;
-            let mut offset = 0u32;
-            for bin in 0..16 {
-                for row in rows.chunks_exact_mut(17) {
-                    let n = row[bin + 1];
-                    row[bin + 1] = offset;
-                    offset += n;
-                }
-            }
-            work.range_parameters = rows.as_mut_ptr();
-            work.entry = code.scatter;
-            host.execute(&mut work, errors, timings)?;
-            std::mem::swap(&mut a, &mut b);
-        }
+    let status = unsafe {
+        sort_records(SortInput {
+            source: pointers[code.source],
+            target: pointers[code.target],
+            count,
+            workers: host.workers as u32,
+            initializers: code.initialize.as_ptr(),
+            keys: code.initialize.len(),
+            histogram: code.histogram,
+            scatter: code.scatter,
+            gather: code.gather,
+            context: (&mut context as *mut PassContext<'_, '_>).cast(),
+            execute: execute_pass,
+        })
+    };
+    match status {
+        0 => Ok(()),
+        1 => Err(std::io::Error::from_raw_os_error(8).into()),
+        2 => Err(context.failure.expect("sort pass reported its range error")),
+        _ => unreachable!("unexpected native sort status {status}"),
     }
-    buffers[2].address = a.as_mut_ptr();
-    work.buffers = buffers.as_ptr();
-    work.entry = code.gather;
-    work.range_parameters = std::ptr::null();
-    host.execute(&mut work, errors, timings)
-}
-
-fn words(count: usize) -> Result<Vec<u32>> {
-    let mut words = Vec::new();
-    words.try_reserve_exact(count)?;
-    words.resize(count, 0);
-    Ok(words)
 }

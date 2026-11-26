@@ -104,6 +104,7 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
     }
     for (name, source) in [
         ("cpu_image", "library/blink/windows/cpu_image"),
+        ("cpu_sort", "library/blink/windows/cpu_sort"),
         ("cpu_work", "library/blink/windows/work"),
     ] {
         for extension in ["b", "h"] {
