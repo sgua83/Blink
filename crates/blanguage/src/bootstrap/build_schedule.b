@@ -9,20 +9,6 @@ u64 word(address data,u64 index) on cpu {
 void put_word(address data,u64 index,u64 value) on cpu {
     unsafe_position<u64>(offset(data,index*8u64))=value;
 }
-// Initial indices in increasing order are already a min-heap.
-extern "C" u64 initialize_ready(address ready,address waiting,u64 length) on cpu {
-    u64 count=0u64;
-    u64 index=0u64;
-    while (index<length) {
-        if (word(waiting,index)==0u64) {
-            put_word(ready,count,index);
-            count+=1u64;
-        }
-        index+=1u64;
-    }
-    return count;
-}
-
 u64 take_ready(address ready,inout u64 count) on cpu {
     if (count==0u64) { return 0xffffffffffffffffu64; }
     u64 unit=word(ready,0u64);

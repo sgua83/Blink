@@ -1,7 +1,5 @@
 module bootstrap.build_schedule;
 
-extern "C" u64 initialize_ready(address ready,address waiting,u64 length) on cpu;
-
 struct ScheduleCounts { u64 ready; u64 unfinished; };
 struct UnitRange { u64 start; u64 count; };
 struct WorkQueue {

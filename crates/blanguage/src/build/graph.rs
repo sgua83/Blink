@@ -1,7 +1,7 @@
 //! 调用方持有的一次编译图；只调度本次真实依赖，不保留后台消费者。
 use super::{ByteField, Compilation, ObjectCompilation, ObjectKind, Result, inputs::{Capture, CapturedUnit, ProviderInterface}};
 use crate::{Compiler, ast::Target, object::Object, source_path};
-use std::{collections::BTreeMap, ffi::{OsStr, c_void}, marker::PhantomData, os::windows::ffi::OsStrExt, path::{Path, PathBuf}, ptr, sync::{Arc, Condvar, Mutex, MutexGuard}, thread};
+use std::{collections::BTreeMap, ffi::{OsStr, c_void}, marker::PhantomData, mem::MaybeUninit, os::windows::ffi::OsStrExt, path::{Path, PathBuf}, ptr, sync::{Arc, Condvar, Mutex, MutexGuard}, thread};
 #[derive(Clone, Copy)]
 pub enum Dependency<'a> {
     Unit(usize),
@@ -110,6 +110,8 @@ struct GraphOutput {
     following: *mut GraphRange,
     waiting: *mut usize,
     followers: *mut usize,
+    ready: *mut usize,
+    counts: *mut ScheduleCounts,
 }
 
 const OUT_OF_RANGE: u64 = 1;
@@ -132,8 +134,6 @@ unsafe extern "C" {
     fn release_dependency_plan(ids: *const usize);
     #[link_name = "bootstrap.build_graph::capture_sources"]
     fn capture_sources(source: CaptureSource, indices: *mut usize) -> i32;
-    #[link_name = "bootstrap.build_schedule::initialize_ready"]
-    fn initialize_ready(ready: *mut usize, waiting: *const usize, length: usize) -> usize;
     #[link_name = "bootstrap.build_schedule::run_worker"]
     fn run_worker(context: *mut c_void, host: WorkHost);
 }
@@ -200,6 +200,7 @@ fn dependency_plan<'a>(units: &[Unit<'a>]) -> Result<DependencyPlan<'a>> {
     let mut waiting = vec![0; units.len()];
     let mut followers = vec![0; edge_count];
     let mut ready = vec![0; units.len()];
+    let mut counts = MaybeUninit::uninit();
     let plan = unsafe {
         build_dependency_plan(
             GraphSource {
@@ -215,6 +216,8 @@ fn dependency_plan<'a>(units: &[Unit<'a>]) -> Result<DependencyPlan<'a>> {
                 following: following_rows.as_mut_ptr(),
                 waiting: waiting.as_mut_ptr(),
                 followers: followers.as_mut_ptr(),
+                ready: ready.as_mut_ptr(),
+                counts: counts.as_mut_ptr(),
             },
         )
     };
@@ -232,10 +235,10 @@ fn dependency_plan<'a>(units: &[Unit<'a>]) -> Result<DependencyPlan<'a>> {
         }
         status => return Err(std::io::Error::from_raw_os_error(status as i32).into()),
     }
-    let ready_count = unsafe { initialize_ready(ready.as_mut_ptr(), waiting.as_ptr(), waiting.len()) };
     let schedule = Schedule {
         following: following_rows, followers, waiting, ready,
-        counts: ScheduleCounts { ready: ready_count, unfinished: units.len() },
+        // The successful plan initializes both counts before returning.
+        counts: unsafe { counts.assume_init() },
     };
     Ok(DependencyPlan { plan, provider_rows, schedule })
 }

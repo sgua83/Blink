@@ -1,4 +1,5 @@
 module bootstrap.build_graph;
+import bootstrap.build_schedule;
 import bootstrap.names;
 
 extern "C" handle GetProcessHeap() on cpu from "KERNEL32.dll";
@@ -280,8 +281,9 @@ bool expand_providers(GraphInput input,GraphOutput output,Scratch work,handle he
     return true;
 }
 
-void compact_direct_dependencies(GraphInput input, GraphOutput output, Scratch work) on cpu {
+u64 compact_direct_dependencies(GraphInput input, GraphOutput output, Scratch work) on cpu {
     u64 index = 0u64;
+    u64 ready = 0u64;
     while (index < input.count) {
         // Provider expansion used stamps 1..count. This pass visits each edge once.
         u64 stamp = input.count + index + 1u64;
@@ -299,8 +301,14 @@ void compact_direct_dependencies(GraphInput input, GraphOutput output, Scratch w
             at += 1u64;
         }
         put_word(output.waiting, index, count);
+        // Ascending unit indices form the scheduler's initial min-heap.
+        if (count == 0u64) {
+            put_word(output.ready, ready, index);
+            ready += 1u64;
+        }
         index += 1u64;
     }
+    return ready;
 }
 
 extern "C" GraphPlan plan(GraphSource source,GraphOutput output) on cpu
@@ -340,7 +348,7 @@ extern "C" GraphPlan plan(GraphSource source,GraphOutput output) on cpu
     // The traversal's state words now serve as incoming counts and write cursors.
     u64 index=0u64;
     while (index<input.count) { put_word(work.states,index,0u64); index+=1u64; }
-    compact_direct_dependencies(input, output, work);
+    u64 ready=compact_direct_dependencies(input, output, work);
     u64 start=0u64;
     index=0u64;
     while (index<input.count) {
@@ -366,6 +374,7 @@ extern "C" GraphPlan plan(GraphSource source,GraphOutput output) on cpu
     }
     HeapFree(heap,0,work.seen);
     HeapFree(heap,0,memory);
+    unsafe_position<ScheduleCounts>(output.counts)=ScheduleCounts(ready,input.count);
     return GraphPlan(providers.ids,providers.count,0u64,0u64);
 }
 

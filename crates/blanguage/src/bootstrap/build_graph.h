@@ -13,7 +13,10 @@ struct GraphSource {
     cfn<GraphRow,address,u64> row;
     cfn<GraphEdge,address,u64> edge;
 };
-struct GraphOutput { address providers; address following; address waiting; address followers; };
+struct GraphOutput {
+    address providers; address following; address waiting; address followers;
+    address ready; address counts;
+};
 
 // The allocation starts with borrowed external identities. Provider IDs below
 // the unit count name units, and the remaining IDs index that prefix.
