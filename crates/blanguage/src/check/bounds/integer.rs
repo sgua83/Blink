@@ -3,7 +3,8 @@ use super::{
     Bits, Fact, Facts, IndexDomain, IntegerExpression, IntegerOperation, IntegerQuery, Operand,
     Scalar, ScalarRanges, ValueIdentity,
 };
-use std::{collections::btree_set::Iter, ffi::c_void};
+use super::facts::Iter;
+use std::ffi::c_void;
 
 #[derive(Clone, Copy)]
 #[repr(u32)]
@@ -72,8 +73,8 @@ struct TileNonzeroBound {
 struct TileFacts<'a> {
     facts: &'a Facts,
     query: IntegerQuery<'a>,
-    lanes: Iter<'a, Fact>,
-    residues: Iter<'a, Fact>,
+    lanes: Iter<'a>,
+    residues: Iter<'a>,
     global: ValueIdentity,
     lane: ValueIdentity,
     width: u32,

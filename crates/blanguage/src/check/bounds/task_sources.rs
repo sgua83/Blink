@@ -1,8 +1,9 @@
 //! B evaluates task-return source sets. This synchronous query owns the original
 //! node results; the final set moves back to the original native consumer.
-use super::{Clause, ClauseNode, Fact, Facts, Scalar, ValueIdentity, condition_graph, fact_fields};
+use super::facts;
+use super::{Clause, ClauseNode, Facts, Scalar, ValueIdentity, condition_graph, fact_fields};
 use std::{
-    collections::{BTreeMap, BTreeSet, btree_set},
+    collections::{BTreeMap, BTreeSet},
     ffi::c_void,
     ptr,
 };
@@ -12,7 +13,7 @@ struct Context<'a> {
     nodes: Vec<&'a Clause>,
     values: BTreeMap<usize, Option<BTreeSet<u32>>>,
     leaf: Option<&'a Facts>,
-    cursor: Option<btree_set::Iter<'a, Fact>>,
+    cursor: Option<facts::Iter<'a>>,
 }
 unsafe fn context<'a, 'b>(slot: Slot) -> &'a mut Context<'b> {
     unsafe { &mut *slot.cast::<Context<'b>>() }

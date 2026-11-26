@@ -1,11 +1,12 @@
 //! B owns shared-Clause overlap and equivalence, including equivalence planning. The original query owns
 //! its physical containers and borrows immutable Clause/Fact fields until return.
+use super::facts;
 use super::{
     CallBindings, Clause, ClauseNode, ClausePostorder, Condition, EncodedClause, Fact, Facts, IndexDomain, OutputBindings, Proof, Value, ValueIdentity,
     internal_conflicts, map_domain, output_identity,
 };
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet, btree_set},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     ffi::c_void,
     ptr,
     sync::Arc,
@@ -77,7 +78,7 @@ const FACT_WALK: FactWalkHost = FactWalkHost {
 };
 
 struct ConditionInput<'a, F> {
-    facts: Option<btree_set::Iter<'a, Fact>>,
+    facts: Option<facts::Iter<'a>>,
     accept: F,
 }
 
@@ -187,7 +188,7 @@ struct Node<'a> {
 }
 enum Alternative<'a> {
     Clause(usize, bool),
-    Fact(&'a Fact, btree_set::Iter<'a, Fact>),
+    Fact(&'a Fact, facts::Iter<'a>),
 }
 #[derive(Default)]
 struct Context<'a> {
@@ -199,8 +200,8 @@ struct Context<'a> {
     facts: Facts,
     additions: Vec<Fact>,
     conflict_input: Option<internal_conflicts::Prepared>,
-    required: Option<btree_set::Iter<'a, Fact>>,
-    next_fact: Option<(Fact, Option<btree_set::Iter<'a, Fact>>)>,
+    required: Option<facts::Iter<'a>>,
+    next_fact: Option<(Fact, Option<facts::Iter<'a>>)>,
 }
 impl<'a> Context<'a> {
     fn new(sources: Vec<EncodedClause<&'a Facts>>) -> Self {
@@ -330,7 +331,7 @@ struct OutputRename<'a, 'out> {
     pending: Vec<(&'a Clause, bool)>,
     clauses: BTreeMap<usize, Clause>,
     conditions: BTreeMap<usize, Arc<Condition>>,
-    facts: btree_set::Iter<'a, Fact>,
+    facts: facts::Iter<'a>,
     renamed: Facts,
 }
 
@@ -494,7 +495,7 @@ fn rename_output_roots<'a>(
         pending: Vec::new(),
         clauses: BTreeMap::new(),
         conditions: BTreeMap::new(),
-        facts: btree_set::Iter::default(),
+        facts: facts::Iter::default(),
         renamed: Facts::new(),
     };
     unsafe {
@@ -887,7 +888,7 @@ unsafe extern "C" fn set_next_fact(slot: Slot, fields: super::fact_fields::Field
     unsafe { context(slot) }.next_fact = Some((fact, None));
 }
 unsafe extern "C" fn remaining(slot: Slot) -> usize {
-    unsafe { context(slot) }.required.as_ref().unwrap().len()
+    usize::from(!unsafe { context(slot) }.required.as_ref().unwrap().is_empty())
 }
 unsafe extern "C" fn push_clause(slot: Slot, id: usize, truth: u32, checkpoint: Checkpoint) {
     unsafe { context(slot) }

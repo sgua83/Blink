@@ -1,6 +1,7 @@
 //! B folds actual bound facts directly into the original consumers' final maps.
+use super::facts;
 use super::*;
-use std::{collections::btree_set, ffi::c_void, ptr};
+use std::{ffi::c_void, ptr};
 type Slot = *mut c_void;
 type Borrowed = *const c_void;
 pub(super) type BoundMap = BTreeMap<(ValueIdentity, Scalar), Bits>;
@@ -17,7 +18,7 @@ struct Previous {
     value: u64,
 }
 struct Context<'a> {
-    input: btree_set::Iter<'a, Fact>,
+    input: facts::Iter<'a>,
     roots: Option<&'a BTreeMap<ValueIdentity, ValueIdentity>>,
     lower: BoundMap,
     upper: BoundMap,

@@ -1,8 +1,9 @@
 //! B decides internal contradictions; the original typed containers own facts and aliases.
+use super::facts;
 use super::fact_fields::{ScalarView, same_scalar, scalar};
 use super::{Fact, Facts, Scalar, ValueIdentity, fact_fields, map_domain};
 use std::{
-    collections::{BTreeMap, btree_map, btree_set},
+    collections::{BTreeMap, btree_map},
     ffi::c_void,
     ptr,
 };
@@ -94,7 +95,7 @@ impl Prepared {
 enum Input<'a> {
     Direct {
         facts: &'a Facts,
-        cursor: btree_set::Iter<'a, Fact>,
+        cursor: facts::Iter<'a>,
     },
     Aliased {
         facts: &'a OrderedFacts,

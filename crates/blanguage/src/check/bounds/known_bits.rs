@@ -1,4 +1,5 @@
 //! Numerical values cross synchronously; the original Proof owns every fact.
+use super::facts;
 use super::{Bits, Fact, Facts, IndexDomain, KnownBits, Scalar, ValueIdentity};
 use crate::builtin_types::ScalarEncoding;
 use crate::ir::scalar_ranges::{self, BitRange as Range};
@@ -211,7 +212,7 @@ fn read_ranges(
 struct FactInput<'a> {
     sets: &'a [&'a Facts],
     groups: slice::Iter<'a, &'a Facts>,
-    domains: Option<btree_set::Range<'a, Fact>>,
+    domains: Option<facts::Iter<'a>>,
     identity: ValueIdentity,
     scalar: Scalar,
 }

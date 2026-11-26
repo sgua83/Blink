@@ -1,5 +1,6 @@
 //! The original normalizer owns every typed map, work item and result.
 //! B receives only synchronous field values and primitive container operations.
+use super::super::facts;
 use super::super::{condition_graph, fact_fields};
 use super::*;
 use std::{ffi::c_void, mem::MaybeUninit, ptr};
@@ -581,7 +582,7 @@ unsafe extern "C" {
     ) -> u32;
 }
 struct Unary<'a> {
-    input: std::collections::btree_set::Iter<'a, Fact>,
+    input: facts::Iter<'a>,
 }
 unsafe extern "C" fn unary_next(s: Slot) -> fact_fields::Fields {
     unsafe { frame::<Unary<'_>>(s) }
@@ -717,7 +718,7 @@ struct Import<'a> {
     normal: *mut Normalizer,
     pending: Vec<Work<'a>>,
     operands: Vec<&'a Clause>,
-    facts: Option<std::collections::btree_set::Iter<'a, Fact>>,
+    facts: Option<facts::Iter<'a>>,
 }
 #[repr(C)]
 struct ImportWork {

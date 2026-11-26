@@ -1,9 +1,10 @@
 //! B controls equality closure and alias projection. The original query owns
 //! roots, typed expression keys, Facts and the final borrowed/owned result.
+use super::facts;
 use super::{Fact, Facts, IndexDomain, IntegerExpression, IntegerOperation, Operand, QueryFacts, ValueIdentity, fact_fields};
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, btree_set},
+    collections::{BTreeMap},
     ffi::c_void,
     mem::MaybeUninit,
     ptr,
@@ -304,7 +305,7 @@ struct Additional<'a> {
     environment: &'a Facts,
     environment_roots: &'a Roots,
     additions: &'a Facts,
-    cursor: btree_set::Iter<'a, Fact>,
+    cursor: facts::Iter<'a>,
     result: Cow<'a, Roots>,
 }
 unsafe fn additional_context<'a, 'b>(slot: Slot) -> &'a mut Additional<'b> {
@@ -401,7 +402,7 @@ struct Projection<'a> {
     roots: &'a Roots,
     members: &'a [(&'a ValueIdentity, &'a ValueIdentity)],
     previous: Option<&'a Roots>,
-    cursors: [btree_set::Iter<'a, Fact>; 2],
+    cursors: [facts::Iter<'a>; 2],
     group: std::slice::Iter<'a, (&'a ValueIdentity, &'a ValueIdentity)>,
     inferred: Facts,
 }

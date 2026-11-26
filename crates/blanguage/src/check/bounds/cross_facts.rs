@@ -1,16 +1,17 @@
 //! B selects cross-set conflicts; original fact containers own keys and storage.
+use super::facts;
 use super::{
-    Fact, Facts, Scalar,
+    Facts, Scalar,
     fact_fields::{Fields, compare, key},
 };
-use std::{collections::btree_set, ffi::c_void, ops::Bound, ptr};
+use std::{ffi::c_void, ops::Bound, ptr};
 
 type Borrowed = *const c_void;
 type Slot = *mut c_void;
 
 struct Context<'a> {
     sets: [&'a Facts; 2],
-    iterator: btree_set::Iter<'a, Fact>,
+    iterator: facts::Iter<'a>,
 }
 
 unsafe fn context<'a, 'b>(slot: Slot) -> &'a mut Context<'b> {
@@ -82,7 +83,7 @@ unsafe extern "C" {
 pub(super) fn conflict(a: &Facts, b: &Facts, may_share: bool) -> bool {
     let mut context = Context {
         sets: [a, b],
-        iterator: btree_set::Iter::default(),
+        iterator: facts::Iter::default(),
     };
     let numeric = [Scalar::U32, Scalar::I32, Scalar::U64, Scalar::I64];
     let scalars = Scalars {

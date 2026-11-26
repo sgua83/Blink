@@ -1,5 +1,6 @@
 //! B controls source-path canonicalization. Native frames hold the original
 //! typed sets and iterators until their synchronous last consumer.
+use super::facts;
 use super::{
     Clause, Facts, Scalar, ValueIdentity, condition_graph, contradictory, fact_fields, numeric_bounds,
 };
@@ -42,7 +43,7 @@ unsafe extern "C" fn conflict(source: Borrowed) -> u32 {
 struct Proof<'a> {
     left: std::borrow::Cow<'a, Facts>,
     right: &'a Facts,
-    next: btree_set::Iter<'a, super::Fact>,
+    next: facts::Iter<'a>,
 }
 unsafe fn proof<'a, 'b>(slot: Slot) -> &'a mut Proof<'b> {
     unsafe { &mut *slot.cast::<Proof<'b>>() }
@@ -68,7 +69,7 @@ unsafe extern "C" fn proof_remove(slot: Slot, fact: fact_fields::Fields) {
     unsafe { proof(slot) }.left.to_mut().remove(&unsafe { fact_fields::key(fact) });
 }
 unsafe extern "C" fn proof_remaining(slot: Slot) -> u32 {
-    u32::from(unsafe { proof(slot) }.next.len() != 0)
+    u32::from(!unsafe { proof(slot) }.next.is_empty())
 }
 #[repr(C)]
 struct ProofHost {
@@ -160,7 +161,7 @@ fn insert(output: &mut Terms, facts: Facts) -> bool {
 }
 struct Normal<'a> {
     source: &'a Facts,
-    input: btree_set::Iter<'a, super::Fact>,
+    input: facts::Iter<'a>,
     lower: &'a Bounds,
     upper: &'a Bounds,
     bounds: [btree_map::Iter<'a, (ValueIdentity, Scalar), u64>; 2],
@@ -412,7 +413,7 @@ struct Consensus<'a> {
     source: &'a Terms,
     left: btree_set::Iter<'a, Facts>,
     right: Option<btree_set::Range<'a, Facts>>,
-    facts: Option<btree_set::Iter<'a, super::Fact>>,
+    facts: Option<facts::Iter<'a>>,
     output: &'a mut Terms,
 }
 unsafe fn consensus<'a, 'b>(slot: Slot) -> &'a mut Consensus<'b> {

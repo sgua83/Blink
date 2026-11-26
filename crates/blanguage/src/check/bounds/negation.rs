@@ -1,7 +1,8 @@
 //! B owns graph negation; original containers own source borrows and Clause results.
-use super::{Clause, ClauseNode, Fact, condition_graph::SourceNode, fact_fields};
+use super::facts;
+use super::{Clause, ClauseNode, condition_graph::SourceNode, fact_fields};
 use std::{
-    collections::{BTreeMap, btree_set},
+    collections::{BTreeMap},
     ffi::c_void,
     ptr,
 };
@@ -19,7 +20,7 @@ struct Pending {
 struct Context<'a> {
     pending: Vec<(&'a Clause, bool)>,
     values: BTreeMap<usize, Clause>,
-    facts: btree_set::Iter<'a, Fact>,
+    facts: facts::Iter<'a>,
 }
 unsafe fn context<'a, 'b>(slot: Slot) -> &'a mut Context<'b> {
     unsafe { &mut *slot.cast::<Context<'b>>() }
@@ -127,7 +128,7 @@ pub(super) fn negate(root: &Clause) -> Clause {
     let mut context = Context {
         pending: Vec::new(),
         values: BTreeMap::new(),
-        facts: btree_set::Iter::default(),
+        facts: facts::Iter::default(),
     };
     let unsigned32 = super::Scalar::U32;
     unsafe {

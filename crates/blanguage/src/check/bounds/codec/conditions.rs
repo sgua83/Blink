@@ -1,5 +1,6 @@
 //! Synchronous projections of the original condition graph and containers.
 //! B owns canonical node IDs and the existing conditions wire grammar.
+use super::super::facts;
 use super::*;
 
 #[repr(u32)]
@@ -253,7 +254,7 @@ unsafe extern "C" fn root_index(context: *const c_void, key: usize) -> usize {
     unsafe { &*context.cast::<WriteContext<'_>>() }.indices[&key]
 }
 unsafe extern "C" fn next_fact(context: Slot) -> *const c_void {
-    unsafe { &mut *context.cast::<std::collections::btree_set::Iter<'_, Fact>>() }
+    unsafe { &mut *context.cast::<facts::Iter<'_>>() }
         .next()
         .map_or(ptr::null(), |fact| ptr::from_ref(fact).cast())
 }

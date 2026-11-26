@@ -1,4 +1,5 @@
 //! B controls common fact production. Original query inputs, roots and result own their storage.
+use super::facts;
 use super::{
     Fact, Facts, IndexDomain, QueryFacts, Scalar, ValueIdentity,
     additional_equality_roots, equality_members, equivalent_facts, fact_fields,
@@ -6,7 +7,7 @@ use super::{
 use std::{
     cell::OnceCell,
     borrow::Cow,
-    collections::{BTreeMap, btree_map, btree_set},
+    collections::{BTreeMap, btree_map},
     ffi::c_void,
     ptr,
     sync::Arc,
@@ -19,8 +20,8 @@ struct Context<'a> {
     sides: [&'a Facts; 2],
     roots: [btree_map::Iter<'a, ValueIdentity, ValueIdentity>; 2],
     groups: BTreeMap<(ValueIdentity, ValueIdentity), ValueIdentity>,
-    union: btree_set::Union<'a, Fact>,
-    cursors: [btree_set::Iter<'a, Fact>; 2],
+    union: facts::Merge<'a>,
+    cursors: [facts::Iter<'a>; 2],
     common: Facts,
 }
 unsafe fn context<'a, 'b>(slot: Slot) -> &'a mut Context<'b> {

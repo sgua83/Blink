@@ -18,6 +18,7 @@ mod index_conditions;
 mod numeric_bounds;
 mod execution_conditions;
 mod proof_facts;
+mod facts;
 mod call_projection;
 mod range_sets;
 #[path = "bounds/required_roots.rs"]
@@ -302,7 +303,7 @@ pub(super) struct FloatingBound {
 }
 
 
-type Facts = BTreeSet<Fact>;
+use facts::Facts;
 
 #[repr(C)]
 struct CleanupError {

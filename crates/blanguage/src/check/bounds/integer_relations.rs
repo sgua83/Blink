@@ -1,7 +1,8 @@
 //! B controls integer relation inference. Original typed inputs, coefficients,
 //! active equations and final facts remain owned by IntegerQuery and its caller.
+use super::facts;
 use super::*;
-use std::{collections::btree_set, ffi::c_void, mem::MaybeUninit, ptr};
+use std::{ffi::c_void, mem::MaybeUninit, ptr};
 type Slot = *mut c_void;
 type Borrowed = *const c_void;
 fn borrow<T>(v: &T) -> Borrowed {
@@ -136,7 +137,7 @@ struct OperandFrame<'a> {
     cached: *mut IntegerAffine,
     result: *mut IntegerAffine,
     root: *mut ValueIdentity,
-    input: Option<btree_set::Range<'a, Fact>>,
+    input: Option<facts::Iter<'a>>,
 }
 unsafe extern "C" fn operand_cache(s: Slot, id: Borrowed) -> Affine {
     let c = unsafe { frame::<OperandFrame<'_>>(s) };
@@ -530,7 +531,7 @@ pub(super) fn at_most_zero(
 struct Infer<'a> {
     query: *mut IntegerQuery<'a>,
     output: *mut Facts,
-    input: btree_set::Iter<'a, Fact>,
+    input: facts::Iter<'a>,
     values: [*mut IntegerAffine; 3],
     root: *mut ValueIdentity,
 }
