@@ -169,11 +169,10 @@ extern "C" usize compact_slots(CompactInput input,CompactHost host) on cpu
 
 
 // One fresh ReductionKernel, built directly from the three real value bodies.
-// Rust keeps their owning Vec/Values/source records; B controls the complete
-// preparation and only borrows views until the next actual owner mutation.
+// Rust owns the original instruction and source types; B controls preparation.
+// An open partition is held by B until its compacted prefix is returned.
 struct ReductionInput { Node source; u32 project; u32 identity; };
 struct ReductionHeader { usize registers; usize locals; };
-struct ReductionExtract { u32 eligible; u32 operation; usize inputs; };
 struct ReductionHost {
  Host ir; address context;
  cfn<ReductionHeader,address> ensures memory(read) header;
@@ -181,9 +180,12 @@ struct ReductionHost {
  cfn<void,address,usize,usize,usize> remap;
  cfn<void,address,usize,usize> push_root;
  cfn<Span,address,usize> part;
- cfn<address,address,usize> uniform;
- cfn<void,address,usize,address> extract;
- cfn<void,address> release_uniform;
+ cfn<address,usize> alloc_uniform;
+ cfn<void,address,usize> release_uniform;
+ cfn<Span,address,usize> open_part;
+ cfn<void,address,usize,address,u32,usize> hoist;
+ cfn<void,address,address> move_instruction;
+ cfn<void,address,usize,usize> close_part;
  cfn<void,address> value_flow;
  cfn<void,address,usize> invariant;
  cfn<void,address,usize,usize,usize> boundaries;
@@ -191,8 +193,7 @@ struct ReductionHost {
  cfn<void,address> finish;
 };
 
-extern "C" ReductionExtract reduction_extract(Node source,address uniform,Host ir) on cpu requires nonzero(ir.inspect);
-extern "C" void reduction_kernel(ReductionInput input,ReductionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.header) requires nonzero(host.clone) requires nonzero(host.remap) requires nonzero(host.push_root) requires nonzero(host.part) requires nonzero(host.uniform) requires nonzero(host.extract) requires nonzero(host.release_uniform) requires nonzero(host.value_flow) requires nonzero(host.invariant) requires nonzero(host.boundaries) requires nonzero(host.append) requires nonzero(host.finish);
+extern "C" void reduction_kernel(ReductionInput input,ReductionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.header) requires nonzero(host.clone) requires nonzero(host.remap) requires nonzero(host.push_root) requires nonzero(host.part) requires nonzero(host.alloc_uniform) requires nonzero(host.release_uniform) requires nonzero(host.open_part) requires nonzero(host.hoist) requires nonzero(host.move_instruction) requires nonzero(host.close_part) requires nonzero(host.value_flow) requires nonzero(host.invariant) requires nonzero(host.boundaries) requires nonzero(host.append) requires nonzero(host.finish);
 
 // Complete Select control borrows one original Stage. Scratch is overwritten
 // before every plan; output rows live only until that branch is emitted.

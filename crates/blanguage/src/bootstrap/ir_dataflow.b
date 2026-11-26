@@ -699,7 +699,8 @@ address reduction_byte(address uniform,usize reg) on cpu {return unsafe_address(
 extern "C" u32 reduction_uniform_operand(address uniform,usize reg) on cpu {
  return unsafe_position<u8>(reduction_byte(uniform,reg))!=u8(0)?1:0;
 }
-extern "C" ReductionExtract reduction_extract(Node source,address uniform,Host ir) on cpu requires nonzero(ir.inspect) {
+struct ReductionExtract { u32 eligible; u32 operation; usize inputs; };
+ReductionExtract reduction_extract(Node source,address uniform,Host ir) on cpu requires nonzero(ir.inspect) {
  View value=ir.inspect(source);u32 operation;usize inputs=0u64;
  if(value.tag==OP_CONSTANT){operation=0;}
  else if(value.tag==OP_UNIFORM){operation=1;}
@@ -716,12 +717,31 @@ extern "C" ReductionExtract reduction_extract(Node source,address uniform,Host i
  while(next.present!=0){unsafe_position<u8>(reduction_byte(uniform,next.value))=u8(1);next=next_result(output);}
  return ReductionExtract(1,operation,inputs);
 }
+void reduction_extract_part(usize partition,address uniform,ReductionHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.open_part) requires nonzero(host.hoist)
+ requires nonzero(host.move_instruction) requires nonzero(host.close_part) {
+ Span code=host.open_part(host.context,partition);
+ usize read=0u64;
+ usize kept=0u64;
+ while(read<code.count){
+  Node inst=node_at(code,read,N_INSTRUCTION);
+  ReductionExtract decision=reduction_extract(inst,uniform,host.ir);
+  if(decision.eligible!=0){
+   host.hoist(host.context,partition,inst.data,decision.operation,decision.inputs);
+  }else{
+   if(kept!=read){host.move_instruction(node_at(code,kept,N_INSTRUCTION).data,inst.data);}
+   kept+=1u64;
+  }
+  read+=1u64;
+ }
+ host.close_part(host.context,partition,kept);
+}
 void reduction_copy_roots(Span values,usize offset,usize root,ReductionHost host) on cpu
  requires nonzero(host.push_root) {
  usize index=0u64;
  while(index<values.count){host.push_root(host.context,root,word_at(values,index)+offset);index+=1u64;}
 }
-extern "C" void reduction_kernel(ReductionInput input,ReductionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.header) requires nonzero(host.clone) requires nonzero(host.remap) requires nonzero(host.push_root) requires nonzero(host.part) requires nonzero(host.uniform) requires nonzero(host.extract) requires nonzero(host.release_uniform) requires nonzero(host.value_flow) requires nonzero(host.invariant) requires nonzero(host.boundaries) requires nonzero(host.append) requires nonzero(host.finish) {
+extern "C" void reduction_kernel(ReductionInput input,ReductionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.header) requires nonzero(host.clone) requires nonzero(host.remap) requires nonzero(host.push_root) requires nonzero(host.part) requires nonzero(host.alloc_uniform) requires nonzero(host.release_uniform) requires nonzero(host.open_part) requires nonzero(host.hoist) requires nonzero(host.move_instruction) requires nonzero(host.close_part) requires nonzero(host.value_flow) requires nonzero(host.invariant) requires nonzero(host.boundaries) requires nonzero(host.append) requires nonzero(host.finish) {
  View source=host.ir.inspect(input.source);
  if(input.identity!=0){
   host.clone(host.context,1u64,source.left,0u64);
@@ -752,10 +772,11 @@ extern "C" void reduction_kernel(ReductionInput input,ReductionHost host) on cpu
   index+=1u64;
  }
  reduction_copy_roots(host.ir.inspect(combine.right).first,base.registers,5u64,host);
- address uniform=host.uniform(host.context,host.header(host.context).registers);
+ usize register_count=host.header(host.context).registers;
+ address uniform=host.alloc_uniform(register_count);
  usize partition=1u64;
- while(partition<4u64){host.extract(host.context,partition,uniform);partition+=1u64;}
- host.release_uniform(host.context);
+ while(partition<4u64){reduction_extract_part(partition,uniform,host);partition+=1u64;}
+ host.release_uniform(uniform,register_count);
  host.value_flow(host.context);
  Span entry=host.part(host.context,0u64);index=0u64;
  while(index<entry.count){

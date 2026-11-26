@@ -19,8 +19,6 @@ struct Input { source: Node, project: u32, identity: u32 }
 #[repr(C)]
 struct Header { registers: usize, locals: usize }
 #[repr(C)]
-struct Extract { eligible: u32, operation: u32, inputs: usize }
-#[repr(C)]
 struct Host {
     ir: crate::ir::dataflow::Host, context: *mut c_void,
     header: unsafe extern "C" fn(*mut c_void) -> Header,
@@ -28,9 +26,12 @@ struct Host {
     remap: unsafe extern "C" fn(*mut c_void, usize, usize, usize),
     push_root: unsafe extern "C" fn(*mut c_void, usize, Reg),
     part: unsafe extern "C" fn(*mut c_void, usize) -> Span,
-    uniform: unsafe extern "C" fn(*mut c_void, usize) -> *mut u8,
-    extract: unsafe extern "C" fn(*mut c_void, usize, *mut u8),
-    release_uniform: unsafe extern "C" fn(*mut c_void),
+    alloc_uniform: extern "C" fn(usize) -> *mut u8,
+    release_uniform: unsafe extern "C" fn(*mut u8, usize),
+    open_part: unsafe extern "C" fn(*mut c_void, usize) -> BlockSpan,
+    hoist: unsafe extern "C" fn(*mut c_void, usize, *mut Inst, u32, usize),
+    move_instruction: unsafe extern "C" fn(*mut Inst, *mut Inst),
+    close_part: unsafe extern "C" fn(*mut c_void, usize, usize),
     value_flow: unsafe extern "C" fn(*mut c_void),
     invariant: unsafe extern "C" fn(*mut c_void, Reg),
     boundaries: unsafe extern "C" fn(*mut c_void, usize, usize, usize),
@@ -39,17 +40,16 @@ struct Host {
 }
 unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::reduction_kernel"] fn b_kernel(input: Input, host: Host);
-    #[link_name = "bootstrap.ir_dataflow::reduction_extract"] fn b_extract(source: Node, uniform: *mut u8, ir: crate::ir::dataflow::Host) -> Extract;
 }
 struct State {
     kernel: ReductionKernel,
     parts: [Vec<Inst>; 4],
-    uniform: Vec<u8>,
 }
 impl State {
     fn host(&mut self) -> Host {
         Host { ir: crate::ir::dataflow::HOST, context: ptr::from_mut(self).cast(),
-            header, clone, remap, push_root, part, uniform, extract, release_uniform, value_flow,
+            header, clone, remap, push_root, part, alloc_uniform, release_uniform,
+            open_part, hoist, move_instruction, close_part, value_flow,
             invariant, boundaries, append, finish }
     }
 }
@@ -68,7 +68,7 @@ pub(crate) fn kernel(reduction: &CustomReduction, stage: &Stage, project: bool, 
     let kernel = ReductionKernel { stage, invariant_end: 0, invariants: BTreeSet::new(),
         initialize_end: 0, project_end: 0, source: Vec::new(), projected: Vec::new(),
         initial: Vec::new(), left: Vec::new(), right: Vec::new(), result: Vec::new() };
-    let mut state = State { kernel, parts: Default::default(), uniform: Vec::new() };
+    let mut state = State { kernel, parts: Default::default() };
     let input = Input { source: Node { data: ptr::from_ref(reduction).cast(), kind: 23 },
         project: u32::from(project), identity: u32::from(identity) };
     let host = state.host();
@@ -102,35 +102,47 @@ unsafe extern "C" fn push_root(context: *mut c_void, root: usize, reg: Reg) {
 unsafe extern "C" fn part(context: *mut c_void, part: usize) -> Span {
     Span::of(unsafe { &(*context.cast::<State>()).parts[part] })
 }
-unsafe extern "C" fn uniform(context: *mut c_void, count: usize) -> *mut u8 {
-    let bytes = unsafe { &mut (*context.cast::<State>()).uniform };
-    *bytes = vec![0; count]; bytes.as_mut_ptr()
+extern "C" fn alloc_uniform(count: usize) -> *mut u8 {
+    Box::into_raw(vec![0u8; count].into_boxed_slice()).cast()
 }
-unsafe extern "C" fn extract(context: *mut c_void, part: usize, uniform: *mut u8) {
+
+unsafe extern "C" fn release_uniform(buffer: *mut u8, count: usize) {
+    unsafe { drop(Box::from_raw(ptr::slice_from_raw_parts_mut(buffer, count))); }
+}
+
+unsafe extern "C" fn open_part(context: *mut c_void, part: usize) -> BlockSpan {
+    let code = unsafe { &mut (*context.cast::<State>()).parts[part] };
+    let span = unsafe { instruction_span(code) };
+    // B takes the live slots and returns only the initialized retained prefix.
+    unsafe { code.set_len(0); }
+    span
+}
+
+unsafe extern "C" fn hoist(context: *mut c_void, part: usize, instruction: *mut Inst,
+    operation: u32, uniform_operand_count: usize,
+) {
     use ReductionUniformOperation as Op;
     const OPERATIONS: [Op; 9] = [Op::Constant, Op::Uniform, Op::BufferStride, Op::Unary,
         Op::Binary, Op::Cast, Op::Math, Op::Select, Op::ConstantIntegerDivide];
     const PARTITIONS: [ReductionPartition; 3] = [ReductionPartition::Identity, ReductionPartition::Project, ReductionPartition::Combine];
-    let parts = unsafe { &mut (*context.cast::<State>()).parts };
-    let (prefix, suffix) = parts.split_at_mut(part);
-    // extract_if is the original Vec's physical compaction and move operation.
-    // Its predicate now asks B about the actual instruction, without Rust classification.
-    prefix[0].extend(suffix[0].extract_if(.., |inst| {
-        let result = unsafe { b_extract(Node { data: ptr::from_ref(inst).cast(), kind: 0 }, uniform, crate::ir::dataflow::HOST) };
-        if result.eligible == 0 { return false; }
-        let retained = OperationOrigin::from_instruction(inst);
-        inst.generated_origin = Some(std::sync::Arc::new(GeneratedOrigin {
-            reason: GenerationReason::ReductionUniformExtract,
-            trigger: Some(GenerationAnchor::ReductionUniformExtract {
-                retained, partition: PARTITIONS[part - 1], operation: OPERATIONS[result.operation as usize],
-                uniform_operand_count: result.inputs,
-            }),
-        }));
-        true
+    let mut inst = unsafe { instruction.read() };
+    let retained = OperationOrigin::from_instruction(&inst);
+    inst.generated_origin = Some(std::sync::Arc::new(GeneratedOrigin {
+        reason: GenerationReason::ReductionUniformExtract,
+        trigger: Some(GenerationAnchor::ReductionUniformExtract {
+            retained, partition: PARTITIONS[part - 1], operation: OPERATIONS[operation as usize], uniform_operand_count,
+        }),
     }));
+    // The prefix Vec is disjoint from the open source partition.
+    unsafe { (*context.cast::<State>()).parts[0].push(inst); }
 }
-unsafe extern "C" fn release_uniform(context: *mut c_void) {
-    unsafe { (*context.cast::<State>()).uniform = Vec::new(); }
+
+unsafe extern "C" fn move_instruction(target: *mut Inst, source: *mut Inst) {
+    unsafe { target.write(source.read()); }
+}
+
+unsafe extern "C" fn close_part(context: *mut c_void, part: usize, kept: usize) {
+    unsafe { (*context.cast::<State>()).parts[part].set_len(kept); }
 }
 unsafe extern "C" fn value_flow(context: *mut c_void) {
     let state = unsafe { &mut *context.cast::<State>() };
