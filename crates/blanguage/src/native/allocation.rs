@@ -1,7 +1,7 @@
 //! 按结构化 IR 活跃性着色；调用跨越值使用 ABI 保留寄存器，溢出槽按干涉复用。
 use super::*;
 use crate::ir::dataflow::Span;
-use std::{collections::{BTreeSet, btree_set}, ffi::c_void};
+use std::{collections::{BTreeMap, BTreeSet, btree_map, btree_set}, ffi::c_void, ptr};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Location {
@@ -42,12 +42,70 @@ pub(super) struct SavedRegister {
     pub bank: u16,
 }
 
+#[repr(u32)]
+#[allow(dead_code)] // The B layout selects the stream to visit.
+enum TileFrameBank {
+    Shared = 0,
+    Private = 1,
+}
+
+#[repr(C)]
+struct TileFrameSlot {
+    key: *const c_void,
+    value: u64,
+}
+
+#[repr(C)]
+struct TileFrameHost {
+    next: unsafe extern "C" fn(*mut c_void, TileFrameBank) -> TileFrameSlot,
+    place: unsafe extern "C" fn(*mut c_void, TileFrameBank, *const c_void, u32),
+}
+
+struct TileFrameCursor<'a> {
+    shared: btree_map::Iter<'a, SharedWord, (Scalar, usize, u32)>,
+    private: btree_set::Iter<'a, PrivateSlot>,
+    registers: &'a [Scalar],
+    locals: &'a BTreeMap<usize, Ty>,
+    frame: &'a mut Frame,
+}
+
+unsafe extern "C" fn next_tile_frame_slot(
+    context: *mut c_void, bank: TileFrameBank,
+) -> TileFrameSlot {
+    let cursor = unsafe { &mut *context.cast::<TileFrameCursor<'_>>() };
+    let slot = match bank {
+        TileFrameBank::Shared => cursor.shared.next().map(|(key, &(_, slot, _))| TileFrameSlot {
+            key: ptr::from_ref(key).cast(),
+            value: slot as u64,
+        }),
+        TileFrameBank::Private => cursor.private.next().map(|key| TileFrameSlot {
+            key: ptr::from_ref(key).cast(),
+            value: u64::from(key.scalar(cursor.registers, cursor.locals).size()),
+        }),
+    };
+    slot.unwrap_or(TileFrameSlot { key: ptr::null(), value: 0 })
+}
+
+unsafe extern "C" fn place_tile_frame_slot(
+    context: *mut c_void, bank: TileFrameBank, key: *const c_void, offset: u32,
+) {
+    let cursor = unsafe { &mut *context.cast::<TileFrameCursor<'_>>() };
+    // Both key collections outlive the synchronous layout.
+    match bank {
+        TileFrameBank::Shared => {
+            cursor.frame.tile_shared.insert(unsafe { *key.cast::<SharedWord>() }, offset);
+        }
+        TileFrameBank::Private => {
+            cursor.frame.tile_private.insert(unsafe { *key.cast::<PrivateSlot>() }, offset);
+        }
+    }
+}
+
 unsafe extern "C" {
     #[link_name = "bootstrap.frame_layout::saved_registers"]
     fn saved_registers(data_end: u64, gpr: u32, xmm: u32, saves: *mut SavedRegister) -> u64;
     #[link_name = "bootstrap.frame_layout::tile_frame"]
-    fn tile_frame(data_end: u64, width: u64, steps: u32, shared: *mut u64,
-        shared_count: usize, private: *mut u64, private_count: usize) -> u64;
+    fn tile_frame(data_end: u64, width: u64, steps: u32, context: *mut c_void, host: TileFrameHost) -> u64;
 }
 
 #[derive(Default)]
@@ -288,25 +346,25 @@ impl PacketAllocation {
 }
 impl Frame {
     pub fn layout_tile(
-        &mut self, registers: &[Scalar], locals: &std::collections::BTreeMap<usize, Ty>,
+        &mut self, registers: &[Scalar], locals: &BTreeMap<usize, Ty>,
         workgroup: u32, phases: &[TilePhase<'_>], shared: crate::ir::dataflow::TileLayout,
     ) -> u64 {
-        // Each outgoing slot has a consumer in the next phase's restore.
+        // Multiple phase entries can restore the same physical private stream.
         let private: BTreeSet<_> = phases.iter().skip(1)
             .flat_map(|phase| phase.live_in.iter().copied()).collect();
-        let mut shared_positions: Vec<_> = shared.values().map(|&(_, slot, _)| slot as u64).collect();
-        let mut private_positions: Vec<_> = private.iter()
-            .map(|&slot| u64::from(slot.scalar(registers, locals).size())).collect();
-        // The frame owns the final maps. B borrows the two position arrays only
-        // while replacing each entry with its stack offset.
-        let end = unsafe {
-            tile_frame(self.end, u64::from(workgroup), u32::from(!phases.is_empty()),
-                shared_positions.as_mut_ptr(), shared_positions.len(),
-                private_positions.as_mut_ptr(), private_positions.len())
+        let data_end = self.end;
+        let mut cursor = TileFrameCursor {
+            shared: shared.iter(),
+            private: private.iter(),
+            registers,
+            locals,
+            frame: self,
         };
-        self.tile_shared = shared.into_keys().zip(shared_positions.into_iter().map(|offset| offset as u32)).collect();
-        self.tile_private = private.into_iter().zip(private_positions.into_iter().map(|offset| offset as u32)).collect();
-        end
+        let host = TileFrameHost { next: next_tile_frame_slot, place: place_tile_frame_slot };
+        unsafe {
+            tile_frame(data_end, u64::from(workgroup), u32::from(!phases.is_empty()),
+                ptr::from_mut(&mut cursor).cast(), host)
+        }
     }
 
     pub fn new(scalar: &Allocation, packet: Option<&PacketAllocation>) -> Self {
