@@ -17,11 +17,6 @@ struct State {
     u64 changes;
 };
 
-struct Ordered {
-    usize id;
-    u64 changes;
-};
-
 address cell(address data, usize index, u64 stride) on cpu {
     return unsafe_address(address_bits(data) + u64(index) * stride);
 }
@@ -224,17 +219,47 @@ void choose_fixed(Input input, Workspace work, address output) on cpu {
     }
 }
 
-extern "C" usize plan(Input input, Workspace work, Output output) on cpu {
+void finish_order(Output output, usize stable, usize feedback) on cpu {
+    usize count = output.ordered_count - feedback;
+    usize offset = 0u64;
+    while (offset < count / 2u64) {
+        address left = cell(output.ordered, feedback + offset, 8u64);
+        address right = cell(output.ordered, output.ordered_count - 1u64 - offset, 8u64);
+        usize first = unsafe_position<usize>(left);
+        unsafe_position<usize>(left) = unsafe_position<usize>(right);
+        unsafe_position<usize>(right) = first;
+        offset += 1u64;
+    }
+    // A partially ordered graph leaves a gap between the two written ranges.
+    if (stable != feedback) {
+        offset = 0u64;
+        while (offset < count) {
+            unsafe_position<usize>(cell(output.ordered, stable + offset, 8u64)) =
+                unsafe_position<usize>(cell(output.ordered, feedback + offset, 8u64));
+            offset += 1u64;
+        }
+    }
+}
+
+extern "C" OrderCount plan(Input input, Workspace work, Output output) on cpu {
     initialize(input, work);
     usize ready = connect(input, work);
     usize completed = 0u64;
+    usize stable = 0u64;
+    usize feedback = output.ordered_count;
     bool materialize = address_bits(output.ordered) != 0u64;
     while (ready != 0u64) {
         ready -= 1u64;
         usize id = unsafe_position<usize>(cell(work.ready, ready, 8u64));
         State row = state(work, id);
         if (materialize) {
-            unsafe_position<Ordered>(cell(output.ordered, completed, 16u64)) = Ordered(id, row.changes);
+            if (row.changes == 0u64) {
+                unsafe_position<usize>(cell(output.ordered, stable, 8u64)) = id;
+                stable += 1u64;
+            } else {
+                feedback -= 1u64;
+                unsafe_position<usize>(cell(output.ordered, feedback, 8u64)) = id;
+            }
         }
         completed += 1u64;
         usize item = 0u64;
@@ -252,9 +277,10 @@ extern "C" usize plan(Input input, Workspace work, Output output) on cpu {
         }
     }
     if (materialize) {
+        finish_order(output, stable, feedback);
         choose_fixed(input, work, output.fixed_inputs);
     }
-    return completed;
+    return OrderCount(completed, stable);
 }
 
 struct CallNode {

@@ -26,11 +26,10 @@ struct PlanState {
     changes: u64,
 }
 
-#[derive(Clone, Copy)]
 #[repr(C)]
-struct PlanOrder {
-    id: usize,
-    changes: u64,
+struct OrderCount {
+    completed: usize,
+    stable: usize,
 }
 
 #[repr(C)]
@@ -49,19 +48,21 @@ struct PlanWorkspace {
 
 #[repr(C)]
 struct PlanOutput {
-    ordered: *mut PlanOrder,
+    ordered: *mut usize,
+    ordered_count: usize,
     fixed_inputs: *mut u8,
 }
 
 struct EvaluationPlan {
-    ordered: Vec<PlanOrder>,
+    ordered: Vec<usize>,
+    stable: usize,
     fixed_inputs: Vec<u8>,
     completed: usize,
 }
 
 unsafe extern "C" {
     #[link_name = "bootstrap.relation_order::plan"]
-    fn plan_relation(input: PlanInput, work: PlanWorkspace, output: PlanOutput) -> usize;
+    fn plan_relation(input: PlanInput, work: PlanWorkspace, output: PlanOutput) -> OrderCount;
 }
 
 #[derive(Clone)]
@@ -767,13 +768,13 @@ impl Graph {
         let output = if materialize {
             ordered.reserve(ordinary_nodes);
             fixed_inputs.resize(rows.len(), 0);
-            PlanOutput { ordered: ordered.as_mut_ptr(), fixed_inputs: fixed_inputs.as_mut_ptr() }
+            PlanOutput { ordered: ordered.as_mut_ptr(), ordered_count: ordinary_nodes, fixed_inputs: fixed_inputs.as_mut_ptr() }
         } else {
-            PlanOutput { ordered: std::ptr::null_mut(), fixed_inputs: std::ptr::null_mut() }
+            PlanOutput { ordered: std::ptr::null_mut(), ordered_count: 0, fixed_inputs: std::ptr::null_mut() }
         };
         // Each dependency can have one reverse entry, and each ordinary node is
         // queued and emitted at most once. Only the emitted order is read here.
-        let completed = unsafe {
+        let OrderCount { completed, stable } = unsafe {
             plan_relation(
                 PlanInput { rows: rows.as_ptr(), dependencies: dependencies.as_ptr(), count: rows.len() },
                 PlanWorkspace { states: states.as_mut_ptr(), users: users.as_mut_ptr(), ready: ready.as_mut_ptr() },
@@ -783,7 +784,7 @@ impl Graph {
         if materialize {
             unsafe { ordered.set_len(completed) };
         }
-        EvaluationPlan { ordered, fixed_inputs, completed }
+        EvaluationPlan { ordered, stable, fixed_inputs, completed }
     }
     pub(in crate::check) fn selected(&self,root:usize)->Self{
         let (reachable, frames) = self.reachable(root);
@@ -991,9 +992,8 @@ impl Graph {
         let loop_scopes = self.inputs.iter().filter_map(|(input, &node)| {
             evaluation.function.history.get(&input.level).map(|history| (node, (input.level, history)))
         }).collect::<BTreeMap<_, _>>();
-        let EvaluationPlan { ordered, fixed_inputs, .. } = self.evaluation_plan(reachable.iter().copied(), true);
-        let (mut stable, feedback): (Vec<_>, Vec<_>) =
-            ordered.into_iter().partition(|entry| entry.changes == 0);
+        let EvaluationPlan { ordered, stable, fixed_inputs, .. } = self.evaluation_plan(reachable.iter().copied(), true);
+        let feedback = &ordered[stable..];
         let mut variables = self.variables.intersection(&reachable)
             .map(|&id| (id, Borrow::default())).collect::<BTreeMap<_, _>>();
         let mut values = BTreeMap::new();
@@ -1019,7 +1019,8 @@ impl Graph {
                 variables: &variables,
                 values,
             };
-            for id in stable.drain(..).chain(feedback.iter().copied()).map(|entry| entry.id) {
+            let scheduled = if initial { ordered.as_slice() } else { feedback };
+            for &id in scheduled {
                 let value = query.definition(id, &mut scope);
                 query.values.insert(id, value);
             }
@@ -1065,8 +1066,8 @@ impl Graph {
                 return self.rebind(value, &|| residual.get_or_init(|| Arc::new(self.residual(&query))));
             }
             values = query.values;
-            for entry in &feedback {
-                values.remove(&entry.id);
+            for id in feedback {
+                values.remove(id);
             }
             variables.extend(next);
             initial = false;

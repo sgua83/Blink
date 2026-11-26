@@ -14,6 +14,7 @@ struct Workspace {
 
 struct Output {
     address ordered;
+    usize ordered_count;
     address fixed_inputs;
 };
 
@@ -55,7 +56,12 @@ extern "C" void historical_relation_frames(address graph,address work,address ro
     requires nonzero(host.frame) requires nonzero(host.write) requires nonzero(host.field)
     requires nonzero(host.mark_frame) requires nonzero(host.publish);
 
-extern "C" usize plan(Input input, Workspace work, Output output) on cpu;
+struct OrderCount {
+    usize completed;
+    usize stable;
+};
+
+extern "C" OrderCount plan(Input input, Workspace work, Output output) on cpu;
 
 struct CallRange { usize first; usize end; };
 struct CallGraph { address rows; address callees; usize count; };
