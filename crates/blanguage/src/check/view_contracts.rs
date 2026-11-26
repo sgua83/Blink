@@ -1003,9 +1003,7 @@ impl BorrowEvaluation<'_>{
         let(function,known)=(self.function,self.known);
         let usage=&function.uses[memory];
         let Requirement::Memory{borrow,access,written,address_fields,..}=&usage.requirement else{return;};
-        if let Some((call_index, call)) = function.calls.iter().enumerate()
-            .find(|(_, call)| !call.deferred && call.memory == memory)
-        {
+        if let Some((call_index, call)) = function.call_at_memory(memory, true) {
             for (index, access) in known[&call.function].interface.access.iter().enumerate().rev() {
                 let Access::Stored { borrows, word, value, when } = access else { continue; };
                 let target = self.evaluate(&call_content_sources(borrows, call, &call.arguments).at_call(&call.arguments));
@@ -1134,7 +1132,7 @@ impl BorrowEvaluation<'_>{
         let mut result = BTreeSet::new();
         for(memory,usage)in function.uses.iter().enumerate(){
             let Requirement::Memory{borrow,written,address_fields,..}=&usage.requirement else{continue;};
-            if let Some((call_index, call)) = function.calls.iter().enumerate().find(|(_, call)| call.memory == memory) {
+            if let Some((call_index, call)) = function.call_at_memory(memory, false) {
                 for (index, access) in known[&call.function].interface.access.iter().enumerate() {
                     let Access::Stored{borrows,word,when,..}=access else{continue;};
                     let target = self.evaluate(&call_content_sources(borrows, call, &call.arguments).at_call(&call.arguments));
@@ -1725,7 +1723,7 @@ fn initializations(function:&Function,state:&State,known:&States,exit_paths:Opti
     // Re-exporting the same bytes as newly initialized adds no fact for any legitimate caller.
     let mut required=Vec::new();
     for(memory,usage)in function.uses.iter().enumerate(){
-        if function.calls.iter().any(|call|call.memory==memory)||matches!(&usage.requirement,Requirement::Memory{access:Some(access),..}if access.writes()){break;}
+        if function.call_at_memory(memory, false).is_some()||matches!(&usage.requirement,Requirement::Memory{access:Some(access),..}if access.writes()){break;}
         if let Requirement::Address{borrow,initialized:true,..}=&usage.requirement && !borrow.pending(){
             for(source,when)in borrow.sources.entries(){
                 let value=canonical_relation(Borrow::source(source.clone()), function, None, &exposed, parameters(), BorrowProjection::Input);
@@ -1935,7 +1933,7 @@ fn converge_access(
                     &parameters,evaluation.evaluate(borrow),
                     |borrows,when|Access::Position{borrows,when,position:PositionAccess{layout:layout.clone(),written:written.as_ref().map(|proof|proof.at_call(&parameters)),writable:*writable,initialized:*initialized}},
                     &usage.path,&bounds::Clause::project_guard),
-                Requirement::Memory{target:address::MemoryTarget::Call(memory),borrow,access:Some(access),..} if !function.calls.iter().any(|call|!call.deferred&&call.memory==*memory)=>
+                Requirement::Memory{target:address::MemoryTarget::Call(memory),borrow,access:Some(access),..} if function.call_at_memory(*memory, true).is_none()=>
                     function.address_access(&parameters,evaluation.evaluate(borrow),|borrows,when|Access::Memory{borrows,when,access:*access},&usage.path,&bounds::Clause::project_guard),
                 Requirement::Dataset{borrow,index,access,atomic,..}=>function.dataset_access(&parameters,evaluation.evaluate(borrow),*index,*access,*atomic,&usage.path,&|id|owns_input(name,id),&bounds::Clause::project_guard),
                 _=>None,

@@ -191,6 +191,15 @@ extern "C" void write_history_bindings(address function, address output, address
     usize prior, HistoryBindingsHost host) on cpu
     requires nonzero(host.next_scope) requires nonzero(host.registers) requires nonzero(host.insert);
 
+struct MemoryCallFacts {
+    usize memory;
+    u32 deferred;
+};
+
+extern "C" usize find_memory_call(WalkSlice calls, usize memory, u32 immediate,
+    cfn<MemoryCallFacts,address,usize> facts) on cpu
+    requires nonzero(facts);
+
 struct PrefixBoundary {
     usize memory;
     usize frame;

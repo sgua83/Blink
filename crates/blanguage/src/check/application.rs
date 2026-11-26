@@ -626,7 +626,7 @@ impl ApplicationLoads<'_, '_> {
         {
             let contract=&self.0.functions.units[name].as_ref().unwrap().contract;
             let mut common:Option<bounds::Proof>=None;
-            if let Some(invocation)=self.0.view_model.calls.iter().find(|entry|Some(entry.memory)==call.memory_use){
+            if let Some((_, invocation)) = call.memory_use.and_then(|memory| self.0.view_model.call_at_memory(memory, false)) {
                 for (identity,storage) in &invocation.arguments {
                     let ValueIdentity::ParameterStorage(index)=identity else{continue};
                     for source in &storage.view_borrow(0).sources {

@@ -1625,7 +1625,7 @@ fn returned_input_aliases(module:&Module,name:&str)->Vec<(usize,usize)> {
             Some(InstKind::Select{a,b,..})=>same(module,name,*a,input,active)&&same(module,name,*b,input,active),
             Some(InstKind::Call(call))=>{
                 if let CallTarget::Defined(callee)=&call.target {
-                    let context=call.memory_use.and_then(|memory|unit.view_model.calls.iter().find(|context|context.memory==memory));
+                    let context=call.memory_use.and_then(|memory| unit.view_model.call_at_memory(memory, false)).map(|(_, entry)| entry);
                     let component=call.values.iter().position(|reg|*reg==value).unwrap();
                     let callee_unit=module.units.get(callee).and_then(Option::as_ref);
                     context.zip(callee_unit).is_some_and(|(context,callee_unit)|{

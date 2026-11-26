@@ -819,6 +819,20 @@ unsafe extern "C" {
     );
 }
 
+#[repr(C)]
+struct MemoryCallFacts {
+    memory: usize,
+    deferred: u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.relation_order::find_memory_call"]
+    fn find_memory_call(
+        calls: WalkSlice, memory: usize, immediate: u32,
+        facts: unsafe extern "C" fn(Borrowed, usize) -> MemoryCallFacts,
+    ) -> usize;
+}
+
 impl Function {
     pub(super) fn visit_carried_writes<F>(&self, memory: usize, mut consumer: F) -> bool
     where
@@ -905,6 +919,17 @@ impl Function {
         let names = unsafe { &mut *output.cast::<BTreeMap<ValueIdentity, ValueIdentity>>() };
         names.insert(ValueIdentity::Register(source), ValueIdentity::Register(destination));
     }
+    pub(in crate::check) fn call_at_memory(&self, memory: usize, immediate: bool) -> Option<(usize, &Call)> {
+        let index = unsafe {
+            find_memory_call(WalkSlice::of(&self.calls), memory, u32::from(immediate), Self::memory_call_facts)
+        };
+        self.calls.get(index).map(|call| (index, call))
+    }
+
+    unsafe extern "C" fn memory_call_facts(calls: Borrowed, index: usize) -> MemoryCallFacts {
+        let call = unsafe { &*calls.cast::<Call>().add(index) };
+        MemoryCallFacts { memory: call.memory, deferred: u32::from(call.deferred) }
+    }
 }
 
 struct Builder<'a> { function:&'a Function,state:LoopScope<'a>,known:&'a States<'a>,keys:BTreeMap<Key,usize>,prefix:FramePrefix,graph:Graph,parameters:BTreeMap<ValueIdentity,usize> }
@@ -968,7 +993,7 @@ impl Builder<'_> {
         let bind = |value: Borrow| {
             if names.is_empty() { value } else { value.output_bound(names) }
         };
-        if let Some(call) = self.function.calls.iter().find(|call| call.memory == memory) {
+        if let Some((_, call)) = self.function.call_at_memory(memory, false) {
             for access in &self.known[&call.function].interface.access {
                 if let Access::Stored { borrows, word, value, when } = access {
                     let target = self.borrow(&bind(call_content_sources(borrows, call, &call.arguments)

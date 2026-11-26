@@ -754,6 +754,30 @@ extern "C" void write_history_bindings(address function, address output, address
     }
 }
 
+extern "C" usize find_memory_call(WalkSlice calls, usize memory, u32 immediate,
+    cfn<MemoryCallFacts,address,usize> facts) on cpu
+    requires nonzero(facts)
+{
+    usize first = 0u64;
+    usize end = calls.count;
+    while (first < end) {
+        usize middle = first + (end - first) / 2u64;
+        if (facts(calls.data,middle).memory < memory) {
+            first = middle + 1u64;
+        } else {
+            end = middle;
+        }
+    }
+
+    while (first < calls.count) {
+        MemoryCallFacts call = facts(calls.data,first);
+        if (call.memory != memory) { break; }
+        if (immediate == 0 || call.deferred == 0) { return first; }
+        first += 1u64;
+    }
+    return WALK_END;
+}
+
 PrefixBoundary prefix_boundary(WalkSlice runs, usize index) on cpu {
     return unsafe_position<PrefixBoundary>(cell(runs.data,index,16u64));
 }
