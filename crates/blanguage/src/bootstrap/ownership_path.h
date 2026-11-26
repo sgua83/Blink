@@ -208,3 +208,18 @@ extern "C" void collect_output_paths(address context,address value,OutputSnapsho
 struct OutputPrefix { address residency; u64 fields; };
 extern "C" OutputPrefix find_output_prefix(address context,u64 fields,cfn<address,address,u64> lookup) on cpu
     requires nonzero(lookup);
+
+enum AvailabilityKind:u32 { Value=0; Dataset=1; Aggregate=2; Variant=3; };
+struct AvailabilityNode { AvailabilityKind kind; address model; u64 fields; };
+struct OutputAvailabilityHost {
+    cfn<AvailabilityNode,address> inspect;
+    cfn<u32,address,address> present;
+    cfn<u32,address> maximum;
+    cfn<address,address> element;
+    cfn<address,address,u64> field;
+    cfn<void,address,u64> discard;
+};
+extern "C" u32 resolve_output_availability(address outputs,address value,OutputAvailabilityHost host) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.present)
+    requires nonzero(host.maximum) requires nonzero(host.element)
+    requires nonzero(host.field) requires nonzero(host.discard);

@@ -484,3 +484,30 @@ extern "C" OutputPrefix find_output_prefix(address context,u64 fields,cfn<addres
     }
     return OutputPrefix(residency,count);
 }
+
+extern "C" u32 resolve_output_availability(address outputs,address value,OutputAvailabilityHost host) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.present)
+    requires nonzero(host.maximum) requires nonzero(host.element)
+    requires nonzero(host.field) requires nonzero(host.discard) {
+    AvailabilityNode node=host.inspect(value);
+    if(node.kind==AvailabilityKind::Dataset){
+        if(host.present(outputs,node.model)==0){return 0;}
+        if(host.maximum(node.model)!=0){
+            address element=host.element(node.model);
+            if(address_bits(element)!=0u64){resolve_output_availability(outputs,element,host);}
+        }
+        return 1;
+    }
+
+    u32 available=1;
+    u64 index=0u64;
+    while(index<node.fields){
+        address field=host.field(node.model,index);
+        if(address_bits(field)!=0u64 && resolve_output_availability(outputs,field,host)==0){
+            if(node.kind==AvailabilityKind::Variant){host.discard(node.model,index);}
+            else{available=0;}
+        }
+        index+=1u64;
+    }
+    return available;
+}

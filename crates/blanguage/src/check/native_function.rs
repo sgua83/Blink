@@ -1956,8 +1956,10 @@ fn resolve_residencies(
     for unit in module.units.values_mut() {
         let unit = unit.as_mut().unwrap();
         if unit.function.is_none() { continue; }
-        for written in &mut unit.contract.written{if let Some(value)=written{if !residency::resolve_returned(value,&outputs){*written=None;}}}
-        if let Some(returned)=&mut unit.contract.returned{if !residency::resolve_returned(returned,&outputs){unit.contract.returned=None;}}
+        let contract = &mut unit.contract;
+        for model in contract.written.iter_mut().chain(std::iter::once(&mut contract.returned)) {
+            residency::resolve_returned(model, &outputs);
+        }
     }
     Ok(())
 }

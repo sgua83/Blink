@@ -2009,33 +2009,89 @@ pub(super) fn output_sources<'a>(
     }).collect()
 }
 
-pub(super) fn resolve_returned(value: &mut Returned, outputs: &Outputs) -> bool {
-    fn resolve(value: &mut Returned, outputs: &Outputs) -> bool {
-        match value {
-            Returned::Dataset(data) => {
-                let present=present(&data.residency,outputs);
-                if present && data.length.maximum()!=0 && let Some(elements)=data.elements.known_mut(){resolve(elements,outputs);}
-                present
-            }
-            Returned::OwnedValue(value) => {
-                let mut present = true;
-                for payload in &mut value.payloads {
-                    if let Some(item) = payload {
-                        if !resolve(item, outputs) {
-                            if value.value.ty.has_variants() {
-                                *payload = None;
-                            } else {
-                                present = false;
-                            }
-                        }
-                    }
-                }
-                present
-            }
-            _ => true,
-        }
+#[repr(u32)]
+enum AvailabilityKind { Value, Dataset, Aggregate, Variant }
+
+#[repr(C)]
+struct AvailabilityNode {
+    kind: AvailabilityKind,
+    model: Context,
+    fields: usize,
+}
+
+#[repr(C)]
+struct OutputAvailabilityHost {
+    inspect: unsafe extern "C" fn(Context) -> AvailabilityNode,
+    present: unsafe extern "C" fn(Borrowed, Context) -> u32,
+    maximum: unsafe extern "C" fn(Context) -> u32,
+    element: unsafe extern "C" fn(Context) -> Context,
+    field: unsafe extern "C" fn(Context, usize) -> Context,
+    discard: unsafe extern "C" fn(Context, usize),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ownership_path::resolve_output_availability"]
+    fn resolve_output_availability(outputs: Borrowed, value: Context, host: OutputAvailabilityHost) -> u32;
+}
+
+unsafe extern "C" fn inspect_availability(value: Context) -> AvailabilityNode {
+    match unsafe { &mut *value.cast::<Returned>() } {
+        Returned::Dataset(data) => AvailabilityNode {
+            kind: AvailabilityKind::Dataset,
+            model: ptr::from_mut(data).cast(),
+            fields: 0,
+        },
+        Returned::OwnedValue(value) => AvailabilityNode {
+            kind: if value.value.ty.has_variants() { AvailabilityKind::Variant } else { AvailabilityKind::Aggregate },
+            fields: value.payloads.len(),
+            model: ptr::from_mut(value).cast(),
+        },
+        _ => AvailabilityNode { kind: AvailabilityKind::Value, model: ptr::null_mut(), fields: 0 },
     }
-    resolve(value, outputs)
+}
+
+unsafe extern "C" fn dataset_available(outputs: Borrowed, model: Context) -> u32 {
+    let data = unsafe { &*model.cast::<application::Data>() };
+    let outputs = unsafe { &*outputs.cast::<Outputs>() };
+    u32::from(present(&data.residency, outputs))
+}
+
+unsafe extern "C" fn dataset_maximum(model: Context) -> u32 {
+    unsafe { &*model.cast::<application::Data>() }.length.maximum()
+}
+
+unsafe extern "C" fn dataset_element(model: Context) -> Context {
+    let data = unsafe { &mut *model.cast::<application::Data>() };
+    data.elements.known_mut().map_or(ptr::null_mut(), |element| ptr::from_mut(element).cast())
+}
+
+unsafe extern "C" fn availability_field(model: Context, index: usize) -> Context {
+    let value = unsafe { &mut *model.cast::<owned_values::OwnedValue>() };
+    value.payloads[index].as_deref_mut().map_or(ptr::null_mut(), |value| ptr::from_mut(value).cast())
+}
+
+unsafe extern "C" fn discard_field(model: Context, index: usize) {
+    let value = unsafe { &mut *model.cast::<owned_values::OwnedValue>() };
+    value.payloads[index] = None;
+}
+
+const OUTPUT_AVAILABILITY_HOST: OutputAvailabilityHost = OutputAvailabilityHost {
+    inspect: inspect_availability,
+    present: dataset_available,
+    maximum: dataset_maximum,
+    element: dataset_element,
+    field: availability_field,
+    discard: discard_field,
+};
+
+pub(super) fn resolve_returned(value: &mut Option<Returned>, outputs: &Outputs) {
+    let Some(model) = value.as_mut() else { return; };
+    let available = unsafe {
+        resolve_output_availability(ptr::from_ref(outputs).cast(), ptr::from_mut(model).cast(), OUTPUT_AVAILABILITY_HOST)
+    };
+    if available == 0 {
+        *value = None;
+    }
 }
 
 
