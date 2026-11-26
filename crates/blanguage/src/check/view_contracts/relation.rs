@@ -652,45 +652,56 @@ impl<'g, F: FnMut(RelationNode<'g>) -> bool> RelationWalk<'g, F> {
 
 #[derive(Clone,PartialEq,Eq,PartialOrd,Ord)]
 enum Key { Loop(LoopInput), Read(ContentRead), Call(CallResult) }
-#[repr(C)]
-struct FeedbackEdge { from: usize, identity: u32 }
-#[repr(C)]
-struct FeedbackNode { edges: *const std::ffi::c_void, count: usize, variable: u32, seeded: u32 }
+type IdentityNext = unsafe extern "C" fn(Borrowed, usize) -> usize;
 
 #[repr(C)]
 struct IdentityFeedbackHost {
-    edge: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> FeedbackEdge,
-    node: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> FeedbackNode,
-    exchange: unsafe extern "C" fn(*mut std::ffi::c_void, usize, usize),
+    edge: unsafe extern "C" fn(Borrowed, usize) -> usize,
+    next: IdentityNext,
+    exchange: unsafe extern "C" fn(Slot, usize, usize),
 }
 
 unsafe extern "C" {
     #[link_name = "bootstrap.relation_order::prune_identity_feedback"]
     fn prune_identity_feedback(
-        graph: *const std::ffi::c_void, edges: *mut std::ffi::c_void, count: usize,
-        variable: usize, host: IdentityFeedbackHost,
+        graph: Borrowed, edges: Slot, count: usize, variable: usize, host: IdentityFeedbackHost,
     ) -> usize;
+    #[link_name = "bootstrap.relation_order::resolve_identity_binding"]
+    fn resolve_identity_binding(context: Borrowed, root: usize, next: IdentityNext) -> usize;
 }
 
-unsafe extern "C" fn identity_feedback_edge(edges: *const std::ffi::c_void, index: usize) -> FeedbackEdge {
-    let edge = unsafe { &*edges.cast::<Edge>().add(index) };
-    FeedbackEdge { from: edge.from, identity: u32::from(matches!(edge.op, Op::Identity)) }
-}
-
-unsafe extern "C" fn identity_feedback_node(graph: *const std::ffi::c_void, index: usize) -> FeedbackNode {
-    let graph = unsafe { &*graph.cast::<Graph>() };
-    let node = &graph.nodes[index];
-    FeedbackNode {
-        edges: node.edges.as_ptr().cast(),
-        count: node.edges.len(),
-        variable: u32::from(graph.variables.contains(&index)),
-        seeded: u32::from(!node.seeds.empty()),
+impl Node {
+    fn unseeded_edge(&self) -> Option<&Edge> {
+        match self.edges.as_slice() {
+            [edge] if self.seeds.empty() => Some(edge),
+            _ => None,
+        }
     }
 }
 
-unsafe extern "C" fn exchange_feedback_edges(edges: *mut std::ffi::c_void, retained: usize, next: usize) {
+impl Graph {
+    fn forwarding_edge(&self, id: usize) -> Option<&Edge> {
+        let edge = self.nodes[id].unseeded_edge()?;
+        (!self.variables.contains(&id)).then_some(edge)
+    }
+}
+
+unsafe extern "C" fn identity_feedback_destination(edges: Borrowed, index: usize) -> usize {
+    let edge = unsafe { &*edges.cast::<Edge>().add(index) };
+    if edge.op == Op::Identity { edge.from } else { usize::MAX }
+}
+
+unsafe extern "C" fn identity_feedback_next(graph: Borrowed, id: usize) -> usize {
+    let graph = unsafe { &*graph.cast::<Graph>() };
+    match graph.forwarding_edge(id) {
+        Some(edge) if edge.op == Op::Identity => edge.from,
+        _ => usize::MAX,
+    }
+}
+
+unsafe extern "C" fn exchange_feedback_edges(edges: Slot, retained: usize, next: usize) {
     let edges = edges.cast::<Edge>();
-    unsafe { std::ptr::swap(edges.add(retained), edges.add(next)) };
+    unsafe { ptr::swap(edges.add(retained), edges.add(next)) };
 }
 
 #[derive(Default)]
@@ -1171,7 +1182,7 @@ impl Graph {
                 prune_identity_feedback(
                     std::ptr::from_ref(self).cast(), edges.as_mut_ptr().cast(), edges.len(), variable,
                     IdentityFeedbackHost {
-                        edge: identity_feedback_edge, node: identity_feedback_node, exchange: exchange_feedback_edges,
+                        edge: identity_feedback_destination, next: identity_feedback_next, exchange: exchange_feedback_edges,
                     },
                 )
             };
@@ -1869,32 +1880,33 @@ impl<'g> Query<'g> {
         }
         Cow::Owned(result)
     }
-    fn binding(&self, mut id: usize) -> (usize, Cow<'g, Node>) {
-        loop {
-            let node = self.local_definition(id);
-            if !self.graph.variables.contains(&id)
-                && node.seeds.empty()
-                && let [edge] = node.edges.as_slice()
-                && edge.op == Op::Identity
-            {
-                id = edge.from;
-            } else {
-                return (id, node);
-            }
+    unsafe extern "C" fn binding_next(context: Borrowed, id: usize) -> usize {
+        let query = unsafe { &*context.cast::<Self>() };
+        let Some(edge) = query.graph.forwarding_edge(id) else {
+            return usize::MAX;
+        };
+        match edge.op {
+            Op::Identity => edge.from,
+            Op::Initial { .. } => match query.local_definition(id).unseeded_edge() {
+                Some(expanded) if expanded.op == Op::Identity => expanded.from,
+                _ => usize::MAX,
+            },
+            _ => usize::MAX,
         }
     }
 
-    fn location(&self, id: usize) -> Option<(usize, address::Origin)> {
-        let (_, node) = self.binding(id);
-        if node.seeds.empty()
-            && let [edge] = node.edges.as_slice()
-            && let Op::Position(origin) = &edge.op
-        {
-            Some((self.binding(edge.from).0, origin.clone()))
-        } else {
-            None
-        }
+    fn binding(&self, id: usize) -> usize {
+        unsafe { resolve_identity_binding(ptr::from_ref(self).cast(), id, Self::binding_next) }
     }
+
+    fn location(&self, id: usize) -> Option<(usize, &'g address::Origin)> {
+        let edge = self.graph.nodes[self.binding(id)].unseeded_edge()?;
+        let Op::Position(origin) = &edge.op else {
+            return None;
+        };
+        Some((self.binding(edge.from), origin))
+    }
+
     fn read(
         &self, id: usize, from_id: usize, from: &Borrow, word: u32, epoch: &Epoch, frame: Option<usize>,
         evaluation: &mut BorrowEvaluation<'_>,
@@ -1902,7 +1914,7 @@ impl<'g> Query<'g> {
         let mut output=Borrow::default();
         let read_location = std::cell::LazyCell::new(|| {
             let (binding, origin) = self.location(from_id)?;
-            let (_, word) = content_word(&origin, word)?;
+            let (_, word) = content_word(origin, word)?;
             Some((binding, origin, word))
         });
         for (source, path) in from.sources.entries() {
@@ -1927,7 +1939,7 @@ impl<'g> Query<'g> {
                     }
                     let read_word = *read_word;
                     Some(fields.iter().filter_map(move |&(field, value)| {
-                        let (_, word) = content_word(&target, field)?;
+                        let (_, word) = content_word(target, field)?;
                         (word == read_word).then_some(value)
                     }).peekable())
                 });

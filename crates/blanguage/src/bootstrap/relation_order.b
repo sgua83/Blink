@@ -374,27 +374,32 @@ extern "C" void recursive_call_groups(CallGraph graph, CallWork work, address gr
     }
 }
 
-bool returns_unchanged(address graph,usize variable,FeedbackEdge first,IdentityFeedbackHost host) on cpu
-    requires nonzero(host.edge) requires nonzero(host.node)
+usize follow_identity(address context, usize root, usize stop, cfn<usize,address,usize> next) on cpu
+    requires nonzero(next)
 {
-    FeedbackEdge edge = first;
-    while (edge.identity != 0) {
-        if (edge.from == variable) { return true; }
-        FeedbackNode node = host.node(graph,edge.from);
-        if (node.variable != 0 || node.count != 1u64 || node.seeded != 0) { return false; }
-        edge = host.edge(node.edges,0u64);
+    usize node = root;
+    while (node != stop) {
+        usize destination = next(context,node);
+        if (destination == WALK_END) { break; }
+        node = destination;
     }
-    return false;
+    return node;
+}
+
+extern "C" usize resolve_identity_binding(address context, usize root, cfn<usize,address,usize> next) on cpu
+    requires nonzero(next)
+{
+    return follow_identity(context,root,WALK_END,next);
 }
 
 extern "C" usize prune_identity_feedback(address graph,address edges,usize count,usize variable,IdentityFeedbackHost host) on cpu
-    requires nonzero(host.edge) requires nonzero(host.node) requires nonzero(host.exchange)
+    requires nonzero(host.edge) requires nonzero(host.next) requires nonzero(host.exchange)
 {
     usize index = 0u64;
     usize retained = 0u64;
     while (index < count) {
-        FeedbackEdge edge = host.edge(edges,index);
-        if (!returns_unchanged(graph,variable,edge,host)) {
+        usize from = host.edge(edges,index);
+        if (from == WALK_END || follow_identity(graph,from,variable,host.next) != variable) {
             if (retained != index) { host.exchange(edges,retained,index); }
             retained += 1u64;
         }
