@@ -1716,7 +1716,7 @@ impl<F> ComponentCallInputs<'_, '_, '_, '_, '_, F> {
         inputs.builder.parameters.clone_from(&port.roots);
         for (target, source, when) in operands {
             let value = local.solve(source, &mut evaluation);
-            if let Some(actual) = function.address_borrows(public, value) {
+            if let Some(actual) = function.public_borrows(public, value, PublicBorrowKind::Argument) {
                 let source = inputs.builder.borrow(&actual.at_call(&identities), &Epoch::Input);
                 inputs.builder.edge(target, source, Op::Identity, when);
             }
@@ -1813,7 +1813,7 @@ impl Graph {
         let parameters = residency::input_parameters(&function.parameters, function.input_width);
         let entries = nodes.into_iter().map(|(input, root)| {
             let value = graph.solve(root, &mut evaluation);
-            (input, function.address_borrows(&parameters, value).unwrap_or_default())
+            (input, function.public_borrows(&parameters, value, PublicBorrowKind::Memory).unwrap_or_default())
         }).collect::<BTreeMap<_,_>>();
         let forwarding = forwarding_calls.map(|calls| {
             let unchanged = entries.keys().copied().filter(|formal| calls.iter().all(|&index| {

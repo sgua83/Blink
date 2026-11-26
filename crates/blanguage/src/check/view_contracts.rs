@@ -520,8 +520,37 @@ impl Function {
         })
     }
 
-    fn address_borrows(&self,parameters:&BTreeMap<ValueIdentity,bounds::Proof>,borrow:Borrow)->Option<Borrow> {
+    fn public_resources(
+        &self, borrow: Borrow, parameters: &BTreeMap<ValueIdentity, bounds::Proof>, kind: PublicBorrowKind,
+    ) -> Borrow {
+        borrow.map_sources(|source|match source{
+            Origin::Data(id) => {
+                match self.parameters.get(&id).copied().filter(|&id| self.input(id)) {
+                    Some(input) => Borrow::source(Origin::Data(input)),
+                    None if matches!(kind, PublicBorrowKind::Argument) => Borrow::source(Origin::Inactive),
+                    None => Borrow::default(),
+                }
+            },
+            Origin::Parameter(id,indices)=>Borrow::source(self.parameters.get(&id).copied().filter(|id|self.input(*id)).map(|id|Origin::Parameter(id,indices.into_iter().map(|index|index.and_then(|index|index.at_call(parameters))).collect())).unwrap_or(Origin::Unresolved)),
+            Origin::Element{parent,fields,index}=>Borrow::selected_element(self.public_resources(*parent,parameters,kind),fields,index.and_then(|index|index.at_call(parameters))),
+            Origin::Projection{parent,fields}=>Borrow::projection(self.public_resources(*parent,parameters,kind),fields),
+            Origin::Position(origin)=>origin.resources(),
+            Origin::Contents{..}|Origin::Relation(..)=>canonical(Borrow::source(source),self,&BTreeMap::new()),
+            Origin::Task{captures,..}=>self.public_resources(*captures,parameters,kind),
+            Origin::TaskOutput{task,projection}=>self.public_resources(*task,parameters,kind).task_projection(projection),
+            Origin::Inactive if matches!(kind, PublicBorrowKind::Argument) => Borrow::source(source),
+            Origin::Unresolved=>Borrow::source(source),Origin::Inactive|Origin::External=>Borrow::default(),
+        }).guards_at_call(parameters)
+    }
+
+    fn public_borrows(
+        &self, parameters: &BTreeMap<ValueIdentity, bounds::Proof>, borrow: Borrow,
+        kind: PublicBorrowKind,
+    ) -> Option<Borrow> {
         let selected=borrow.map_sources(|source|match source {
+            source @ (Origin::Data(_) | Origin::Element { .. } | Origin::Projection { .. } | Origin::Inactive)
+                if matches!(kind, PublicBorrowKind::Argument) =>
+                self.public_resources(Borrow::source(source), parameters, kind),
             Origin::Parameter(id,indices)=>self.parameters.get(&id).copied().filter(|id|self.input(*id))
                 .map(|id|Borrow::source(Origin::Parameter(id,indices.into_iter().map(|index|contract_index(index,self,BorrowProjection::Input,None)).collect()))).unwrap_or_else(||Borrow::source(Origin::Unresolved)),
             Origin::Position(origin) if matches!(origin.root,address::Root::Parameter(_)|address::Root::Derived(_)|address::Root::External(_)|address::Root::Dataset{..}|address::Root::Resource{..}) =>
@@ -570,13 +599,13 @@ impl Function {
         self.address_access(parameters,read.borrow(),|borrows,when|Access::Initialized{borrows,initialized:address::merge_initializations(initialized),when},when,project)
     }
     fn address_access(&self,parameters:&BTreeMap<ValueIdentity,bounds::Proof>,borrow:Borrow,make:impl FnOnce(Borrow,bounds::Condition)->Access,when:&bounds::Clause,project:&impl Fn(&bounds::Clause,&BTreeMap<ValueIdentity,bounds::Proof>)->bounds::Clause)->Option<Access>{
-        let borrows = self.address_borrows(parameters,borrow)?;
+        let borrows = self.public_borrows(parameters,borrow,PublicBorrowKind::Memory)?;
         let when = project(when,parameters);
         when.possible().then(|| make(borrows, bounds::Condition::guard(when)))
     }
     fn access(&self,parameters:&BTreeMap<ValueIdentity,bounds::Proof>,resources:Borrow,borrows:Borrow,kind:view::Exclusion,when:&bounds::Clause,project:&impl Fn(&bounds::Clause,&BTreeMap<ValueIdentity,bounds::Proof>)->bounds::Clause)->Option<Access>{
         if matches!(kind,view::Exclusion::Position(_)) {
-            let resources = self.address_borrows(parameters,resources)?;
+            let resources = self.public_borrows(parameters,resources,PublicBorrowKind::Memory)?;
             return self.address_access(parameters,borrows, |borrows, when| Access::Resource { resources, borrows, kind, when }, when,project);
         }
         let mut parameters=std::borrow::Cow::Borrowed(parameters);
@@ -590,25 +619,12 @@ impl Function {
                 parameters.to_mut().insert(id,bounds::Proof::default().with_identity(ValueIdentity::ElementIndex(next)));next+=1;
             }
         }
-        fn external(function:&Function,borrow:Borrow,parameters:&BTreeMap<ValueIdentity,bounds::Proof>)->Borrow{
-            borrow.map_sources(|source|match source{
-                Origin::Data(id)=>function.parameters.get(&id).copied().filter(|id|function.input(*id)).map(|id|Borrow::source(Origin::Data(id))).unwrap_or_default(),
-                Origin::Parameter(id,indices)=>Borrow::source(function.parameters.get(&id).copied().filter(|id|function.input(*id)).map(|id|Origin::Parameter(id,indices.into_iter().map(|index|index.and_then(|index|index.at_call(parameters))).collect())).unwrap_or(Origin::Unresolved)),
-                Origin::Element{parent,fields,index}=>Borrow::selected_element(external(function,*parent,parameters),fields,index.and_then(|index|index.at_call(parameters))),
-                Origin::Projection{parent,fields}=>Borrow::projection(external(function,*parent,parameters),fields),
-                Origin::Position(origin)=>origin.resources(),
-                Origin::Contents{..}|Origin::Relation(..)=>canonical(Borrow::source(source),function,&BTreeMap::new()),
-                Origin::Task{captures,..}=>external(function,*captures,parameters),
-                Origin::TaskOutput{task,projection}=>external(function,*task,parameters).task_projection(projection),
-                Origin::Unresolved=>Borrow::source(source),Origin::Inactive|Origin::External=>Borrow::default(),
-            }).guards_at_call(parameters)
-        }
-        let resources=external(self,resources.resources(),&parameters);
-        let borrows=external(self,match kind {
+        let resources=self.public_resources(resources.resources(),&parameters,PublicBorrowKind::Memory);
+        let borrows=self.public_resources(match kind {
             view::Exclusion::Ownership=>borrows.owners(),
             view::Exclusion::View=>borrows.view_resources(),
             _=>borrows.resources(),
-        },&parameters);
+        },&parameters,PublicBorrowKind::Memory);
         if !resources.active()||!borrows.active(){return None;}
         let when=bounds::Condition::guard(project(when,&parameters).canonical());
         when.active().then_some(Access::Resource{resources,borrows,kind,when})
@@ -1304,6 +1320,12 @@ fn stored_target<'p>(
 }
 fn evaluate(borrow:&Borrow,function:&Function,state:&State,known:&States,expand_loops:bool)->Borrow {
     BorrowEvaluation{function,state:state.loop_scope(),known,expand_loops,deferred_reads:false,loop_bindings:None,values:BTreeMap::new(),stored: None, exit_writes: None,stored_paths:Default::default()}.evaluate(borrow)
+}
+
+#[derive(Clone, Copy)]
+enum PublicBorrowKind {
+    Memory,
+    Argument,
 }
 
 #[derive(Clone, Copy)]
