@@ -8,39 +8,23 @@ struct CliArgument {
     u64 text;
 };
 
-enum LinkCommand:u32 {
-    Link=0;
-    Archive=1;
-    HostArchive=2;
-    StackReport=3;
-    Help=4;
-    Version=5;
+struct LinkCommandHost {
+    address context;
+    cfn<void,address,u64> append_input;
+    cfn<void,address,address,u64> diagnostic;
+    cfn<void,address,address,u64> help;
+    cfn<void,address> version;
+    cfn<u32,address,u64> link;
+    cfn<u32,address,u64> archive;
+    cfn<u32,address,u64> host_archive;
+    cfn<u32,address,u64,u64,u64> stack_report;
+    cfn<void,address,u64,address,u64> complete;
 };
 
-enum LinkArgumentError:u32 {
-    None=0;
-    ProductConflict=1;
-    MissingBudget=2;
-    BudgetText=3;
-    EmptyBudget=4;
-    InvalidBudget=5;
-    BudgetOverflow=6;
-    MissingOutputOperand=7;
-    BudgetWithoutReport=8;
-    MissingOutput=9;
-};
-
-struct LinkCommandLine {
-    LinkCommand command;
-    LinkArgumentError error;
-    u64 output_index;
-    u64 budget;
-    u64 has_budget;
-};
-
-// Reports the original argument index synchronously for each input.
-extern "C" LinkCommandLine parse_link_arguments(address arguments, u64 count, address context, cfn<void,address,u64> append_input) on cpu
-    requires nonzero(append_input);
+extern "C" void run_link_command(address arguments, u64 count, LinkCommandHost host) on cpu
+    requires nonzero(host.append_input) requires nonzero(host.diagnostic) requires nonzero(host.help)
+    requires nonzero(host.version) requires nonzero(host.link) requires nonzero(host.archive)
+    requires nonzero(host.host_archive) requires nonzero(host.stack_report) requires nonzero(host.complete);
 
 enum CompileCommand:u32 {
     Unknown=0; Version=1; Help=2; Inputs=3; X64=4; Image=5; Code=6; Spirv=7;

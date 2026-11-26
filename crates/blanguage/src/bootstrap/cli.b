@@ -1,5 +1,35 @@
 module bootstrap.cli;
 
+enum LinkCommand:u32 {
+    Link=0;
+    Archive=1;
+    HostArchive=2;
+    StackReport=3;
+    Help=4;
+    Version=5;
+};
+
+enum LinkArgumentError:u32 {
+    None=0;
+    ProductConflict=1;
+    MissingBudget=2;
+    BudgetText=3;
+    EmptyBudget=4;
+    InvalidBudget=5;
+    BudgetOverflow=6;
+    MissingOutputOperand=7;
+    BudgetWithoutReport=8;
+    MissingOutput=9;
+};
+
+struct LinkCommandLine {
+    LinkCommand command;
+    LinkArgumentError error;
+    u64 output_index;
+    u64 budget;
+    u64 has_budget;
+};
+
 struct LinkBudget {
     u64 bytes;
     LinkArgumentError error;
@@ -300,7 +330,7 @@ LinkBudget parse_budget(CliArgument argument) on cpu {
     return LinkBudget(number.value, LinkArgumentError::None);
 }
 
-extern "C" LinkCommandLine parse_link_arguments(address arguments, u64 count, address context, cfn<void,address,u64> append_input) on cpu
+LinkCommandLine parse_link_arguments(address arguments, u64 count, address context, cfn<void,address,u64> append_input) on cpu
     requires nonzero(append_input) {
     LinkCommandLine result = LinkCommandLine(LinkCommand::Link, LinkArgumentError::None, count, 0u64, 0u64);
     if (count == 0u64) {
@@ -358,6 +388,75 @@ extern "C" LinkCommandLine parse_link_arguments(address arguments, u64 count, ad
         result.error = LinkArgumentError::MissingOutput;
     }
     return result;
+}
+
+void link_message<const N:u32>(address context, cfn<void,address,address,u64> emit, read array<u8,N> text) on cpu
+    requires nonzero(emit) {
+    emit(context, address_of(text[0]), u64(N));
+}
+
+void link_error(LinkArgumentError error, LinkCommandHost host) on cpu
+    requires nonzero(host.diagnostic) {
+    if (error == LinkArgumentError::ProductConflict) {
+        link_message(host.context, host.diagnostic, "blink只能选择一种产物命令");
+    }
+    else if (error == LinkArgumentError::MissingBudget) {
+        link_message(host.context, host.diagnostic, "--stack-budget缺少字节数");
+    }
+    else if (error == LinkArgumentError::BudgetText) {
+        link_message(host.context, host.diagnostic, "--stack-budget需要十进制字节数");
+    }
+    else if (error == LinkArgumentError::EmptyBudget) {
+        link_message(host.context, host.diagnostic, "cannot parse integer from empty string");
+    }
+    else if (error == LinkArgumentError::InvalidBudget) {
+        link_message(host.context, host.diagnostic, "invalid digit found in string");
+    }
+    else if (error == LinkArgumentError::BudgetOverflow) {
+        link_message(host.context, host.diagnostic, "number too large to fit in target type");
+    }
+    else if (error == LinkArgumentError::MissingOutputOperand) {
+        link_message(host.context, host.diagnostic, "-o 缺少输出路径");
+    }
+    else if (error == LinkArgumentError::BudgetWithoutReport) {
+        link_message(host.context, host.diagnostic, "--stack-budget只用于--stack-report命令");
+    }
+    else if (error == LinkArgumentError::MissingOutput) {
+        link_message(host.context, host.diagnostic, "用法：blink <input.obj|library.lib>... -o <output.exe|output.dll>；B接口库使用 --archive，原生宿主库使用 --host-archive");
+    }
+}
+
+void link_complete<const N:u32>(LinkCommandHost host, u64 output, read array<u8,N> label) on cpu
+    requires nonzero(host.complete) {
+    host.complete(host.context, output, address_of(label[0]), u64(N));
+}
+
+extern "C" void run_link_command(address arguments, u64 count, LinkCommandHost host) on cpu
+    requires nonzero(host.append_input) requires nonzero(host.diagnostic) requires nonzero(host.help)
+    requires nonzero(host.version) requires nonzero(host.link) requires nonzero(host.archive)
+    requires nonzero(host.host_archive) requires nonzero(host.stack_report) requires nonzero(host.complete) {
+    LinkCommandLine line = parse_link_arguments(arguments, count, host.context, host.append_input);
+    if (line.error != LinkArgumentError::None) {
+        link_error(line.error, host);
+    } else if (line.command == LinkCommand::Help) {
+        link_message(host.context, host.help, "Blink linker\nblink --version\nblink <input.obj|library.lib>... -o <output.exe|output.dll>\nblink --archive <module.obj|library.lib>... -o <library.lib>\nblink --host-archive <module.obj|library.lib>... -o <host.lib>\nblink --stack-report <application.obj|library.lib>... -o <report.txt> [--stack-budget bytes]\n");
+    } else if (line.command == LinkCommand::Version) {
+        host.version(host.context);
+    } else if (line.command == LinkCommand::StackReport) {
+        if (host.stack_report(host.context, line.output_index, line.budget, line.has_budget) != 0) {
+            link_complete(host, line.output_index, "stack report");
+        }
+    } else if (line.command == LinkCommand::Archive) {
+        if (host.archive(host.context, line.output_index) != 0) {
+            link_complete(host, line.output_index, "archived");
+        }
+    } else if (line.command == LinkCommand::HostArchive) {
+        if (host.host_archive(host.context, line.output_index) != 0) {
+            link_complete(host, line.output_index, "host archived");
+        }
+    } else if (host.link(host.context, line.output_index) != 0) {
+        link_complete(host, line.output_index, "linked");
+    }
 }
 
 enum ResourceOption:u32 { None=0; Jobs=1; Cpus=2; ParameterLimit=3; };
