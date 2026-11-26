@@ -22,7 +22,6 @@ struct Host {
     live: PrivateLiveHost,
     scalar: unsafe extern "C" fn(*const Scalar) -> ScalarEncoding,
     next_local: unsafe extern "C" fn(*mut c_void) -> Span,
-    next_private: unsafe extern "C" fn(*mut c_void) -> PrivateDeclaration,
     register_operand: unsafe extern "C" fn(*mut c_void, Reg) -> u32,
 }
 #[repr(C)]
@@ -31,7 +30,6 @@ struct Request {
     registers: Span,
     local_slots: usize,
     locals: *mut c_void,
-    private: *mut c_void,
     live: *mut Slots,
     empty: *const Slots,
 }
@@ -54,14 +52,13 @@ unsafe extern "C" {
     fn graph_register_read(graph: *mut c_void, index: usize, weight: u64);
 }
 pub(super) fn build(code: &[Inst], registers: &[Scalar], locals: &BTreeMap<usize, Ty>,
-    private: &BTreeSet<(usize, usize)>, live: &mut Slots) -> (*mut c_void, bool) {
+    live: &mut Slots) -> (*mut c_void, bool) {
     let local_slots = locals.last_key_value().map_or(0, |(&end, _)| end);
     let mut types = locals.values();
-    let mut declarations = PrivateDeclarations { spans: private.iter(), locals };
     let empty = Slots::new();
     let request = Request {
         code: Span::slice(code), registers: Span::slice(registers), local_slots,
-        locals: ptr::from_mut(&mut types).cast(), private: ptr::from_mut(&mut declarations).cast(),
+        locals: ptr::from_mut(&mut types).cast(),
         live, empty: &empty,
     };
     let built = unsafe { graph_create(&request, HOST) };
@@ -101,6 +98,6 @@ unsafe extern "C" fn register_operand(context: *mut c_void, register: Reg) -> u3
 
 const CORE: Core = Core { visit_set };
 const HOST: Host = Host {
-    core: CORE, live: PRIVATE_LIVE_HOST, scalar, next_local, next_private: next_private_declaration,
+    core: CORE, live: PRIVATE_LIVE_HOST, scalar, next_local,
     register_operand,
 };

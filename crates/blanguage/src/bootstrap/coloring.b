@@ -410,12 +410,12 @@ ColorLayout color_locations(address graph,address places,u32 mode,Span packet_us
     return ColorLayout(end,saved_gpr,saved_xmm);
 }
 
-extern "C" ScalarAllocation finish_scalar(address graph,u32 mode,address context,
-    cfn<PrivateDeclaration,address> next) on cpu requires nonzero(next) {
+extern "C" ScalarAllocation finish_scalar(address graph,u32 mode,address locals,
+    cfn<LocalLayout,address,usize> ensures memory(read) local_layout) on cpu requires nonzero(local_layout) {
     graph_seal(graph);
     GraphData data=unsafe_position<GraphData>(graph);
     ColorLayout layout=color_locations(graph,data.places,mode,Span(address(),0u64,0u64));
-    layout.end=place_private(data.places,layout.end,data.registers,context,next);
+    layout.end=place_private(data,layout.end,locals,local_layout);
     unsafe_position<GraphData>(graph).places=address();
     ColorPositions positions=ColorPositions(Span(data.places,data.count,size_of<ColorPlace>()),data.registers);
     return ScalarAllocation(positions,layout);
@@ -442,26 +442,34 @@ extern "C" void color_places_drop(Span places) on cpu {
     HeapFree(GetProcessHeap(), 0, places.data);
 }
 
-u64 place_private(address places, u64 data_end, usize registers, address context,
-    cfn<PrivateDeclaration,address> next) on cpu requires nonzero(next) {
+u64 place_private(GraphData data, u64 data_end, address locals,
+    cfn<LocalLayout,address,usize> ensures memory(read) local_layout) on cpu requires nonzero(local_layout) {
     u64 end = data_end;
-    while (true) {
-        PrivateDeclaration declaration = next(context);
-        Span offsets = declaration.offsets;
-        if (address_bits(offsets.data) == 0u64) { return end; }
-        u64 alignment = declaration.alignment > 16 ? u64(declaration.alignment) : 16u64;
+    usize slot = data.registers;
+    while (slot < data.count) {
+        ColorPlace first = unsafe_position<ColorPlace>(place_at(data.places, slot));
+        if (first.width != u8(0) || first.value == 0u64) {
+            slot += 1u64;
+            continue;
+        }
+        // The addressable declaration's first row still holds its local end.
+        usize limit = first.value;
+        LocalLayout layout = local_layout(locals, limit);
+        u64 alignment = max(16u64, u64(layout.alignment));
         u64 base = ((end + alignment - 1u64) / alignment) * alignment;
-        usize first = registers + declaration.begin;
+        Span offsets = layout.offsets;
         usize index = 0u64;
         while (index < offsets.count) {
-            address offset = unsafe_address(address_bits(offsets.data) + u64(index) * u64(offsets.stride));
-            address place = place_at(places, u64(first + index));
+            address offset = color_offset(offsets.data, index * u64(offsets.stride));
+            address place = place_at(data.places, slot + index);
             unsafe_position<ColorPlace>(place).value = base + u64(unsafe_position<u32>(offset));
             unsafe_position<ColorPlace>(place).kind = ColorPlaceKind::Stack;
             index += 1u64;
         }
-        end = base + u64(declaration.size);
+        end = base + u64(layout.size);
+        slot = data.registers + limit;
     }
+    return end;
 }
 
 void record_definition(address place, u32 literal, u64 bits) on cpu {
@@ -803,8 +811,20 @@ usize initialize_scalar_span(address places,usize first,Span scalars,
     return first+index;
 }
 
+extern "C" void mark_private(address graph, usize begin, usize end) on cpu {
+    GraphData data = unsafe_position<GraphData>(graph);
+    address first = place_at(data.places, data.registers + begin);
+    if (unsafe_position<ColorPlace>(first).value == end) { return; }
+    unsafe_position<ColorPlace>(first).value = end;
+    usize slot = begin;
+    while (slot < end) {
+        unsafe_position<ColorPlace>(place_at(data.places, data.registers + slot)).width = u8(0);
+        slot += 1u64;
+    }
+}
+
 void initialize_scalar_places(address graph,GraphRequest input,GraphHost host) on cpu
-    requires nonzero(host.scalar) requires nonzero(host.next_local) requires nonzero(host.next_private) {
+    requires nonzero(host.scalar) requires nonzero(host.next_local) requires nonzero(host.live.ir.inspect) {
     address places=unsafe_position<GraphData>(graph).places;
     usize first=initialize_scalar_span(places,0u64,input.registers,host.scalar);
     while(true){
@@ -812,21 +832,13 @@ void initialize_scalar_places(address graph,GraphRequest input,GraphHost host) o
         if(address_bits(scalars.data)==0u64){break;}
         first=initialize_scalar_span(places,first,scalars,host.scalar);
     }
-    while(true){
-        PrivateDeclaration declaration=host.next_private(input.private);
-        if(address_bits(declaration.offsets.data)==0u64){break;}
-        usize slot=declaration.begin;
-        while(slot<declaration.end){
-            unsafe_position<ColorPlace>(place_at(places,input.registers.count+slot)).width=u8(0);
-            slot+=1u64;
-        }
-    }
+    private_spans(input.code,host.live.ir,graph,c_function(mark_private));
 }
 
 extern "C" GraphBuilt graph_create(address request,GraphHost host) on cpu
     requires nonzero(host.core.visit_set)
     requires nonzero(host.live.ir.inspect) requires nonzero(host.scalar)
-    requires nonzero(host.next_local) requires nonzero(host.next_private)
+    requires nonzero(host.next_local)
     requires nonzero(host.live.clone_set) requires nonzero(host.live.drop_set) requires nonzero(host.live.change)
     requires nonzero(host.live.insert_register) requires nonzero(host.register_operand) {
     GraphRequest input=unsafe_position<GraphRequest>(request);

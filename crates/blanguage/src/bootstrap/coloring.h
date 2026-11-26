@@ -14,11 +14,11 @@ extern "C" bool prepare_packet(address graph, address context, Span code, Packet
     requires nonzero(host.widths);
 extern "C" void color_places_drop(Span places) on cpu;
 
-// The cursor borrows original ranges and offsets for the graph and final stack write.
-struct PrivateDeclaration { Span offsets; usize begin; usize end; u32 size; u32 alignment; };
+// The original declaration supplies the layout of a marked local.
+struct LocalLayout { Span offsets; u32 size; u32 alignment; };
 struct ScalarAllocation { ColorPositions positions; ColorLayout layout; };
-extern "C" ScalarAllocation finish_scalar(address graph,u32 mode,address context,
-    cfn<PrivateDeclaration,address> next) on cpu requires nonzero(next);
+extern "C" ScalarAllocation finish_scalar(address graph,u32 mode,address locals,
+    cfn<LocalLayout,address,usize> ensures memory(read) local_layout) on cpu requires nonzero(local_layout);
 
 enum GraphSpace:u32 { Register=0; Local=1; };
 struct GraphEvent { u64 anchor; u64 skip; u32 kind; u32 skip_present; };
@@ -30,18 +30,17 @@ struct GraphHost {
     LiveHost live;
     cfn<ScalarEncoding,address> ensures memory(read) scalar;
     cfn<Span,address> next_local;
-    cfn<PrivateDeclaration,address> next_private;
     cfn<u32,address,usize> register_operand;
 };
 // Borrow the original IR and native live sets for the synchronous graph walk.
 struct GraphRequest {
-    Span code; Span registers; usize local_slots; address locals; address private;
+    Span code; Span registers; usize local_slots; address locals;
     address live; address empty;
 };
 struct GraphBuilt {address state;u32 uses_r15;};
 extern "C" GraphBuilt graph_create(address request,GraphHost host) on cpu
     requires nonzero(host.core.visit_set) requires nonzero(host.live.ir.inspect) requires nonzero(host.scalar)
-    requires nonzero(host.next_local) requires nonzero(host.next_private)
+    requires nonzero(host.next_local)
     requires nonzero(host.live.clone_set) requires nonzero(host.live.drop_set) requires nonzero(host.live.change)
     requires nonzero(host.live.insert_register) requires nonzero(host.register_operand);
 extern "C" void graph_together(address graph,address live,GraphCore core) on cpu

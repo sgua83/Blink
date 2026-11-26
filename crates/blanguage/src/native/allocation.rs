@@ -124,7 +124,6 @@ pub(super) struct Frame {
     pub tile_private: std::collections::BTreeMap<PrivateSlot, u32>,
 }
 pub(super) struct Graph {
-    private: BTreeSet<(usize, usize)>,
     pub(super) state: *mut c_void,
     pub(super) needs_r15: bool,
 }
@@ -145,9 +144,8 @@ impl Graph {
         locals: &std::collections::BTreeMap<usize, Ty>,
         mut live: BTreeSet<PrivateSlot>,
     ) -> Self {
-        let private = private_spans(code);
-        let (state, needs_r15) = graph::build(code, scalars, locals, &private, &mut live);
-        Self { private, state, needs_r15 }
+        let (state, needs_r15) = graph::build(code, scalars, locals, &mut live);
+        Self { state, needs_r15 }
     }
 
     pub(super) fn tile_interference(&mut self, phases: &[TilePhase<'_>]) {
@@ -191,29 +189,17 @@ impl ColorPlace {
 
 
 #[repr(C)]
-struct PrivateDeclaration {
+struct LocalLayout {
     offsets: Span,
-    begin: usize,
-    end: usize,
     size: u32,
     alignment: u32,
 }
 
-struct PrivateDeclarations<'a> {
-    spans: btree_set::Iter<'a, (usize, usize)>,
-    locals: &'a std::collections::BTreeMap<usize, Ty>,
-}
-
-unsafe extern "C" fn next_private_declaration(context: *mut c_void) -> PrivateDeclaration {
-    let state = unsafe { &mut *context.cast::<PrivateDeclarations<'_>>() };
-    let Some(&(begin, end)) = state.spans.next() else {
-        return PrivateDeclaration { offsets: Span::EMPTY, begin: 0, end: 0, size: 0, alignment: 0 };
-    };
-    let ty = &state.locals[&end];
-    PrivateDeclaration {
+unsafe extern "C" fn local_layout(locals: *const c_void, end: usize) -> LocalLayout {
+    let declarations = unsafe { &*locals.cast::<BTreeMap<usize, Ty>>() };
+    let ty = &declarations[&end];
+    LocalLayout {
         offsets: Span::field(&ty.components, |component| &component.1),
-        begin,
-        end,
         size: ty.size,
         alignment: ty.align,
     }
@@ -225,8 +211,8 @@ unsafe extern "C" {
     #[link_name = "bootstrap.coloring::graph_release"]
     fn graph_release(graph: *mut c_void);
     #[link_name = "bootstrap.coloring::finish_scalar"]
-    fn finish_scalar(graph: *mut c_void, mode: u32, context: *mut c_void,
-        next: unsafe extern "C" fn(*mut c_void) -> PrivateDeclaration) -> Allocation;
+    fn finish_scalar(graph: *mut c_void, mode: u32, locals: *const c_void,
+        local_layout: unsafe extern "C" fn(*const c_void, usize) -> LocalLayout) -> Allocation;
 }
 impl Allocation {
     pub fn new(
@@ -234,9 +220,8 @@ impl Allocation {
     ) -> Self {
         // All entry and tile interference has now been collected. Packet coloring
         // borrows these same ordered rows after scalar coloring returns.
-        let mut private = PrivateDeclarations { spans: graph.private.iter(), locals };
         unsafe { finish_scalar(graph.state, u32::from(tile_scope),
-            ptr::from_mut(&mut private).cast(), next_private_declaration) }
+            ptr::from_ref(locals).cast(), local_layout) }
     }
     pub fn location(&self, slot: PrivateSlot) -> Location {
         let locations = unsafe { self.positions.rows.as_slice::<ColorPlace>() };
