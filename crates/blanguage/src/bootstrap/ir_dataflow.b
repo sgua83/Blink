@@ -2898,14 +2898,33 @@ bool sdk_prefix<const N:u32>(Span text, read array<u8,N> prefix) on cpu {
 Word sdk_index<const N:u32>(Span text, read array<u8,N> prefix) on cpu {
     if (text.count <= u64(N) || !sdk_prefix(text, prefix)) { return absent(); }
     usize index = u64(N);
+    if (text.count > index + 1u64 && sdk_symbol_byte(text,index) == u8(48)) { return absent(); }
     usize value = 0u64;
     while (index < text.count) {
         u8 digit = sdk_symbol_byte(text, index);
         if (digit < u8(48) || digit > u8(57)) { return absent(); }
-        value = value * 10u64 + u64(digit - u8(48));
+        u64 next = u64(digit - u8(48));
+        if (value > (18446744073709551615u64 - next) / 10u64) { return absent(); }
+        value = value * 10u64 + next;
         index += 1u64;
     }
     return found(value);
+}
+
+extern "C" ApplicationResourceSlot application_resource_slot(Span library,Span symbol) on cpu {
+    if(library.count!=19u64 || !sdk_prefix(library,"@blink.application@")){
+        return ApplicationResourceSlot(ApplicationResourceKind::Other,0u64);
+    }
+    Word index=sdk_index(symbol,"blink_allocate_");
+    if(index.present!=0){return ApplicationResourceSlot(ApplicationResourceKind::Allocate,index.value);}
+    index=sdk_index(symbol,"blink_run_");
+    if(index.present!=0){return ApplicationResourceSlot(ApplicationResourceKind::Run,index.value);}
+    index=sdk_index(symbol,"blink_complete_");
+    if(index.present!=0){return ApplicationResourceSlot(ApplicationResourceKind::Complete,index.value);}
+    if(symbol.count==16u64 && sdk_prefix(symbol,"blink_task_start")){
+        return ApplicationResourceSlot(ApplicationResourceKind::TaskStart,0u64);
+    }
+    return ApplicationResourceSlot(ApplicationResourceKind::Other,0u64);
 }
 
 // Numbered call producers pass one scalar per argument after the Frame.
@@ -3085,19 +3104,18 @@ bool sdk_resource_call(SdkResourceEmission out, read SdkResourceInput input,
     requires nonzero(host.layout) requires nonzero(host.completions) requires nonzero(host.completion) {
     View invocation = host.ir.inspect(call);
     View target = host.ir.inspect(invocation.left);
-    if (target.tag != 0 || target.first.count != 19u64 || !sdk_prefix(target.first, "@blink.application@")) {
-        return false;
-    }
-    Word index = sdk_index(target.second, "blink_allocate_");
-    if (index.present != 0) { sdk_allocate(out, host, index.value); return true; }
-    index = sdk_index(target.second, "blink_run_");
-    if (index.present != 0) {
-        sdk_run(out, host, host.layout(input.programs, index.value), invocation.first, index.value);
+    if(target.tag!=0){return false;}
+    let resource=application_resource_slot(target.first,target.second);
+    if(resource.kind==ApplicationResourceKind::Allocate){
+        sdk_allocate(out,host,resource.index);
         return true;
     }
-    index = sdk_index(target.second, "blink_complete_");
-    if (index.present == 0) { return false; }
-    Span fields = host.completions(input.completions, index.value);
+    if(resource.kind==ApplicationResourceKind::Run){
+        sdk_run(out,host,host.layout(input.programs,resource.index),invocation.first,resource.index);
+        return true;
+    }
+    if(resource.kind!=ApplicationResourceKind::Complete){return false;}
+    Span fields=host.completions(input.completions,resource.index);
     usize row = 0u64;
     while (row < fields.count) {
         SdkCompletion field = host.completion(node_at(fields, row, N_INSTRUCTION).data);

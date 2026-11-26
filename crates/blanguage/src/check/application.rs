@@ -1184,26 +1184,43 @@ pub(crate) async fn compile_application(
     })
 }
 
-fn runtime_calls(code: &mut [Inst], visitor: &mut impl FnMut(&mut ExternalName)) {
+#[repr(u32)]
+#[derive(Clone, Copy)]
+#[allow(dead_code)] // Returned by bootstrap.ir_dataflow.
+enum ApplicationResourceKind { Allocate = 0, Run = 1, Complete = 2, TaskStart = 3, Other = 4 }
+
+#[repr(C)]
+struct ApplicationResourceSlot { kind: ApplicationResourceKind, index: usize }
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ir_dataflow::application_resource_slot"]
+    fn application_resource_slot(library: dataflow::Span, symbol: dataflow::Span) -> ApplicationResourceSlot;
+}
+
+fn resource_calls(code: &mut [Inst], visitor: &mut impl FnMut(&mut ExternalName, ApplicationResourceSlot)) {
     for instruction in code {
         match &mut (instruction).kind {
             InstKind::Call(call) => {
-                if let CallTarget::External(name) = &mut call.target
-                    && name.library == crate::application::RUNTIME_LIBRARY
-                {
-                    visitor(name)
+                if let CallTarget::External(name) = &mut call.target {
+                    let resource = unsafe {
+                        application_resource_slot(
+                            dataflow::Span::slice(name.library.as_bytes()),
+                            dataflow::Span::slice(name.symbol.as_bytes()),
+                        )
+                    };
+                    visitor(name, resource);
                 }
             }
-            InstKind::Scope(body) | InstKind::Cleanup { body, .. } => runtime_calls(body, visitor),
+            InstKind::Scope(body) | InstKind::Cleanup { body, .. } => resource_calls(body, visitor),
             InstKind::If { yes, no, .. } => {
-                runtime_calls(yes, visitor);
-                runtime_calls(no, visitor);
+                resource_calls(yes, visitor);
+                resource_calls(no, visitor);
             }
             InstKind::Loop {
                 condition, body, ..
             } => {
-                runtime_calls(condition, visitor);
-                runtime_calls(body, visitor);
+                resource_calls(condition, visitor);
+                resource_calls(body, visitor);
             }
             _ => {}
         }
@@ -1231,63 +1248,85 @@ fn declarations(
     codes: &mut [&mut Vec<Inst>],
     mut resources: crate::application::Resources,
 ) -> crate::application::Resources {
-    fn collect(code: &mut [Inst], names: &mut BTreeSet<String>, pending: &mut Vec<usize>) {
-        runtime_calls(code, &mut |call| {
-            if names.insert(call.symbol.clone())
-                && let Some(index) = call.symbol.strip_prefix("blink_run_").and_then(|index| index.parse().ok())
-            {
-                pending.push(index);
-            }
-        });
-    }
-    let mut names = BTreeSet::new();
+    use ApplicationResourceKind::{Allocate, Complete, Other, Run, TaskStart};
+
+    let mut slots = [
+        vec![None; resources.types.len()],
+        vec![None; resources.programs.len()],
+        vec![None; resources.completions.len()],
+    ];
     let mut pending = Vec::new();
+    let mut task_starts = false;
+    let mut collect = |code: &mut [Inst], pending: &mut Vec<usize>| {
+        resource_calls(code, &mut |_, resource| match resource.kind {
+            Allocate | Run | Complete => {
+                if let Some(position) = slots[resource.kind as usize].get_mut(resource.index)
+                    && position.replace(resource.index).is_none()
+                    && matches!(resource.kind, Run)
+                {
+                    pending.push(resource.index);
+                }
+            }
+            TaskStart => task_starts = true,
+            Other => {}
+        });
+    };
     for code in codes.iter_mut() {
-        collect(code, &mut names, &mut pending);
+        collect(code, &mut pending);
     }
     while let Some(index) = pending.pop() {
         visit_stage_bodies(&mut resources.programs[index].1.stages, |_, _, code| {
-            collect(code, &mut names, &mut pending);
+            collect(code, &mut pending);
         });
     }
-    fn retain<T>(
-        items: Vec<T>,
-        prefix: &str,
-        names: &BTreeSet<String>,
-        renames: &mut BTreeMap<String, String>,
-    ) -> Vec<T> {
-        let mut live = Vec::new();
-        for (old, item) in items.into_iter().enumerate() {
-            let name = format!("blink_{prefix}_{old}");
-            if names.contains(&name) {
-                if old != live.len() {
-                    renames.insert(name, format!("blink_{prefix}_{}", live.len()));
-                }
-                live.push(item);
-            }
-        }
-        live
-    }
-    let mut renames = BTreeMap::new();
-    let types = retain(resources.types, "allocate", &names, &mut renames);
-    let mut programs = retain(resources.programs, "run", &names, &mut renames);
-    let completions = retain(resources.completions, "complete", &names, &mut renames);
-    if !renames.is_empty() {
+
+    let [types, programs, completions] = &mut slots;
+    let moved_types = compact_resources(&mut resources.types, types);
+    let moved_programs = compact_resources(&mut resources.programs, programs);
+    let moved_completions = compact_resources(&mut resources.completions, completions);
+    if moved_types || moved_programs || moved_completions {
         let rewrite = |code: &mut [Inst]| {
-            runtime_calls(code, &mut |call| {
-                if let Some(name) = renames.get(&call.symbol) {
-                    call.symbol = name.clone();
+            resource_calls(code, &mut |call, resource| {
+                let prefix = match resource.kind {
+                    Allocate => "allocate",
+                    Run => "run",
+                    Complete => "complete",
+                    Other | TaskStart => return,
+                };
+                if let Some(index) = slots[resource.kind as usize].get(resource.index).copied().flatten()
+                    && index != resource.index
+                {
+                    call.symbol = format!("blink_{prefix}_{index}");
                 }
             });
         };
         for code in codes.iter_mut() {
             rewrite(code);
         }
-        for (_, program) in &mut programs {
+        for (_, program) in &mut resources.programs {
             visit_stage_bodies(&mut program.stages, |_, _, code| rewrite(code));
         }
     }
-    crate::application::Resources { types, programs, completions, task_starts: names.contains("blink_task_start") }
+    resources.task_starts = task_starts;
+    resources
+}
+
+fn compact_resources<T>(resources: &mut Vec<T>, positions: &mut [Option<usize>]) -> bool {
+    let mut input = 0;
+    let mut output = 0;
+    let mut moved = false;
+    resources.retain(|_| {
+        let old = input;
+        input += 1;
+        if positions[old].is_none() {
+            return false;
+        }
+        positions[old] = Some(output);
+        moved |= old != output;
+        output += 1;
+        true
+    });
+    moved
 }
 pub(super) fn module_resources(
     functions: &mut [FunctionBody],

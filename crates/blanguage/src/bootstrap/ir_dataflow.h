@@ -664,6 +664,10 @@ enum SdkArgumentKind:u32 {
 };
 struct SdkArgument { SdkArgumentKind kind; usize value; usize count; };
 enum SdkResourceCall:u32 { Allocate=0; Run=1; Complete=2; };
+enum ApplicationResourceKind:u32 { Allocate=0; Run=1; Complete=2; TaskStart=3; Other=4; };
+struct ApplicationResourceSlot {ApplicationResourceKind kind;usize index;};
+extern "C" ApplicationResourceSlot application_resource_slot(Span library,Span symbol) on cpu;
+
 struct SdkResourceHost {
     Host ir;
     cfn<SdkResourceBody,address> function;
