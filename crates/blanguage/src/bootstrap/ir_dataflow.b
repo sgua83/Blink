@@ -21,15 +21,29 @@ Node node_at(Span span,usize index,u32 kind) on cpu {
  return Node(unsafe_address(address_bits(span.data)+u64(index)*u64(span.stride)),kind);
 }
 
-extern "C" usize next_loop_edit(Span code,usize first,Host host) on cpu
- requires nonzero(host.inspect) {
- usize index=first;
- while(index<code.count){
-  u32 kind=host.inspect(node_at(code,index,N_INSTRUCTION)).tag;
-  if(kind==OP_BREAK_VALUE||kind==OP_CONTINUE_VALUE||kind==OP_BRANCH||kind==OP_SCOPE){return index;}
-  index+=1u64;
+extern "C" InitialLoopEdit next_initial_loop_edit(InitialLoopEdit start,usize inserted,InitialLoopEditor host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.bodies)
+ requires nonzero(host.push) requires nonzero(host.pop) requires nonzero(host.record_break) {
+ InitialLoopEdit cursor=InitialLoopEdit(start.block,start.index+inserted);
+ while(cursor.block!=address()){
+  Span code=host.block(cursor.block);
+  usize index=cursor.index;
+  while(index<code.count){
+   u32 kind=host.ir.inspect(node_at(code,index,N_INSTRUCTION)).tag;
+   if(kind==OP_CONTINUE_VALUE){return InitialLoopEdit(cursor.block,index);}
+   if(kind==OP_BREAK_VALUE){host.record_break(host.context);}
+   if(kind==OP_BRANCH||kind==OP_SCOPE){
+    InitialLoopBodies bodies=host.bodies(cursor.block,index);
+    host.push(host.context,InitialLoopEdit(cursor.block,index+1u64));
+    if(kind==OP_BRANCH){host.push(host.context,InitialLoopEdit(bodies.second,0u64));}
+    cursor=InitialLoopEdit(bodies.first,0u64);
+    break;
+   }
+   index+=1u64;
+  }
+  if(index==code.count){cursor=host.pop(host.context);}
  }
- return code.count;
+ return cursor;
 }
 
 enum TransferSearch:u32 { LoopLocal=0; LoopAndExit=1; FunctionExit=2; };

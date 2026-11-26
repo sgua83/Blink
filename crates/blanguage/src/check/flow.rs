@@ -1431,9 +1431,6 @@ struct LoopPathHost {
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.ir_dataflow::next_loop_edit"]
-    fn next_loop_edit(code: dataflow::Span, first: usize, host: dataflow::Host) -> usize;
-
     #[link_name = "bootstrap.ir_dataflow::loop_exit_paths"]
     fn source_loop_exit_paths(code: dataflow::Span, paths: LoopPaths, host: LoopPathHost);
 
@@ -1543,11 +1540,81 @@ where
     }
     Ok(code)
 }
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct InitialLoopEdit {
+    block: *mut std::ffi::c_void,
+    index: usize,
+}
+
+#[repr(C)]
+struct InitialLoopBodies {
+    first: *mut std::ffi::c_void,
+    second: *mut std::ffi::c_void,
+}
+
+#[repr(C)]
+struct InitialLoopEditor {
+    ir: dataflow::Host,
+    context: *mut std::ffi::c_void,
+    block: unsafe extern "C" fn(*const std::ffi::c_void) -> dataflow::Span,
+    bodies: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> InitialLoopBodies,
+    push: unsafe extern "C" fn(*mut std::ffi::c_void, InitialLoopEdit),
+    pop: unsafe extern "C" fn(*mut std::ffi::c_void) -> InitialLoopEdit,
+    record_break: unsafe extern "C" fn(*mut std::ffi::c_void),
+}
+
+struct InitialLoopState<'a> {
+    pending: Vec<InitialLoopEdit>,
+    breaks: &'a mut std::vec::IntoIter<LoopState>,
+    exits: &'a mut Vec<LoopState>,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ir_dataflow::next_initial_loop_edit"]
+    fn next_initial_loop_edit(start: InitialLoopEdit, inserted: usize, host: InitialLoopEditor) -> InitialLoopEdit;
+}
+
+unsafe extern "C" fn initial_loop_block(block: *const std::ffi::c_void) -> dataflow::Span {
+    dataflow::Span::slice(unsafe { &*block.cast::<Vec<Inst>>() })
+}
+
+unsafe extern "C" fn initial_loop_bodies(block: *mut std::ffi::c_void, index: usize) -> InitialLoopBodies {
+    // B only visits the child containers of the original branch or scope.
+    let body = unsafe { &mut *block.cast::<Vec<Inst>>() };
+    match &mut body[index].kind {
+        InstKind::If { yes, no, .. } => InitialLoopBodies {
+            first: std::ptr::from_mut(yes).cast(),
+            second: std::ptr::from_mut(no).cast(),
+        },
+        InstKind::Scope(body) => InitialLoopBodies {
+            first: std::ptr::from_mut(body).cast(),
+            second: std::ptr::null_mut(),
+        },
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    }
+}
+
+unsafe extern "C" fn push_initial_loop(context: *mut std::ffi::c_void, edit: InitialLoopEdit) {
+    unsafe { &mut *context.cast::<InitialLoopState<'_>>() }.pending.push(edit);
+}
+
+unsafe extern "C" fn pop_initial_loop(context: *mut std::ffi::c_void) -> InitialLoopEdit {
+    unsafe { &mut *context.cast::<InitialLoopState<'_>>() }.pending.pop()
+        .unwrap_or(InitialLoopEdit { block: std::ptr::null_mut(), index: 0 })
+}
+
+unsafe extern "C" fn record_initial_break(context: *mut std::ffi::c_void) {
+    let state = unsafe { &mut *context.cast::<InitialLoopState<'_>>() };
+    state.exits.push(state.breaks.next().unwrap());
+}
+
 async fn expand_initial_code<'a, F>(
     builder: &mut Builder<'a>,
     code: &mut Vec<Inst>,
-    breaks: &mut impl Iterator<Item = LoopState>,
-    continues: &mut impl Iterator<Item = LoopState>,
+    breaks: &mut std::vec::IntoIter<LoopState>,
+    continues: &mut std::vec::IntoIter<LoopState>,
     exits: &mut Vec<LoopState>,
     flow: &mut Flow,
     continuation: &mut F,
@@ -1555,41 +1622,28 @@ async fn expand_initial_code<'a, F>(
 where
     F: std::ops::AsyncFnMut(&mut Builder<'a>, Option<Value>) -> Result<()>,
 {
-    let mut first = 0;
+    let mut state = InitialLoopState { pending: Vec::new(), breaks, exits };
+    let mut cursor = InitialLoopEdit { block: std::ptr::from_mut(code).cast(), index: 0 };
+    let mut inserted = 0;
     loop {
-        let index = unsafe { next_loop_edit(dataflow::Span::slice(code), first, dataflow::HOST) };
-        let Some(instruction) = code.get_mut(index) else {
-            return Ok(());
+        // Only the selected block can be resized. Its Vec and every suspended
+        // cursor stay in the original, untouched ancestor containers.
+        cursor = unsafe {
+            next_initial_loop_edit(cursor, inserted, InitialLoopEditor {
+                ir: dataflow::HOST, context: std::ptr::from_mut(&mut state).cast(),
+                block: initial_loop_block, bodies: initial_loop_bodies,
+                push: push_initial_loop, pop: pop_initial_loop, record_break: record_initial_break,
+            })
         };
-        first = index + 1;
-        match &mut instruction.kind {
-            InstKind::Break => exits.push(breaks.next().unwrap()),
-            InstKind::Continue => {
-                let next = unsafe { builder.world.call(compile_initial_continuation(
-                    builder,
-                    continues.next().unwrap(),
-                    exits,
-                    flow,
-                    continuation,
-                )).await }?;
-                first = index + next.len();
-                drop(code.splice(index..index + 1, next));
-            }
-            InstKind::If { yes, no, .. } => {
-                unsafe { builder.world.call(expand_initial_code(
-                    builder, yes, breaks, continues, exits, flow, continuation,
-                )).await }?;
-                unsafe { builder.world.call(expand_initial_code(
-                    builder, no, breaks, continues, exits, flow, continuation,
-                )).await }?;
-            }
-            InstKind::Scope(body) => {
-                unsafe { builder.world.call(expand_initial_code(
-                    builder, body, breaks, continues, exits, flow, continuation,
-                )).await }?;
-            }
-            _ => {}
+        if cursor.block.is_null() {
+            return Ok(());
         }
+        let next = unsafe { builder.world.call(compile_initial_continuation(
+            builder, continues.next().unwrap(), state.exits, flow, continuation,
+        )).await }?;
+        inserted = next.len();
+        let block = unsafe { &mut *cursor.block.cast::<Vec<Inst>>() };
+        drop(block.splice(cursor.index..cursor.index + 1, next));
     }
 }
 

@@ -89,8 +89,19 @@ struct LoopPathHost {
  cfn<void,usize,Span,Span,LoopPaths,LoopPathHost> with_branch;
  cfn<void,Span,LoopPaths,LoopPathHost> with_scope;
 };
-extern "C" usize next_loop_edit(Span code,usize first,Host host) on cpu
- requires nonzero(host.inspect);
+struct InitialLoopEdit { address block; usize index; };
+struct InitialLoopBodies { address first; address second; };
+struct InitialLoopEditor {
+ Host ir; address context;
+ cfn<Span,address> block;
+ cfn<InitialLoopBodies,address,usize> bodies;
+ cfn<void,address,InitialLoopEdit> push;
+ cfn<InitialLoopEdit,address> pop;
+ cfn<void,address> record_break;
+};
+extern "C" InitialLoopEdit next_initial_loop_edit(InitialLoopEdit start,usize inserted,InitialLoopEditor host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.bodies)
+ requires nonzero(host.push) requires nonzero(host.pop) requires nonzero(host.record_break);
 extern "C" u32 has_function_exit(Span code,Host host) on cpu requires nonzero(host.inspect);
 extern "C" u32 parallel_frame_operand(address context,usize reg) on cpu;
 extern "C" u32 parallel_frame_used(Span code,Span frame,Host host) on cpu requires nonzero(host.inspect);
