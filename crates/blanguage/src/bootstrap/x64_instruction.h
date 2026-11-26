@@ -622,28 +622,16 @@ struct PrintEncoding {
 // for integer and boolean output. Other fields are relative to output.
 extern "C" PrintEncoding print_helper(ScalarEncoding scalar, address output, address unwind) on cpu;
 
-enum PacketPlanKind:u32 {
-    Unsupported=0; Constant=1; Index=2; Uniform=3; LocalLoad=4; LocalStore=5;
-    Load=6; ViewLoad=7; Store=8; Unary=9; Binary=10; Divide=11; Cast=12;
-    Math=13; Select=14; If=15; Loop=16; Scope=17; Exit=18; Break=19; Continue=20;
-};
-enum PacketPlanVisit:u32 { Operands=0; Results=1; Stride=2; Widths=3; };
-struct PacketPlanBlock { address instructions;u64 count; };
-struct PacketPlanNode {
-    PacketPlanBlock first;PacketPlanBlock second;
-    address instruction;address payload;
-    u64 dst;u64 a;u64 b;u64 c;
-    u32 word;u32 stride;u32 writes;PacketPlanKind kind;u32 math;
-    ScalarEncoding from;ScalarEncoding into;
-};
 struct PacketPlanHeader {u64 registers;u64 slots;u64 writes;u32 tile;u32 selected;};
 struct PacketPlanState {address owner;address bytes;u64 count;};
 struct PacketPlanProduct { address plan; PacketPlanState uses; };
 struct PacketPlanFlow {PacketPlanState next;PacketPlanState breaks;PacketPlanState continues;PacketPlanState exits;};
-struct PacketPlanDefinition {PacketPlanState state;address definitions;u32 uniform;u32 record;};
 struct PacketPlanHost {
-    cfn<PacketPlanNode,address,PacketPlanBlock,u64> read;
-    cfn<u32,address,address,PacketPlanVisit,address,cfn<u32,address,u64>> visit;
+    Host ir;
+    cfn<u32,address,usize> stride;
+    cfn<u32,address,usize> written;
+    cfn<ScalarEncoding,address,usize> scalar;
+    cfn<u32,address,cfn<u32,usize>> widths;
     cfn<PacketPlanState,u64,address> state_new;
     cfn<void,PacketPlanState> state_drop;
     cfn<address> plan_new;
@@ -652,12 +640,13 @@ struct PacketPlanHost {
 };
 // A successful plan transfers both the final Step vector and the original uses
 // buffer. The latter is consumed by packet coloring before emission.
-extern "C" PacketPlanProduct packet_plan(address context,PacketPlanBlock code,PacketPlanHeader header,PacketPlanHost host) on cpu 
-    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append);
+extern "C" PacketPlanProduct packet_plan(address context,Span code,PacketPlanHeader header,PacketPlanHost host) on cpu 
+    requires nonzero(host.ir.inspect) requires nonzero(host.stride) requires nonzero(host.written) requires nonzero(host.scalar)
+    requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append)
+    requires nonzero(host.widths) requires nonzero(host.state_new) requires nonzero(host.state_drop);
 extern "C" u32 packet_plan_uniform_operand(address bytes,u64 reg) on cpu;
 extern "C" u32 packet_plan_mark_operand(address bytes,u64 reg) on cpu;
-extern "C" u32 packet_plan_definition(address context,u64 reg) on cpu;
-extern "C" u32 packet_plan_width(address context,u64 bytes) on cpu;
+extern "C" u32 packet_plan_width(usize bytes) on cpu;
 
 enum RangeEntry:u32 {
     Map=0; Reduce=1; CustomReduce=2; CustomScan=3; CustomSegmentedReduce=4;
