@@ -3690,16 +3690,14 @@ impl Builder<'_> {
                 "并行域由主流程或整域函数发起；元素实例中的嵌套域尚未实现",
             );
         }
-        let mut names = BTreeSet::new();
-        captured_names(statement, &mut names);
         let mut params = Vec::new();
         let mut args = Vec::new();
-        for name in names {
-            let Some(binding) = self.env.get(&name) else {
+        for name in captured_names(statement) {
+            let Some(binding) = self.env.get(name) else {
                 continue;
             };
             let (ty, access, arg) = if matches!(binding, Binding::ApplicationData(_) | Binding::DataReference(_)) {
-                let data = unsafe { self.world.call(self.application_named_reference(&name, statement.span())).await }?.unwrap();
+                let data = unsafe { self.world.call(self.application_named_reference(name, statement.span())).await }?.unwrap();
                 let access = if data.access == Access::Atomic {
                     Access::Atomic
                 } else if data.access == Access::Read {
@@ -3714,11 +3712,11 @@ impl Builder<'_> {
                 ty.count = data.count.map(Shape::Literal);
                 (ty, access, Argument::BorrowedData(data))
             } else {
-                let value = unsafe { self.world.call(self.name_expr(&name, statement.span())).await }?;
+                let value = unsafe { self.world.call(self.name_expr(name, statement.span())).await }?;
                 (value.ty.syntax(), Access::Value, Argument::Value(value))
             };
             params.push(Param {
-                name,
+                name: name.to_owned(),
                 ty,
                 access,
                 span: statement.span(),
@@ -3985,102 +3983,65 @@ pub(super) fn rebound(body:&Block,name:&str)->bool {
     (unsafe {source_binding_rebound(storage.nodes.cast_const(),storage.source.cast_const(),storage.text.cast_const(),body.source_slice(),name.as_ptr(),name.len())})!=0
 }
 
-fn captured_names(statement: &Stmt, names: &mut BTreeSet<String>) {
-    fn name(name: &str, bound: &BTreeSet<String>, names: &mut BTreeSet<String>) {
-        if !bound.contains(name) {
-            names.insert(name.to_owned());
-        }
+#[repr(C)]
+struct ApplicationCaptureHost {
+    context: *mut c_void,
+    add_binding: unsafe extern "C" fn(*mut c_void, crate::syntax::wire::Text) -> usize,
+    add_reference: unsafe extern "C" fn(*mut c_void, crate::syntax::wire::Text),
+    restore: unsafe extern "C" fn(*mut c_void, usize),
+}
+
+struct ApplicationCaptures<'a> {
+    source: crate::syntax::SourceView<'a>,
+    bound: BTreeSet<&'a str>,
+    added: Vec<&'a str>,
+    names: BTreeSet<&'a str>,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.function_body::application_captures"]
+    fn application_captures(statement: crate::syntax::wire::SignatureNode, host: ApplicationCaptureHost);
+}
+
+unsafe extern "C" fn bind_capture(context: *mut c_void, name: crate::syntax::wire::Text) -> usize {
+    let captures = unsafe { &mut *context.cast::<ApplicationCaptures<'_>>() };
+    let name = captures.source.text(name);
+    if captures.bound.insert(name) {
+        captures.added.push(name);
     }
-    fn expr(e: &Expr, bound: &BTreeSet<String>, names: &mut BTreeSet<String>) {
-        match e.kind() {
-            ExprKind::Name(n) => name(n, bound, names),
-            ExprKind::Invoke(callee, args) => {
-                expr(&callee, bound, names);
-                for arg in args { expr(&arg, bound, names); }
-            }
-            ExprKind::Call(callee, args) => {
-                name(callee, bound, names);
-                for arg in args { expr(&arg, bound, names); }
-            }
-            ExprKind::Specialize(_, _, args)
-            | ExprKind::Construct(_, args)
-            | ExprKind::Cooperate(_, _, args) => {
-                for a in args {
-                    expr(&a, bound, names);
-                }
-            }
-            ExprKind::Target(_, e) | ExprKind::Unary(_, e) | ExprKind::Member(e, _) => {
-                expr(&e, bound, names)
-            }
-            ExprKind::Index(a, b) | ExprKind::Binary(_, a, b) => {
-                expr(&a, bound, names);
-                expr(&b, bound, names);
-            }
-            ExprKind::Select(a, b, c) => {
-                expr(&a, bound, names);
-                expr(&b, bound, names);
-                expr(&c, bound, names);
-            }
-            _ => {}
-        }
+    captures.added.len()
+}
+
+unsafe extern "C" fn reference_capture(context: *mut c_void, name: crate::syntax::wire::Text) {
+    let captures = unsafe { &mut *context.cast::<ApplicationCaptures<'_>>() };
+    let name = captures.source.text(name);
+    if !captures.bound.contains(name) {
+        captures.names.insert(name);
     }
-    fn block(body: impl IntoIterator<Item=Stmt>, bound: &BTreeSet<String>, names: &mut BTreeSet<String>) {
-        let mut bound = bound.clone();
-        for s in body {
-            match s.kind() {
-                StmtKind::Parallel(iterator, domain, body) => {
-                    name(&domain.dataset(), &bound, names);
-                    if let Some(e) = &domain.count() {
-                        expr(e, &bound, names);
-                    }
-                    if let Some(e) = &domain.selection() {
-                        expr(e, &bound, names);
-                    }
-                    let mut nested = bound.clone();
-                    nested.insert(iterator.to_string());
-                    block(&body, &nested, names);
-                }
-                StmtKind::Let(_, local, e) => {
-                    expr(&e, &bound, names);
-                    bound.insert(local.to_string());
-                }
-                StmtKind::Declare(_, local) => {
-                    bound.insert(local.to_string());
-                }
-                StmtKind::Expr(e) | StmtKind::Return(Some(e)) | StmtKind::Seek(_, e) => {
-                    expr(&e, &bound, names)
-                }
-                StmtKind::Assign(a, _, b) => {
-                    expr(&a, &bound, names);
-                    expr(&b, &bound, names);
-                }
-                StmtKind::If(e, a, b) => {
-                    expr(&e, &bound, names);
-                    block(&a, &bound, names);
-                    block(&b, &bound, names);
-                }
-                StmtKind::Match(e, arms) => {
-                    expr(&e,&bound,names);
-                    for arm in arms {let mut nested=bound.clone();nested.extend(arm.binding().into_iter().map(str::to_owned));block(&arm.body(),&nested,names);}
-                }
-                StmtKind::While(e, body) => {
-                    expr(&e, &bound, names);
-                    block(&body, &bound, names);
-                }
-                StmtKind::For(iterator, a, b, body) => {
-                    expr(&a, &bound, names);
-                    if let Some(b) = b {
-                        expr(&b, &bound, names);
-                    }
-                    let mut nested = bound.clone();
-                    nested.insert(iterator.to_string());
-                    block(&body, &nested, names);
-                }
-                _ => {}
-            }
-        }
+}
+
+unsafe extern "C" fn restore_capture(context: *mut c_void, mark: usize) {
+    let captures = unsafe { &mut *context.cast::<ApplicationCaptures<'_>>() };
+    for name in captures.added.drain(mark..) {
+        captures.bound.remove(name);
     }
-    block(std::iter::once(statement.clone()), &BTreeSet::new(), names);
+}
+
+fn captured_names(statement: &Stmt) -> BTreeSet<&str> {
+    let mut captures = ApplicationCaptures {
+        source: statement.source_view(),
+        bound: BTreeSet::new(),
+        added: Vec::new(),
+        names: BTreeSet::new(),
+    };
+    let host = ApplicationCaptureHost {
+        context: ptr::from_mut(&mut captures).cast(),
+        add_binding: bind_capture,
+        add_reference: reference_capture,
+        restore: restore_capture,
+    };
+    unsafe { application_captures(statement.signature_node(), host) };
+    captures.names
 }
 
 // 函数出口已要求完整拥有值；局部条件与Place一样不进入模块接口。

@@ -171,6 +171,15 @@ struct ReturnedStep {LocalCursor cursor;ReturnedNeed need;u32 mutable;};
 extern "C" ReturnedStep returned_step(LocalCursor cursor,ReturnedFacts facts) on cpu;
 extern "C" u32 binding_rebound(address nodes,address source,address stored,Slice body,address name,u64 length) on cpu;
 
+struct ApplicationCaptureHost {
+    address context;
+    cfn<u64,address,Text> add_binding;
+    cfn<void,address,Text> add_reference;
+    cfn<void,address,u64> restore;
+};
+extern "C" void application_captures(SignatureNode statement,ApplicationCaptureHost host) on cpu
+    requires nonzero(host.add_binding) requires nonzero(host.add_reference) requires nonzero(host.restore);
+
 struct AssignmentCursor {u32 phase;u32 compound;};
 struct OperatorSpelling {address data;u64 length;};
 struct AssignmentFacts {OperatorSpelling operation;u32 owns;u32 kind;u32 dataset;u32 present;u32 name;u32 borrowed;};

@@ -763,6 +763,126 @@ bool rebound_body(address nodes,address source,address stored,Slice body,address
 }
 extern "C" u32 binding_rebound(address nodes,address source,address stored,Slice body,address name,u64 length) on cpu {return rebound_body(nodes,source,stored,body,name,length) ? 1 : 0;}
 
+
+void capture_expressions(read SignatureNode source,Slice list,ApplicationCaptureHost host) on cpu
+    requires nonzero(host.add_reference) {
+    u64 index=0u64;
+    while(index<list.count){
+        capture_expression(source,binding_member(source.storage.nodes,list,index),host);
+        index+=1u64;
+    }
+}
+void capture_expression(read SignatureNode source,u64 offset,ApplicationCaptureHost host) on cpu
+    requires nonzero(host.add_reference) {
+    let expression=binding_node<ExprNode>(source.storage.nodes,offset);
+    match(expression.kind){
+        ExprKind::Name(name){host.add_reference(host.context,name);}
+        ExprKind::Call(value){
+            host.add_reference(host.context,value.name);
+            capture_expressions(source,value.arguments,host);
+        }
+        ExprKind::Invoke(value){
+            capture_expression(source,value.callee.offset,host);
+            capture_expressions(source,value.arguments,host);
+        }
+        ExprKind::Construct(value){capture_expressions(source,value.arguments,host);}
+        ExprKind::Specialize(value){capture_expressions(source,value.arguments,host);}
+        ExprKind::Cooperate(value){capture_expressions(source,value.arguments,host);}
+        ExprKind::Member(value){capture_expression(source,value.base.offset,host);}
+        ExprKind::Target(value){capture_expression(source,value.value.offset,host);}
+        ExprKind::Unary(value){capture_expression(source,value.value.offset,host);}
+        ExprKind::Index(value){
+            capture_expression(source,value.base.offset,host);
+            capture_expression(source,value.index.offset,host);
+        }
+        ExprKind::Binary(value){
+            capture_expression(source,value.left.offset,host);
+            capture_expression(source,value.right.offset,host);
+        }
+        ExprKind::Select(value){
+            capture_expression(source,value.condition.offset,host);
+            capture_expression(source,value.yes.offset,host);
+            capture_expression(source,value.no.offset,host);
+        }
+        ExprKind::Number(unused){}
+        ExprKind::StaticU32(unused){}
+        ExprKind::Bool(unused){}
+        ExprKind::FunctionRef(unused){}
+    }
+}
+void capture_body(read SignatureNode source,Slice body,u64 mark,u64 active,ApplicationCaptureHost host) on cpu
+    requires nonzero(host.add_binding) requires nonzero(host.add_reference) requires nonzero(host.restore) {
+    u64 index=0u64;
+    u64 current=active;
+    while(index<body.count){
+        capture_statement(source,binding_member(source.storage.nodes,body,index),current,host);
+        index+=1u64;
+    }
+    if(current!=mark){host.restore(host.context,mark);}
+}
+void capture_statement(read SignatureNode source,u64 offset,inout u64 active,ApplicationCaptureHost host) on cpu
+    requires nonzero(host.add_binding) requires nonzero(host.add_reference) requires nonzero(host.restore) {
+    let statement=binding_node<StmtNode>(source.storage.nodes,offset);
+    match(statement.kind){
+        StmtKind::Parallel(value){
+            let domain=binding_node<ParallelNode>(source.storage.nodes,value.domain.offset);
+            host.add_reference(host.context,domain.dataset);
+            if(domain.count.present!=0){capture_expression(source,domain.count.value.offset,host);}
+            if(domain.selection.present!=0){capture_expression(source,domain.selection.value.offset,host);}
+            let nested=host.add_binding(host.context,value.name);
+            capture_body(source,value.body,active,nested,host);
+        }
+        StmtKind::Let(value){
+            capture_expression(source,value.value.offset,host);
+            active=host.add_binding(host.context,value.name);
+        }
+        StmtKind::Declare(value){active=host.add_binding(host.context,value.name);}
+        StmtKind::Expr(value){capture_expression(source,value.offset,host);}
+        StmtKind::Return(value){
+            if(value.present!=0){capture_expression(source,value.value.offset,host);}
+        }
+        StmtKind::Seek(value){capture_expression(source,value.value.offset,host);}
+        StmtKind::Assign(value){
+            capture_expression(source,value.target.offset,host);
+            capture_expression(source,value.value.offset,host);
+        }
+        StmtKind::If(value){
+            capture_expression(source,value.condition.offset,host);
+            capture_body(source,value.yes,active,active,host);
+            capture_body(source,value.no,active,active,host);
+        }
+        StmtKind::Match(value){
+            capture_expression(source,value.value.offset,host);
+            u64 index=0u64;
+            while(index<value.arms.count){
+                let arm=binding_node<ArmNode>(source.storage.nodes,binding_member(source.storage.nodes,value.arms,index));
+                u64 nested=active;
+                if(arm.binding.present!=0){nested=host.add_binding(host.context,arm.binding.value);}
+                capture_body(source,arm.body,active,nested,host);
+                index+=1u64;
+            }
+        }
+        StmtKind::While(value){
+            capture_expression(source,value.condition.offset,host);
+            capture_body(source,value.body,active,active,host);
+        }
+        StmtKind::For(value){
+            capture_expression(source,value.start.offset,host);
+            if(value.end.present!=0){capture_expression(source,value.end.value.offset,host);}
+            let nested=host.add_binding(host.context,value.name);
+            capture_body(source,value.body,active,nested,host);
+        }
+        StmtKind::Break(){}
+        StmtKind::Continue(){}
+        StmtKind::Phase(){}
+    }
+}
+extern "C" void application_captures(SignatureNode statement,ApplicationCaptureHost host) on cpu
+    requires nonzero(host.add_binding) requires nonzero(host.add_reference) requires nonzero(host.restore) {
+    u64 active=0u64;
+    capture_statement(statement,statement.offset,active,host);
+}
+
 extern "C" AssignmentStep assignment_step(AssignmentCursor cursor,AssignmentFacts facts) on cpu {
  AssignmentCursor c=cursor;
  if(c.phase==0){c.compound=facts.operation.length!=1u64||unsafe_position<u8>(facts.operation.data)!=61 ? 1 : 0;c.phase=1;return AssignmentStep(c,AssignmentNeed::Type);}
