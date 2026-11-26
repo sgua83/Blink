@@ -115,6 +115,7 @@ struct Host {
     contains_parameter:unsafe extern "C" fn(Address,u64,u64)->u32,
     contains_element:unsafe extern "C" fn(Address,u64,Index,u32)->u32,
     contains_input:unsafe extern "C" fn(Address,u64,u64,Index,u32)->u32,
+    field_coverage: unsafe extern "C" fn(LoopFieldState, Node) -> u32,
     iterate:unsafe extern "C" fn(Address,Address)->Address,
     next:unsafe extern "C" fn(Address)->Item,
     drop_iterator:unsafe extern "C" fn(Address),
@@ -127,7 +128,7 @@ struct Host {
     fresh_set:unsafe extern "C" fn()->Address,
     insert_set:unsafe extern "C" fn(Address,Address),
 }
-const HOST:Host=Host{inspect,child,equal,identity_equal,presence_kind,presence_equal,presence_uses_index,contains,contains_parameter,contains_element,contains_input,iterate,next,drop_iterator,fresh_vector,push_vector,vector_count,vector_at,make_position,clone_position,fresh_set,insert_set};
+const HOST:Host=Host{inspect,child,equal,identity_equal,presence_kind,presence_equal,presence_uses_index,contains,contains_parameter,contains_element,contains_input,field_coverage,iterate,next,drop_iterator,fresh_vector,push_vector,vector_count,vector_at,make_position,clone_position,fresh_set,insert_set};
 unsafe extern "C" {
     #[link_name="bootstrap.ownership_position::select"] fn source_select(when:Address,a:Address,b:Address,equal:EqualPosition,presence_kind:PresenceKind)->u32;
     #[link_name="bootstrap.ownership_position::both"] fn source_both(a:Address,b:Address,equal:EqualPosition,inspect:InspectPosition)->u32;
@@ -221,7 +222,7 @@ pub(in crate::check) fn merge_initialization<T>(
 struct LoopFieldRow { position: Address, words: *const u32, count: usize }
 
 #[repr(C)]
-struct LoopFieldState { known: Address, fixed: u32, value: u32 }
+struct LoopFieldState { known: Address, path: Address, effects: Address }
 
 #[repr(C)]
 struct LoopFieldHost {
@@ -234,7 +235,7 @@ struct LoopFieldExit<'a, R, T> {
     rows: &'a [R],
     fields: fn(&R) -> (&Position, &[u32]),
     states: &'a [T],
-    edge: fn(&T) -> (&BTreeSet<Position>, Option<u32>),
+    edge: fn(&T) -> (&BTreeSet<Position>, &bounds::Clause, Option<&view_contracts::InitializedEffects>),
 }
 
 unsafe extern "C" fn loop_field_row<R, T>(context: Address, at: usize) -> LoopFieldRow {
@@ -245,8 +246,12 @@ unsafe extern "C" fn loop_field_row<R, T>(context: Address, at: usize) -> LoopFi
 
 unsafe extern "C" fn loop_field_state<R, T>(context: Address, at: usize) -> LoopFieldState {
     let context = unsafe { &*context.cast::<LoopFieldExit<'_, R, T>>() };
-    let (known, fixed) = (context.edge)(&context.states[at]);
-    LoopFieldState { known: pointer(known), fixed: u32::from(fixed.is_some()), value: fixed.unwrap_or(0) }
+    let (known, path, effects) = (context.edge)(&context.states[at]);
+    LoopFieldState {
+        known: pointer(known),
+        path: pointer(path),
+        effects: effects.map_or(std::ptr::null_mut(), pointer),
+    }
 }
 
 unsafe extern "C" fn publish_loop_field(output: Address, value: Address) {
@@ -317,7 +322,7 @@ impl Position {
         rows: &[R],
         fields: fn(&R) -> (&Self, &[u32]),
         states: &[T],
-        edge: fn(&T) -> (&BTreeSet<Self>, Option<u32>),
+        edge: fn(&T) -> (&BTreeSet<Self>, &bounds::Clause, Option<&view_contracts::InitializedEffects>),
         output: &mut BTreeSet<Self>,
         at: ApplicationIndex,
     ) {
@@ -365,7 +370,7 @@ impl Position {
 struct InitializationEffectsHost {
     enter: unsafe extern "C" fn(Address, Node, u64),
     leave: unsafe extern "C" fn(Address),
-    effect: unsafe extern "C" fn(Address, Address) -> u32,
+    effect: unsafe extern "C" fn(Address, Address, Index) -> u32,
 }
 
 struct InitializationEffects<F> {
@@ -391,36 +396,98 @@ unsafe extern "C" fn leave_effect<F>(context: Address) {
     state.branches.pop();
 }
 
-unsafe extern "C" fn initialization_effect<F>(context: Address, value: Address) -> u32
-where F: FnMut(&Position, &bounds::Condition) -> bool {
+unsafe extern "C" fn initialization_effect<F>(context: Address, value: Address, index: Index) -> u32
+where F: FnMut(&Position, &bounds::Condition, Index) -> bool {
     let state = unsafe { &mut *context.cast::<InitializationEffects<F>>() };
     let position = unsafe { &*value.cast::<Position>() };
     let when = state.branches.last().unwrap_or(&state.root);
-    u32::from((state.effect)(position, when))
+    u32::from((state.effect)(position, when, index))
 }
 
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct InitializationFilter {
+    kind: u32,
+    indexed: u32,
+    owner: u64,
+    member: u64,
+    word: u64,
+}
 
 unsafe extern "C" {
     #[link_name = "bootstrap.ownership_position::visit_initialization_effects"]
     fn source_initialization_effects(
-        initialized: Address, context: Address, host: Host, sink: InitializationEffectsHost,
+        initialized: Address, context: Address, filter: InitializationFilter,
+        host: Host, sink: InitializationEffectsHost,
     ) -> u32;
+    #[link_name = "bootstrap.ownership_position::visit_initialization_position"]
+    fn source_initialization_position(
+        position: Address, context: Address, filter: InitializationFilter,
+        host: Host, sink: InitializationEffectsHost,
+    ) -> u32;
+}
+
+unsafe extern "C" fn field_coverage(edge: LoopFieldState, field: Node) -> u32 {
+    let path = unsafe { &*edge.path.cast::<bounds::Clause>() };
+    let mut remaining = path.clone();
+    let known = unsafe { &*edge.known.cast::<BTreeSet<Position>>() };
+    let wanted = unsafe { actual_index(field.index) };
+    let filter = InitializationFilter {
+        kind: field.kind, indexed: field.index.kind, owner: field.owner, member: field.member, word: field.word,
+    };
+    let mut cover = |_: &Position, when: &bounds::Condition, index: Index| {
+        let actual = unsafe { actual_index(index) };
+        remaining = match (wanted, actual) {
+            (Some(wanted), Some(actual)) if wanted != actual => {
+                let equality = Presence::indices(Comparison::Equal, wanted, actual).condition();
+                when.clone().logical(equality, false).assume(&remaining, false)
+            }
+            _ => when.assume(&remaining, false),
+        };
+        !remaining.possible()
+    };
+    let complete = visit_initializations(
+        InitializationInput::Set(known), bounds::Condition::constant(true), filter, &mut cover,
+    ) || unsafe { edge.effects.cast::<view_contracts::InitializedEffects>().as_ref() }.is_some_and(|effects| {
+        effects.visit_guarded_positions(path, |position, when| {
+            visit_initializations(InitializationInput::Position(position), when.clone(), filter, &mut cover)
+        })
+    });
+    u32::from(complete || !remaining.possible())
+}
+
+enum InitializationInput<'a> {
+    Set(&'a BTreeSet<Position>),
+    Position(&'a Position),
+}
+
+fn visit_initializations<F>(
+    input: InitializationInput<'_>, root: bounds::Condition, filter: InitializationFilter, effect: F,
+) -> bool
+where F: FnMut(&Position, &bounds::Condition, Index) -> bool {
+    let mut context = InitializationEffects { root, branches: Vec::new(), effect };
+    let sink = InitializationEffectsHost {
+        enter: enter_effect::<F>, leave: leave_effect::<F>, effect: initialization_effect::<F>,
+    };
+    let context = std::ptr::from_mut(&mut context).cast();
+    unsafe {
+        (match input {
+            InitializationInput::Set(set) => source_initialization_effects(pointer(set), context, filter, HOST, sink),
+            InitializationInput::Position(position) => source_initialization_position(pointer(position), context, filter, HOST, sink),
+        }) != 0
+    }
 }
 
 impl Position {
     pub(in crate::check) fn visit_initialization_effects<F>(
-        initialized: &BTreeSet<Self>, path: &bounds::Clause, effect: F,
+        initialized: &BTreeSet<Self>, path: &bounds::Clause, mut effect: F,
     ) -> bool
     where F: FnMut(&Self, &bounds::Condition) -> bool {
-        let mut context = InitializationEffects {
-            root: bounds::Condition::execution(path), branches: Vec::new(), effect,
-        };
-        let sink = InitializationEffectsHost {
-            enter: enter_effect::<F>, leave: leave_effect::<F>, effect: initialization_effect::<F>,
-        };
-        unsafe {
-            source_initialization_effects(pointer(initialized), std::ptr::from_mut(&mut context).cast(), HOST, sink) != 0
-        }
+        visit_initializations(
+            InitializationInput::Set(initialized), bounds::Condition::execution(path),
+            InitializationFilter::default(), |position, when, _| effect(position, when),
+        )
     }
 }
 

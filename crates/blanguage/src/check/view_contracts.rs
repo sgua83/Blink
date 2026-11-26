@@ -1507,7 +1507,7 @@ fn resolved_application_position(input:LoopInput,index:Option<ownership::Applica
     visiting.remove(&position);result
 }
 
-struct InitializedEffects {
+pub(super) struct InitializedEffects {
     facts:Vec<address::Initialization>,
     iterations:Vec<(BTreeSet<Position>,bounds::Condition)>,
 }
@@ -1517,11 +1517,50 @@ impl InitializedEffects {
         for(positions,when)in &self.iterations {if when.truth_in(path)==Some(true){result.extend(positions.iter().cloned());}}
         result
     }
+
+    fn take_unconditional_positions(
+        &mut self, path: &bounds::Clause, initialized: &mut BTreeSet<Position>,
+    ) {
+        self.facts.retain(|fact| match fact.when.truth_in(path) {
+            Some(true) => {
+                initialized.extend(fact.positions(path));
+                false
+            }
+            Some(false) => false,
+            None => true,
+        });
+        self.iterations.retain_mut(|(positions, when)| match when.truth_in(path) {
+            Some(true) => {
+                initialized.append(positions);
+                false
+            }
+            Some(false) => false,
+            None => true,
+        });
+    }
+
+    pub(super) fn visit_guarded_positions(
+        &self,
+        path: &bounds::Clause,
+        mut action: impl FnMut(&Position, &bounds::Condition) -> bool,
+    ) -> bool {
+        for fact in &self.facts {
+            let active = fact.when.assume(path, true);
+            for position in fact.positions(&active) {
+                if action(&position, &fact.when) { return true; }
+            }
+        }
+        self.iterations.iter().any(|(positions, when)| {
+            positions.iter().any(|position| action(position, when))
+        })
+    }
 }
 fn iteration_positions(iteration:&address::Iteration,function:&Function,state:&State,known:&States)->BTreeSet<Position> {
     let states = iteration.states.iter().map(|entry| {
         let path = entry.path.assume(&bounds::Clause::default(), true);
-        (resolved_initialization(&entry.initialized, &path, function, state, known), entry.fixed_index)
+        let (mut positions, mut effects) = resolved_initialization_sources(&entry.initialized, &path, function, state, known);
+        effects.take_unconditional_positions(&path, &mut positions);
+        (positions, path, effects)
     }).collect::<Vec<_>>();
     flow::iteration_positions(iteration, &states)
 }
@@ -1554,12 +1593,20 @@ fn initialization_effects(effects:&[address::InitializationEffect],function:&Fun
     InitializedEffects{facts:address::merge_initializations(facts),iterations}
 }
 fn resolved_initialization(initialized:&BTreeSet<Position>,path:&bounds::Clause,function:&Function,state:&State,known:&States)->BTreeSet<Position> {
+    let (mut positions, effects) = resolved_initialization_sources(initialized, path, function, state, known);
+    positions.extend(effects.positions(path));
+    positions
+}
+fn resolved_initialization_sources(
+    initialized: &BTreeSet<Position>, path: &bounds::Clause, function: &Function, state: &State, known: &States,
+) -> (BTreeSet<Position>, InitializedEffects) {
     let map=|borrow:&Borrow|evaluate(borrow,function,state,known,true);
     let effects=address::initialization_effects(initialized,&bounds::Clause::default());
     let effects=initialization_effects(&effects,function,state,known);
-    let mut result=initialized.iter().filter(|position|!matches!(position,Position::Initialization(_)))
-        .map(|position|resolved_position(position,path,&map,&|input,index,word|Position::ApplicationInput(input,index,word))).collect::<BTreeSet<_>>();
-    result.extend(effects.positions(path));result
+    let positions = initialized.iter().filter(|position| !matches!(position, Position::Initialization(_)))
+        .map(|position| resolved_position(position, path, &map, &|input, index, word| Position::ApplicationInput(input, index, word)))
+        .collect();
+    (positions, effects)
 }
 fn resolved_read(read:&address::InitializationRead,path:&bounds::Clause,function:&Function,state:&State,known:&States)->address::InitializationRead {
     let initialized=resolved_initialization(&read.initialized,path,function,state,known);

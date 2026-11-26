@@ -2,6 +2,7 @@ module bootstrap.ownership_position;
 struct PositionIndex { u32 kind; u32 value; address identity; u64 reg; };
 struct PositionNode { u32 kind; u64 owner; u64 member; u64 word; PositionIndex index; address condition; u64 count; };
 struct PositionItem { address node; u32 present; };
+struct LoopFieldState { address known; address path; address effects; };
 // Every address is borrowed for this synchronous model operation or belongs to
 // the one actual output container. No node directory or second tree is stored.
 struct Host {
@@ -16,6 +17,7 @@ struct Host {
     cfn<u32,address,u64,u64> contains_parameter;
     cfn<u32,address,u64,PositionIndex,u32> contains_element;
     cfn<u32,address,u64,u64,PositionIndex,u32> contains_input;
+    cfn<u32,LoopFieldState,PositionNode> field_coverage;
     cfn<address,address,address> iterate;
     cfn<PositionItem,address> next;
     cfn<void,address> drop_iterator;
@@ -64,6 +66,7 @@ extern "C" u32 ready(address value,address known,Host host) on cpu
     requires nonzero(host.contains_parameter)
     requires nonzero(host.contains_element)
     requires nonzero(host.contains_input)
+    requires nonzero(host.field_coverage)
     requires nonzero(host.iterate)
     requires nonzero(host.next)
     requires nonzero(host.drop_iterator);
@@ -78,6 +81,7 @@ extern "C" u32 word_ready(address value,PositionIndex selected,u32 field,address
     requires nonzero(host.contains_parameter)
     requires nonzero(host.contains_element)
     requires nonzero(host.contains_input)
+    requires nonzero(host.field_coverage)
     requires nonzero(host.iterate)
     requires nonzero(host.next)
     requires nonzero(host.drop_iterator);
@@ -92,6 +96,7 @@ extern "C" u32 prefix_ready(address value,u32 length,u32 field,address known,Hos
     requires nonzero(host.contains_parameter)
     requires nonzero(host.contains_element)
     requires nonzero(host.contains_input)
+    requires nonzero(host.field_coverage)
     requires nonzero(host.iterate)
     requires nonzero(host.next)
     requires nonzero(host.drop_iterator);
@@ -116,6 +121,7 @@ extern "C" address merge_initialization(address exits, usize count, usize condit
     requires nonzero(host.contains_parameter)
     requires nonzero(host.contains_element)
     requires nonzero(host.contains_input)
+    requires nonzero(host.field_coverage)
     requires nonzero(host.iterate)
     requires nonzero(host.next)
     requires nonzero(host.drop_iterator)
@@ -127,7 +133,6 @@ extern "C" address merge_initialization(address exits, usize count, usize condit
     requires nonzero(initialization.drop_positions);
 
 struct LoopFieldRow { address position; address words; usize count; };
-struct LoopFieldState { address known; u32 fixed; u32 value; };
 struct LoopFieldHost {
     cfn<LoopFieldRow,address,usize> ensures memory(read) row;
     cfn<LoopFieldState,address,usize> ensures memory(read) edge;
@@ -145,6 +150,7 @@ extern "C" void loop_field_initialization(address context, address output, usize
     requires nonzero(host.contains_parameter)
     requires nonzero(host.contains_element)
     requires nonzero(host.contains_input)
+    requires nonzero(host.field_coverage)
     requires nonzero(host.iterate)
     requires nonzero(host.next)
     requires nonzero(host.drop_iterator)
@@ -175,6 +181,7 @@ extern "C" void array_initialization(address context, address output, usize coun
     requires nonzero(host.contains_parameter)
     requires nonzero(host.contains_element)
     requires nonzero(host.contains_input)
+    requires nonzero(host.field_coverage)
     requires nonzero(host.iterate)
     requires nonzero(host.next)
     requires nonzero(host.drop_iterator)
@@ -183,14 +190,15 @@ extern "C" void array_initialization(address context, address output, usize coun
     requires nonzero(host.insert_set);
 
 
+struct InitializationFilter { u32 kind; u32 indexed; u64 owner; u64 member; u64 word; };
 struct InitializationEffectsHost {
     cfn<void,address,PositionNode,u64> enter;
     cfn<void,address> leave;
-    cfn<u32,address,address> effect;
+    cfn<u32,address,address,PositionIndex> effect;
 };
 
 extern "C" u32 visit_initialization_effects(address initialized, address context,
-    Host host, InitializationEffectsHost sink) on cpu
+    InitializationFilter filter, Host host, InitializationEffectsHost sink) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.child)
     requires nonzero(host.iterate)
@@ -199,6 +207,14 @@ extern "C" u32 visit_initialization_effects(address initialized, address context
     requires nonzero(sink.enter)
     requires nonzero(sink.leave)
     requires nonzero(sink.effect);
+extern "C" u32 visit_initialization_position(address position, address context,
+    InitializationFilter filter, Host host, InitializationEffectsHost sink) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.child)
+    requires nonzero(sink.enter)
+    requires nonzero(sink.leave)
+    requires nonzero(sink.effect);
+
 
 
 struct ResolutionBase {

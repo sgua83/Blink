@@ -856,7 +856,6 @@ pub(super) struct Initialization { pub source:InitializationSource,pub when:boun
 pub(super) struct InitializationState {
     pub initialized: BTreeSet<Position>,
     pub path: bounds::Condition,
-    pub fixed_index: Option<u32>,
 }
 #[derive(Clone,PartialEq,Eq,PartialOrd,Ord)]
 pub(super) struct Iteration {
