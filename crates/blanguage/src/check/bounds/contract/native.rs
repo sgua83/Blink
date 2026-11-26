@@ -604,35 +604,35 @@ unsafe extern "C" fn all_unary(facts: Borrowed) -> u32 {
         )
     }
 }
-#[repr(C)]
-struct PriorityHost {
-    inspect: unsafe extern "C" fn(Borrowed) -> condition_graph::SourceNode,
-    all_unary: unsafe extern "C" fn(Borrowed) -> u32,
-}
-unsafe extern "C" {
-    #[link_name = "bootstrap.condition_graph::contract_priority"]
-    fn b_priority(source: Borrowed, host: PriorityHost) -> u32;
-}
 unsafe extern "C" fn source(source: Borrowed) -> condition_graph::SourceNode {
     condition_graph::source_node(unsafe { &*source.cast::<Clause>() })
 }
-fn priority(clause: &Clause) -> bool {
-    (unsafe {
-        b_priority(
-            borrow(clause),
-            PriorityHost {
-                inspect: source,
-                all_unary,
-            },
-        )
-    }) != 0
+
+#[derive(Default)]
+struct OrderedOperands<'a> {
+    priority: Vec<&'a Clause>,
+    remaining: Vec<&'a Clause>,
+}
+impl<'a> OrderedOperands<'a> {
+    fn len(&self) -> usize {
+        self.priority.len() + self.remaining.len()
+    }
+
+    fn at(&self, index: usize) -> &'a Clause {
+        let priority_count = self.priority.len();
+        if index < priority_count {
+            self.priority[index]
+        } else {
+            self.remaining[index - priority_count]
+        }
+    }
 }
 
 struct Operands<'a, 'b> {
     normal: &'a Normalizer,
     pending: Vec<&'b Clause>,
     seen: HashSet<usize>,
-    output: Vec<&'b Clause>,
+    output: OrderedOperands<'b>,
 }
 unsafe extern "C" fn operand_pop(s: Slot) -> Borrowed {
     unsafe { frame::<Operands<'_, '_>>(s) }
@@ -661,10 +661,14 @@ unsafe extern "C" fn operand_imported(s: Slot, clause: Borrowed) -> u32 {
             .contains_key(&unsafe { &*clause.cast::<Clause>() }.key()),
     )
 }
-unsafe extern "C" fn operand_emit(s: Slot, clause: Borrowed) {
-    unsafe { frame::<Operands<'_, '_>>(s) }
-        .output
-        .push(unsafe { &*clause.cast::<Clause>() });
+unsafe extern "C" fn operand_emit(s: Slot, clause: Borrowed, priority: u32) {
+    let output = &mut unsafe { frame::<Operands<'_, '_>>(s) }.output;
+    let span = if priority != 0 {
+        &mut output.priority
+    } else {
+        &mut output.remaining
+    };
+    span.push(unsafe { &*clause.cast::<Clause>() });
 }
 #[repr(C)]
 struct OperandsHost {
@@ -673,18 +677,19 @@ struct OperandsHost {
     seen: unsafe extern "C" fn(Slot, Borrowed) -> u32,
     imported: unsafe extern "C" fn(Slot, Borrowed) -> u32,
     inspect: unsafe extern "C" fn(Borrowed) -> condition_graph::SourceNode,
-    emit: unsafe extern "C" fn(Slot, Borrowed),
+    all_unary: unsafe extern "C" fn(Borrowed) -> u32,
+    emit: unsafe extern "C" fn(Slot, Borrowed, u32),
 }
 unsafe extern "C" {
     #[link_name = "bootstrap.condition_graph::contract_operands"]
     fn b_operands(context: Slot, either: u32, host: OperandsHost);
 }
-pub(super) fn operands<'a>(normal: &Normalizer, root: &'a Clause, or: bool) -> Vec<&'a Clause> {
+fn operands<'a>(normal: &Normalizer, root: &'a Clause, or: bool) -> OrderedOperands<'a> {
     let mut c = Operands {
         normal,
         pending: vec![root],
         seen: HashSet::new(),
-        output: Vec::new(),
+        output: OrderedOperands::default(),
     };
     unsafe {
         b_operands(
@@ -696,16 +701,16 @@ pub(super) fn operands<'a>(normal: &Normalizer, root: &'a Clause, or: bool) -> V
                 seen: operand_seen,
                 imported: operand_imported,
                 inspect: source,
+                all_unary,
                 emit: operand_emit,
             },
         )
     };
-    c.output.sort_by_key(|c| !priority(c));
     c.output
 }
 
 struct Fold<'a> {
-    operands: Vec<&'a Clause>,
+    operands: OrderedOperands<'a>,
     or: bool,
     next: usize,
     result: usize,
@@ -717,7 +722,7 @@ struct Work<'a> {
 struct Import<'a> {
     normal: *mut Normalizer,
     pending: Vec<Work<'a>>,
-    operands: Vec<&'a Clause>,
+    operands: OrderedOperands<'a>,
     facts: Option<facts::Iter<'a>>,
 }
 #[repr(C)]
@@ -782,7 +787,7 @@ unsafe extern "C" fn import_visit(s: Slot, clause: Borrowed) {
 unsafe extern "C" fn import_start(s: Slot, clause: Borrowed, or: u32, result: usize) {
     let c = unsafe { frame::<Import<'_>>(s) };
     let clause = unsafe { &*clause.cast::<Clause>() };
-    let operands = unsafe { &*c.normal }.operands(clause, or != 0);
+    let operands = operands(unsafe { &*c.normal }, clause, or != 0);
     c.pending.push(Work {
         clause,
         fold: Some(Fold {
@@ -833,7 +838,7 @@ unsafe extern "C" fn import_operation(s: Slot, a: usize, b: usize, or: u32) -> u
     unsafe { &mut *frame::<Import<'_>>(s).normal }.operation(a, b, or != 0)
 }
 unsafe extern "C" fn import_operand(s: Slot, i: usize) -> Borrowed {
-    borrow(unsafe { frame::<Import<'_>>(s) }.operands[i])
+    borrow(unsafe { frame::<Import<'_>>(s) }.operands.at(i))
 }
 unsafe extern "C" fn import_remember(s: Slot, clause: Borrowed, value: usize) {
     let clause = unsafe { &*clause.cast::<Clause>() };
@@ -841,7 +846,7 @@ unsafe extern "C" fn import_remember(s: Slot, clause: Borrowed, value: usize) {
     unsafe { &mut *c.normal }
         .clauses
         .insert(clause.key(), (clause.clone(), value));
-    c.operands.clear();
+    c.operands = OrderedOperands::default();
 }
 #[repr(C)]
 struct ImportHost {
@@ -868,7 +873,7 @@ pub(super) fn import(normal: &mut Normalizer, root: &Clause) -> usize {
     let mut c = Import {
         normal,
         pending: Vec::new(),
-        operands: Vec::new(),
+        operands: OrderedOperands::default(),
         facts: None,
     };
     unsafe {

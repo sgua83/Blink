@@ -1443,18 +1443,19 @@ extern "C" u32 contract_all_unary(address context,cfn<FactView,address> next,cfn
  while(true){FactView fact=next(context);if(fact.present==0){return 1;}if(contract_unary(fact,predicate,domain)==0){return 0;}}
 }
 
-extern "C" u32 contract_priority(address source,ContractPriorityHost host) on cpu
- requires nonzero(host.inspect) requires nonzero(host.all_unary) {
- SourceNode node=host.inspect(source);if(node.kind==0){return 1;}if(node.kind==1){return host.all_unary(node.left);}return 0;
-}
-
 extern "C" void contract_operands(address context,u32 either,ContractOperandsHost host) on cpu
- requires nonzero(host.pop) requires nonzero(host.push) requires nonzero(host.seen) requires nonzero(host.imported) requires nonzero(host.inspect) requires nonzero(host.emit) {
+ requires nonzero(host.pop) requires nonzero(host.push) requires nonzero(host.seen) requires nonzero(host.imported) requires nonzero(host.inspect) requires nonzero(host.all_unary) requires nonzero(host.emit) {
  while(true){address clause=host.pop(context);if(clause==address()){return;}if(host.seen(context,clause)==0){continue;}
-  if(host.imported(context,clause)!=0){host.emit(context,clause);continue;}SourceNode node=host.inspect(clause);
-  if((node.kind==2&&either==0)||(node.kind==3&&either!=0)){host.push(context,node.right);host.push(context,node.left);}
-  else if(node.kind==4&&either==0){host.push(context,node.truth!=0 ? node.right : node.no);host.push(context,node.left);}
-  else{host.emit(context,clause);}
+  SourceNode node=host.inspect(clause);
+  bool flatten=(either==0&&(node.kind==2||node.kind==4))||(either!=0&&node.kind==3);
+  if(flatten&&host.imported(context,clause)==0){
+   host.push(context,node.kind==4&&node.truth==0 ? node.no : node.right);
+   host.push(context,node.left);
+  }else{
+   u32 priority=node.kind==0 ? 1 : 0;
+   if(node.kind==1){priority=host.all_unary(node.left);}
+   host.emit(context,clause,priority);
+  }
  }
 }
 

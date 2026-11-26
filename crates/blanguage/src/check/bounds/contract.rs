@@ -60,7 +60,6 @@ impl Normalizer {
     fn operation(&mut self,a:usize,b:usize,or:bool)->usize {native::operation(self,a,b,or)}
     fn not(&mut self,root:usize)->usize {native::not(self,root)}
     fn fact(&mut self,fact:Fact)->usize {native::fact(self,fact)}
-    fn operands<'a>(&self,root:&'a Clause,or:bool)->Vec<&'a Clause> {native::operands(self,root,or)}
     fn import(&mut self,root:&Clause)->usize {native::import(self,root)}
     fn emit(&mut self,root:usize)->Clause {native::emit(self,root)}
     pub(in crate::check) fn clause(&mut self,value:&Clause)->Clause { let root=self.import(value);self.emit(root) }

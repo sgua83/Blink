@@ -520,17 +520,14 @@ struct ContractSemanticHost {
  cfn<ContractDomain,address> ensures memory(read) domain;
  address unsigned32;
 };
-struct ContractPriorityHost {
- cfn<SourceNode,address> ensures memory(read) inspect;
- cfn<u32,address> all_unary;
-};
 struct ContractOperandsHost {
  cfn<address,address> pop;
  cfn<void,address,address> push;
  cfn<u32,address,address> seen;
  cfn<u32,address,address> ensures memory(read) imported;
  cfn<SourceNode,address> ensures memory(read) inspect;
- cfn<void,address,address> emit;
+ cfn<u32,address> all_unary;
+ cfn<void,address,address,u32> emit;
 };
 struct ContractImportHost {
  cfn<ContractImport,address> pop;
@@ -596,11 +593,8 @@ extern "C" u32 contract_unary(FactView fact,cfn<InternalPredicate,address> ensur
 extern "C" u32 contract_all_unary(address context,cfn<FactView,address> next,cfn<InternalPredicate,address> ensures memory(read) predicate,cfn<ContractDomain,address> ensures memory(read) domain) on cpu
  requires nonzero(next) requires nonzero(predicate) requires nonzero(domain);
 
-extern "C" u32 contract_priority(address source,ContractPriorityHost host) on cpu
- requires nonzero(host.inspect) requires nonzero(host.all_unary);
-
 extern "C" void contract_operands(address context,u32 either,ContractOperandsHost host) on cpu
- requires nonzero(host.pop) requires nonzero(host.push) requires nonzero(host.seen) requires nonzero(host.imported) requires nonzero(host.inspect) requires nonzero(host.emit);
+ requires nonzero(host.pop) requires nonzero(host.push) requires nonzero(host.seen) requires nonzero(host.imported) requires nonzero(host.inspect) requires nonzero(host.all_unary) requires nonzero(host.emit);
 
 extern "C" usize contract_import(address context,address root,ContractImportHost host) on cpu
  requires nonzero(host.pop) requires nonzero(host.visit) requires nonzero(host.start) requires nonzero(host.resume) requires nonzero(host.lookup) requires nonzero(host.inspect) requires nonzero(host.begin) requires nonzero(host.next) requires nonzero(host.predicate) requires nonzero(host.domain) requires nonzero(host.fact) requires nonzero(host.operation) requires nonzero(host.operand) requires nonzero(host.remember);
