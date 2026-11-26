@@ -1,4 +1,5 @@
 module bootstrap.proof_facts;
+import bootstrap.fact_key;
 
 extern "C" handle GetProcessHeap() on cpu from "KERNEL32.dll";
 extern "C" address HeapAlloc(handle heap, u32 flags, u64 bytes) on cpu from "KERNEL32.dll";
@@ -8,63 +9,60 @@ extern "C" void RtlMoveMemory(address output, address input, u64 bytes) on cpu f
 extern "C" void abort() on cpu from "ucrtbase.dll";
 
 struct FactNode { u64 left; u64 right; u64 parent; u64 height; };
+struct FactCell { FactNode node; FactKey key; };
 
-// One-based node indices survive growth. The native host only lends typed
-// payloads, which occupy the aligned tail of each densely packed tree node.
+// One-based node indices survive growth. The actual key occupies the
+// aligned tail of each cell and is compared in place.
 address offset(address base, u64 bytes) on cpu {
     return unsafe_address(address_bits(base) + bytes);
 }
 
-u64 stride(u64 width) on cpu {
-    return size_of<FactNode>() + ((width + 15u64) & ~15u64);
+address node(address records, u64 index) on cpu {
+    return offset(records, (index - 1u64) * size_of<FactCell>());
 }
 
-address node(FactTree tree, u64 index, u64 width) on cpu {
-    return offset(tree.records, (index - 1u64) * stride(width));
+address payload(address records, u64 index) on cpu {
+    return offset(node(records,index),size_of<FactNode>());
 }
 
-address payload(FactTree tree, u64 index, u64 width) on cpu {
-    return offset(node(tree,index,width),size_of<FactNode>());
-}
-
-u64 height(FactTree tree, u64 index, u64 width) on cpu {
+u64 height(address records, u64 index) on cpu {
     if (index == 0u64) { return 0u64; }
-    return unsafe_position<FactNode>(node(tree,index,width)).height;
+    return unsafe_position<FactNode>(node(records,index)).height;
 }
 
-void update_height(FactTree tree, u64 index, u64 width) on cpu {
-    address entry = node(tree,index,width);
+void update_height(address records, u64 index) on cpu {
+    address entry = node(records,index);
     FactNode value = unsafe_position<FactNode>(entry);
     unsafe_position<FactNode>(entry).height =
-        1u64 + max(height(tree,value.left,width),height(tree,value.right,width));
+        1u64 + max(height(records,value.left),height(records,value.right));
 }
 
-void set_parent(FactTree tree, u64 index, u64 parent, u64 width) on cpu {
-    if (index != 0u64) { unsafe_position<FactNode>(node(tree,index,width)).parent = parent; }
+void set_parent(address records, u64 index, u64 parent) on cpu {
+    if (index != 0u64) { unsafe_position<FactNode>(node(records,index)).parent = parent; }
 }
 
-void replace_child(address owner, FactTree tree, u64 parent, u64 old, u64 fresh, u64 width) on cpu {
+void replace_child(address owner, address records, u64 parent, u64 old, u64 fresh) on cpu {
     if (parent == 0u64) {
         unsafe_position<FactTree>(owner).root = fresh;
     } else {
-        address entry = node(tree,parent,width);
+        address entry = node(records,parent);
         if (unsafe_position<FactNode>(entry).left == old) {
             unsafe_position<FactNode>(entry).left = fresh;
         } else {
             unsafe_position<FactNode>(entry).right = fresh;
         }
     }
-    set_parent(tree,fresh,parent,width);
+    set_parent(records,fresh,parent);
 }
 
-u64 rotate(address owner, FactTree tree, u64 low, u64 width, bool left) on cpu {
-    address low_node = node(tree,low,width);
+u64 rotate(address owner, address records, u64 low, bool left) on cpu {
+    address low_node = node(records,low);
     FactNode old = unsafe_position<FactNode>(low_node);
     u64 high = left ? old.right : old.left;
-    address high_node = node(tree,high,width);
+    address high_node = node(records,high);
     FactNode elevated = unsafe_position<FactNode>(high_node);
     u64 middle = left ? elevated.left : elevated.right;
-    replace_child(owner,tree,old.parent,low,high,width);
+    replace_child(owner,records,old.parent,low,high);
     if (left) {
         unsafe_position<FactNode>(low_node).right = middle;
         unsafe_position<FactNode>(high_node).left = low;
@@ -72,45 +70,45 @@ u64 rotate(address owner, FactTree tree, u64 low, u64 width, bool left) on cpu {
         unsafe_position<FactNode>(low_node).left = middle;
         unsafe_position<FactNode>(high_node).right = low;
     }
-    set_parent(tree,middle,low,width);
-    set_parent(tree,low,high,width);
-    update_height(tree,low,width);
-    update_height(tree,high,width);
+    set_parent(records,middle,low);
+    set_parent(records,low,high);
+    update_height(records,low);
+    update_height(records,high);
     return high;
 }
 
-void rebalance(address owner, u64 start, u64 width) on cpu {
+void rebalance(address owner, u64 start) on cpu {
     u64 current = start;
-    FactTree tree = unsafe_position<FactTree>(owner);
+    address records = unsafe_position<FactTree>(owner).records;
     while (current != 0u64) {
-        FactNode value = unsafe_position<FactNode>(node(tree,current,width));
-        u64 left = height(tree,value.left,width);
-        u64 right = height(tree,value.right,width);
+        FactNode value = unsafe_position<FactNode>(node(records,current));
+        u64 left = height(records,value.left);
+        u64 right = height(records,value.right);
         u64 top = current;
         if (left > right + 1u64) {
-            FactNode child = unsafe_position<FactNode>(node(tree,value.left,width));
-            if (height(tree,child.right,width) > height(tree,child.left,width)) {
-                rotate(owner,tree,value.left,width,true);
+            FactNode child = unsafe_position<FactNode>(node(records,value.left));
+            if (height(records,child.right) > height(records,child.left)) {
+                rotate(owner,records,value.left,true);
             }
-            top = rotate(owner,tree,current,width,false);
+            top = rotate(owner,records,current,false);
         } else if (right > left + 1u64) {
-            FactNode child = unsafe_position<FactNode>(node(tree,value.right,width));
-            if (height(tree,child.left,width) > height(tree,child.right,width)) {
-                rotate(owner,tree,value.right,width,false);
+            FactNode child = unsafe_position<FactNode>(node(records,value.right));
+            if (height(records,child.left) > height(records,child.right)) {
+                rotate(owner,records,value.right,false);
             }
-            top = rotate(owner,tree,current,width,true);
+            top = rotate(owner,records,current,true);
         } else {
-            unsafe_position<FactNode>(node(tree,current,width)).height = 1u64 + max(left,right);
+            unsafe_position<FactNode>(node(records,current)).height = 1u64 + max(left,right);
         }
-        current = unsafe_position<FactNode>(node(tree,top,width)).parent;
+        current = unsafe_position<FactNode>(node(records,top)).parent;
     }
 }
 
-u64 extreme(FactTree tree, u64 start, u64 width, bool reverse) on cpu {
+u64 extreme(address records, u64 start, bool reverse) on cpu {
     u64 current = start;
     if (current != 0u64) {
         while (true) {
-            FactNode value = unsafe_position<FactNode>(node(tree,current,width));
+            FactNode value = unsafe_position<FactNode>(node(records,current));
             u64 child = reverse ? value.right : value.left;
             if (child == 0u64) { break; }
             current = child;
@@ -119,14 +117,14 @@ u64 extreme(FactTree tree, u64 start, u64 width, bool reverse) on cpu {
     return current;
 }
 
-u64 neighbor(FactTree tree, u64 start, u64 width, bool reverse) on cpu {
+u64 neighbor(address records, u64 start, bool reverse) on cpu {
     u64 current = start;
-    FactNode value = unsafe_position<FactNode>(node(tree,current,width));
+    FactNode value = unsafe_position<FactNode>(node(records,current));
     u64 child = reverse ? value.left : value.right;
-    if (child != 0u64) { return extreme(tree,child,width,reverse); }
+    if (child != 0u64) { return extreme(records,child,reverse); }
     u64 parent = value.parent;
     while (parent != 0u64) {
-        FactNode higher = unsafe_position<FactNode>(node(tree,parent,width));
+        FactNode higher = unsafe_position<FactNode>(node(records,parent));
         if ((reverse ? higher.right : higher.left) == current) { break; }
         current = parent;
         parent = higher.parent;
@@ -136,26 +134,24 @@ u64 neighbor(FactTree tree, u64 start, u64 width, bool reverse) on cpu {
 
 struct Search { u64 exact; u64 parent; i32 order; };
 
-Search locate(FactTree tree, address key, u64 width, cfn<i32,address,address> compare) on cpu
-    requires nonzero(compare) {
+Search locate(address records, u64 root, address key) on cpu {
     Search result = Search(0u64,0u64,i32(0));
-    u64 current = tree.root;
+    u64 current = root;
     while (current != 0u64) {
-        result.order = compare(key,payload(tree,current,width));
+        result.order = order_fact(key,payload(records,current));
         if (result.order == 0) {
             result.exact = current;
             break;
         }
         result.parent = current;
-        FactNode value = unsafe_position<FactNode>(node(tree,current,width));
+        FactNode value = unsafe_position<FactNode>(node(records,current));
         current = result.order < 0 ? value.left : value.right;
     }
     return result;
 }
 
-void grow(address owner, FactTree tree, u64 width) on cpu {
-    u64 bytes = stride(width);
-    if (bytes == 0u64) { abort(); return; }
+void grow(address owner, FactTree tree) on cpu {
+    u64 bytes = size_of<FactCell>();
     u64 limit = 9223372036854775807u64 / bytes;
     if (tree.count == limit) { abort(); return; }
     u64 capacity = tree.capacity == 0u64 ? 4u64 : tree.count + min(tree.count,limit - tree.count);
@@ -173,10 +169,10 @@ extern "C" void fact_tree_clear(address owner) on cpu {
     unsafe_position<FactTree>(owner) = FactTree(address(),0u64,0u64,0u64);
 }
 
-extern "C" void fact_tree_copy(address original, address output, u64 width) on cpu {
+extern "C" void fact_tree_copy(address original, address output) on cpu {
     FactTree tree = unsafe_position<FactTree>(original);
     if (tree.count != 0u64) {
-        u64 bytes = tree.count * stride(width);
+        u64 bytes = tree.count * size_of<FactCell>();
         address records = HeapAlloc(GetProcessHeap(),0,bytes);
         if (records == address()) { abort(); return; }
         RtlMoveMemory(records,tree.records,bytes);
@@ -184,28 +180,27 @@ extern "C" void fact_tree_copy(address original, address output, u64 width) on c
     }
 }
 
-extern "C" u32 fact_tree_insert(address owner, address key, u64 width, cfn<i32,address,address> compare) on cpu
-    requires nonzero(compare) {
+extern "C" u32 fact_tree_insert(address owner, address key) on cpu {
     FactTree tree = unsafe_position<FactTree>(owner);
-    Search place = locate(tree,key,width,compare);
+    Search place = locate(tree.records,tree.root,key);
     if (place.exact != 0u64) { return 0; }
     if (tree.capacity == tree.count) {
-        grow(owner,tree,width);
+        grow(owner,tree);
         tree = unsafe_position<FactTree>(owner);
     }
     u64 fresh = tree.count + 1u64;
-    unsafe_position<FactNode>(node(tree,fresh,width)) = FactNode(0u64,0u64,place.parent,1u64);
-    RtlMoveMemory(payload(tree,fresh,width),key,width);
+    unsafe_position<FactNode>(node(tree.records,fresh)) = FactNode(0u64,0u64,place.parent,1u64);
+    RtlMoveMemory(payload(tree.records,fresh),key,size_of<FactKey>());
     if (place.parent == 0u64) {
         unsafe_position<FactTree>(owner).root = fresh;
     } else {
-        address parent = node(tree,place.parent,width);
+        address parent = node(tree.records,place.parent);
         if (place.order < 0) {
             unsafe_position<FactNode>(parent).left = fresh;
         } else {
             unsafe_position<FactNode>(parent).right = fresh;
         }
-        rebalance(owner,place.parent,width);
+        rebalance(owner,place.parent);
     }
     unsafe_position<FactTree>(owner).count = fresh;
     return 1;
@@ -214,74 +209,72 @@ extern "C" u32 fact_tree_insert(address owner, address key, u64 width, cfn<i32,a
 // Erase the current key and return its successor's new index for retain.
 // Keeping live nodes packed avoids a separate free list and copies only the
 // live allocation when a query first needs to own borrowed facts.
-u64 erase(address owner, FactTree tree, u64 erased, u64 width) on cpu {
+u64 erase(address owner, address records, u64 count, u64 erased) on cpu {
     u64 current = erased;
-    u64 next = neighbor(tree,current,width,false);
-    FactNode value = unsafe_position<FactNode>(node(tree,current,width));
+    u64 next = neighbor(records,current,false);
+    FactNode value = unsafe_position<FactNode>(node(records,current));
     if (value.left != 0u64 && value.right != 0u64) {
-        RtlMoveMemory(payload(tree,current,width),payload(tree,next,width),width);
+        RtlMoveMemory(payload(records,current),payload(records,next),size_of<FactKey>());
         u64 successor = next;
         next = current;
         current = successor;
-        value = unsafe_position<FactNode>(node(tree,current,width));
+        value = unsafe_position<FactNode>(node(records,current));
     }
     u64 child = value.left == 0u64 ? value.right : value.left;
-    replace_child(owner,tree,value.parent,current,child,width);
-    rebalance(owner,value.parent,width);
-    if (current != tree.count) {
-        FactNode moved = unsafe_position<FactNode>(node(tree,tree.count,width));
-        RtlMoveMemory(node(tree,current,width),node(tree,tree.count,width),stride(width));
-        replace_child(owner,tree,moved.parent,tree.count,current,width);
-        set_parent(tree,moved.left,current,width);
-        set_parent(tree,moved.right,current,width);
-        if (next == tree.count) { next = current; }
+    replace_child(owner,records,value.parent,current,child);
+    rebalance(owner,value.parent);
+    if (current != count) {
+        FactNode moved = unsafe_position<FactNode>(node(records,count));
+        RtlMoveMemory(node(records,current),node(records,count),size_of<FactCell>());
+        replace_child(owner,records,moved.parent,count,current);
+        set_parent(records,moved.left,current);
+        set_parent(records,moved.right,current);
+        if (next == count) { next = current; }
     }
-    unsafe_position<FactTree>(owner).count = tree.count - 1u64;
+    unsafe_position<FactTree>(owner).count = count - 1u64;
     return next;
 }
 
-extern "C" u32 fact_tree_remove(address owner, address key, u64 width, cfn<i32,address,address> compare) on cpu
-    requires nonzero(compare) {
+extern "C" u32 fact_tree_remove(address owner, address key) on cpu {
     FactTree tree = unsafe_position<FactTree>(owner);
-    u64 index = locate(tree,key,width,compare).exact;
+    u64 index = locate(tree.records,tree.root,key).exact;
     if (index == 0u64) { return 0; }
-    erase(owner,tree,index,width);
+    erase(owner,tree.records,tree.count,index);
     return 1;
 }
 
-extern "C" u32 fact_tree_contains(address owner, address key, u64 width, cfn<i32,address,address> compare) on cpu
-    requires nonzero(compare) {
-    return u32(locate(unsafe_position<FactTree>(owner),key,width,compare).exact != 0u64);
+extern "C" u32 fact_tree_contains(address owner, address key) on cpu {
+    FactTree tree = unsafe_position<FactTree>(owner);
+    return u32(locate(tree.records,tree.root,key).exact != 0u64);
 }
 
-extern "C" void fact_tree_retain(address owner, u64 width, address context, cfn<u32,address,address> keep) on cpu
+extern "C" void fact_tree_retain(address owner, address context, cfn<u32,address,address> keep) on cpu
     requires nonzero(keep) {
     FactTree tree = unsafe_position<FactTree>(owner);
-    u64 index = extreme(tree,tree.root,width,false);
+    u64 index = extreme(tree.records,tree.root,false);
     while (index != 0u64) {
-        if (keep(context,payload(tree,index,width)) == 0) {
-            index = erase(owner,tree,index,width);
+        if (keep(context,payload(tree.records,index)) == 0) {
+            index = erase(owner,tree.records,tree.count,index);
             tree = unsafe_position<FactTree>(owner);
         } else {
-            index = neighbor(tree,index,width,false);
+            index = neighbor(tree.records,index,false);
         }
     }
 }
 
-extern "C" FactCursor fact_tree_cursor(address owner, u64 width) on cpu {
+extern "C" FactCursor fact_tree_cursor(address owner) on cpu {
     FactTree tree = unsafe_position<FactTree>(owner);
-    return FactCursor(extreme(tree,tree.root,width,false),extreme(tree,tree.root,width,true));
+    return FactCursor(extreme(tree.records,tree.root,false),extreme(tree.records,tree.root,true));
 }
 
-u64 bound(FactTree tree, u64 width, FactBound limit, bool reverse, cfn<i32,address,address> compare) on cpu
-    requires nonzero(compare) {
-    if (limit.key == address()) { return extreme(tree,tree.root,width,reverse); }
+u64 bound(address records, u64 root, FactBound limit, bool reverse) on cpu {
+    if (limit.key == address()) { return extreme(records,root,reverse); }
     u64 result = 0u64;
-    u64 current = tree.root;
+    u64 current = root;
     while (current != 0u64) {
-        i32 order = compare(payload(tree,current,width),limit.key);
+        i32 order = order_fact(payload(records,current),limit.key);
         if (order == 0 && limit.exclusive == 0) { return current; }
-        FactNode value = unsafe_position<FactNode>(node(tree,current,width));
+        FactNode value = unsafe_position<FactNode>(node(records,current));
         if (reverse ? order < 0 : order > 0) {
             result = current;
             current = reverse ? value.right : value.left;
@@ -292,45 +285,43 @@ u64 bound(FactTree tree, u64 width, FactBound limit, bool reverse, cfn<i32,addre
     return result;
 }
 
-extern "C" FactCursor fact_tree_range(address owner, u64 width, FactBound start, FactBound end,
-    cfn<i32,address,address> compare) on cpu requires nonzero(compare) {
+extern "C" FactCursor fact_tree_range(address owner, FactBound start, FactBound end) on cpu {
     FactTree tree = unsafe_position<FactTree>(owner);
-    u64 first = bound(tree,width,start,false,compare);
-    u64 last = bound(tree,width,end,true,compare);
-    if (first == 0u64 || last == 0u64 || compare(payload(tree,first,width),payload(tree,last,width)) > 0) {
+    u64 first = bound(tree.records,tree.root,start,false);
+    u64 last = bound(tree.records,tree.root,end,true);
+    if (first == 0u64 || last == 0u64 || order_fact(payload(tree.records,first),payload(tree.records,last)) > 0) {
         return FactCursor(0u64,0u64);
     }
     return FactCursor(first,last);
 }
 
-address head(FactTree tree, FactCursor cursor, u64 width) on cpu {
+address head(address records, FactCursor cursor) on cpu {
     if (cursor.front == 0u64) { return address(); }
-    return payload(tree,cursor.front,width);
+    return payload(records,cursor.front);
 }
 
-FactCursor advance(FactTree tree, FactCursor previous, u64 width, bool reverse) on cpu {
+FactCursor advance(address records, FactCursor previous, bool reverse) on cpu {
     FactCursor state = previous;
     if (state.front == state.back) { return FactCursor(0u64,0u64); }
     if (reverse) {
-        state.back = neighbor(tree,state.back,width,true);
+        state.back = neighbor(records,state.back,true);
     } else {
-        state.front = neighbor(tree,state.front,width,false);
+        state.front = neighbor(records,state.front,false);
     }
     return state;
 }
 
-extern "C" address fact_tree_next(address owner, u64 width, address cursor, u32 reverse) on cpu {
+extern "C" address fact_tree_next(address owner, address cursor, u32 reverse) on cpu {
     FactCursor state = unsafe_position<FactCursor>(cursor);
     if (state.front == 0u64) { return address(); }
     FactTree tree = unsafe_position<FactTree>(owner);
-    address item = payload(tree,reverse == 0 ? state.front : state.back,width);
-    unsafe_position<FactCursor>(cursor) = advance(tree,state,width,reverse != 0);
+    address item = payload(tree.records,reverse == 0 ? state.front : state.back);
+    unsafe_position<FactCursor>(cursor) = advance(tree.records,state,reverse != 0);
     return item;
 }
 
 // Modes are union (0), intersection (1) and left difference (2).
-extern "C" address fact_tree_merge(address left, address right, address cursors, u64 width, u32 operation,
-    cfn<i32,address,address> compare) on cpu requires nonzero(compare) {
+extern "C" address fact_tree_merge(address left, address right, address cursors, u32 operation) on cpu {
     FactTree a = unsafe_position<FactTree>(left);
     FactTree b = unsafe_position<FactTree>(right);
     address left_cursor = cursors;
@@ -338,45 +329,43 @@ extern "C" address fact_tree_merge(address left, address right, address cursors,
     while (true) {
         FactCursor x = unsafe_position<FactCursor>(left_cursor);
         FactCursor y = unsafe_position<FactCursor>(right_cursor);
-        address first = head(a,x,width);
-        address second = head(b,y,width);
+        address first = head(a.records,x);
+        address second = head(b.records,y);
         if (first == address()) {
             if (operation != 0 || second == address()) { return address(); }
-            unsafe_position<FactCursor>(right_cursor) = advance(b,y,width,false);
+            unsafe_position<FactCursor>(right_cursor) = advance(b.records,y,false);
             return second;
         }
         if (second == address()) {
             if (operation == 1) { return address(); }
-            unsafe_position<FactCursor>(left_cursor) = advance(a,x,width,false);
+            unsafe_position<FactCursor>(left_cursor) = advance(a.records,x,false);
             return first;
         }
-        i32 order = compare(first,second);
-        if (order <= 0) { unsafe_position<FactCursor>(left_cursor) = advance(a,x,width,false); }
-        if (order >= 0) { unsafe_position<FactCursor>(right_cursor) = advance(b,y,width,false); }
+        i32 order = order_fact(first,second);
+        if (order <= 0) { unsafe_position<FactCursor>(left_cursor) = advance(a.records,x,false); }
+        if (order >= 0) { unsafe_position<FactCursor>(right_cursor) = advance(b.records,y,false); }
         if (order == 0 ? operation != 2 : order < 0 ? operation != 1 : operation == 0) {
             return order <= 0 ? first : second;
         }
     }
 }
 
-extern "C" i32 fact_tree_compare(address left, address right, u64 width, cfn<i32,address,address> compare) on cpu
-    requires nonzero(compare) {
+extern "C" i32 fact_tree_compare(address left, address right) on cpu {
     if (left == right) { return i32(0); }
     FactTree a = unsafe_position<FactTree>(left);
     FactTree b = unsafe_position<FactTree>(right);
-    u64 x = extreme(a,a.root,width,false);
-    u64 y = extreme(b,b.root,width,false);
+    u64 x = extreme(a.records,a.root,false);
+    u64 y = extreme(b.records,b.root,false);
     while (x != 0u64 && y != 0u64) {
-        i32 order = compare(payload(a,x,width),payload(b,y,width));
+        i32 order = order_fact(payload(a.records,x),payload(b.records,y));
         if (order != 0) { return order; }
-        x = neighbor(a,x,width,false);
-        y = neighbor(b,y,width,false);
+        x = neighbor(a.records,x,false);
+        y = neighbor(b.records,y,false);
     }
     return x != 0u64 ? i32(1) : y != 0u64 ? -i32(1) : i32(0);
 }
 
-extern "C" u32 fact_tree_relation(address left, address right, u64 width, u32 subset,
-    cfn<i32,address,address> compare) on cpu requires nonzero(compare) {
+extern "C" u32 fact_tree_relation(address left, address right, u32 subset) on cpu {
     FactTree a = unsafe_position<FactTree>(left);
     FactTree b = unsafe_position<FactTree>(right);
     if (subset != 0 && a.count > b.count) { return 0; }
@@ -387,22 +376,22 @@ extern "C" u32 fact_tree_relation(address left, address right, u64 width, u32 su
     }
     if (a.count == 0u64) { return 1; }
     if (b.count == 0u64) { return u32(subset == 0); }
-    u64 x = extreme(a,a.root,width,false);
+    u64 x = extreme(a.records,a.root,false);
     // A sparse operand can probe the other root without walking its full order.
-    if (a.count <= b.count / max(1u64,height(b,b.root,width))) {
+    if (a.count <= b.count / max(1u64,height(b.records,b.root))) {
         while (x != 0u64) {
-            bool found = locate(b,payload(a,x,width),width,compare).exact != 0u64;
+            bool found = locate(b.records,b.root,payload(a.records,x)).exact != 0u64;
             if (found != (subset != 0)) { return 0; }
-            x = neighbor(a,x,width,false);
+            x = neighbor(a.records,x,false);
         }
         return 1;
     }
-    u64 y = extreme(b,b.root,width,false);
+    u64 y = extreme(b.records,b.root,false);
     while (x != 0u64 && y != 0u64) {
-        i32 order = compare(payload(a,x,width),payload(b,y,width));
+        i32 order = order_fact(payload(a.records,x),payload(b.records,y));
         if (order == 0 && subset == 0 || order < 0 && subset != 0) { return 0; }
-        if (order <= 0) { x = neighbor(a,x,width,false); }
-        if (order >= 0) { y = neighbor(b,y,width,false); }
+        if (order <= 0) { x = neighbor(a.records,x,false); }
+        if (order >= 0) { y = neighbor(b.records,y,false); }
     }
     return u32(subset == 0 || x == 0u64);
 }

@@ -135,7 +135,8 @@ enum TaskCompletionSource {
     Returned(Reg,usize),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
 enum ValueIdentity {
     Register(Reg),
     // 资源的长度身份不随每次装载而变化；只存在于编译期。
@@ -163,7 +164,8 @@ enum ValueIdentity {
     // 普通返回实际交接的任务来源，按原结果分量命名。
     TaskReturnSource(usize),
 }
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
 enum IndexDomain {
     Data(usize),
     Fixed(u32),

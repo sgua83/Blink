@@ -19,6 +19,7 @@ mod numeric_bounds;
 mod execution_conditions;
 mod proof_facts;
 mod facts;
+mod fact_key;
 mod call_projection;
 mod range_sets;
 #[path = "bounds/required_roots.rs"]
@@ -43,7 +44,8 @@ pub(super) fn for_cursor(begin: &Value, limit: &Value, seeks: bool) -> Proof {
         .with_domains(indices_below(&limit.proof.domains(0), true))
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
 enum Fact {
     Equal(ValueIdentity, ValueIdentity),
     Index(ValueIdentity, IndexDomain),
@@ -58,12 +60,14 @@ enum Fact {
     Predicate(ScalarPredicate, bool),
 }
 // 运算关系只引用已求值的快照；常量使用实际类型与位模式。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
 pub(super) enum Operand {
     Value(ValueIdentity),
     Constant(Scalar, Bits),
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
 pub(super) enum Selector {
     Direct(Operand),
     Affine { base: ValueIdentity, scale: i128, offset: i128 },
@@ -191,7 +195,8 @@ impl Operand {
 }
 // Predicates retain the scalar type through substitution. Floating results
 // retain unordered semantics: NaN makes !(a < b) different from a >= b.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
 struct ScalarPredicate {
     op: Comparison,
     scalar: Scalar,
@@ -230,14 +235,16 @@ impl ScalarPredicate {
 
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
 pub(super) enum IntegerOperation { Add, Subtract, Multiply, Divide, Remainder, And, Or, Xor, ShiftLeft, ShiftRight }
 // Numeric facts use eight-byte alignment. Keep the same selector without
 // imposing the alignment of its affine coefficients on every captured fact.
-#[repr(packed(8))]
+#[repr(C, packed(8))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct IndexSelection(Selector);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
 pub(super) enum IntegerExpression {
     Binary(IntegerOperation, Scalar, Operand, Operand),
     Selection(IndexSelection),
@@ -291,8 +298,10 @@ impl IntegerExpression {
 // The existing numeric fact owns one source snapshot and its valid integer domain.
 // Upper means value <= a*d+b+c/d (a >= 0); Cast names the actual F32 conversion.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
 enum FloatingForm { Cast, Upper }
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
 pub(super) struct FloatingBound {
     source: ValueIdentity,
     lower: Bits,

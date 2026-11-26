@@ -40,6 +40,7 @@ pub(crate) use custom_reduce::{PreparedReductionKernel, ReductionBody};
 pub type Reg = usize;
 pub type Bits = u64;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
 pub enum Scalar {
     F32,
     U32,
@@ -582,6 +583,7 @@ pub struct Uniform {
     pub offset: u32,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
 pub enum Comparison {
     Equal,
     NotEqual,

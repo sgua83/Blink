@@ -300,6 +300,7 @@ const MODULES: &[&str] = &[
     "ownership_place",
     "contract_codec",
     "condition_graph",
+    "fact_key",
     "proof_facts",
     "stack_report",
 ];

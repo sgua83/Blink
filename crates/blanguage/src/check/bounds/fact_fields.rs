@@ -158,9 +158,7 @@ pub(super) unsafe fn key(view: Fields) -> Fact {
     }
 }
 
-pub(super) unsafe extern "C" fn compare(a: Borrowed, b: Borrowed) -> i32 {
-    unsafe { (&*a.cast::<ValueIdentity>()).cmp(&*b.cast::<ValueIdentity>()) as i32 }
-}
+pub(super) use super::fact_key::order_identity as compare;
 
 pub(super) unsafe extern "C" fn project(fact: Borrowed) -> Fields {
     Fields::from(unsafe { &*fact.cast::<Fact>() })

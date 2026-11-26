@@ -9,13 +9,10 @@ use std::{
 
 type Borrowed = *const c_void;
 type Slot = *mut c_void;
-type Compare = unsafe extern "C" fn(Borrowed, Borrowed) -> i32;
 type Keep = unsafe extern "C" fn(Slot, Borrowed) -> u32;
-const WIDTH: usize = size_of::<Fact>();
-const _: () = assert!(align_of::<Fact>() <= 16);
 
 /// The node allocation and all order operations belong to the B fact tree.
-/// The payload is the original Copy fact, borrowed through its native type.
+/// The original C-layout fact is stored and compared in place.
 #[repr(C)]
 pub(super) struct Facts {
     records: Slot,
@@ -65,32 +62,28 @@ unsafe extern "C" {
     #[link_name = "bootstrap.proof_facts::fact_tree_clear"]
     fn clear(tree: &mut Facts);
     #[link_name = "bootstrap.proof_facts::fact_tree_copy"]
-    fn copy(original: &Facts, output: &mut Facts, width: usize);
+    fn copy(original: &Facts, output: &mut Facts);
     #[link_name = "bootstrap.proof_facts::fact_tree_insert"]
-    fn insert(tree: &mut Facts, key: Borrowed, width: usize, compare: Compare) -> u32;
+    fn insert(tree: &mut Facts, key: Borrowed) -> u32;
     #[link_name = "bootstrap.proof_facts::fact_tree_remove"]
-    fn remove(tree: &mut Facts, key: Borrowed, width: usize, compare: Compare) -> u32;
+    fn remove(tree: &mut Facts, key: Borrowed) -> u32;
     #[link_name = "bootstrap.proof_facts::fact_tree_contains"]
-    fn contains(tree: &Facts, key: Borrowed, width: usize, compare: Compare) -> u32;
+    fn contains(tree: &Facts, key: Borrowed) -> u32;
     #[link_name = "bootstrap.proof_facts::fact_tree_retain"]
-    fn retain(tree: &mut Facts, width: usize, context: Slot, keep: Keep);
+    fn retain(tree: &mut Facts, context: Slot, keep: Keep);
     #[link_name = "bootstrap.proof_facts::fact_tree_cursor"]
-    fn cursor(tree: &Facts, width: usize) -> Cursor;
+    fn cursor(tree: &Facts) -> Cursor;
     #[link_name = "bootstrap.proof_facts::fact_tree_range"]
-    fn range(tree: &Facts, width: usize, start: KeyBound, end: KeyBound, compare: Compare) -> Cursor;
+    fn range(tree: &Facts, start: KeyBound, end: KeyBound) -> Cursor;
     #[link_name = "bootstrap.proof_facts::fact_tree_next"]
-    fn next(tree: &Facts, width: usize, cursor: &mut Cursor, reverse: u32) -> Borrowed;
+    fn next(tree: &Facts, cursor: &mut Cursor, reverse: u32) -> Borrowed;
     #[link_name = "bootstrap.proof_facts::fact_tree_merge"]
-    fn merge(left: &Facts, right: &Facts, cursors: &mut [Cursor; 2], width: usize,
-        operation: MergeOperation, compare: Compare) -> Borrowed;
+    fn merge(left: &Facts, right: &Facts, cursors: &mut [Cursor; 2],
+        operation: MergeOperation) -> Borrowed;
     #[link_name = "bootstrap.proof_facts::fact_tree_compare"]
-    fn ordered(left: &Facts, right: &Facts, width: usize, compare: Compare) -> i32;
+    fn ordered(left: &Facts, right: &Facts) -> i32;
     #[link_name = "bootstrap.proof_facts::fact_tree_relation"]
-    fn related(left: &Facts, right: &Facts, width: usize, subset: u32, compare: Compare) -> u32;
-}
-
-unsafe extern "C" fn compare(left: Borrowed, right: Borrowed) -> i32 {
-    unsafe { (&*left.cast::<Fact>()).cmp(&*right.cast::<Fact>()) as i32 }
+    fn related(left: &Facts, right: &Facts, subset: u32) -> u32;
 }
 
 unsafe extern "C" fn keep<F: FnMut(&Fact) -> bool>(context: Slot, key: Borrowed) -> u32 {
@@ -116,29 +109,29 @@ impl Facts {
     }
 
     pub(super) fn insert(&mut self, key: Fact) -> bool {
-        unsafe { insert(self, ptr::from_ref(&key).cast(), WIDTH, compare) != 0 }
+        unsafe { insert(self, ptr::from_ref(&key).cast()) != 0 }
     }
 
     pub(super) fn remove(&mut self, key: &Fact) -> bool {
-        unsafe { remove(self, ptr::from_ref(key).cast(), WIDTH, compare) != 0 }
+        unsafe { remove(self, ptr::from_ref(key).cast()) != 0 }
     }
 
     pub(super) fn contains(&self, key: &Fact) -> bool {
-        unsafe { contains(self, ptr::from_ref(key).cast(), WIDTH, compare) != 0 }
+        unsafe { contains(self, ptr::from_ref(key).cast()) != 0 }
     }
 
     pub(super) fn retain<F: FnMut(&Fact) -> bool>(&mut self, mut predicate: F) {
-        unsafe { retain(self, WIDTH, ptr::from_mut(&mut predicate).cast(), keep::<F>) }
+        unsafe { retain(self, ptr::from_mut(&mut predicate).cast(), keep::<F>) }
     }
 
     pub(super) fn iter(&self) -> Iter<'_> {
-        Iter { tree: Some(self), cursor: unsafe { cursor(self, WIDTH) } }
+        Iter { tree: Some(self), cursor: unsafe { cursor(self) } }
     }
 
     pub(super) fn range(&self, bounds: impl RangeBounds<Fact>) -> Iter<'_> {
         let start = bounds.start_bound().into();
         let end = bounds.end_bound().into();
-        Iter { tree: Some(self), cursor: unsafe { range(self, WIDTH, start, end, compare) } }
+        Iter { tree: Some(self), cursor: unsafe { range(self, start, end) } }
     }
 
     pub(super) fn union<'a>(&'a self, other: &'a Self) -> Merge<'a> {
@@ -154,11 +147,11 @@ impl Facts {
     }
 
     pub(super) fn is_subset(&self, other: &Self) -> bool {
-        unsafe { related(self, other, WIDTH, 1, compare) != 0 }
+        unsafe { related(self, other, 1) != 0 }
     }
 
     pub(super) fn is_disjoint(&self, other: &Self) -> bool {
-        unsafe { related(self, other, WIDTH, 0, compare) != 0 }
+        unsafe { related(self, other, 0) != 0 }
     }
 }
 
@@ -177,7 +170,7 @@ impl Drop for Facts {
 impl Clone for Facts {
     fn clone(&self) -> Self {
         let mut result = Self::new();
-        unsafe { copy(self, &mut result, WIDTH) }
+        unsafe { copy(self, &mut result) }
         result
     }
 }
@@ -198,7 +191,7 @@ impl PartialOrd for Facts {
 
 impl Ord for Facts {
     fn cmp(&self, other: &Self) -> Ordering {
-        unsafe { ordered(self, other, WIDTH, compare).cmp(&0) }
+        unsafe { ordered(self, other).cmp(&0) }
     }
 }
 
@@ -238,7 +231,7 @@ impl<'a> Iter<'a> {
     fn step(&mut self, reverse: bool) -> Option<&'a Fact> {
         let tree = self.tree?;
         // The borrow prevents relocation while a cursor or yielded fact lives.
-        unsafe { next(tree, WIDTH, &mut self.cursor, u32::from(reverse)).cast::<Fact>().as_ref() }
+        unsafe { next(tree, &mut self.cursor, u32::from(reverse)).cast::<Fact>().as_ref() }
     }
 }
 
@@ -273,7 +266,7 @@ pub(super) struct IntoIter {
 impl Iterator for IntoIter {
     type Item = Fact;
     fn next(&mut self) -> Option<Self::Item> {
-        unsafe { next(&self.tree, WIDTH, &mut self.cursor, 0).cast::<Fact>().as_ref().copied() }
+        unsafe { next(&self.tree, &mut self.cursor, 0).cast::<Fact>().as_ref().copied() }
     }
 }
 
@@ -281,7 +274,7 @@ impl IntoIterator for Facts {
     type Item = Fact;
     type IntoIter = IntoIter;
     fn into_iter(self) -> Self::IntoIter {
-        let cursor = unsafe { cursor(&self, WIDTH) };
+        let cursor = unsafe { cursor(&self) };
         IntoIter { tree: self, cursor }
     }
 }
@@ -295,7 +288,7 @@ pub(super) struct Merge<'a> {
 
 impl<'a> Merge<'a> {
     fn new(left: &'a Facts, right: &'a Facts, operation: MergeOperation) -> Self {
-        let positions = unsafe { [cursor(left, WIDTH), cursor(right, WIDTH)] };
+        let positions = unsafe { [cursor(left), cursor(right)] };
         Self { left, right, positions, operation }
     }
 }
@@ -303,7 +296,7 @@ impl<'a> Merge<'a> {
 impl<'a> Iterator for Merge<'a> {
     type Item = &'a Fact;
     fn next(&mut self) -> Option<Self::Item> {
-        unsafe { merge(self.left, self.right, &mut self.positions, WIDTH, self.operation, compare)
+        unsafe { merge(self.left, self.right, &mut self.positions, self.operation)
             .cast::<Fact>().as_ref() }
     }
 }
