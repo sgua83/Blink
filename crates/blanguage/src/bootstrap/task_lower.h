@@ -1,4 +1,5 @@
 module bootstrap.task_lower;
+import bootstrap.ir_dataflow;
 enum Kind:u32 {Other=0;Start=1;Scope=2;Pair=3;};
 enum Role:u32 {Ordinary=0;Frame=1;ReturnSource=2;Completion=3;};
 struct BindHost {
@@ -11,6 +12,13 @@ struct RewriteHost {
  cfn<u32,address,address> child;
  cfn<u32,address,address,usize> start;
 };
+struct ScanHost {
+ Host ir;
+ cfn<void,address,address> address;
+ cfn<u32,address,address> start;
+};
+extern "C" u32 scan_starts(Span code,address context,u32 rewrite,ScanHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.address) requires nonzero(host.start);
 struct BoundStart { usize binding; usize worker_argument; usize retained_arguments; };
 struct StartHost {
  cfn<u32,address,usize> matches;

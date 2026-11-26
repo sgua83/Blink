@@ -1,4 +1,5 @@
 module bootstrap.task_lower;
+import bootstrap.ir_dataflow;
 extern "C" u32 bind(address context,u32 root,usize functions,BindHost host) on cpu
  requires nonzero(host.root) requires nonzero(host.function) {
  if(root!=0 && host.root(context)!=0) {return 1;}
@@ -28,6 +29,31 @@ extern "C" u32 rewrite_block(address block,usize count,address context,RewriteHo
  }
  return 0;
 }
+extern "C" u32 scan_starts(Span code,address context,u32 rewrite,ScanHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.address) requires nonzero(host.start) {
+ u32 found=0;
+ usize index=0u64;
+ while(index<code.count){
+  address at=unsafe_address(address_bits(code.data)+index*code.stride);
+  View inst=host.ir.inspect(Node(at,0));
+  if(inst.tag==OP_FUNCTION_ADDRESS && host.ir.inspect(inst.left).tag==1){
+   host.address(context,at);
+  }else if(inst.tag==OP_INVOKE && rewrite!=0){
+   found|=host.start(context,at);
+  }else if(inst.tag==OP_SCOPE){
+   found|=scan_starts(inst.first,context,rewrite,host);
+  }else if(inst.tag==OP_CLEANUP){
+   // Cleanup contributes address producers, but the start rewriter owns no cleanup body.
+   scan_starts(inst.first,context,0,host);
+  }else if(inst.tag==OP_BRANCH || inst.tag==OP_LOOP_VALUE){
+   found|=scan_starts(inst.first,context,rewrite,host);
+   found|=scan_starts(inst.second,context,rewrite,host);
+  }
+  index+=1u64;
+ }
+ return found;
+}
+
 extern "C" BoundStart bind_start(address context,usize count,StartHost host) on cpu
  requires nonzero(host.matches) requires nonzero(host.create) {
  usize index=0u64;
