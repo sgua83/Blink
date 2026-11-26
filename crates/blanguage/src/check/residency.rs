@@ -443,7 +443,7 @@ fn merge_bound_source(result: &mut Residency, value: Residency) {
 unsafe extern "C" fn bind_input_origin(visit: ResidencyBinding, input: Borrowed) -> u32 {
     let arguments = unsafe { &*visit.arguments.cast::<Arguments>() };
     let input = unsafe { &*input.cast::<Input>() };
-    let Some(value) = argument_value(arguments, input, &input.selection()) else { return 0; };
+    let Some(value) = argument_value(arguments, input, || input.selection()) else { return 0; };
     let present = u32::from(!value.absent());
     merge_bound_source(unsafe { &mut *visit.result.cast::<Residency>() }, value);
     present
@@ -473,20 +473,55 @@ unsafe extern "C" fn bind_concrete_origin(result: Context, origin: Borrowed) {
 
 pub(super) type Arguments=BTreeMap<Input,Residency>;
 pub(super) type SharedArguments = Arc<Arguments>;
-fn argument_value(arguments:&Arguments,input:&Input,selection:&BTreeMap<ValueIdentity,bounds::Proof>)->Option<Residency>{
-    let mut prefix=input.family();
-    let selected=prefix.model().element_indices(selection);
-    loop{
-        if let Some(value)=arguments.get(&prefix){
-            let end=prefix.fields.len();let removed=input.depth()-prefix.depth();
-            let prefix_selection=selection.iter().filter_map(|(id,proof)|match id{
-                ValueIdentity::ElementIndex(index)if *index>=removed=>Some((ValueIdentity::ElementIndex(index-removed),proof.clone())),
-                _=>None,
-            }).collect();
-            return Some(value.element_indices(&prefix_selection).project(&selected.fields[end..],selection));
-        }
-        prefix.fields.pop()?;
+struct ArgumentLookup<'a> {
+    arguments: &'a Arguments,
+    key: Input,
+}
+
+unsafe extern "C" fn lookup_argument_path(context: Context, fields: usize) -> Borrowed {
+    let lookup = unsafe { &mut *context.cast::<ArgumentLookup<'_>>() };
+    lookup.key.fields.truncate(fields);
+    lookup.arguments.get(&lookup.key).map_or(ptr::null(), |value| ptr::from_ref(value).cast())
+}
+
+fn argument_value(
+    arguments: &Arguments,
+    input: &Input,
+    selection: impl FnOnce() -> BTreeMap<ValueIdentity, bounds::Proof>,
+) -> Option<Residency> {
+    let mut lookup = ArgumentLookup { arguments, key: input.family() };
+    let fields = lookup.key.fields.len();
+    let prefix = unsafe {
+        find_residency_prefix(ptr::from_mut(&mut lookup).cast(), fields, lookup_argument_path)
+    };
+    let value = unsafe { prefix.residency.cast::<Residency>().as_ref() }?;
+    if value.absent() {
+        return Some(Residency::Absent);
     }
+
+    let selection = selection();
+    let suffix = &input.fields[prefix.fields..];
+    let removed = suffix.iter().filter(|part| !matches!(part, Part::Field(_))).count();
+    let value = if removed == 0 {
+        value.element_indices(&selection)
+    } else {
+        let prefix_selection = selection.iter().filter_map(|(id, proof)| match id {
+            ValueIdentity::ElementIndex(index) if *index >= removed =>
+                Some((ValueIdentity::ElementIndex(index - removed), proof.clone())),
+            _ => None,
+        }).collect();
+        value.element_indices(&prefix_selection)
+    };
+    if suffix.is_empty() {
+        return Some(value);
+    }
+
+    // Model ordinals count from the end of the path. Only the selected suffix is needed here.
+    let mut selected = path_model(&path_family(suffix));
+    for part in &mut selected {
+        *part = part.element_indices(&selection);
+    }
+    Some(value.project(&selected, &selection))
 }
 
 #[derive(Clone)]
@@ -966,13 +1001,17 @@ impl<'a> ResidencyQuery<'a> {
     fn consume(&mut self) -> Result<()> {
         let call = &self.current.call;
         for ((input, target), guards) in self.current.required {
+            if guards.is_empty() {
+                continue;
+            }
             let bindings = scoped_indices(&call.bindings, input.depth());
+            let Some(value) = argument_value(&call.arguments, input, || {
+                input.selection().into_iter().map(|(index, proof)| {
+                    (index, proof.at_call(&bindings))
+                }).collect()
+            }) else { continue; };
             for guard in guards {
                 let path = bounds::Clause::both(&call.path, &guard.projected_case(true, &bindings));
-                let selection = input.selection().into_iter().map(|(index, proof)| {
-                    (index, proof.at_call(&bindings))
-                }).collect();
-                let Some(value) = argument_value(&call.arguments, input, &selection) else { continue; };
                 let value = evaluate(&value, self.outputs, &path);
                 if !query_consume(&mut self.required, &mut self.deferred, self.wanted, &value, *target, &path) {
                     let place = if *target == Target::Cpu { "CPU" } else { "GPU" };
@@ -1749,9 +1788,8 @@ pub(super) fn dependencies<'a>(contract: &Contract, models: impl Iterator<Item =
     walk_dependencies(ptr::from_mut(&mut names).cast(), calls.chain(models));
     names
 }
-// Project the requested resource through its original output definition.
 #[repr(C)]
-struct OutputPrefix {
+struct ResidencyPrefix {
     residency: Borrowed,
     fields: usize,
 }
@@ -1762,24 +1800,25 @@ struct OutputLookup<'a> {
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.ownership_path::find_output_prefix"]
-    fn find_output_prefix(
-        context: Borrowed,
+    #[link_name = "bootstrap.ownership_path::find_residency_prefix"]
+    fn find_residency_prefix(
+        context: Context,
         fields: usize,
-        lookup: unsafe extern "C" fn(Borrowed, usize) -> Borrowed,
-    ) -> OutputPrefix;
+        lookup: unsafe extern "C" fn(Context, usize) -> Borrowed,
+    ) -> ResidencyPrefix;
 }
 
-unsafe extern "C" fn lookup_output_path(context: Borrowed, fields: usize) -> Borrowed {
+unsafe extern "C" fn lookup_output_path(context: Context, fields: usize) -> Borrowed {
     let lookup = unsafe { &*context.cast::<OutputLookup<'_>>() };
     lookup.paths.get(&lookup.fields[..fields]).map_or(ptr::null(), |value| ptr::from_ref(value).cast())
 }
 
 fn output_source(output: &Output, outputs: &Outputs) -> Option<Residency> {
     let paths = outputs[&output.function].get(&output.kind)?;
-    let lookup = OutputLookup { paths, fields: &output.fields };
+    let mut lookup = OutputLookup { paths, fields: &output.fields };
+    let fields = lookup.fields.len();
     let prefix = unsafe {
-        find_output_prefix(ptr::from_ref(&lookup).cast(), lookup.fields.len(), lookup_output_path)
+        find_residency_prefix(ptr::from_mut(&mut lookup).cast(), fields, lookup_output_path)
     };
     let value = unsafe { prefix.residency.cast::<Residency>().as_ref() }?;
     if value.absent() {

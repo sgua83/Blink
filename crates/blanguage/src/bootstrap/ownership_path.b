@@ -474,7 +474,7 @@ extern "C" void collect_output_paths(address context,address value,OutputSnapsho
     }
 }
 
-extern "C" OutputPrefix find_output_prefix(address context,u64 fields,cfn<address,address,u64> lookup) on cpu
+extern "C" ResidencyPrefix find_residency_prefix(address context,u64 fields,cfn<address,address,u64> lookup) on cpu
     requires nonzero(lookup) {
     u64 count=fields;
     address residency=lookup(context,count);
@@ -482,7 +482,7 @@ extern "C" OutputPrefix find_output_prefix(address context,u64 fields,cfn<addres
         count-=1u64;
         residency=lookup(context,count);
     }
-    return OutputPrefix(residency,count);
+    return ResidencyPrefix(residency,count);
 }
 
 extern "C" u32 resolve_output_availability(address source,address value,OutputAvailabilityHost host) on cpu

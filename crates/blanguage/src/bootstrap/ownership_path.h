@@ -205,8 +205,8 @@ extern "C" void collect_output_paths(address context,address value,OutputSnapsho
     requires nonzero(host.inspect) requires nonzero(host.insert) requires nonzero(host.elements)
     requires nonzero(host.field_count) requires nonzero(host.field);
 
-struct OutputPrefix { address residency; u64 fields; };
-extern "C" OutputPrefix find_output_prefix(address context,u64 fields,cfn<address,address,u64> lookup) on cpu
+struct ResidencyPrefix { address residency; u64 fields; };
+extern "C" ResidencyPrefix find_residency_prefix(address context,u64 fields,cfn<address,address,u64> lookup) on cpu
     requires nonzero(lookup);
 
 enum AvailabilityKind:u32 { Value=0; Dataset=1; Aggregate=2; Variant=3; };
