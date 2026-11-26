@@ -25,12 +25,16 @@ struct WalkEdge { usize source; usize frame; u32 read; };
 struct WalkFrame { usize parent; WalkSlice writes; };
 struct WalkWrite { usize target; WalkSlice fields; };
 
-struct WalkEdges {
+struct RelationSource {
     cfn<WalkSlice,address,usize> edges;
     cfn<WalkEdge,address,usize> edge;
     cfn<WalkFrame,address,usize> frame;
     cfn<WalkWrite,address,usize> write;
     cfn<usize,address,usize> field;
+};
+
+struct WalkEdges {
+    RelationSource source;
     cfn<u32,address,WalkVisit> mark_frame;
     cfn<void,address,WalkVisit> publish;
 };
@@ -42,18 +46,18 @@ struct WalkHost {
 };
 
 extern "C" u32 walk_relation(address graph,address work,usize root,u32 feedback,WalkHost host) on cpu
-    requires nonzero(host.edges.edges) requires nonzero(host.edges.edge)
-    requires nonzero(host.edges.frame) requires nonzero(host.edges.write)
-    requires nonzero(host.edges.field) requires nonzero(host.edges.mark_frame)
+    requires nonzero(host.edges.source.edges) requires nonzero(host.edges.source.edge)
+    requires nonzero(host.edges.source.frame) requires nonzero(host.edges.source.write)
+    requires nonzero(host.edges.source.field) requires nonzero(host.edges.mark_frame)
     requires nonzero(host.edges.publish) requires nonzero(host.pop) requires nonzero(host.visit);
 extern "C" void relation_dependencies(address graph,address work,usize root,WalkEdges host) on cpu
-    requires nonzero(host.edges) requires nonzero(host.edge)
-    requires nonzero(host.frame) requires nonzero(host.write)
-    requires nonzero(host.field) requires nonzero(host.mark_frame) requires nonzero(host.publish);
+    requires nonzero(host.source.edges) requires nonzero(host.source.edge)
+    requires nonzero(host.source.frame) requires nonzero(host.source.write)
+    requires nonzero(host.source.field) requires nonzero(host.mark_frame) requires nonzero(host.publish);
 
 extern "C" void historical_relation_frames(address graph,address work,address roots,cfn<usize,address> next,WalkEdges host) on cpu
-    requires nonzero(next) requires nonzero(host.edges) requires nonzero(host.edge)
-    requires nonzero(host.frame) requires nonzero(host.write) requires nonzero(host.field)
+    requires nonzero(next) requires nonzero(host.source.edges) requires nonzero(host.source.edge)
+    requires nonzero(host.source.frame) requires nonzero(host.source.write) requires nonzero(host.source.field)
     requires nonzero(host.mark_frame) requires nonzero(host.publish);
 
 struct OrderCount {
@@ -98,3 +102,25 @@ struct RoundHost {
 extern "C" u32 solve_round(address context, RoundSchedule schedule, u32 initial, RoundHost host) on cpu
     requires nonzero(host.evaluate) requires nonzero(host.next_variable) requires nonzero(host.observe)
     requires nonzero(host.equivalent) requires nonzero(host.forget);
+
+struct RelationSelection {
+    WalkSlice nodes;
+    WalkSlice frames;
+    usize root;
+};
+
+struct SelectionOutput {
+    cfn<address,address,usize,usize> node;
+    cfn<void,address,address,usize,usize,usize> edge;
+    cfn<address,address,usize,usize> frame;
+    cfn<address,address,address,usize,usize> write;
+    cfn<void,address,address,usize,usize> field;
+};
+
+extern "C" usize compact_index(RelationSelection selection, usize id) on cpu;
+
+extern "C" void compact(address graph, address destination, RelationSelection selection, RelationSource source, SelectionOutput output) on cpu
+    requires nonzero(source.edges) requires nonzero(source.edge)
+    requires nonzero(source.frame) requires nonzero(source.write) requires nonzero(source.field)
+    requires nonzero(output.node) requires nonzero(output.edge)
+    requires nonzero(output.frame) requires nonzero(output.write) requires nonzero(output.field);

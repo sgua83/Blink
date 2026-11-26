@@ -93,6 +93,7 @@ struct Frame { parent:Option<usize>, writes:Vec<Write> }
 pub(in crate::check) struct Graph { nodes:Vec<Node>, variables:BTreeSet<usize>, frames:Vec<Frame>, inputs:BTreeMap<LoopInput,usize> }
 
 
+#[derive(Clone, Copy)]
 #[repr(C)]
 struct WalkSlice { data: Borrowed, count: usize }
 impl WalkSlice {
@@ -109,12 +110,23 @@ struct WalkFrame { parent: usize, writes: WalkSlice }
 struct WalkWrite { target: usize, fields: WalkSlice }
 
 #[repr(C)]
-struct WalkEdges {
+struct RelationSource {
     edges: unsafe extern "C" fn(Borrowed, usize) -> WalkSlice,
     edge: unsafe extern "C" fn(Borrowed, usize) -> WalkEdge,
     frame: unsafe extern "C" fn(Borrowed, usize) -> WalkFrame,
     write: unsafe extern "C" fn(Borrowed, usize) -> WalkWrite,
     field: unsafe extern "C" fn(Borrowed, usize) -> usize,
+}
+
+impl RelationSource {
+    const GRAPH: Self = Self {
+        edges: walk_edges, edge: walk_edge, frame: walk_frame, write: walk_write, field: walk_field,
+    };
+}
+
+#[repr(C)]
+struct WalkEdges {
+    source: RelationSource,
     mark_frame: unsafe extern "C" fn(Slot, WalkVisit) -> u32,
     publish: unsafe extern "C" fn(Slot, WalkVisit),
 }
@@ -137,9 +149,57 @@ unsafe extern "C" {
     );
 }
 
+#[derive(Clone, Copy)]
+struct RelationView<'g> {
+    base: &'g Graph,
+    tail: &'g [Node],
+}
+
+impl<'g> RelationView<'g> {
+    fn node(self, id: usize) -> &'g Node {
+        if id < self.base.nodes.len() {
+            &self.base.nodes[id]
+        } else {
+            &self.tail[id - self.base.nodes.len()]
+        }
+    }
+
+    fn reachable(self, root: usize) -> (BTreeSet<usize>, BTreeSet<usize>) {
+        let mut work = RelationWalk::from_view(self, |_| false);
+        work.walk(root, false);
+        let [nodes, _] = work.nodes;
+        let [frames, _] = work.frames;
+        (nodes, frames)
+    }
+
+    fn selected(self, root: usize) -> Graph {
+        let (nodes, frames) = self.reachable(root);
+        let nodes: Vec<_> = nodes.into_iter().collect();
+        let frames: Vec<_> = frames.into_iter().collect();
+        let selection = RelationSelection {
+            nodes: WalkSlice::of(&nodes), frames: WalkSlice::of(&frames), root,
+        };
+        let mut selected = SelectedRelation {
+            source: self,
+            result: Graph { nodes: Vec::with_capacity(nodes.len()), frames: Vec::with_capacity(frames.len()), ..Graph::default() },
+        };
+        unsafe {
+            compact_relation(
+                ptr::from_ref(&self).cast(), ptr::from_mut(&mut selected).cast(),
+                selection, RelationSource::GRAPH, SelectedRelation::OUTPUT,
+            );
+        }
+        selected.result.inputs.extend(self.base.inputs.iter().filter_map(|(&input, &id)| {
+            let id = unsafe { compact_relation_index(selection, id) };
+            (id != usize::MAX).then_some((input, id))
+        }));
+        selected.result
+    }
+}
+
 unsafe extern "C" fn walk_edges(graph: Borrowed, node: usize) -> WalkSlice {
-    let graph = unsafe { &*graph.cast::<Graph>() };
-    WalkSlice::of(&graph.nodes[node].edges)
+    let graph = unsafe { *graph.cast::<RelationView<'_>>() };
+    WalkSlice::of(&graph.node(node).edges)
 }
 
 unsafe extern "C" fn walk_edge(edges: Borrowed, index: usize) -> WalkEdge {
@@ -153,8 +213,8 @@ unsafe extern "C" fn walk_edge(edges: Borrowed, index: usize) -> WalkEdge {
 }
 
 unsafe extern "C" fn walk_frame(graph: Borrowed, frame: usize) -> WalkFrame {
-    let graph = unsafe { &*graph.cast::<Graph>() };
-    let frame = &graph.frames[frame];
+    let graph = unsafe { *graph.cast::<RelationView<'_>>() };
+    let frame = &graph.base.frames[frame];
     WalkFrame { parent: frame.parent.unwrap_or(usize::MAX), writes: WalkSlice::of(&frame.writes) }
 }
 
@@ -167,8 +227,100 @@ unsafe extern "C" fn walk_field(fields: Borrowed, index: usize) -> usize {
     unsafe { (*fields.cast::<(u32, usize)>().add(index)).1 }
 }
 
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct RelationSelection {
+    nodes: WalkSlice,
+    frames: WalkSlice,
+    root: usize,
+}
+
+#[repr(C)]
+struct SelectionOutput {
+    node: unsafe extern "C" fn(Slot, usize, usize) -> Slot,
+    edge: unsafe extern "C" fn(Slot, Borrowed, usize, usize, usize),
+    frame: unsafe extern "C" fn(Slot, usize, usize) -> Slot,
+    write: unsafe extern "C" fn(Slot, Borrowed, usize, usize) -> Slot,
+    field: unsafe extern "C" fn(Slot, Borrowed, usize, usize),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.relation_order::compact"]
+    fn compact_relation(
+        source: Borrowed, destination: Slot, selection: RelationSelection,
+        graph: RelationSource, output: SelectionOutput,
+    );
+    #[link_name = "bootstrap.relation_order::compact_index"]
+    fn compact_relation_index(selection: RelationSelection, original: usize) -> usize;
+}
+
+struct SelectedRelation<'g> {
+    source: RelationView<'g>,
+    result: Graph,
+}
+
+impl SelectedRelation<'_> {
+    const OUTPUT: SelectionOutput = SelectionOutput {
+        node: Self::node, edge: Self::edge, frame: Self::frame, write: Self::write, field: Self::field,
+    };
+
+    unsafe extern "C" fn node(destination: Slot, id: usize, count: usize) -> Slot {
+        let selected = unsafe { &mut *destination.cast::<Self>() };
+        let graph = &mut selected.result;
+        let index = graph.nodes.len();
+        if selected.source.base.variables.contains(&id) {
+            graph.variables.insert(index);
+        }
+        graph.nodes.push(Node {
+            seeds: selected.source.node(id).seeds.clone(),
+            edges: Vec::with_capacity(count),
+        });
+        ptr::from_mut(&mut graph.nodes[index]).cast()
+    }
+
+    unsafe extern "C" fn edge(destination: Slot, edges: Borrowed, index: usize, from: usize, frame: usize) {
+        let node = unsafe { &mut *destination.cast::<Node>() };
+        let old = unsafe { &*edges.cast::<Edge>().add(index) };
+        let mut op = old.op.clone();
+        if let Op::Initial { frame: original, .. } | Op::Read { frame: original, .. } = &mut op {
+            *original = (frame != usize::MAX).then_some(frame);
+        }
+        node.edges.push(Edge { from, op, when: old.when.clone() });
+    }
+
+    unsafe extern "C" fn frame(destination: Slot, parent: usize, count: usize) -> Slot {
+        let selected = unsafe { &mut *destination.cast::<Self>() };
+        let frames = &mut selected.result.frames;
+        let index = frames.len();
+        frames.push(Frame {
+            parent: (parent != usize::MAX).then_some(parent),
+            writes: Vec::with_capacity(count),
+        });
+        ptr::from_mut(&mut frames[index]).cast()
+    }
+
+    unsafe extern "C" fn write(destination: Slot, writes: Borrowed, index: usize, target: usize) -> Slot {
+        let frame = unsafe { &mut *destination.cast::<Frame>() };
+        let old = unsafe { &*writes.cast::<Write>().add(index) };
+        let index = frame.writes.len();
+        frame.writes.push(Write {
+            target,
+            fields: old.fields.as_ref().map(|fields| Vec::with_capacity(fields.len())),
+            when: old.when.clone(),
+        });
+        frame.writes[index].fields.as_mut()
+            .map_or(ptr::null_mut(), |fields| ptr::from_mut(fields).cast())
+    }
+
+    unsafe extern "C" fn field(destination: Slot, fields: Borrowed, index: usize, target: usize) {
+        let output = unsafe { &mut *destination.cast::<Vec<(u32, usize)>>() };
+        let (word, _) = unsafe { *fields.cast::<(u32, usize)>().add(index) };
+        output.push((word, target));
+    }
+}
+
 struct RelationWalk<'g, F> {
-    graph: &'g Graph,
+    graph: RelationView<'g>,
     accepts: F,
     pending: Vec<WalkVisit>,
     nodes: [BTreeSet<usize>; 2],
@@ -177,14 +329,15 @@ struct RelationWalk<'g, F> {
 
 impl<'g, F: FnMut(&Node) -> bool> RelationWalk<'g, F> {
     fn new(graph: &'g Graph, accepts: F) -> Self {
+        Self::from_view(RelationView { base: graph, tail: &[] }, accepts)
+    }
+
+    fn from_view(graph: RelationView<'g>, accepts: F) -> Self {
         Self { graph, accepts, pending: Vec::new(), nodes: Default::default(), frames: Default::default() }
     }
 
     fn edges(publish: unsafe extern "C" fn(Slot, WalkVisit)) -> WalkEdges {
-        WalkEdges {
-            edges: walk_edges, edge: walk_edge, frame: walk_frame, write: walk_write, field: walk_field,
-            mark_frame: Self::mark_frame, publish,
-        }
+        WalkEdges { source: RelationSource::GRAPH, mark_frame: Self::mark_frame, publish }
     }
 
     unsafe extern "C" fn mark_frame(work: Slot, visit: WalkVisit) -> u32 {
@@ -206,7 +359,7 @@ impl<'g, F: FnMut(&Node) -> bool> RelationWalk<'g, F> {
         if !work.nodes[visit.read as usize].insert(visit.node) {
             return 0;
         }
-        if (work.accepts)(&work.graph.nodes[visit.node]) { 2 } else { 1 }
+        if (work.accepts)(work.graph.node(visit.node)) { 2 } else { 1 }
     }
 
     unsafe extern "C" fn collect(work: Slot, visit: WalkVisit) {
@@ -214,9 +367,10 @@ impl<'g, F: FnMut(&Node) -> bool> RelationWalk<'g, F> {
     }
 
     fn walk(&mut self, root: usize, feedback: bool) -> bool {
+        let graph = self.graph;
         let host = WalkHost { edges: Self::edges(Self::push), pop: Self::pop, visit: Self::visit };
         unsafe {
-            walk_relation(ptr::from_ref(self.graph).cast(), ptr::from_mut(self).cast(), root, u32::from(feedback), host) != 0
+            walk_relation(ptr::from_ref(&graph).cast(), ptr::from_mut(self).cast(), root, u32::from(feedback), host) != 0
         }
     }
 
@@ -224,17 +378,19 @@ impl<'g, F: FnMut(&Node) -> bool> RelationWalk<'g, F> {
         unsafe extern "C" fn next<I: Iterator<Item = usize>>(roots: Slot) -> usize {
             unsafe { &mut *roots.cast::<I>() }.next().unwrap_or(usize::MAX)
         }
+        let graph = self.graph;
         unsafe {
             historical_relation_frames(
-                ptr::from_ref(self.graph).cast(), ptr::from_mut(self).cast(), ptr::from_mut(&mut roots).cast(),
+                ptr::from_ref(&graph).cast(), ptr::from_mut(self).cast(), ptr::from_mut(&mut roots).cast(),
                 next::<I>, Self::edges(Self::collect),
             );
         }
     }
 
     fn dependencies(&mut self, root: usize) {
+        let graph = self.graph;
         unsafe {
-            relation_dependencies(ptr::from_ref(self.graph).cast(), ptr::from_mut(self).cast(), root, Self::edges(Self::collect));
+            relation_dependencies(ptr::from_ref(&graph).cast(), ptr::from_mut(self).cast(), root, Self::edges(Self::collect));
         }
     }
 }
@@ -717,11 +873,7 @@ impl Graph {
     }
 
     fn reachable(&self, root: usize) -> (BTreeSet<usize>, BTreeSet<usize>) {
-        let mut work = RelationWalk::new(self, |_| false);
-        work.walk(root, false);
-        let [nodes, _] = work.nodes;
-        let [frames, _] = work.frames;
-        (nodes, frames)
+        RelationView { base: self, tail: &[] }.reachable(root)
     }
 
     fn any_reachable(&self, root: usize, accepts: impl FnMut(&Node) -> bool) -> bool {
@@ -786,18 +938,8 @@ impl Graph {
         }
         EvaluationPlan { ordered, stable, fixed_inputs, completed }
     }
-    pub(in crate::check) fn selected(&self,root:usize)->Self{
-        let (reachable, frames) = self.reachable(root);
-        let order: Vec<_> = std::iter::once(root)
-            .chain(reachable.into_iter().filter(|&id| id != root)).collect();
-        let indices: BTreeMap<_, _> = order.iter().enumerate().map(|(i, &id)| (id, i)).collect();
-        let fi: BTreeMap<_, _> = frames.iter().enumerate().map(|(i, &id)| (id, i)).collect();
-        let nodes=order.iter().map(|&id|Node{seeds:self.nodes[id].seeds.clone(),edges:self.nodes[id].edges.iter().map(|edge|{let mut op=edge.op.clone();if let Op::Read{frame,..}|Op::Initial{frame,..}=&mut op{*frame=frame.map(|id|fi[&id]);}Edge{from:indices[&edge.from],op,when:edge.when.clone()}}).collect()}).collect();
-        let variables=self.variables.iter().filter_map(|id|indices.get(id).copied()).collect();let frames=frames.iter().map(|id|{let f=&self.frames[*id];Frame{parent:f.parent.map(|p|fi[&p]),writes:f.writes.iter().map(|w|Write{target:indices[&w.target],fields:w.fields.as_ref().map(|v|v.iter().map(|(word,id)|(*word,indices[id])).collect()),when:w.when.clone()}).collect()}}).collect();
-        let inputs = self.inputs.iter().filter_map(|(input, id)| {
-            indices.get(id).map(|&id| (*input, id))
-        }).collect();
-        Self { nodes, variables, frames, inputs }
+    pub(in crate::check) fn selected(&self, root: usize) -> Self {
+        RelationView { base: self, tail: &[] }.selected(root)
     }
     pub(in crate::check) fn has_local(&self, root: usize) -> bool {
         self.any_reachable(root, |node| node.seeds.has_local())
@@ -963,22 +1105,12 @@ impl Graph {
         }
         residual
     }
-    fn rebind<'r>(&self, value: &Borrow, residual: &impl Fn() -> &'r Arc<Graph>) -> Borrow {
+    fn rebind<'r>(&self, value: &Borrow, residual: &impl Fn() -> &'r Graph) -> Borrow {
         value.map_sources(|source|match source{
             Origin::Relation(graph, root) if self.extension(&graph) => {
-                let residual = residual();
                 let tail = &graph.nodes[self.nodes.len()..];
-                let graph = if tail.is_empty() {
-                    Arc::clone(residual)
-                } else {
-                    Arc::new(Self {
-                        nodes: residual.nodes.iter().chain(tail).cloned().collect(),
-                        variables: graph.variables.clone(),
-                        frames: residual.frames.clone(),
-                        inputs: graph.inputs.clone(),
-                    })
-                };
-                Borrow::source(Origin::Relation(Arc::new(graph.selected(root)), 0))
+                let selected = RelationView { base: residual(), tail }.selected(root);
+                Borrow::source(Origin::Relation(Arc::new(selected), 0))
             },
             Origin::Element{parent,fields,index}=>Borrow::selected_element(self.rebind(&parent,residual),fields,index),
             Origin::Projection{parent,fields}=>Borrow::projection(self.rebind(&parent,residual),fields),
@@ -1029,7 +1161,7 @@ impl Graph {
             if converged {
                 let value = query.node(root);
                 let residual = std::cell::OnceCell::new();
-                return self.rebind(value, &|| residual.get_or_init(|| Arc::new(self.residual(&query))));
+                return self.rebind(value, &|| residual.get_or_init(|| self.residual(&query)));
             }
             values = query.values;
             variables.extend(next);

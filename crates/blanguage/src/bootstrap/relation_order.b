@@ -27,25 +27,25 @@ const u32 WALK_SEEN = 0;
 const u32 WALK_MATCHED = 2;
 
 void walk_frames(address graph,address work,WalkSlice edges,u32 frame_read,u32 sources,WalkEdges host) on cpu
-    requires nonzero(host.edge) requires nonzero(host.frame) requires nonzero(host.write)
-    requires nonzero(host.field) requires nonzero(host.mark_frame) requires nonzero(host.publish)
+    requires nonzero(host.source.edge) requires nonzero(host.source.frame) requires nonzero(host.source.write)
+    requires nonzero(host.source.field) requires nonzero(host.mark_frame) requires nonzero(host.publish)
 {
     usize index = 0u64;
     while (index < edges.count) {
-        usize frame = host.edge(edges.data,index).frame;
+        usize frame = host.source.edge(edges.data,index).frame;
         index += 1u64;
         while (frame != WALK_END && host.mark_frame(work,WalkVisit(frame,frame_read)) != 0) {
-            WalkFrame current = host.frame(graph,frame);
+            WalkFrame current = host.source.frame(graph,frame);
             frame = current.parent;
             if (sources == 0) { continue; }
             usize item = 0u64;
             while (item < current.writes.count) {
-                WalkWrite write = host.write(current.writes.data,item);
+                WalkWrite write = host.source.write(current.writes.data,item);
                 item += 1u64;
                 host.publish(work,WalkVisit(write.target,frame_read));
                 usize field = 0u64;
                 while (field < write.fields.count) {
-                    host.publish(work,WalkVisit(host.field(write.fields.data,field),frame_read));
+                    host.publish(work,WalkVisit(host.source.field(write.fields.data,field),frame_read));
                     field += 1u64;
                 }
             }
@@ -54,15 +54,15 @@ void walk_frames(address graph,address work,WalkSlice edges,u32 frame_read,u32 s
 }
 
 void walk_inputs(address graph,address work,WalkVisit visit,u32 feedback,WalkEdges host) on cpu
-    requires nonzero(host.edges) requires nonzero(host.edge)
-    requires nonzero(host.frame) requires nonzero(host.write)
-    requires nonzero(host.field) requires nonzero(host.mark_frame) requires nonzero(host.publish)
+    requires nonzero(host.source.edges) requires nonzero(host.source.edge)
+    requires nonzero(host.source.frame) requires nonzero(host.source.write)
+    requires nonzero(host.source.field) requires nonzero(host.mark_frame) requires nonzero(host.publish)
 {
-    WalkSlice edges = host.edges(graph,visit.node);
+    WalkSlice edges = host.source.edges(graph,visit.node);
     u32 frame_read = visit.read;
     usize index = 0u64;
     while (index < edges.count) {
-        WalkEdge edge = host.edge(edges.data,index);
+        WalkEdge edge = host.source.edge(edges.data,index);
         u32 read = visit.read | (feedback & edge.read);
         frame_read |= read;
         host.publish(work,WalkVisit(edge.source,read));
@@ -73,9 +73,9 @@ void walk_inputs(address graph,address work,WalkVisit visit,u32 feedback,WalkEdg
 }
 
 extern "C" u32 walk_relation(address graph,address work,usize root,u32 feedback,WalkHost host) on cpu
-    requires nonzero(host.edges.edges) requires nonzero(host.edges.edge)
-    requires nonzero(host.edges.frame) requires nonzero(host.edges.write)
-    requires nonzero(host.edges.field) requires nonzero(host.edges.mark_frame)
+    requires nonzero(host.edges.source.edges) requires nonzero(host.edges.source.edge)
+    requires nonzero(host.edges.source.frame) requires nonzero(host.edges.source.write)
+    requires nonzero(host.edges.source.field) requires nonzero(host.edges.mark_frame)
     requires nonzero(host.edges.publish) requires nonzero(host.pop) requires nonzero(host.visit)
 {
     host.edges.publish(work,WalkVisit(root,0));
@@ -91,21 +91,21 @@ extern "C" u32 walk_relation(address graph,address work,usize root,u32 feedback,
 }
 
 extern "C" void relation_dependencies(address graph,address work,usize root,WalkEdges host) on cpu
-    requires nonzero(host.edges) requires nonzero(host.edge)
-    requires nonzero(host.frame) requires nonzero(host.write)
-    requires nonzero(host.field) requires nonzero(host.mark_frame) requires nonzero(host.publish)
+    requires nonzero(host.source.edges) requires nonzero(host.source.edge)
+    requires nonzero(host.source.frame) requires nonzero(host.source.write)
+    requires nonzero(host.source.field) requires nonzero(host.mark_frame) requires nonzero(host.publish)
 {
     walk_inputs(graph,work,WalkVisit(root,0),0,host);
 }
 
 extern "C" void historical_relation_frames(address graph,address work,address roots,cfn<usize,address> next,WalkEdges host) on cpu
-    requires nonzero(next) requires nonzero(host.edges) requires nonzero(host.edge)
-    requires nonzero(host.frame) requires nonzero(host.write) requires nonzero(host.field)
+    requires nonzero(next) requires nonzero(host.source.edges) requires nonzero(host.source.edge)
+    requires nonzero(host.source.frame) requires nonzero(host.source.write) requires nonzero(host.source.field)
     requires nonzero(host.mark_frame) requires nonzero(host.publish)
 {
     usize root = next(roots);
     while (root != WALK_END) {
-        walk_frames(graph,work,host.edges(graph,root),0,0,host);
+        walk_frames(graph,work,host.source.edges(graph,root),0,0,host);
         root = next(roots);
     }
 }
@@ -446,4 +446,78 @@ extern "C" u32 solve_round(address context, RoundSchedule schedule, u32 initial,
         index += 1u64;
     }
     return 0;
+}
+
+usize old_id(WalkSlice ids, usize index) on cpu {
+    return unsafe_position<usize>(cell(ids.data,index,8u64));
+}
+
+usize rank_of(WalkSlice ids, usize id) on cpu {
+    usize first = 0u64;
+    usize end = ids.count;
+    while (first < end) {
+        usize middle = first + (end - first) / 2u64;
+        if (old_id(ids,middle) < id) {
+            first = middle + 1u64;
+        } else {
+            end = middle;
+        }
+    }
+    return first < ids.count && old_id(ids,first) == id ? first : WALK_END;
+}
+
+extern "C" usize compact_index(RelationSelection selection, usize id) on cpu {
+    if (id == selection.root) { return 0u64; }
+    usize rank = rank_of(selection.nodes,id);
+    if (rank == WALK_END) { return rank; }
+    return id < selection.root ? rank + 1u64 : rank;
+}
+
+void compact_node(address graph, address destination, RelationSelection selection, usize id, RelationSource source, SelectionOutput output) on cpu
+    requires nonzero(source.edges) requires nonzero(source.edge)
+    requires nonzero(output.node) requires nonzero(output.edge)
+{
+    WalkSlice edges = source.edges(graph,id);
+    address node = output.node(destination,id,edges.count);
+    usize index = 0u64;
+    while (index < edges.count) {
+        WalkEdge edge = source.edge(edges.data,index);
+        output.edge(node,edges.data,index,
+            compact_index(selection,edge.source),rank_of(selection.frames,edge.frame));
+        index += 1u64;
+    }
+}
+
+extern "C" void compact(address graph, address destination, RelationSelection selection, RelationSource source, SelectionOutput output) on cpu
+    requires nonzero(source.edges) requires nonzero(source.edge)
+    requires nonzero(source.frame) requires nonzero(source.write) requires nonzero(source.field)
+    requires nonzero(output.node) requires nonzero(output.edge)
+    requires nonzero(output.frame) requires nonzero(output.write) requires nonzero(output.field)
+{
+    compact_node(graph,destination,selection,selection.root,source,output);
+    usize index = 0u64;
+    while (index < selection.nodes.count) {
+        usize id = old_id(selection.nodes,index);
+        if (id != selection.root) { compact_node(graph,destination,selection,id,source,output); }
+        index += 1u64;
+    }
+
+    index = 0u64;
+    while (index < selection.frames.count) {
+        WalkFrame frame = source.frame(graph,old_id(selection.frames,index));
+        address next_frame = output.frame(destination,rank_of(selection.frames,frame.parent),frame.writes.count);
+        usize item = 0u64;
+        while (item < frame.writes.count) {
+            WalkWrite write = source.write(frame.writes.data,item);
+            address fields = output.write(next_frame,frame.writes.data,item,compact_index(selection,write.target));
+            usize field = 0u64;
+            while (field < write.fields.count) {
+                usize id = source.field(write.fields.data,field);
+                output.field(fields,write.fields.data,field,compact_index(selection,id));
+                field += 1u64;
+            }
+            item += 1u64;
+        }
+        index += 1u64;
+    }
 }
