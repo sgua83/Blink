@@ -1935,15 +1935,31 @@ fn converge_access(
         }).collect()
     }
 
-    let components = groups.iter().filter_map(|(&entry, members)| {
-        if members.len() < 2 { return None; }
-        let inputs = relation::Graph::component_inputs(entry, members, functions, known, |member| &direct[member].0);
-        let (parameters, _) = &direct[entry];
-        let invoked = functions[entry].calls.iter().filter(|call| members.contains(&call.function.as_str()))
-            .map(|call| bounds::Condition::execution(&call.path).guard_at_call(parameters))
-            .reduce(|a,b|a.logical(b,true)).unwrap();
-        Some((entry, (members, invoked, inputs)))
-    }).collect::<BTreeMap<_,_>>();
+    let components = {
+        let calls = groups.iter().filter(|(_, members)| members.len() > 1).map(|(&name, members)| {
+            let sites: Vec<_> = functions[name].calls.iter().filter_map(|call| {
+                let callee = members.iter().copied().find(|member| *member == call.function.as_str())?;
+                Some((callee, call))
+            }).collect();
+            let guards = bounds::Clause::project_guard_paths(
+                sites.iter().map(|(_, call)| &call.path), &direct[name].0,
+            );
+            let projected: Vec<_> = sites.into_iter().zip(guards).map(|((callee, call), public)| {
+                relation::ComponentCall { callee, call, public }
+            }).collect();
+            (name, projected)
+        }).collect::<BTreeMap<_, _>>();
+        calls.iter().map(|(&entry, sites)| {
+            let members = &groups[entry];
+            let inputs = relation::Graph::component_inputs(entry, members, functions, known,
+                &calls, |member| &direct[member].0);
+            let (parameters, _) = &direct[entry];
+            let invoked = sites.iter().map(|site| {
+                bounds::Condition::execution(&site.call.path).guard_at_call(parameters)
+            }).reduce(|a, b| a.logical(b, true)).unwrap();
+            (entry, (members, invoked, inputs))
+        }).collect::<BTreeMap<_, _>>()
+    };
 
     let mut call_accesses = functions.keys().map(|name| {
         (name.as_str(), BTreeMap::<usize, CallProjection<'_>>::new())

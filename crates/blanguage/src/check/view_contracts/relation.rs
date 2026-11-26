@@ -1597,7 +1597,14 @@ unsafe extern "C" {
     );
 }
 
-struct ComponentInputGraph<'name, 'state, F> {
+pub(super) struct ComponentCall<'name, 'state> {
+    pub(super) callee: &'name str,
+    pub(super) call: &'state Call,
+    pub(super) public: bounds::Clause,
+}
+
+struct ComponentInputGraph<'name, 'state, 'calls, F> {
+    calls: &'calls BTreeMap<&'name str, Vec<ComponentCall<'name, 'state>>>,
     functions: &'state BTreeMap<String, &'state Function>,
     public_parameters: F,
     formals: BTreeMap<&'name str, BTreeSet<ValueIdentity>>,
@@ -1605,7 +1612,7 @@ struct ComponentInputGraph<'name, 'state, F> {
     ports: Vec<ComponentPort<'name>>,
 }
 
-impl<'name, 'state, 'bindings, F> ComponentInputGraph<'name, 'state, F>
+impl<'name, 'state, 'bindings, 'calls, F> ComponentInputGraph<'name, 'state, 'calls, F>
 where
     F: Fn(&'name str) -> &'bindings BTreeMap<ValueIdentity, bounds::Proof>,
 {
@@ -1625,37 +1632,39 @@ where
         let known = inputs.builder.known;
         let state = known[caller].loop_scope();
         let public = (inputs.public_parameters)(caller);
+        let calls = inputs.calls[caller].as_slice();
         let mut local = ComponentCallInputs {
-            inputs, port, public, builder: Graph::builder(function, state, known), operands: Vec::new(),
+            inputs, calls, port, public, builder: Graph::builder(function, state, known), operands: Vec::new(),
         };
-        local.expand(function.calls.len());
+        local.expand();
         local.publish();
     }
 }
 
-struct ComponentCallInputs<'work, 'name, 'state, 'bindings, F> {
-    inputs: &'work mut ComponentInputGraph<'name, 'state, F>,
+struct ComponentCallInputs<'work, 'name, 'state, 'bindings, 'calls, F> {
+    inputs: &'work mut ComponentInputGraph<'name, 'state, 'calls, F>,
+    calls: &'calls [ComponentCall<'name, 'state>],
     port: usize,
     public: &'bindings BTreeMap<ValueIdentity, bounds::Proof>,
     builder: Builder<'state>,
     operands: Vec<(usize, usize, bounds::Clause)>,
 }
 
-impl<F> ComponentCallInputs<'_, '_, '_, '_, F> {
-    fn expand(&mut self, count: usize) {
-        unsafe { visit_relation_calls(ptr::from_mut(self).cast(), count, Self::call) };
+impl<F> ComponentCallInputs<'_, '_, '_, '_, '_, F> {
+    fn expand(&mut self) {
+        unsafe { visit_relation_calls(ptr::from_mut(self).cast(), self.calls.len(), Self::call) };
     }
 
     unsafe extern "C" fn call(context: Slot, index: usize) {
         let local = unsafe { &mut *context.cast::<Self>() };
         let inputs = &mut *local.inputs;
         let function = local.builder.function;
-        let call = &function.calls[index];
-        let Some((&callee, formals)) = inputs.formals.get_key_value(call.function.as_str()) else {
-            return;
-        };
+        let site = &local.calls[index];
+        let call = site.call;
+        let callee = site.callee;
+        let formals = &inputs.formals[callee];
         let scalars = &inputs.ports[local.port].scalars;
-        let when = call.path.project_guard(local.public).project_guard(scalars);
+        let when = site.public.project_guard(scalars);
         if !when.possible() { return; }
 
         let empty = BTreeMap::new();
@@ -1690,7 +1699,7 @@ impl<F> ComponentCallInputs<'_, '_, '_, '_, F> {
     }
 
     fn publish(self) {
-        let Self { inputs, port, public, builder, operands } = self;
+        let Self { inputs, calls: _, port, public, builder, operands } = self;
         let Builder { function, state, known, graph, .. } = builder;
         let local = Arc::new(graph);
         let mut evaluation = BorrowEvaluation {
@@ -1839,6 +1848,7 @@ impl Graph {
         members: &[&'name str],
         functions: &'state BTreeMap<String, &'state Function>,
         known: &'state States<'state>,
+        calls: &BTreeMap<&'name str, Vec<ComponentCall<'name, 'state>>>,
         public_parameters: impl Fn(&'name str) -> &'bindings BTreeMap<ValueIdentity, bounds::Proof>,
     ) -> Vec<(&'name str, BTreeMap<ValueIdentity, bounds::Proof>)> {
         let function = functions[entry];
@@ -1853,7 +1863,7 @@ impl Graph {
         }).collect::<BTreeMap<_,_>>();
         let first = ComponentPort::new(entry, scalars, &mut builder, true);
         let mut inputs = ComponentInputGraph {
-            functions, public_parameters, formals, builder, ports: vec![first],
+            calls, functions, public_parameters, formals, builder, ports: vec![first],
         };
         inputs.expand();
 
