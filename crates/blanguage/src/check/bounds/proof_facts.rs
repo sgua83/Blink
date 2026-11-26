@@ -26,7 +26,7 @@ unsafe extern "C" fn origin(slot:Slot,index:usize)->Borrowed {
     ptr::from_ref(mapped.unwrap_or(identity)).cast()
 }
 unsafe extern "C" fn range(slot:Slot,index:usize)->Bounds {
-    let c=unsafe{frame(slot)};let(lower,upper)=c.proof.ranges.get(c.component).map_or((0,u64::MAX),|v|v.0[index]);Bounds{lower,upper}
+    let c=unsafe{frame(slot)};let value=c.proof.interval_source(c.component)[index];Bounds{lower:value.lower,upper:value.upper}
 }
 unsafe extern "C" fn rewind(slot:Slot) {
     let c=unsafe{frame(slot)};c.domains=c.proof.domains.get(c.component).map(|d|d.iter()).unwrap_or_default();

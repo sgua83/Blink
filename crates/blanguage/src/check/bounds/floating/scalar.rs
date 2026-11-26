@@ -20,7 +20,7 @@ fn raw(range: (Bits, Bits)) -> RawRange { RawRange { lower: range.0, upper: rang
 fn decoded(value: NumericalRange) -> ScalarRanges {
     match value.state {
         1 => ScalarRanges::interval(value.lower, value.upper),
-        2 => ScalarRanges(Vec::new()),
+        2 => ScalarRanges::empty(),
         _ => ScalarRanges::default(),
     }
 }

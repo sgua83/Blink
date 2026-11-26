@@ -1,6 +1,7 @@
 //! Numerical values cross synchronously; the original Proof owns every fact.
 use super::{Bits, Fact, Facts, IndexDomain, KnownBits, Scalar, ValueIdentity};
 use crate::builtin_types::ScalarEncoding;
+use crate::ir::scalar_ranges::{self, BitRange as Range};
 use std::{collections::btree_set, ffi::c_void, slice};
 
 #[derive(Clone, Copy)]
@@ -24,11 +25,6 @@ impl From<KnownBits> for Pattern {
             value: value.value,
         }
     }
-}
-#[repr(C)]
-struct Range {
-    lower: Bits,
-    upper: Bits,
 }
 #[repr(C)]
 struct KnownDomain {
@@ -68,7 +64,7 @@ struct KnownProjection {
     present: u32,
 }
 
-type Reader = unsafe extern "C" fn(*const c_void, u64) -> Range;
+type Reader = unsafe extern "C" fn(*const c_void, usize) -> Range;
 unsafe extern "C" {
     #[link_name = "bootstrap.scalar_fold::known_cast_path"]
     fn cast_values(
@@ -87,7 +83,7 @@ unsafe extern "C" {
         mask: Bits,
         bias: Bits,
         ranges: *const c_void,
-        count: u64,
+        count: usize,
         read: Reader,
         domains: *mut c_void,
         next_domain: unsafe extern "C" fn(*mut c_void) -> KnownDomain,
@@ -108,7 +104,7 @@ unsafe extern "C" {
         left: u32,
         value: Pattern,
         context: *const c_void,
-        count: u64,
+        count: usize,
         read: Reader,
     ) -> Pattern;
 }
@@ -166,11 +162,6 @@ pub(super) fn bitwise(
         )
     })
 }
-unsafe extern "C" fn interval(context: *const c_void, index: u64) -> Range {
-    let ranges = unsafe { &*context.cast::<&[(Bits, Bits)]>() };
-    let (lower, upper) = ranges[index as usize];
-    Range { lower, upper }
-}
 unsafe extern "C" fn next_domain(context: *mut c_void) -> KnownDomain {
     let domains = unsafe { &mut *context.cast::<btree_set::Iter<'_, IndexDomain>>() };
     for domain in domains {
@@ -183,16 +174,34 @@ unsafe extern "C" fn next_domain(context: *mut c_void) -> KnownDomain {
 
 pub(super) fn from_proof(
     scalar: Scalar,
+    ranges: &[Range],
+    domains: btree_set::Iter<'_, IndexDomain>,
+) -> Option<KnownBits> {
+    read_ranges(scalar, ranges.as_ptr().cast(), ranges.len(), super::range_sets::read_record, domains)
+}
+
+pub(super) fn from_pairs(
+    scalar: Scalar,
     ranges: &[(Bits, Bits)],
+    domains: btree_set::Iter<'_, IndexDomain>,
+) -> Option<KnownBits> {
+    read_ranges(scalar, std::ptr::from_ref(&ranges).cast(), ranges.len(), scalar_ranges::interval, domains)
+}
+
+fn read_ranges(
+    scalar: Scalar,
+    ranges: *const c_void,
+    count: usize,
+    read: Reader,
     mut domains: btree_set::Iter<'_, IndexDomain>,
 ) -> Option<KnownBits> {
     present(scalar, unsafe {
         read_proof(
             scalar.bit_mask(),
             scalar.order_bias(),
-            std::ptr::from_ref(&ranges).cast(),
-            ranges.len() as u64,
-            interval,
+            ranges,
+            count,
+            read,
             std::ptr::from_mut(&mut domains).cast(),
             next_domain,
         )
@@ -276,16 +285,16 @@ pub(super) fn from_facts(scalar: Scalar, identity: ValueIdentity, sets: &[&Facts
     (result.present != 0).then(|| value(scalar, result.pattern))
 }
 
-pub(super) fn shifted(source: KnownBits, left: bool, counts: &[(Bits, Bits)]) -> Option<KnownBits> {
+pub(super) fn shifted(source: KnownBits, left: bool, counts: &[Range]) -> Option<KnownBits> {
     present(source.scalar, unsafe {
         shift(
             source.scalar.bit_mask(),
             source.scalar.order_bias(),
             u32::from(left),
             source.into(),
-            (&counts as *const &[(Bits, Bits)]).cast(),
-            counts.len() as u64,
-            interval,
+            counts.as_ptr().cast(),
+            counts.len(),
+            super::range_sets::read_record,
         )
     })
 }

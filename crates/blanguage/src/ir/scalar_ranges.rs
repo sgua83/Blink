@@ -7,7 +7,7 @@ type Read = unsafe extern "C" fn(*const c_void, usize) -> BitRange;
 type Write = unsafe extern "C" fn(*mut c_void, usize, BitRange);
 type Push = unsafe extern "C" fn(*mut c_void, BitRange);
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub(crate) struct BitRange {
     pub(crate) lower: Bits,
@@ -57,6 +57,11 @@ impl RangeInput {
     pub(crate) fn borrowed(values: &&[Pair]) -> Self {
         Self { values: ptr::from_ref(values).cast(), count: values.len(), get: interval }
     }
+
+    #[cfg(feature = "compiler")]
+    pub(crate) fn records(values: &[BitRange], get: Read) -> Self {
+        Self { values: values.as_ptr().cast(), count: values.len(), get }
+    }
 }
 
 unsafe extern "C" {
@@ -67,7 +72,7 @@ unsafe extern "C" {
         known: BitPattern, required: BitPattern) -> u32;
     #[cfg(feature = "compiler")]
     #[link_name = "codec.scalar_ranges::intersect_ranges"]
-    fn intersect_ranges(left: RangeInput, right: RangeInput, output: *mut c_void, push: Push) -> usize;
+    pub(crate) fn intersect_ranges(left: RangeInput, right: RangeInput, output: *mut c_void, push: Push) -> usize;
     #[link_name = "codec.scalar_ranges::intersect_element_ranges"]
     fn intersect_element_ranges(left: RangeInput, right: RangeInput, write_left: Write,
         write_right: Write, left_bits: BitPattern, right_bits: BitPattern, output: *mut c_void,
@@ -115,16 +120,6 @@ pub(super) fn within(scalar: Scalar, actual: &[Pair], allowed: &[Pair], known: P
         element_ranges_within(RangeInput::borrowed(&actual), RangeInput::borrowed(&allowed),
             scalar.order_bias(), known.into(), required.into()) != 0
     }
-}
-
-#[cfg(feature = "compiler")]
-pub(crate) fn intersect_sorted(left: &[Pair], right: &[Pair]) -> Vec<Pair> {
-    let mut output = Vec::new();
-    unsafe {
-        intersect_ranges(RangeInput::borrowed(&left), RangeInput::borrowed(&right),
-            ptr::from_mut(&mut output).cast(), push);
-    }
-    output
 }
 
 pub(super) fn intersect(mut left: &mut [Pair], right: &[Pair], left_bits: Pair, right_bits: Pair) -> (Vec<Pair>, Pair) {

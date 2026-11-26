@@ -1,6 +1,139 @@
 module bootstrap.scalar_fold;
 import codec.scalar_ranges;
 
+extern "C" handle GetProcessHeap() on cpu from "KERNEL32.dll";
+extern "C" address HeapAlloc(handle heap, u32 flags, u64 bytes) on cpu from "KERNEL32.dll";
+extern "C" address HeapReAlloc(handle heap, u32 flags, address data, u64 bytes) on cpu from "KERNEL32.dll";
+extern "C" i32 HeapFree(handle heap, u32 flags, address data) on cpu from "KERNEL32.dll";
+extern "C" void RtlMoveMemory(address output, address input, u64 bytes) on cpu from "KERNEL32.dll";
+extern "C" void abort() on cpu from "ucrtbase.dll";
+
+struct ProofRangeHeap { u64 capacity; address records; };
+
+address proof_range_address(address base, u64 bytes) on cpu {
+    return unsafe_address(address_bits(base) + bytes);
+}
+
+address proof_range_payload(address storage) on cpu {
+    return proof_range_address(storage, size_of<u64>());
+}
+
+address proof_range_records(address storage) on cpu {
+    address payload = proof_range_payload(storage);
+    if (unsafe_position<u64>(storage) <= 1u64) { return payload; }
+    return unsafe_position<ProofRangeHeap>(payload).records;
+}
+
+extern "C" BitRange proof_range_record(address records, u64 index) on cpu {
+    return unsafe_position<BitRange>(proof_range_address(records, index * size_of<BitRange>()));
+}
+
+extern "C" BitRange proof_range_side(address sides, u32 side, u64 index) on cpu {
+    address records = unsafe_position<address>(proof_range_address(sides, u64(side) * size_of<address>()));
+    return proof_range_record(records, index);
+}
+
+extern "C" BitRange proof_range_get(address storage, u64 index) on cpu {
+    return proof_range_record(proof_range_records(storage), index);
+}
+
+extern "C" void proof_range_set(address storage, u64 index, BitRange value) on cpu {
+    unsafe_position<BitRange>(proof_range_address(proof_range_records(storage),
+        index * size_of<BitRange>())) = value;
+}
+
+extern "C" void proof_range_push(address storage, BitRange value) on cpu {
+    u64 count = unsafe_position<u64>(storage);
+    address payload = proof_range_payload(storage);
+    if (count == 0u64) {
+        unsafe_position<BitRange>(payload) = value;
+        unsafe_position<u64>(storage) = 1u64;
+        return;
+    }
+
+    ProofRangeHeap heap;
+    if (count == 1u64) {
+        BitRange first = unsafe_position<BitRange>(payload);
+        address records = HeapAlloc(GetProcessHeap(), 0, 4u64 * size_of<BitRange>());
+        if (records == address()) { abort(); return; }
+        unsafe_position<BitRange>(records) = first;
+        heap = ProofRangeHeap(4u64, records);
+        unsafe_position<ProofRangeHeap>(payload) = heap;
+    } else {
+        heap = unsafe_position<ProofRangeHeap>(payload);
+        if (count == heap.capacity) {
+            u64 limit = 9223372036854775807u64 / size_of<BitRange>();
+            if (count == limit) { abort(); return; }
+            u64 capacity = count + min(count, limit - count);
+            address records = HeapReAlloc(GetProcessHeap(), 0, heap.records, capacity * size_of<BitRange>());
+            if (records == address()) { abort(); return; }
+            heap = ProofRangeHeap(capacity, records);
+            unsafe_position<ProofRangeHeap>(payload) = heap;
+        }
+    }
+    unsafe_position<BitRange>(proof_range_address(heap.records, count * size_of<BitRange>())) = value;
+    unsafe_position<u64>(storage) = count + 1u64;
+}
+
+extern "C" void proof_range_push_ends(address storage, u64 lower, u64 upper) on cpu {
+    proof_range_push(storage, BitRange(lower, upper));
+}
+
+extern "C" void proof_range_truncate(address storage, u64 count) on cpu {
+    u64 length = unsafe_position<u64>(storage);
+    if (count >= length) { return; }
+    if (count <= 1u64 && length > 1u64) {
+        address payload = proof_range_payload(storage);
+        address records = unsafe_position<ProofRangeHeap>(payload).records;
+        if (count == 1u64) { unsafe_position<BitRange>(payload) = unsafe_position<BitRange>(records); }
+        HeapFree(GetProcessHeap(), 0, records);
+    }
+    unsafe_position<u64>(storage) = count;
+}
+
+extern "C" void proof_range_clone(address storage, address output) on cpu {
+    u64 count = unsafe_position<u64>(storage);
+    address records = proof_range_records(storage);
+    if (count > 1u64) {
+        u64 bytes = count * size_of<BitRange>();
+        address copy = HeapAlloc(GetProcessHeap(), 0, bytes);
+        if (copy == address()) { abort(); return; }
+        RtlMoveMemory(copy, records, bytes);
+        unsafe_position<ProofRangeHeap>(proof_range_payload(output)) = ProofRangeHeap(count, copy);
+    } else if (count == 1u64) {
+        unsafe_position<BitRange>(proof_range_payload(output)) = unsafe_position<BitRange>(records);
+    }
+    unsafe_position<u64>(output) = count;
+}
+
+extern "C" void proof_range_drop(address storage) on cpu {
+    proof_range_truncate(storage, 0u64);
+}
+
+extern "C" u64 proof_range_append(address storage, address source) on cpu {
+    u64 count = unsafe_position<u64>(source);
+    address records = proof_range_records(source);
+    u64 index = 0u64;
+    while (index < count) {
+        proof_range_push(storage, proof_range_record(records, index));
+        index += 1u64;
+    }
+    return unsafe_position<u64>(storage);
+}
+
+extern "C" void proof_range_collect(address input, cfn<RangeSetNext,address> pull, address storage) on cpu
+    requires nonzero(pull) {
+    while (true) {
+        RangeSetNext next = pull(input);
+        if (next.present == 0) { break; }
+        proof_range_push(storage, next.value);
+    }
+    RangeSetOutput host = RangeSetOutput(c_function(proof_range_get), c_function(proof_range_set),
+        c_function(proof_range_push));
+    u64 count = range_set_normalize(storage, unsafe_position<u64>(storage), host);
+    proof_range_truncate(storage, count);
+}
+
 u64 truncate(u64 bits, u32 width) on cpu {
     return bits & (18446744073709551615u64 >> u64(64 - width));
 }

@@ -663,7 +663,7 @@ async fn holds(builder:&Builder<'_>,requirement:&Requirement,span:Span)->Result<
             Predicate::Range(selection, scalar, intervals) => {
                 selection.empty() || if scalar.is_float() {
                     let required = bounds::Condition::range_value(&selection.value, *scalar, |_| intervals.iter().copied());
-                    let values = bounds::Condition::range_value(&selection.value, *scalar, |component| selection.value.component_ranges(component).0);
+                    let values = bounds::Condition::range_value(&selection.value, *scalar, |component| selection.value.component_ranges(component).to_pairs());
                     required.covers(&values.logical(bounds::Condition::guard(builder.residency_path()), false))
                 } else {
                     let proof = builder.path_proof(&selection.value.ty, bounds::Proof::capture(&selection.value));

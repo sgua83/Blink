@@ -17,17 +17,7 @@ fn operation(op: Comparison) -> u32 {
         Comparison::GreaterEqual => 15,
     }
 }
-#[derive(Clone, Copy)]
-#[repr(C)]
-pub(super) struct Bounds {
-    lower: u64,
-    upper: u64,
-}
-impl From<(Bits, Bits)> for Bounds {
-    fn from((lower, upper): (Bits, Bits)) -> Self {
-        Self { lower, upper }
-    }
-}
+pub(super) type Bounds = crate::ir::scalar_ranges::BitRange;
 #[derive(Clone, Copy)]
 #[repr(u32)]
 enum Output {
@@ -205,11 +195,7 @@ struct CallComparisonRanges {
     left_count: u64,
     right: Borrowed,
     right_count: u64,
-    get: unsafe extern "C" fn(Borrowed, u64) -> Bounds,
-}
-unsafe extern "C" fn call_range(input: Borrowed, at: u64) -> Bounds {
-    let ranges = unsafe { *input.cast::<&[(Bits, Bits)]>() };
-    ranges[at as usize].into()
+    get: unsafe extern "C" fn(Borrowed, usize) -> Bounds,
 }
 
 pub(super) fn call_below(
@@ -219,11 +205,11 @@ pub(super) fn call_below(
     let left_ranges = left.intervals();
     let right_ranges = right.intervals();
     let ranges = CallComparisonRanges {
-        left: ptr::from_ref(&left_ranges).cast(),
+        left: left_ranges.as_ptr().cast(),
         left_count: left_ranges.len() as u64,
-        right: ptr::from_ref(&right_ranges).cast(),
+        right: right_ranges.as_ptr().cast(),
         right_count: right_ranges.len() as u64,
-        get: call_range,
+        get: super::range_sets::read_record,
     };
     let mut facts = Facts::new();
     let mut c = Constraint {
@@ -257,7 +243,7 @@ struct IntegerInfo {
     nonzero: [u32; 2],
 }
 unsafe extern "C" fn range(i: Borrowed, side: u32, at: u64) -> Bounds {
-    unsafe { (&*i.cast::<Integer<'_>>()).ranges[side as usize].0[at as usize].into() }
+    unsafe { (&*i.cast::<Integer<'_>>()).ranges[side as usize].0[at as usize] }
 }
 unsafe extern "C" fn constrain_case(s: Slot, i: Borrowed, truth: u32, side: u32, strict: u32) {
     let i = unsafe { &*i.cast::<Integer<'_>>() };

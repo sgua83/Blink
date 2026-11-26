@@ -23,6 +23,7 @@ mod range_sets;
 #[path = "bounds/required_roots.rs"]
 mod required_roots;
 use super::*;
+use crate::ir::scalar_ranges::BitRange;
 mod floating;
 mod known_bits;
 mod integer;
@@ -98,7 +99,7 @@ impl Selector {
             Self::Affine { base, scale, offset } => (base, scale, offset),
         };
         let input = bindings.input(base)?;
-        if let [(lower, upper)] = input.intervals() && lower == upper {
+        if let [BitRange { lower, upper }] = input.intervals() && lower == upper {
             let value = i128::from(*lower).checked_mul(scale)?.checked_add(offset)?;
             return Some(Self::Direct(Operand::Constant(Scalar::U32, u32::try_from(value).ok()?.into())));
         }
@@ -179,7 +180,7 @@ impl Operand {
                 let input = bindings.input(id)?;
                 match (input.identity(), input.intervals()) {
                     (Some(id), _) => Self::Value(id),
-                    (None, [(a, b)]) if a == b => Self::Constant(Scalar::U32, *a),
+                    (None, [BitRange { lower, upper }]) if lower == upper => Self::Constant(Scalar::U32, *lower),
                     _ => return None,
                 }
             }
@@ -216,7 +217,7 @@ impl ScalarPredicate {
                 // Capture already preserves a constant's exact storage bits.
                 // This is identity substitution, never floating range inference.
                 match input.intervals() {
-                    [(a, b)] if a == b => Operand::Constant(self.scalar, if self.scalar.is_float(){floating::bits(self.scalar,*a)}else{*a^self.scalar.order_bias()}),
+                    [BitRange { lower, upper }] if lower == upper => Operand::Constant(self.scalar, if self.scalar.is_float(){floating::bits(self.scalar,*lower)}else{*lower^self.scalar.order_bias()}),
                     _ => Operand::Value(input.identity()?),
                 }
             }
@@ -366,7 +367,7 @@ impl QueryFacts<'_> {
         }
     }
 }
-const FULL_INTERVALS: &[(Bits, Bits)] = &[(0, Bits::MAX)];
+const FULL_INTERVALS: &[BitRange] = &[BitRange { lower: 0, upper: Bits::MAX }];
 
 #[derive(Clone, Copy)]
 pub(super) enum CallInput<'a> {
@@ -396,7 +397,7 @@ impl<'a> CallInput<'a> {
         }
     }
 
-    fn intervals(self) -> &'a [(Bits, Bits)] {
+    fn intervals(self) -> &'a [BitRange] {
         self.proof().map_or(FULL_INTERVALS, |proof| proof.interval_source(0))
     }
 
@@ -581,15 +582,17 @@ pub(super) fn numeric_intervals(scalar: Scalar, intervals: impl IntoIterator<Ite
         if lower > upper { return source.fail(span, "B225", "range闭区间下端点不能大于上端点"); }
         Ok((lower, upper))
     }).collect::<Result<Vec<_>>>()?;
-    Ok(ScalarRanges::from_intervals(intervals).0)
+    Ok(ScalarRanges::from_intervals(intervals).0.to_pairs())
 }
 
 #[derive(Clone)]
-pub(super) struct ScalarRanges(pub(super) Vec<(Bits,Bits)>);
+pub(super) struct ScalarRanges(range_sets::RangeStorage);
 impl Default for ScalarRanges {
     fn default()->Self {range_sets::full()}
 }
 impl ScalarRanges {
+    fn empty() -> Self { Self(range_sets::RangeStorage::empty()) }
+    pub(super) fn to_pairs(&self) -> Vec<(Bits, Bits)> { self.0.to_pairs() }
     fn cast(&self,source:Scalar,target:Scalar,nonzero:bool)->Self {range_sets::cast(&self.0,source,target,nonzero)}
     fn from_intervals(values:impl IntoIterator<Item=(Bits,Bits)>)->Self {range_sets::from_intervals(values)}
     fn from_sorted_intervals(values:impl IntoIterator<Item=(Bits,Bits)>)->Self {range_sets::from_sorted_intervals(values)}
@@ -638,7 +641,7 @@ impl PartialEq for Proof {
     }
 }
 impl Eq for Proof {}
-fn element_known_bits(scalar: Scalar, ranges: &[(Bits, Bits)], domains: Option<&Domains>) -> (Bits, Bits) {
+fn element_known_bits(scalar: Scalar, ranges: &[BitRange], domains: Option<&Domains>) -> (Bits, Bits) {
     scalar.is_integer().then(|| {
         known_bits::from_proof(scalar, ranges, domains.map(Domains::iter).unwrap_or_default())
     }).flatten().map_or((0, 0), |bits| (bits.mask, bits.value))
@@ -683,12 +686,12 @@ impl Proof {
             }
         }
     }
-    fn interval_source(&self, component: usize) -> &[(Bits, Bits)] {
+    fn interval_source(&self, component: usize) -> &[BitRange] {
         self.ranges.get(component)
             .map_or(FULL_INTERVALS, |ranges| ranges.0.as_slice())
     }
 
-    fn element_intervals(&self, component: usize, scalar: Scalar) -> (&[(Bits, Bits)], Option<Bits>) {
+    fn element_intervals(&self, component: usize, scalar: Scalar) -> (&[BitRange], Option<Bits>) {
         let excluded = (scalar.is_integer() && self.nonzero.get(component) == Some(&true))
             .then(|| scalar.order_bias());
         (self.interval_source(component), excluded)
@@ -709,7 +712,7 @@ impl Proof {
     }
 
     fn element_range_fact(&self, binding: usize, component: usize, scalar: Scalar, offset: u32) -> Option<ElementRange> {
-        let intervals = self.element_range(component, scalar).0;
+        let intervals = self.element_range(component, scalar).0.to_pairs();
         let known_bits = self.element_known_bits(component, scalar);
         element_range_fact(binding, offset, scalar, intervals, known_bits)
     }
@@ -1067,7 +1070,7 @@ impl Proof {
         if !scalar.is_integer() { return None; }
         let bias = scalar.order_bias();
         match self.range_set(component).restrict(0, scalar.bit_mask()).0.as_slice() {
-            [(lower, upper)] if lower == upper => Some((lower ^ bias, IntegerKnownValueBasis::SingletonRange)),
+            [BitRange { lower, upper }] if lower == upper => Some((lower ^ bias, IntegerKnownValueBasis::SingletonRange)),
             _ if self.component_condition(component).is_some_and(|condition|!condition.cases[1].possible()&&condition.cases[0].possible()) => Some((0, IntegerKnownValueBasis::ZeroCondition)),
             _ => None,
         }
@@ -1102,7 +1105,7 @@ impl Proof {
         }
     }
     fn known_bits(&self, component: usize, scalar: Scalar) -> Option<KnownBits> {
-        let ranges = self.ranges.get(component).map_or(&[(0, Bits::MAX)][..], |ranges| ranges.0.as_slice());
+        let ranges = self.interval_source(component);
         let domains = self.domains.get(component).map(Domains::iter).unwrap_or_default();
         known_bits::from_proof(scalar, ranges, domains)
     }
@@ -1666,13 +1669,15 @@ impl Value {
         &self, binding: usize, component: usize, offset: u32, intervals: Vec<(Bits, Bits)>,
     ) -> Option<ElementRange> {
         let scalar = self.ty.components[component].0;
-        let known_bits = element_known_bits(scalar, &intervals, self.proof.domains.get(component));
+        let known_bits = scalar.is_integer().then(|| known_bits::from_pairs(
+            scalar, &intervals, self.proof.domains.get(component).map(Domains::iter).unwrap_or_default(),
+        )).flatten().map_or((0, 0), |bits| (bits.mask, bits.value));
         element_range_fact(binding, offset, scalar, intervals, known_bits)
     }
     pub(super) fn component_range_intervals(&self, component: usize) -> Vec<(Bits, Bits)> {
         let scalar = self.ty.components[component].0;
         let bits = |ordered| if scalar.is_float() { floating::bits(scalar, ordered) } else { ordered ^ scalar.order_bias() };
-        self.component_ranges(component).0.into_iter().map(|(lower, upper)| (bits(lower), bits(upper))).collect()
+        self.component_ranges(component).0.iter().map(|range| (bits(range.lower), bits(range.upper))).collect()
     }
     pub(super) fn component_ranges(&self, component: usize) -> ScalarRanges {
         let scalar = self.ty.components[component].0;
@@ -1681,7 +1686,7 @@ impl Value {
         let (ranges, projection) = self.integer_projection(component, scalar);
         range_sets::project(ranges, projection)
     }
-    fn integer_projection(&self, component: usize, scalar: Scalar) -> (&[(Bits, Bits)], range_sets::Projection) {
+    fn integer_projection(&self, component: usize, scalar: Scalar) -> (&[BitRange], range_sets::Projection) {
         let mask = scalar.bit_mask();
         let (lower, upper) = self.constant.as_ref().map_or((0, mask), |bits| {
             let value = bits[component] ^ scalar.order_bias();
@@ -2492,7 +2497,10 @@ impl Condition {
     }
     pub(super) fn nonzero_value(value:&Value)->Self {
         if value.is_nonzero(){return Self::constant(true);}
-        if (0..value.regs.len()).any(|i|value.component_ranges(i).0.as_slice()==[(value.ty.components[i].0.order_bias(),value.ty.components[i].0.order_bias())]){return Self::constant(false);}
+        if (0..value.regs.len()).any(|i| {
+            let zero = value.ty.components[i].0.order_bias();
+            value.component_ranges(i).0.as_slice() == [BitRange { lower: zero, upper: zero }]
+        }) { return Self::constant(false); }
         (0..value.regs.len()).fold(Self::constant(true),|condition,i|condition.logical(Self::component(value,i),false))
     }
     pub(super) fn nonzero_proof(proof:&Proof,component:usize)->Self {
@@ -2988,7 +2996,7 @@ impl Builder<'_> {
         }
         let Some(ranges) = ranges else { return false; };
         ranges.0.iter().all(|&range| IntegerQuery::new(&facts, &roots)
-            .below_in(left, right, scalar, source, range, &order) == Some(true))
+            .below_in(left, right, scalar, source, range.into(), &order) == Some(true))
     }
     pub(super) fn observe_bounds(&mut self, value: &Value) {
         self.path = Clause::observed(&self.path,proof_facts::value(value));
@@ -3221,7 +3229,7 @@ impl Builder<'_> {
         lengths.extend(selected_length.map(|proof| (proof, 0)));
         let minimum = if let IndexDomain::Fixed(count) = domain { count } else { minimum };
         let limit = lengths.iter().map(|(proof, component)| proof.unsigned_minimum(*component)).fold(minimum, u32::max);
-        if self.index_known(value, 0, domain, limit, || value.component_ranges(0).0.last().map(|range| range.1),
+        if self.index_known(value, 0, domain, limit, || value.component_ranges(0).0.last().map(|range| range.upper),
             lengths.iter().map(|&(proof, component)| (
                 Cow::Borrowed(proof.origins.get(component).map(Vec::as_slice).unwrap_or_default()),
                 proof.domains(component),
@@ -3548,11 +3556,11 @@ impl Builder<'_> {
         let (minimum, maximum) = range_sets::restricted_hull(length.interval_source(0), (1, Bits::from(u32::MAX)), None);
         Proof {
             ranges: ty.components.iter().enumerate().map(|(component, (scalar, _))| {
-                if minimum > maximum { return ScalarRanges(Vec::new()); }
+                if minimum > maximum { return ScalarRanges::empty(); }
                 if scalar.is_float() { return floating::sum(input, component, *scalar, maximum); }
                 if !scalar.is_integer() { return ScalarRanges::default(); }
                 let (lower, upper) = input.element_hull(component, *scalar);
-                if lower > upper { return ScalarRanges(Vec::new()); }
+                if lower > upper { return ScalarRanges::empty(); }
                 let nonzero = self.tile_nonzero_count(tile, words[component], maximum as u32);
                 integer::tile_sum(*scalar, (lower, upper), (minimum as u32, maximum as u32), nonzero)
             }).collect(),

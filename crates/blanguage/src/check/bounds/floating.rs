@@ -21,8 +21,8 @@ fn requires_float_preserve(scalar: Scalar, ranges: &ScalarRanges, domains: Optio
         (order(scalar, 0), order(scalar, 0)),
         (order(scalar, minimum), order(scalar, maximum)),
     ];
-    ranges.0.iter().any(|&(lower, upper)|
-        !ordinary.iter().any(|&(first, last)| first <= lower && upper <= last))
+    ranges.0.iter().any(|range|
+        !ordinary.iter().any(|&(first, last)| first <= range.lower && range.upper <= last))
 }
 
 impl Value {

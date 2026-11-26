@@ -1,14 +1,15 @@
-//! B owns complete scalar-set rules; native containers retain their ownership.
+//! Borrows of the canonical scalar interval records owned by B.
 use super::{Bits, CallBindings, IntegerExpression, IntegerOperation, Operand, Scalar, ScalarRanges, ValueIdentity};
-use std::{ffi::c_void,ptr};
-use crate::ir::scalar_ranges::{self, BitPattern as Pattern, BitRange as Range, Pair, RangeInput, push};
+use std::{ffi::c_void, ops::Deref, ptr, slice};
+use crate::ir::scalar_ranges::{self, BitPattern as Pattern, BitRange as Range, Pair, RangeInput};
 type Slot=*mut c_void;
 type Borrowed=*const c_void;
 #[repr(C)]
 struct Next {value:Range,present:u32}
 #[repr(C)]
 struct CastSummary { hull: Range, contains: u32 }
-struct Sources<'a>{left:&'a [Pair],right:&'a [Pair]}
+#[repr(C)]
+struct Sources { left: *const Range, right: *const Range }
 type Read=unsafe extern "C" fn(Borrowed,u32,usize)->Range;
 type Push=unsafe extern "C" fn(Slot,Range);
 type Pull=unsafe extern "C" fn(Slot)->Next;
@@ -20,6 +21,84 @@ struct Output {
     push:Push,
 }
 
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct HeapRanges {
+    capacity: usize,
+    records: *mut Range,
+}
+
+#[repr(C)]
+union Payload {
+    inline: Range,
+    heap: HeapRanges,
+}
+
+/// The only owner of this inline interval or heap-backed interval sequence.
+/// B updates the count and payload together under an exclusive borrow.
+#[repr(C)]
+pub(super) struct RangeStorage {
+    count: usize,
+    payload: Payload,
+}
+
+impl RangeStorage {
+    pub(super) fn empty() -> Self {
+        Self { count: 0, payload: Payload { inline: Range::default() } }
+    }
+
+    pub(super) fn as_slice(&self) -> &[Range] {
+        match self.count {
+            0 => &[],
+            1 => slice::from_ref(unsafe { &self.payload.inline }),
+            count => unsafe { slice::from_raw_parts(self.payload.heap.records, count) },
+        }
+    }
+
+    pub(super) fn to_pairs(&self) -> Vec<Pair> {
+        self.as_slice().iter().copied().map(Pair::from).collect()
+    }
+
+    fn slot(&mut self) -> Slot {
+        ptr::from_mut(self).cast()
+    }
+
+    fn truncate(&mut self, count: usize) {
+        unsafe { truncate(self.slot(), count) }
+    }
+}
+
+impl Deref for RangeStorage {
+    type Target = [Range];
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl PartialEq for RangeStorage {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl Clone for RangeStorage {
+    fn clone(&self) -> Self {
+        let mut result = Self::empty();
+        unsafe { clone_ranges(ptr::from_ref(self).cast(), result.slot()) }
+        result
+    }
+}
+
+impl Drop for RangeStorage {
+    fn drop(&mut self) {
+        unsafe { drop_ranges(self.slot()) }
+    }
+}
+
+// Shared borrows only read initialized records. A move transfers the whole
+// allocation, and cloning gives each owner independent storage.
+unsafe impl Send for RangeStorage {}
+unsafe impl Sync for RangeStorage {}
 #[derive(Clone, Copy)]
 #[repr(u32)]
 enum BinaryOperation {
@@ -141,13 +220,7 @@ struct CallBinding {
 
 struct CallInputs<'a, P> {
     bindings: &'a P,
-    sides: [CallSide<'a>; 2],
-}
-
-#[derive(Default)]
-struct CallSide<'a> {
-    identity: Option<ValueIdentity>,
-    intervals: &'a [Pair],
+    identities: [Option<ValueIdentity>; 2],
 }
 
 unsafe extern "C" fn call_input<P: CallBindings>(context: Slot, side: u32, source: Borrowed) -> CallBinding {
@@ -157,13 +230,12 @@ unsafe extern "C" fn call_input<P: CallBindings>(context: Slot, side: u32, sourc
     let Some(input) = bindings.input(source) else {
         return CallBinding { present: 0, identity: ptr::null(), intervals: ptr::null(), count: 0 };
     };
-    // The other operand's identity and slice header can already be borrowed by B.
-    let slot = unsafe { &mut *ptr::addr_of_mut!((*call).sides).cast::<CallSide<'_>>().add(side as usize) };
-    slot.identity = input.identity();
-    slot.intervals = input.intervals();
-    let identity = slot.identity.as_ref().map_or(ptr::null(), |id| ptr::from_ref(id).cast());
-    let intervals = &slot.intervals;
-    CallBinding { present: 1, identity, intervals: ptr::from_ref(intervals).cast(), count: intervals.len() }
+    // B may already borrow the other identity slot.
+    let slot = unsafe { &mut *ptr::addr_of_mut!((*call).identities).cast::<Option<ValueIdentity>>().add(side as usize) };
+    *slot = input.identity();
+    let identity = slot.as_ref().map_or(ptr::null(), |id| ptr::from_ref(id).cast());
+    let intervals = input.intervals();
+    CallBinding { present: 1, identity, intervals: intervals.as_ptr().cast(), count: intervals.len() }
 }
 
 #[repr(C)]
@@ -253,35 +325,52 @@ impl CastStep {
         }
     }
 }
-unsafe extern "C" fn read(slot:Borrowed,side:u32,index:usize)->Range {
-    let source=unsafe{&*slot.cast::<Sources<'_>>()};
-    (if side==0{source.left}else{source.right})[index].into()
-}
-unsafe extern "C" fn read_requirement(slot: Borrowed, index: usize) -> Range {
-    unsafe { read(slot, 1, index) }
-}
-unsafe extern "C" fn get(slot:Slot,index:usize)->Range {{let values=unsafe{&*slot.cast::<Vec<Pair>>()};values[index].into()}}
-unsafe extern "C" fn set(slot:Slot,index:usize,value:Range) {let values=unsafe{&mut *slot.cast::<Vec<Pair>>()};values[index]=value.into();}
 unsafe extern "C" fn pull<I:Iterator<Item=Pair>>(slot:Slot)->Next {
     unsafe{&mut *slot.cast::<I>()}.next().map(|v|Next{value:v.into(),present:1}).unwrap_or(Next{value:Range::default(),present:0})
 }
-unsafe extern "C" fn invoke<F:FnMut(Pair)->ScalarRanges>(slot:Slot,input:Range,output:Slot)->usize {
-    let value=unsafe{&mut *slot.cast::<F>()}(input.into());
-    let output=unsafe{&mut *output.cast::<Vec<Pair>>()};output.extend(value.0);output.len()
+unsafe extern "C" fn invoke<F: FnMut(Pair) -> ScalarRanges>(slot: Slot, input: Range, output: Slot) -> usize {
+    let value = unsafe { &mut *slot.cast::<F>() }(input.into());
+    unsafe { append_ranges(output, ptr::from_ref(&value.0).cast()) }
 }
-fn host()->Output {Output{get,set,push}}
-fn inputs<R>(left:&[Pair],right:&[Pair],run:impl FnOnce(Borrowed,usize,usize)->R)->R {
-    let source=Sources{left,right};run(ptr::from_ref(&source).cast(),left.len(),right.len())
+fn host() -> Output { Output { get, set, push } }
+fn inputs<R>(left: &[Range], right: &[Range], run: impl FnOnce(Borrowed, usize, usize) -> R) -> R {
+    let source = Sources { left: left.as_ptr(), right: right.as_ptr() };
+    run(ptr::from_ref(&source).cast(), left.len(), right.len())
 }
-fn output(run:impl FnOnce(Slot))->ScalarRanges {
-    let mut values=Vec::<Pair>::new();run(ptr::from_mut(&mut values).cast());ScalarRanges(values)
+fn output(run: impl FnOnce(Slot)) -> ScalarRanges {
+    let mut values = RangeStorage::empty();
+    run(values.slot());
+    ScalarRanges(values)
 }
-fn normalized_output(run:impl FnOnce(Slot,Output)->usize)->ScalarRanges {
-    let mut values=Vec::<Pair>::new();let count=run(ptr::from_mut(&mut values).cast(),host());values.truncate(count);ScalarRanges(values)
+fn normalized_output(run: impl FnOnce(Slot, Output) -> usize) -> ScalarRanges {
+    let mut values = RangeStorage::empty();
+    let count = run(values.slot(), host());
+    values.truncate(count);
+    ScalarRanges(values)
 }
 unsafe extern "C" {
-    #[link_name="bootstrap.scalar_fold::range_set_normalize"]
-    fn normalize(output:Slot,count:usize,host:Output)->usize;
+    #[link_name="bootstrap.scalar_fold::proof_range_record"]
+    pub(super) fn read_record(records: Borrowed, index: usize) -> Range;
+    #[link_name="bootstrap.scalar_fold::proof_range_side"]
+    fn read(sides: Borrowed, side: u32, index: usize) -> Range;
+    #[link_name="bootstrap.scalar_fold::proof_range_get"]
+    fn get(storage: Slot, index: usize) -> Range;
+    #[link_name="bootstrap.scalar_fold::proof_range_set"]
+    fn set(storage: Slot, index: usize, value: Range);
+    #[link_name="bootstrap.scalar_fold::proof_range_push"]
+    fn push(storage: Slot, value: Range);
+    #[link_name="bootstrap.scalar_fold::proof_range_push_ends"]
+    pub(super) fn push_ends(storage: Slot, lower: u64, upper: u64);
+    #[link_name="bootstrap.scalar_fold::proof_range_truncate"]
+    fn truncate(storage: Slot, count: usize);
+    #[link_name="bootstrap.scalar_fold::proof_range_clone"]
+    fn clone_ranges(storage: Borrowed, output: Slot);
+    #[link_name="bootstrap.scalar_fold::proof_range_drop"]
+    fn drop_ranges(storage: Slot);
+    #[link_name="bootstrap.scalar_fold::proof_range_append"]
+    fn append_ranges(storage: Slot, source: Borrowed) -> usize;
+    #[link_name="bootstrap.scalar_fold::proof_range_collect"]
+    fn collect_ranges(input: Slot, pull: Pull, output: Slot);
     #[link_name="bootstrap.scalar_fold::range_set_sorted"]
     fn sorted(input:Slot,pull:Pull,output:Slot,push:Push);
     #[link_name="bootstrap.scalar_fold::range_set_full"]
@@ -328,59 +417,63 @@ unsafe extern "C" {
 }
 pub(super) fn full()->ScalarRanges {output(|o|unsafe{all(o,push)})}
 pub(super) fn interval(lower:u64,upper:u64)->ScalarRanges {output(|o|unsafe{single(o,push,lower,upper)})}
-pub(super) fn from_intervals(values:impl IntoIterator<Item=Pair>)->ScalarRanges {
-    let mut values:Vec<_>=values.into_iter().collect();let count=unsafe{normalize(ptr::from_mut(&mut values).cast(),values.len(),host())};values.truncate(count);ScalarRanges(values)
+pub(super) fn from_intervals<I: IntoIterator<Item = Pair>>(values: I) -> ScalarRanges {
+    let mut stream = values.into_iter();
+    output(|dest| unsafe { collect_ranges(ptr::from_mut(&mut stream).cast(), pull::<I::IntoIter>, dest) })
 }
 pub(super) fn from_sorted_intervals<I:IntoIterator<Item=Pair>>(values:I)->ScalarRanges {
     let mut stream=values.into_iter();output(|o|unsafe{sorted(ptr::from_mut(&mut stream).cast(),pull::<I::IntoIter>,o,push)})
 }
-pub(super) fn hull(values:&[Pair])->Pair {inputs(values,&[],|s,n,_|unsafe{outer(s,n,read)}.into())}
-pub(super) fn contains(values:&[Pair],value:u64)->bool {inputs(values,&[],|s,n,_|unsafe{member(s,n,read,value)})}
-pub(super) fn union(left:&[Pair],right:&[Pair])->ScalarRanges {inputs(left,right,|s,n,m|output(|o|unsafe{united(s,n,m,read,o,push)}))}
-pub(super) fn intersection(left: &[Pair], right: &[Pair]) -> ScalarRanges {
-    ScalarRanges(scalar_ranges::intersect_sorted(left, right))
+pub(super) fn hull(values:&[Range])->Pair {inputs(values,&[],|s,n,_|unsafe{outer(s,n,read)}.into())}
+pub(super) fn contains(values:&[Range],value:u64)->bool {inputs(values,&[],|s,n,_|unsafe{member(s,n,read,value)})}
+pub(super) fn union(left:&[Range],right:&[Range])->ScalarRanges {inputs(left,right,|s,n,m|output(|o|unsafe{united(s,n,m,read,o,push)}))}
+pub(super) fn intersection(left: &[Range], right: &[Range]) -> ScalarRanges {
+    output(|dest| unsafe {
+        scalar_ranges::intersect_ranges(RangeInput::records(left, read_record),
+            RangeInput::records(right, read_record), dest, push);
+    })
 }
-pub(super) fn restrict(values:&[Pair],lower:u64,upper:u64)->ScalarRanges {inputs(values,&[],|s,n,_|output(|o|unsafe{clipped(s,n,read,o,push,lower,upper)}))}
-pub(super) fn project(values: &[Pair], projection: Projection) -> ScalarRanges {
+pub(super) fn restrict(values:&[Range],lower:u64,upper:u64)->ScalarRanges {inputs(values,&[],|s,n,_|output(|o|unsafe{clipped(s,n,read,o,push,lower,upper)}))}
+pub(super) fn project(values: &[Range], projection: Projection) -> ScalarRanges {
     inputs(values, &[], |source, count, _| {
         output(|dest| unsafe { projected(source, count, read, dest, push, projection) })
     })
 }
-pub(super) fn project_contains(values: &[Pair], projection: Projection, point: Bits) -> (ScalarRanges, bool) {
-    let mut result = Vec::<Pair>::new();
+pub(super) fn project_contains(values: &[Range], projection: Projection, point: Bits) -> (ScalarRanges, bool) {
+    let mut result = RangeStorage::empty();
     let contains = inputs(values, &[], |source, count, _| unsafe {
-        projected_contains(source, count, read, ptr::from_mut(&mut result).cast(), push, projection, point)
+        projected_contains(source, count, read, result.slot(), push, projection, point)
     });
     (ScalarRanges(result), contains)
 }
-pub(super) fn restricted_hull(values: &[Pair], (lower, upper): Pair, excluded: Option<Bits>) -> Pair {
+pub(super) fn restricted_hull(values: &[Range], (lower, upper): Pair, excluded: Option<Bits>) -> Pair {
     let projection = Projection::new(lower, upper, excluded);
     inputs(values, &[], |source, count, _| unsafe {
         projected_hull(source, count, read, projection).into()
     })
 }
 pub(super) fn covers_element(
-    values: &[Pair], scalar: Scalar, excluded: Option<Bits>, known: Pair, intervals: &[Pair], required: Pair,
+    values: &[Range], scalar: Scalar, excluded: Option<Bits>, known: Pair, intervals: &[Pair], required: Pair,
 ) -> bool {
     let projection = Projection::new(0, scalar.bit_mask(), excluded);
-    inputs(values, intervals, |source, count, required_count| {
+    inputs(values, &[], |source, count, _| {
         let requirement = Requirement {
             order_bias: scalar.order_bias(),
             known: known.into(),
             required: required.into(),
-            intervals: source,
-            count: required_count,
-            interval: read_requirement,
+            intervals: ptr::from_ref(&intervals).cast(),
+            count: intervals.len(),
+            interval: scalar_ranges::interval,
         };
         unsafe { covers_projected(source, count, read, projection, requirement) }
     })
 }
-pub(super) fn without(values:&[Pair],value:u64)->ScalarRanges {inputs(values,&[],|s,n,_|output(|o|unsafe{excluded(s,n,read,o,push,value)}))}
-pub(super) fn cast(values:&[Pair],source:Scalar,target:Scalar,nonzero:bool)->ScalarRanges {
+pub(super) fn without(values:&[Range],value:u64)->ScalarRanges {inputs(values,&[],|s,n,_|output(|o|unsafe{excluded(s,n,read,o,push,value)}))}
+pub(super) fn cast(values:&[Range],source:Scalar,target:Scalar,nonzero:bool)->ScalarRanges {
     let query = Cast::new(source, target, nonzero);
     inputs(values,&[],|s,n,_|normalized_output(|o,h|unsafe{converted(s,n,read,o,h,query)}))
 }
-pub(super) fn cast_chain(values: &[Pair], [from, low, extended, to]: [Scalar; 4], nonzero: bool) -> ScalarRanges {
+pub(super) fn cast_chain(values: &[Range], [from, low, extended, to]: [Scalar; 4], nonzero: bool) -> ScalarRanges {
     let first = Cast::new(from, low, nonzero);
     let second = CastStep::new(low, extended);
     let last = CastStep::new(extended, to);
@@ -390,7 +483,7 @@ pub(super) fn cast_chain(values: &[Pair], [from, low, extended, to]: [Scalar; 4]
         })
     })
 }
-pub(super) fn cast_summary(values: &[Pair], [from, low, extended, to]: [Scalar; 4], nonzero: bool) -> (Pair, u32) {
+pub(super) fn cast_summary(values: &[Range], [from, low, extended, to]: [Scalar; 4], nonzero: bool) -> (Pair, u32) {
     let first = Cast::new(from, low, nonzero);
     let second = CastStep::new(low, extended);
     let last = CastStep::new(extended, to);
@@ -399,25 +492,25 @@ pub(super) fn cast_summary(values: &[Pair], [from, low, extended, to]: [Scalar; 
     });
     (summary.hull.into(), summary.contains)
 }
-pub(super) fn shift_counts(values: &[Pair], scalar: Scalar) -> ScalarRanges {
+pub(super) fn shift_counts(values: &[Range], scalar: Scalar) -> ScalarRanges {
     normalized_output(|output, host| unsafe {
-        counts(RangeInput::borrowed(&values), output, host, scalar.bit_width(), scalar.order_bias())
+        counts(RangeInput::records(values, read_record), output, host, scalar.bit_width(), scalar.order_bias())
     })
 }
 
 pub(super) fn computed_at_call<P: CallBindings>(
     op: IntegerOperation, scalar: Scalar, left: Operand, right: Operand, bindings: &P, with_ranges: bool,
 ) -> Option<(Option<IntegerExpression>, Option<ScalarRanges>)> {
-    let mut input = CallInputs { bindings, sides: std::array::from_fn(|_| CallSide::default()) };
-    let mut left_scratch = Vec::<Pair>::new();
-    let mut right_scratch = Vec::<Pair>::new();
-    let mut shift_scratch = Vec::<Pair>::new();
-    let mut output = Vec::<Pair>::new();
+    let mut input = CallInputs { bindings, identities: [None; 2] };
+    let mut left_scratch = RangeStorage::empty();
+    let mut right_scratch = RangeStorage::empty();
+    let mut shift_scratch = RangeStorage::empty();
+    let mut output = RangeStorage::empty();
     let storage = CallStorage {
-        left: ptr::from_mut(&mut left_scratch).cast(),
-        right: ptr::from_mut(&mut right_scratch).cast(),
-        counts: ptr::from_mut(&mut shift_scratch).cast(),
-        output: ptr::from_mut(&mut output).cast(),
+        left: left_scratch.slot(),
+        right: right_scratch.slot(),
+        counts: shift_scratch.slot(),
+        output: output.slot(),
     };
     let encoding = ComputedType {
         width: scalar.bit_width(), signed: u32::from(scalar.is_signed()), floating: u32::from(scalar.is_float()),
@@ -426,7 +519,7 @@ pub(super) fn computed_at_call<P: CallBindings>(
     let result = unsafe {
         project_call(ptr::from_mut(&mut input).cast(), op as u32, encoding,
             CallOperand::borrowed(&left), CallOperand::borrowed(&right), u32::from(with_ranges),
-            storage, CallHost { input: call_input::<P>, interval: scalar_ranges::interval, ranges: host() })
+            storage, CallHost { input: call_input::<P>, interval: read_record, ranges: host() })
     };
     if result.present == 0 {
         return None;
@@ -467,18 +560,18 @@ pub(super) fn binary(
         zero_quotient: u32::from(evidence.as_ref().is_some_and(|facts| facts.zero_quotient)),
         track_origin: u32::from(evidence.is_some()),
     };
-    let mut output = Vec::<Pair>::new();
+    let mut output = RangeStorage::empty();
     let result = unsafe {
         integer_binary(
-            RangeInput::borrowed(&left), RangeInput::borrowed(&right),
-            RangeInput::borrowed(&right_counts), ptr::from_mut(&mut output).cast(), host(), proof,
+            RangeInput::records(left, read_record), RangeInput::records(right, read_record),
+            RangeInput::records(right_counts, read_record), output.slot(), host(), proof,
         )
     };
     output.truncate(result.count);
     (ScalarRanges(output), result.origin)
 }
-pub(super) fn map<F: FnMut(Pair) -> ScalarRanges>(values: &[Pair], mut operation: F) -> ScalarRanges {
+pub(super) fn map<F: FnMut(Pair) -> ScalarRanges>(values: &[Range], mut operation: F) -> ScalarRanges {
     normalized_output(|output, host| unsafe {
-        mapped(RangeInput::borrowed(&values), ptr::from_mut(&mut operation).cast(), invoke::<F>, output, host)
+        mapped(RangeInput::records(values, read_record), ptr::from_mut(&mut operation).cast(), invoke::<F>, output, host)
     })
 }

@@ -130,6 +130,22 @@ struct RangeSetOutput {
     cfn<void,address,u64,BitRange> set;
     cfn<void,address,BitRange> push;
 };
+
+// A count of zero or one uses an inline BitRange. A larger count owns the
+// heap view at the same payload offset. The compiler borrows the records.
+struct ProofRangeStorage { u64 count; BitRange payload; };
+extern "C" BitRange proof_range_record(address records, u64 index) on cpu;
+extern "C" BitRange proof_range_side(address sides, u32 side, u64 index) on cpu;
+extern "C" BitRange proof_range_get(address storage, u64 index) on cpu;
+extern "C" void proof_range_set(address storage, u64 index, BitRange value) on cpu;
+extern "C" void proof_range_push(address storage, BitRange value) on cpu;
+extern "C" void proof_range_push_ends(address storage, u64 lower, u64 upper) on cpu;
+extern "C" void proof_range_truncate(address storage, u64 count) on cpu;
+extern "C" void proof_range_clone(address storage, address output) on cpu;
+extern "C" void proof_range_drop(address storage) on cpu;
+extern "C" u64 proof_range_append(address storage, address source) on cpu;
+extern "C" void proof_range_collect(address input, cfn<RangeSetNext,address> pull, address storage) on cpu
+    requires nonzero(pull);
 struct IntegerBinaryProof {
     IntegerRangeOperation operation;
     u32 width;

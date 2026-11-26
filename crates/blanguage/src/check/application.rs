@@ -3824,7 +3824,7 @@ impl Builder<'_> {
                 if scalar == Scalar::Bool { continue; }
                 let component = source.data.ty.components.iter()
                     .position(|item| *item == (scalar, offset + word)).unwrap();
-                let intervals = model.component_ranges(component).0;
+                let intervals = model.component_ranges(component).to_pairs();
                 if scalar == Scalar::U32 {
                     for (target, (_, data)) in captured.iter().enumerate() {
                         let length = std::iter::once_with(|| (

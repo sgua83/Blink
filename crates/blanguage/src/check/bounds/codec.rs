@@ -774,14 +774,11 @@ native_codec!(FloatingForm, write_floating_form, read_floating_form);
 native_codec!(FloatingBound, write_floating, read_floating);
 native_codec!(ScalarPredicate, write_predicate, read_predicate);
 unsafe extern "C" fn interval(value: *const c_void) -> NumericInterval {
-    let value = unsafe { &*value.cast::<(Bits, Bits)>() };
+    let value = unsafe { &*value.cast::<BitRange>() };
     NumericInterval {
-        lower: value.0,
-        upper: value.1,
+        lower: value.lower,
+        upper: value.upper,
     }
-}
-unsafe extern "C" fn push_interval(output: *mut c_void, lower: u64, upper: u64) {
-    unsafe { &mut *output.cast::<Vec<(Bits, Bits)>>() }.push((lower, upper));
 }
 impl Encode for ScalarRanges {
     fn encode(&self, writer: &mut Writer) {
@@ -790,7 +787,7 @@ impl Encode for ScalarRanges {
                 Span {
                     data: self.0.as_ptr().cast(),
                     count: self.0.len(),
-                    stride: size_of::<(Bits, Bits)>(),
+                    stride: size_of::<BitRange>(),
                 },
                 ptr::from_mut(writer).cast(),
                 RangeWriter { append, interval },
@@ -801,7 +798,7 @@ impl Encode for ScalarRanges {
 impl Decode for ScalarRanges {
     fn decode(reader: &mut Reader<'_>) -> Result<Self> {
         reader.with_native_input(|bytes, position| {
-            let mut output = Vec::new();
+            let mut output = Self::empty();
             let status = unsafe {
                 read_ranges(
                     Bytes {
@@ -809,13 +806,13 @@ impl Decode for ScalarRanges {
                         count: bytes.len(),
                     },
                     ptr::from_mut(position),
-                    ptr::from_mut(&mut output).cast(),
-                    push_interval,
+                    slot(&mut output.0),
+                    range_sets::push_ends,
                 )
             };
             match status.message() {
                 Some(message) => Err(message.into()),
-                None => Ok(Self(output)),
+                None => Ok(output),
             }
         })
     }
@@ -1770,7 +1767,7 @@ pub(super) mod conditions;
 // Physical construction for the original public contract wire.
 impl crate::codec::contracts::Native for ScalarRanges {
     fn empty() -> Self {
-        Self(Vec::new())
+        Self::empty()
     }
     unsafe fn write(&self, output: Slot) {
         unsafe {
@@ -1778,7 +1775,7 @@ impl crate::codec::contracts::Native for ScalarRanges {
                 Span {
                     data: self.0.as_ptr().cast(),
                     count: self.0.len(),
-                    stride: size_of::<(Bits, Bits)>(),
+                    stride: size_of::<BitRange>(),
                 },
                 output,
                 RangeWriter { append, interval },
@@ -1795,7 +1792,7 @@ impl crate::codec::contracts::Native for ScalarRanges {
                 },
                 position,
                 slot(&mut output.0),
-                push_interval,
+                range_sets::push_ends,
             )
         }
     }
