@@ -51,6 +51,8 @@ struct FloatPieces { BitRange first; BitRange second; u32 count; };
 extern "C" u64 float_order(u32 width,u64 value) on cpu;
 extern "C" u64 float_bits(u32 width,u64 value) on cpu;
 extern "C" f64 float_number(u32 width,u64 value) on cpu;
+extern "C" bool float_ranges_require_preserve(u32 width, RangeInput values, BitRange clip) on cpu
+    requires nonzero(values.get);
 extern "C" FloatInterval float_finite(u32 width,BitRange range) on cpu;
 extern "C" f64 float_rounded(u32 width,f64 value,u32 lower) on cpu;
 extern "C" f64 float_sum_bound(u32 width,f64 left,f64 right,u32 lower) on cpu;

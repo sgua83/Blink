@@ -1,35 +1,38 @@
 //! 同一Proof区间集合中的有限浮点次序；不拥有运行资源或另一份事实表。
 use super::*;
+use crate::ir::scalar_ranges::RangeInput;
 #[path="floating/scalar.rs"]
 mod scalar;
 pub(super) use scalar::{order,bits,comparison_possible,finite,interval,bitcast,cast,arithmetic,math,sum,negate,add_up,multiply_up,divide_up,integer_bound,conversion_error};
 
-fn requires_float_preserve(scalar: Scalar, ranges: &ScalarRanges, domains: Option<&Domains>) -> bool {
+unsafe extern "C" {
+    #[link_name = "bootstrap.scalar_fold::float_ranges_require_preserve"]
+    fn ranges_require_preserve(width: u32, values: RangeInput, clip: BitRange) -> bool;
+}
+
+fn requires_float_preserve(
+    scalar: Scalar, ranges: &[BitRange], clip: BitRange, domains: Option<&Domains>,
+) -> bool {
     // An unsigned integer conversion to f32 can only produce +0 or a normal value.
     if scalar == Scalar::F32 && domains.into_iter().flatten().any(|domain|
         matches!(domain, IndexDomain::Floating(FloatingBound { form: FloatingForm::Cast, .. }))) {
         return false;
     }
-    let (minimum, maximum) = if scalar == Scalar::F32 {
-        (f32::MIN_POSITIVE.to_bits() as Bits, f32::MAX.to_bits() as Bits)
-    } else {
-        (f64::MIN_POSITIVE.to_bits(), f64::MAX.to_bits())
-    };
-    let sign = 1 << (scalar.bit_width() - 1);
-    let ordinary = [
-        (order(scalar, maximum | sign), order(scalar, minimum | sign)),
-        (order(scalar, 0), order(scalar, 0)),
-        (order(scalar, minimum), order(scalar, maximum)),
-    ];
-    ranges.0.iter().any(|range|
-        !ordinary.iter().any(|&(first, last)| first <= range.lower && range.upper <= last))
+    unsafe {
+        ranges_require_preserve(scalar.bit_width(), RangeInput::records(ranges, range_sets::read_record), clip)
+    }
 }
 
 impl Value {
     pub(in crate::check) fn requires_float_preserve(&self, component: usize) -> bool {
         let component = component % self.regs.len();
-        requires_float_preserve(self.ty.components[component].0,
-            &ranges(self, component), self.proof.domains.get(component))
+        let scalar = self.ty.components[component].0;
+        let maximum = scalar.bit_mask();
+        let clip = self.constant.as_ref().map_or(BitRange { lower: 0, upper: maximum }, |values| {
+            let at = order(scalar, values[component]);
+            BitRange { lower: at, upper: at.min(maximum) }
+        });
+        requires_float_preserve(scalar, self.proof.interval_source(component), clip, self.proof.domains.get(component))
     }
 }
 
@@ -38,7 +41,8 @@ impl Proof {
         &self, scalar: Scalar, component: usize, a: &Value, b: &Value, comparison: bool,
     ) -> bool {
         a.requires_float_preserve(component) || b.requires_float_preserve(component)
-            || (!comparison && requires_float_preserve(scalar, &self.range_set(component), self.domains.get(component)))
+            || (!comparison && requires_float_preserve(scalar, self.interval_source(component),
+                FULL_INTERVALS[0], self.domains.get(component)))
     }
 }
 

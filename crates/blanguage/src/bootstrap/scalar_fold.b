@@ -424,6 +424,29 @@ extern "C" u64 float_bits(u32 width,u64 value) on cpu {
     u64 sign=fp_sign(width);return (value&sign)==0u64 ? (~value)&truncate(0xffffffffffffffffu64,width) : value^sign;
 }
 extern "C" f64 float_number(u32 width,u64 value) on cpu {return floating_value(float_bits(width,value),width);}
+
+extern "C" bool float_ranges_require_preserve(u32 width, RangeInput values, BitRange clip) on cpu
+    requires nonzero(values.get) {
+    u64 first = fp_raw(width, fp_normal(width));
+    u64 last = fp_raw(width, fp_maximum(width));
+    u64 sign = fp_sign(width);
+    BitRange negative = BitRange(float_order(width, last | sign), float_order(width, first | sign));
+    BitRange positive = BitRange(float_order(width, first), float_order(width, last));
+    u64 zero = float_order(width, 0u64);
+    u64 index = 0u64;
+    while (index < values.count) {
+        BitRange range = values.get(values.values, index);
+        index += 1u64;
+        range.lower = max(range.lower, clip.lower);
+        range.upper = min(range.upper, clip.upper);
+        if (range.lower > range.upper) { continue; }
+        if (negative.lower <= range.lower && range.upper <= negative.upper) { continue; }
+        if (range.lower == zero && range.upper == zero) { continue; }
+        if (positive.lower <= range.lower && range.upper <= positive.upper) { continue; }
+        return true;
+    }
+    return false;
+}
 extern "C" FloatInterval float_finite(u32 width,BitRange range) on cpu {
     if(range.lower>range.upper){return FloatInterval(0.0f64,0.0f64,0);}
     f64 lower=float_number(width,range.lower);f64 upper=float_number(width,range.upper);
