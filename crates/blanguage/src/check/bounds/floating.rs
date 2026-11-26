@@ -3,9 +3,11 @@ use super::*;
 use crate::ir::scalar_ranges::RangeInput;
 #[path="floating/scalar.rs"]
 mod scalar;
-pub(super) use scalar::{order,bits,comparison_possible,finite,interval,bitcast,cast,arithmetic,math,sum,negate,add_up,multiply_up,divide_up,integer_bound,conversion_error};
+pub(super) use scalar::{order,bits,comparison_possible,finite,interval,bitcast,cast,arithmetic,math,sum,negate,add_up,multiply_up,divide_up,conversion_error};
 
 unsafe extern "C" {
+    #[link_name = "bootstrap.scalar_fold::float_upper_maximum"]
+    fn float_upper_maximum(inputs: BitRange, scale: f64, offset: f64, reciprocal: f64) -> f64;
     #[link_name = "bootstrap.scalar_fold::float_ranges_require_preserve"]
     fn ranges_require_preserve(width: u32, values: RangeInput, clip: BitRange) -> bool;
 }
@@ -97,14 +99,12 @@ impl FloatingBound {
         (bound.lower <= bound.upper).then_some(bound)
     }
     fn maximum(self) -> f64 {
-        let [a,b,c] = self.coefficients();
-        // For positive d: c >= 0 is convex; c < 0 with a >= 0 is increasing.
-        [integer_bound(self.lower,true),integer_bound(self.upper,false)].into_iter().map(|d|
-            add_up(add_up(multiply_up(a,d),b),if c == 0.0 { 0.0 } else { divide_up(c,d) }))
-            .fold(f64::NEG_INFINITY,f64::max)
+        let inputs = BitRange { lower: self.lower, upper: self.upper };
+        let [scale, offset, reciprocal] = self.coefficients();
+        unsafe { float_upper_maximum(inputs, scale, offset, reciprocal) }
     }
     fn restricted(self, input: CallInput<'_>) -> Option<Self> {
-        let (lower,upper) = range_sets::restrict(input.intervals(), 0, self.scalar.bit_mask()).hull();
+        let (lower,upper) = range_sets::restricted_hull(input.intervals(), (0, self.scalar.bit_mask()), None);
         let bound = Self { lower: self.lower.max(lower), upper: self.upper.min(upper), ..self };
         (bound.lower <= bound.upper).then_some(bound)
     }
@@ -214,7 +214,10 @@ pub(super) fn arithmetic_domains(builder: &Builder<'_>, op: &str, a: &Value, b: 
     }
     // A finite upper fact must not conceal an overflowing intermediate result.
     domains.retain(|domain| match domain {
-        IndexDomain::Floating(bound) => bound.maximum().is_finite() && bound.maximum() <= f32::MAX as f64,
+        IndexDomain::Floating(bound) => {
+            let maximum = bound.maximum();
+            maximum.is_finite() && maximum <= f32::MAX as f64
+        }
         _ => true,
     });
     domains

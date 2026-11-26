@@ -622,7 +622,22 @@ extern "C" FloatRange float_sum_range(u32 width,BitRange range,u64 maximum) on c
 extern "C" FloatRange float_negate(u32 width,BitRange range) on cpu {
     FloatInterval input=float_finite(width,range);return input.present!=0 ? float_interval(width,-input.upper,-input.lower) : fp_unknown();
 }
-extern "C" f64 float_integer_bound(u64 value,u32 lower) on cpu {return fp_integer_endpoint(ScalarEncoding(ScalarKind::Unsigned,64),64,value,lower);}
+f64 evaluate_float_upper(f64 input, f64 scale, f64 offset, f64 reciprocal) on cpu {
+    f64 linear = float_add_up(float_multiply_up(scale, input), offset);
+    f64 quotient = reciprocal == 0.0f64 ? 0.0f64 : float_divide_up(reciprocal, input);
+    return float_add_up(linear, quotient);
+}
+
+extern "C" f64 float_upper_maximum(BitRange inputs, f64 scale, f64 offset, f64 reciprocal) on cpu {
+    // For positive d, a*d+b+c/d is convex when c>=0 and increasing when c<0 and a>=0.
+    ScalarEncoding encoding = ScalarEncoding(ScalarKind::Unsigned, 64);
+    f64 first = evaluate_float_upper(fp_integer_endpoint(encoding, 64, inputs.lower, 1), scale, offset, reciprocal);
+    f64 last = evaluate_float_upper(fp_integer_endpoint(encoding, 64, inputs.upper, 0), scale, offset, reciprocal);
+    f64 maximum = bitcast_f64(0xfff0000000000000u64);
+    if (first > maximum) { maximum = first; }
+    if (last > maximum) { maximum = last; }
+    return maximum;
+}
 extern "C" f64 float_conversion_error(u64 upper) on cpu {return upper<=16777216u64 ? 0.0f64 : fp_power(-23);}
 
 struct BitPrefix { bool present; u64 lower; u64 upper; };

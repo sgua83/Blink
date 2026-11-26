@@ -39,7 +39,6 @@ unsafe extern "C" {
     #[link_name="bootstrap.scalar_fold::float_add_up"] fn source_add_up(left:f64,right:f64)->f64;
     #[link_name="bootstrap.scalar_fold::float_multiply_up"] fn source_multiply_up(left:f64,right:f64)->f64;
     #[link_name="bootstrap.scalar_fold::float_divide_up"] fn source_divide_up(left:f64,right:f64)->f64;
-    #[link_name="bootstrap.scalar_fold::float_integer_bound"] fn source_integer_bound(value:Bits,lower:u32)->f64;
     #[link_name="bootstrap.scalar_fold::float_conversion_error"] fn source_conversion_error(upper:Bits)->f64;
 }
 pub(in crate::check::bounds) fn bits(scalar:Scalar,value:Bits)->Bits {unsafe{source_bits(scalar.bit_width(),value)}}
@@ -90,5 +89,4 @@ pub(in crate::check::bounds) fn negate(value:&Value,component:usize)->ScalarRang
 pub(in crate::check::bounds) fn add_up(left:f64,right:f64)->f64 {unsafe{source_add_up(left,right)}}
 pub(in crate::check::bounds) fn multiply_up(left:f64,right:f64)->f64 {unsafe{source_multiply_up(left,right)}}
 pub(in crate::check::bounds) fn divide_up(left:f64,right:f64)->f64 {unsafe{source_divide_up(left,right)}}
-pub(in crate::check::bounds) fn integer_bound(value:Bits,lower:bool)->f64 {unsafe{source_integer_bound(value,u32::from(lower))}}
 pub(in crate::check::bounds) fn conversion_error(upper:Bits)->f64 {unsafe{source_conversion_error(upper)}}

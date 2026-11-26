@@ -68,7 +68,7 @@ extern "C" FloatRange float_negate(u32 width,BitRange range) on cpu;
 extern "C" f64 float_add_up(f64 left,f64 right) on cpu;
 extern "C" f64 float_multiply_up(f64 left,f64 right) on cpu;
 extern "C" f64 float_divide_up(f64 left,f64 right) on cpu;
-extern "C" f64 float_integer_bound(u64 value,u32 lower) on cpu;
+extern "C" f64 float_upper_maximum(BitRange inputs, f64 scale, f64 offset, f64 reciprocal) on cpu;
 extern "C" f64 float_conversion_error(u64 upper) on cpu;
 
 enum IntegerBitwise : u32 { And = 0; Or = 1; Xor = 2; };
