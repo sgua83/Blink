@@ -53,23 +53,24 @@ void walk_frames(address graph,address work,WalkSlice edges,u32 frame_read,u32 s
     }
 }
 
-void walk_inputs(address graph,address work,WalkVisit visit,u32 feedback,WalkEdges host) on cpu
+u32 walk_inputs(address graph,address work,WalkVisit visit,u32 feedback,WalkEdges host) on cpu
     requires nonzero(host.source.edges) requires nonzero(host.source.edge)
     requires nonzero(host.source.frame) requires nonzero(host.source.write)
     requires nonzero(host.source.field) requires nonzero(host.mark_frame) requires nonzero(host.publish)
 {
     WalkSlice edges = host.source.edges(graph,visit.node);
-    u32 frame_read = visit.read;
+    u32 reads = 0;
     usize index = 0u64;
     while (index < edges.count) {
         WalkEdge edge = host.source.edge(edges.data,index);
         u32 read = visit.read | (feedback & edge.read);
-        frame_read |= read;
+        reads |= edge.read;
         host.publish(work,WalkVisit(edge.source,read));
         index += 1u64;
     }
 
-    walk_frames(graph,work,edges,frame_read,1,host);
+    walk_frames(graph,work,edges,visit.read | (feedback & reads),1,host);
+    return reads;
 }
 
 extern "C" u32 walk_relation(address graph,address work,usize root,u32 feedback,WalkHost host) on cpu
@@ -90,12 +91,32 @@ extern "C" u32 walk_relation(address graph,address work,usize root,u32 feedback,
     }
 }
 
-extern "C" void relation_dependencies(address graph,address work,usize root,WalkEdges host) on cpu
-    requires nonzero(host.source.edges) requires nonzero(host.source.edge)
-    requires nonzero(host.source.frame) requires nonzero(host.source.write)
-    requires nonzero(host.source.field) requires nonzero(host.mark_frame) requires nonzero(host.publish)
+extern "C" usize prepare_plan_inputs(address graph, address work, address roots, address rows,
+    u32 materialize, PlanInputsHost host) on cpu
+    requires nonzero(host.edges.source.edges) requires nonzero(host.edges.source.edge)
+    requires nonzero(host.edges.source.frame) requires nonzero(host.edges.source.write)
+    requires nonzero(host.edges.source.field) requires nonzero(host.edges.mark_frame)
+    requires nonzero(host.edges.publish) requires nonzero(host.next) requires nonzero(host.variable)
+    requires nonzero(host.begin) requires nonzero(host.finish)
 {
-    walk_inputs(graph,work,WalkVisit(root,0),0,host);
+    usize ordinary_count = 0u64;
+    usize end = 0u64;
+    usize id = host.next(roots);
+    while (id != WALK_END) {
+        u32 variable = host.variable(graph,id);
+        if (variable == 0) { ordinary_count += 1u64; }
+        usize first = end;
+        u64 flags = REACHABLE | (variable != 0 ? VARIABLE : 0u64);
+        if (materialize != 0 || variable == 0) {
+            host.begin(work,id);
+            u32 reads = walk_inputs(graph,work,WalkVisit(id,0),0,host.edges);
+            if (materialize != 0 && reads != 0) { flags |= READS; }
+            end = host.finish(work,first);
+        }
+        unsafe_position<Dependencies>(cell(rows,id,size_of<Dependencies>())) = Dependencies(first,end,flags);
+        id = host.next(roots);
+    }
+    return ordinary_count;
 }
 
 extern "C" void historical_relation_frames(address graph,address work,address roots,cfn<usize,address> next,WalkEdges host) on cpu

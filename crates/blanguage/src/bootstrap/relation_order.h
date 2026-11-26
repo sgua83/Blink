@@ -50,10 +50,21 @@ extern "C" u32 walk_relation(address graph,address work,usize root,u32 feedback,
     requires nonzero(host.edges.source.frame) requires nonzero(host.edges.source.write)
     requires nonzero(host.edges.source.field) requires nonzero(host.edges.mark_frame)
     requires nonzero(host.edges.publish) requires nonzero(host.pop) requires nonzero(host.visit);
-extern "C" void relation_dependencies(address graph,address work,usize root,WalkEdges host) on cpu
-    requires nonzero(host.source.edges) requires nonzero(host.source.edge)
-    requires nonzero(host.source.frame) requires nonzero(host.source.write)
-    requires nonzero(host.source.field) requires nonzero(host.mark_frame) requires nonzero(host.publish);
+struct PlanInputsHost {
+    WalkEdges edges;
+    cfn<usize,address> next;
+    cfn<u32,address,usize> variable;
+    cfn<void,address,usize> begin;
+    cfn<usize,address,usize> finish;
+};
+
+extern "C" usize prepare_plan_inputs(address graph, address work, address roots, address rows,
+    u32 materialize, PlanInputsHost host) on cpu
+    requires nonzero(host.edges.source.edges) requires nonzero(host.edges.source.edge)
+    requires nonzero(host.edges.source.frame) requires nonzero(host.edges.source.write)
+    requires nonzero(host.edges.source.field) requires nonzero(host.edges.mark_frame)
+    requires nonzero(host.edges.publish) requires nonzero(host.next) requires nonzero(host.variable)
+    requires nonzero(host.begin) requires nonzero(host.finish);
 
 extern "C" void historical_relation_frames(address graph,address work,address roots,cfn<usize,address> next,WalkEdges host) on cpu
     requires nonzero(next) requires nonzero(host.source.edges) requires nonzero(host.source.edge)

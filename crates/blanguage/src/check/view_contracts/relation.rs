@@ -5,10 +5,6 @@ use std::{borrow::Cow, ffi::c_void, ptr};
 type Borrowed = *const c_void;
 type Slot = *mut c_void;
 
-const PLAN_REACHABLE: u64 = 1;
-const PLAN_VARIABLE: u64 = 2;
-const PLAN_READS: u64 = 4;
-
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
 struct PlanNode {
@@ -141,8 +137,6 @@ struct WalkHost {
 unsafe extern "C" {
     #[link_name = "bootstrap.relation_order::walk_relation"]
     fn walk_relation(graph: Borrowed, work: Slot, root: usize, feedback: u32, host: WalkHost) -> u32;
-    #[link_name = "bootstrap.relation_order::relation_dependencies"]
-    fn relation_dependencies(graph: Borrowed, work: Slot, root: usize, host: WalkEdges);
     #[link_name = "bootstrap.relation_order::historical_relation_frames"]
     fn historical_relation_frames(
         graph: Borrowed, work: Slot, roots: Slot, next: unsafe extern "C" fn(Slot) -> usize, host: WalkEdges,
@@ -574,6 +568,78 @@ impl NormalizeRelation<'_> {
     }
 }
 
+#[repr(C)]
+struct PlanInputsHost {
+    edges: WalkEdges,
+    next: unsafe extern "C" fn(Slot) -> usize,
+    variable: unsafe extern "C" fn(Borrowed, usize) -> u32,
+    begin: unsafe extern "C" fn(Slot, usize),
+    finish: unsafe extern "C" fn(Slot, usize) -> usize,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.relation_order::prepare_plan_inputs"]
+    fn prepare_plan_inputs(
+        graph: Borrowed, work: Slot, roots: Slot, rows: *mut PlanNode, materialize: u32,
+        host: PlanInputsHost,
+    ) -> usize;
+}
+
+unsafe extern "C" fn next_relation_root<I: Iterator<Item = usize>>(roots: Slot) -> usize {
+    unsafe { &mut *roots.cast::<I>() }.next().unwrap_or(usize::MAX)
+}
+
+struct PlanDependencies {
+    row: usize,
+    nodes: Vec<usize>,
+    frames: Vec<usize>,
+    dependencies: Vec<usize>,
+}
+
+impl PlanDependencies {
+    fn host<I: Iterator<Item = usize>>() -> PlanInputsHost {
+        PlanInputsHost {
+            edges: WalkEdges {
+                source: RelationSource::GRAPH, mark_frame: Self::mark_frame, publish: Self::publish,
+            },
+            next: next_relation_root::<I>, variable: Self::variable,
+            begin: Self::begin, finish: Self::finish,
+        }
+    }
+
+    unsafe extern "C" fn variable(graph: Borrowed, id: usize) -> u32 {
+        let graph = unsafe { &*graph.cast::<RelationView<'_>>() };
+        u32::from(graph.base.variables.contains(&id))
+    }
+
+    unsafe extern "C" fn begin(work: Slot, row: usize) {
+        unsafe { &mut *work.cast::<Self>() }.row = row;
+    }
+
+    unsafe extern "C" fn mark_frame(work: Slot, visit: WalkVisit) -> u32 {
+        let work = unsafe { &mut *work.cast::<Self>() };
+        let last = &mut work.frames[visit.node];
+        if *last == work.row { return 0; }
+        *last = work.row;
+        1
+    }
+
+    unsafe extern "C" fn publish(work: Slot, visit: WalkVisit) {
+        let work = unsafe { &mut *work.cast::<Self>() };
+        let last = &mut work.nodes[visit.node];
+        if *last != work.row {
+            *last = work.row;
+            work.dependencies.push(visit.node);
+        }
+    }
+
+    unsafe extern "C" fn finish(work: Slot, first: usize) -> usize {
+        let work = unsafe { &mut *work.cast::<Self>() };
+        work.dependencies[first..].sort_unstable();
+        work.dependencies.len()
+    }
+}
+
 struct RelationWalk<'g, F> {
     graph: RelationView<'g>,
     accepts: F,
@@ -630,22 +696,12 @@ impl<'g, F: FnMut(RelationNode<'g>) -> bool> RelationWalk<'g, F> {
     }
 
     fn historical_frames<I: Iterator<Item = usize>>(&mut self, mut roots: I) {
-        unsafe extern "C" fn next<I: Iterator<Item = usize>>(roots: Slot) -> usize {
-            unsafe { &mut *roots.cast::<I>() }.next().unwrap_or(usize::MAX)
-        }
         let graph = self.graph;
         unsafe {
             historical_relation_frames(
                 ptr::from_ref(&graph).cast(), ptr::from_mut(self).cast(), ptr::from_mut(&mut roots).cast(),
-                next::<I>, Self::edges(Self::collect),
+                next_relation_root::<I>, Self::edges(Self::collect),
             );
-        }
-    }
-
-    fn dependencies(&mut self, root: usize) {
-        let graph = self.graph;
-        unsafe {
-            relation_dependencies(ptr::from_ref(&graph).cast(), ptr::from_mut(self).cast(), root, Self::edges(Self::collect));
         }
     }
 }
@@ -1373,37 +1429,26 @@ impl Graph {
         RelationWalk::new(self, accepts).walk(root, false)
     }
 
-    fn evaluation_dependencies(&self, id: usize) -> BTreeSet<usize> {
-        let mut work = RelationWalk::new(self, |_| false);
-        work.dependencies(id);
-        let [nodes, _] = work.nodes;
-        nodes
-    }
-
-    fn evaluation_plan(
-        &self,
-        reachable: impl IntoIterator<Item = usize>,
-        materialize: bool,
+    fn evaluation_plan<I: IntoIterator<Item = usize>>(
+        &self, reachable: I, materialize: bool,
     ) -> EvaluationPlan {
         let mut rows = vec![PlanNode::default(); self.nodes.len()];
-        let mut dependencies = Vec::new();
-        let mut ordinary_nodes = 0;
-        for id in reachable {
-            let variable = self.variables.contains(&id);
-            ordinary_nodes += usize::from(!variable);
-            let first = dependencies.len();
-            if materialize || !variable {
-                dependencies.extend(self.evaluation_dependencies(id));
-            }
-            let mut flags = PLAN_REACHABLE;
-            if variable {
-                flags |= PLAN_VARIABLE;
-            }
-            if materialize && self.nodes[id].edges.iter().any(|edge| matches!(edge.op, Op::Read { .. })) {
-                flags |= PLAN_READS;
-            }
-            rows[id] = PlanNode { first, end: dependencies.len(), flags };
-        }
+        let (ordinary_nodes, dependencies) = {
+            let mut reachable = reachable.into_iter();
+            let graph = RelationView { base: self, tail: &[], residual: None };
+            let mut work = PlanDependencies {
+                row: usize::MAX, nodes: vec![usize::MAX; self.nodes.len()],
+                frames: vec![usize::MAX; self.frames.len()], dependencies: Vec::new(),
+            };
+            let ordinary_nodes = unsafe {
+                prepare_plan_inputs(
+                    ptr::from_ref(&graph).cast(), ptr::from_mut(&mut work).cast(),
+                    ptr::from_mut(&mut reachable).cast(), rows.as_mut_ptr(), u32::from(materialize),
+                    PlanDependencies::host::<I::IntoIter>(),
+                )
+            };
+            (ordinary_nodes, work.dependencies)
+        };
 
         let mut states = vec![PlanState::default(); rows.len()];
         let mut users = Vec::<usize>::with_capacity(dependencies.len());
