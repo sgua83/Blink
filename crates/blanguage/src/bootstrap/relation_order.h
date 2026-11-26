@@ -18,3 +18,9 @@ struct Output {
 };
 
 extern "C" usize plan(Input input, Workspace work, Output output) on cpu;
+
+struct CallRange { usize first; usize end; };
+struct CallGraph { address rows; address callees; usize count; };
+struct CallWork { address states; address visits; address active; };
+
+extern "C" void recursive_call_groups(CallGraph graph, CallWork work, address groups) on cpu;

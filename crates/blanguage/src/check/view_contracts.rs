@@ -1858,50 +1858,59 @@ fn converge_access(
     owns_input: &(impl Fn(&str, ValueIdentity) -> bool + Sync),
 ) -> Result<()> {
     fn recursive_groups<'a>(functions: &'a BTreeMap<String, &Function>) -> BTreeMap<&'a str, Arc<[&'a str]>> {
-        let callees = functions.iter().map(|(name, function)| {
-            let calls = function.calls.iter().map(|call| call.function.as_str())
-                .filter(|callee| functions.contains_key(*callee)).collect::<Vec<_>>();
-            (name.as_str(), calls)
-        }).collect::<BTreeMap<_, _>>();
-        let mut callers = callees.keys().map(|&name| (name, Vec::new())).collect::<BTreeMap<_, _>>();
-        for (&name, targets) in &callees {
-            for target in targets {
-                callers.get_mut(target).unwrap().push(name);
+        #[repr(C)]
+        struct CallRange { first: usize, end: usize }
+        #[repr(C)]
+        struct CallGraph { rows: *const CallRange, callees: *const usize, count: usize }
+        #[repr(C)]
+        #[derive(Clone, Default)]
+        struct CallNode { index: usize, low: usize }
+        #[repr(C)]
+        #[derive(Clone, Default)]
+        struct CallVisit { node: usize, next: usize, self_call: u64 }
+        #[repr(C)]
+        struct CallWork { states: *mut CallNode, visits: *mut CallVisit, active: *mut usize }
+        unsafe extern "C" {
+            #[link_name = "bootstrap.relation_order::recursive_call_groups"]
+            fn resolve_groups(graph: CallGraph, work: CallWork, groups: *mut usize);
+        }
+
+        let names = functions.keys().map(String::as_str).collect::<Vec<_>>();
+        let mut callees = Vec::new();
+        let rows = functions.values().map(|function| {
+            let first = callees.len();
+            callees.extend(function.calls.iter().filter_map(|call| {
+                names.binary_search(&call.function.as_str()).ok()
+            }));
+            CallRange { first, end: callees.len() }
+        }).collect::<Vec<_>>();
+        let count = names.len();
+        let mut states = vec![CallNode::default(); count];
+        let mut visits = vec![CallVisit::default(); count];
+        let mut active = vec![0; count];
+        let mut groups = vec![0; count];
+        unsafe {
+            resolve_groups(
+                CallGraph { rows: rows.as_ptr(), callees: callees.as_ptr(), count },
+                CallWork { states: states.as_mut_ptr(), visits: visits.as_mut_ptr(), active: active.as_mut_ptr() },
+                groups.as_mut_ptr(),
+            );
+        }
+
+        let mut members = BTreeMap::<usize, Vec<&str>>::new();
+        for (name, group) in names.into_iter().zip(groups) {
+            if group != 0 {
+                members.entry(group).or_default().push(name);
             }
         }
-        let mut ordered = Vec::new();
-        let mut seen = BTreeSet::new();
-        for &name in callees.keys() {
-            let mut work = vec![(name, false)];
-            while let Some((next, exit)) = work.pop() {
-                if exit {
-                    ordered.push(next);
-                } else if seen.insert(next) {
-                    work.push((next, true));
-                    work.extend(callees[next].iter().map(|&target| (target, false)));
-                }
+        let mut recursive = BTreeMap::new();
+        for members in members.into_values() {
+            let members: Arc<[_]> = Arc::from(members);
+            for &name in members.iter() {
+                recursive.insert(name, Arc::clone(&members));
             }
         }
-        seen.clear();
-        let mut groups = BTreeMap::new();
-        for name in ordered.into_iter().rev() {
-            if !seen.insert(name) {
-                continue;
-            }
-            let mut members = vec![name];
-            let mut at = 0;
-            while at < members.len() {
-                let parents = &callers[members[at]];
-                members.extend(parents.iter().copied().filter(|&parent| seen.insert(parent)));
-                at += 1;
-            }
-            if members.len() > 1 || callees[name].contains(&name) {
-                members.sort_unstable();
-                let group: Arc<[_]> = Arc::from(members);
-                groups.extend(group.iter().map(|&name| (name, Arc::clone(&group))));
-            }
-        }
-        groups
+        recursive
     }
     let groups = recursive_groups(functions);
     fn insert(accesses: &mut BTreeMap<Access<()>, bounds::Condition>, access: Access) {
