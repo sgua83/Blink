@@ -341,6 +341,15 @@ pub(in crate::check::bounds) fn write_borrowed(conditions:Conditions<'_>,writer:
     };
 }
 
+struct ReadContext {
+    input: Bytes,
+    position: *mut usize,
+}
+unsafe fn input(context: Slot) -> (Bytes, *mut usize) {
+    let context = unsafe { &*context.cast::<ReadContext>() };
+    (context.input, context.position)
+}
+
 #[repr(C)]
 struct ReadHost {
     context: Slot,
@@ -361,7 +370,7 @@ unsafe extern "C" fn push_either(output: Slot, a: usize, b: usize) {
 unsafe extern "C" fn push_fact(context: Slot, output: Slot) -> ReadStatus {
     let (bytes, position) = unsafe { input(context) };
     let mut value = Fact::NonZero(ValueIdentity::TileLength);
-    let status = unsafe { read_fact(bytes, position, slot(&mut value), reader_host(context)) };
+    let status = unsafe { read_fact(bytes, position, slot(&mut value), reader_host()) };
     if status == ReadStatus::Success {
         unsafe { &mut *output.cast::<Facts>() }.insert(value);
     }

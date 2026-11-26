@@ -38,30 +38,6 @@ enum FloatingKind {
 }
 #[repr(u32)]
 #[derive(Clone, Copy, Default)]
-enum DomainKind {
-    #[default]
-    Data = 0,
-    Fixed = 1,
-    Tile = 2,
-    DataLength = 3,
-    TileLength = 4,
-    View = 5,
-    ViewLength = 6,
-    ApplicationData = 7,
-    ApplicationLength = 8,
-    Upper = 9,
-    Lower = 10,
-    Room = 11,
-    Sum = 12,
-    Offset = 13,
-    Shifted = 14,
-    Computed = 15,
-    CommonRange = 16,
-    KnownBits = 17,
-    Floating = 18,
-}
-#[repr(u32)]
-#[derive(Clone, Copy, Default)]
 enum ScalarTag {
     #[default]
     F32 = 0,
@@ -621,192 +597,40 @@ fn slot<T>(value: &mut T) -> Slot {
     ptr::from_mut(value).cast()
 }
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
-struct DomainFields {
-    kind: DomainKind,
-    first: *const c_void,
-    second: *const c_void,
-    third: *const c_void,
-    ordinal: u64,
-    distance: u32,
-    scalars: [ScalarTag; 4],
-    mask: u64,
-    bits: u64,
-    expression: *const c_void,
-    floating: *const c_void,
-}
-#[repr(C)]
 struct NumericWriter {
     append: unsafe extern "C" fn(*mut c_void, *const u8, usize),
     expression: unsafe extern "C" fn(*const c_void) -> NumericExpression,
     floating: unsafe extern "C" fn(*const c_void) -> NumericFloating,
-    domain: unsafe extern "C" fn(*const c_void) -> DomainFields,
 }
 #[repr(C)]
 struct NumericReader {
-    context: Slot,
-    domain: unsafe extern "C" fn(Slot, Slot, DomainKind) -> ReadStatus,
-}
-struct ReadContext {
-    input: Bytes,
-    position: *mut usize,
+    expression: unsafe extern "C" fn(NumericExpression, Slot),
+    floating: unsafe extern "C" fn(NumericFloating, Slot),
 }
 fn writer_host() -> NumericWriter {
     NumericWriter {
         append,
         expression: expression_fields,
         floating: floating_fields,
-        domain: domain_fields,
     }
 }
-fn reader_host(context: Slot) -> NumericReader {
+fn reader_host() -> NumericReader {
     NumericReader {
-        context,
-        domain: construct_domain,
+        expression: materialize_expression,
+        floating: materialize_floating,
     }
 }
-unsafe fn input(context: Slot) -> (Bytes, *mut usize) {
-    let context = unsafe { &*context.cast::<ReadContext>() };
-    (context.input, context.position)
+unsafe extern "C" fn materialize_expression(value: NumericExpression, output: Slot) {
+    unsafe { output.cast::<IntegerExpression>().write(IntegerExpression::from_frame(value)) };
+}
+unsafe extern "C" fn materialize_floating(value: NumericFloating, output: Slot) {
+    unsafe { output.cast::<FloatingBound>().write(FloatingBound::from_frame(value)) };
 }
 unsafe extern "C" fn expression_fields(source: *const c_void) -> NumericExpression {
     unsafe { *source.cast::<IntegerExpression>() }.into_frame()
 }
 unsafe extern "C" fn floating_fields(source: *const c_void) -> NumericFloating {
     unsafe { *source.cast::<FloatingBound>() }.into_frame()
-}
-unsafe extern "C" fn domain_fields(source: *const c_void) -> DomainFields {
-    let source = unsafe { &*source.cast::<IndexDomain>() };
-    match source {
-        IndexDomain::Data(v0) => {
-            let mut fields = DomainFields::default();
-            fields.kind = DomainKind::Data;
-            fields.ordinal = (*v0) as u64;
-            fields
-        }
-        IndexDomain::Fixed(v0) => {
-            let mut fields = DomainFields::default();
-            fields.kind = DomainKind::Fixed;
-            fields.distance = (*v0);
-            fields
-        }
-        IndexDomain::Tile => {
-            let mut fields = DomainFields::default();
-            fields.kind = DomainKind::Tile;
-            fields
-        }
-        IndexDomain::DataLength(v0) => {
-            let mut fields = DomainFields::default();
-            fields.kind = DomainKind::DataLength;
-            fields.ordinal = (*v0) as u64;
-            fields
-        }
-        IndexDomain::TileLength => {
-            let mut fields = DomainFields::default();
-            fields.kind = DomainKind::TileLength;
-            fields
-        }
-        IndexDomain::View(v0) => {
-            let mut fields = DomainFields::default();
-            fields.kind = DomainKind::View;
-            fields.first = ptr::from_ref(&v0[0]).cast();
-            fields.second = ptr::from_ref(&v0[1]).cast();
-            fields.third = ptr::from_ref(&v0[2]).cast();
-            fields
-        }
-        IndexDomain::ViewLength(v0) => {
-            let mut fields = DomainFields::default();
-            fields.kind = DomainKind::ViewLength;
-            fields.first = ptr::from_ref(&v0[0]).cast();
-            fields.second = ptr::from_ref(&v0[1]).cast();
-            fields.third = ptr::from_ref(&v0[2]).cast();
-            fields
-        }
-        IndexDomain::ApplicationData(v0) => {
-            let mut fields = DomainFields::default();
-            fields.kind = DomainKind::ApplicationData;
-            fields.first = ptr::from_ref(v0).cast();
-            fields
-        }
-        IndexDomain::ApplicationLength(v0) => {
-            let mut fields = DomainFields::default();
-            fields.kind = DomainKind::ApplicationLength;
-            fields.first = ptr::from_ref(v0).cast();
-            fields
-        }
-        IndexDomain::Upper(v0, v1) => {
-            let mut fields = DomainFields::default();
-            fields.kind = DomainKind::Upper;
-            fields.first = ptr::from_ref(v0).cast();
-            fields.distance = (*v1);
-            fields
-        }
-        IndexDomain::Room(v0) => {
-            let mut fields = DomainFields::default();
-            fields.kind = DomainKind::Room;
-            fields.first = ptr::from_ref(v0).cast();
-            fields
-        }
-        IndexDomain::Sum(v0, v1) => {
-            let mut fields = DomainFields::default();
-            fields.kind = DomainKind::Sum;
-            fields.first = ptr::from_ref(v0).cast();
-            fields.second = ptr::from_ref(v1).cast();
-            fields
-        }
-        IndexDomain::Shifted(v0, v1, v2) => {
-            let mut fields = DomainFields::default();
-            fields.kind = DomainKind::Shifted;
-            fields.first = ptr::from_ref(v0).cast();
-            fields.second = ptr::from_ref(v1).cast();
-            fields.distance = (*v2);
-            fields
-        }
-        IndexDomain::Offset(v0, v1) => {
-            let mut fields = DomainFields::default();
-            fields.kind = DomainKind::Offset;
-            fields.first = ptr::from_ref(v0).cast();
-            fields.distance = (*v1);
-            fields
-        }
-        IndexDomain::Computed(v0) => {
-            let mut fields = DomainFields::default();
-            fields.kind = DomainKind::Computed;
-            fields.expression = ptr::from_ref(v0).cast();
-            fields
-        }
-        IndexDomain::Lower(v0, v1) => {
-            let mut fields = DomainFields::default();
-            fields.kind = DomainKind::Lower;
-            fields.first = ptr::from_ref(v0).cast();
-            fields.distance = (*v1);
-            fields
-        }
-        IndexDomain::CommonRange(v0, v1, v2, v3, v4) => {
-            let mut fields = DomainFields::default();
-            fields.kind = DomainKind::CommonRange;
-            fields.first = ptr::from_ref(v0).cast();
-            fields.scalars[0] = (*v1).into_frame();
-            fields.scalars[1] = (*v2).into_frame();
-            fields.scalars[2] = (*v3).into_frame();
-            fields.scalars[3] = (*v4).into_frame();
-            fields
-        }
-        IndexDomain::KnownBits(v0, v1, v2) => {
-            let mut fields = DomainFields::default();
-            fields.kind = DomainKind::KnownBits;
-            fields.scalars[0] = (*v0).into_frame();
-            fields.mask = (*v1);
-            fields.bits = (*v2);
-            fields
-        }
-        IndexDomain::Floating(v0) => {
-            let mut fields = DomainFields::default();
-            fields.kind = DomainKind::Floating;
-            fields.floating = ptr::from_ref(v0).cast();
-            fields
-        }
-    }
 }
 unsafe extern "C" {
     #[link_name = "bootstrap.contract_codec::numeric_write_domain"]
@@ -835,8 +659,8 @@ macro_rules! borrowed_codec {
             unsafe fn write(&self,output:Slot){unsafe{$write(ptr::from_ref(self).cast(),output,writer_host())}}
             unsafe fn read(context:Slot,output:&mut Self)->ReadStatus{
                 let(bytes,position)=unsafe{crate::codec::contracts::input(context)};
-                let bytes=Bytes{data:bytes.data,count:bytes.count};let mut frame=ReadContext{input:bytes,position};
-                unsafe{$read(bytes,position,slot(output),reader_host(slot(&mut frame)))}
+                let bytes=Bytes{data:bytes.data,count:bytes.count};
+                unsafe { $read(bytes, position, slot(output), reader_host()) }
             }
         }
         impl Encode for $ty {
@@ -858,17 +682,13 @@ macro_rules! borrowed_codec {
                         count: bytes.len(),
                     };
                     let position = ptr::from_mut(position);
-                    let mut context = ReadContext {
-                        input: bytes,
-                        position,
-                    };
                     let mut output = $empty;
                     let status = unsafe {
                         $read(
                             bytes,
                             position,
                             slot(&mut output),
-                            reader_host(slot(&mut context)),
+                            reader_host(),
                         )
                     };
                     match status.message() {
@@ -888,326 +708,6 @@ borrowed_codec!(
     read_fact
 );
 
-unsafe extern "C" {
-    #[link_name = "bootstrap.contract_codec::numeric_read_payload_ordinal"]
-    fn read_payload_ordinal(input: Bytes, position: *mut usize, field0: *mut u64) -> ReadStatus;
-    #[link_name = "bootstrap.contract_codec::numeric_read_payload_count"]
-    fn read_payload_count(input: Bytes, position: *mut usize, field0: *mut u32) -> ReadStatus;
-    #[link_name = "bootstrap.contract_codec::numeric_read_payload_view_identities"]
-    fn read_payload_view_identities(
-        input: Bytes,
-        position: *mut usize,
-        field0: *mut [NumericIdentity; 3],
-    ) -> ReadStatus;
-    #[link_name = "bootstrap.contract_codec::numeric_read_payload_identity_distance"]
-    fn read_payload_identity_distance(
-        input: Bytes,
-        position: *mut usize,
-        field0: *mut NumericIdentity,
-        field1: *mut u32,
-    ) -> ReadStatus;
-    #[link_name = "bootstrap.contract_codec::numeric_read_payload_identity_pair"]
-    fn read_payload_identity_pair(
-        input: Bytes,
-        position: *mut usize,
-        field0: *mut NumericIdentity,
-        field1: *mut NumericIdentity,
-    ) -> ReadStatus;
-    #[link_name = "bootstrap.contract_codec::numeric_read_payload_shifted_identities"]
-    fn read_payload_shifted_identities(
-        input: Bytes,
-        position: *mut usize,
-        field0: *mut NumericIdentity,
-        field1: *mut NumericIdentity,
-        field2: *mut u32,
-    ) -> ReadStatus;
-    #[link_name = "bootstrap.contract_codec::numeric_read_payload_common_range"]
-    fn read_payload_common_range(
-        input: Bytes,
-        position: *mut usize,
-        field0: *mut NumericIdentity,
-        field1: *mut ScalarTag,
-        field2: *mut ScalarTag,
-        field3: *mut ScalarTag,
-        field4: *mut ScalarTag,
-    ) -> ReadStatus;
-    #[link_name = "bootstrap.contract_codec::numeric_read_payload_known_bits"]
-    fn read_payload_known_bits(
-        input: Bytes,
-        position: *mut usize,
-        field0: *mut ScalarTag,
-        field1: *mut u64,
-        field2: *mut u64,
-    ) -> ReadStatus;
-}
-unsafe extern "C" fn construct_domain(context: Slot, output: Slot, kind: DomainKind) -> ReadStatus {
-    let (bytes, position) = unsafe { input(context) };
-    match kind {
-        DomainKind::Data => {
-            let mut v0: u64 = Default::default();
-            let status = unsafe { read_payload_ordinal(bytes, position, ptr::from_mut(&mut v0)) };
-            if status == ReadStatus::Success {
-                unsafe { *output.cast::<IndexDomain>() = IndexDomain::Data(v0 as usize) };
-            }
-            status
-        }
-        DomainKind::Fixed => {
-            let mut v0: u32 = Default::default();
-            let status = unsafe { read_payload_count(bytes, position, ptr::from_mut(&mut v0)) };
-            if status == ReadStatus::Success {
-                unsafe { *output.cast::<IndexDomain>() = IndexDomain::Fixed(v0) };
-            }
-            status
-        }
-        DomainKind::Tile => {
-            unsafe { *output.cast::<IndexDomain>() = IndexDomain::Tile };
-            ReadStatus::Success
-        }
-        DomainKind::DataLength => {
-            let mut v0: u64 = Default::default();
-            let status = unsafe { read_payload_ordinal(bytes, position, ptr::from_mut(&mut v0)) };
-            if status == ReadStatus::Success {
-                unsafe { *output.cast::<IndexDomain>() = IndexDomain::DataLength(v0 as usize) };
-            }
-            status
-        }
-        DomainKind::TileLength => {
-            unsafe { *output.cast::<IndexDomain>() = IndexDomain::TileLength };
-            ReadStatus::Success
-        }
-        DomainKind::View => {
-            let mut v0: [NumericIdentity; 3] = Default::default();
-            let status =
-                unsafe { read_payload_view_identities(bytes, position, ptr::from_mut(&mut v0)) };
-            if status == ReadStatus::Success {
-                unsafe {
-                    *output.cast::<IndexDomain>() =
-                        IndexDomain::View(v0.map(NativeValue::from_frame))
-                };
-            }
-            status
-        }
-        DomainKind::ViewLength => {
-            let mut v0: [NumericIdentity; 3] = Default::default();
-            let status =
-                unsafe { read_payload_view_identities(bytes, position, ptr::from_mut(&mut v0)) };
-            if status == ReadStatus::Success {
-                unsafe {
-                    *output.cast::<IndexDomain>() =
-                        IndexDomain::ViewLength(v0.map(NativeValue::from_frame))
-                };
-            }
-            status
-        }
-        DomainKind::ApplicationData => {
-            let mut v0: NumericIdentity = Default::default();
-            let status = unsafe { read_identity(bytes, position, ptr::from_mut(&mut v0)) };
-            if status == ReadStatus::Success {
-                unsafe {
-                    *output.cast::<IndexDomain>() =
-                        IndexDomain::ApplicationData(ValueIdentity::from_frame(v0))
-                };
-            }
-            status
-        }
-        DomainKind::ApplicationLength => {
-            let mut v0: NumericIdentity = Default::default();
-            let status = unsafe { read_identity(bytes, position, ptr::from_mut(&mut v0)) };
-            if status == ReadStatus::Success {
-                unsafe {
-                    *output.cast::<IndexDomain>() =
-                        IndexDomain::ApplicationLength(ValueIdentity::from_frame(v0))
-                };
-            }
-            status
-        }
-        DomainKind::Upper => {
-            let mut v0: NumericIdentity = Default::default();
-            let mut v1: u32 = Default::default();
-            let status = unsafe {
-                read_payload_identity_distance(
-                    bytes,
-                    position,
-                    ptr::from_mut(&mut v0),
-                    ptr::from_mut(&mut v1),
-                )
-            };
-            if status == ReadStatus::Success {
-                unsafe {
-                    *output.cast::<IndexDomain>() =
-                        IndexDomain::Upper(ValueIdentity::from_frame(v0), v1)
-                };
-            }
-            status
-        }
-        DomainKind::Room => {
-            let mut v0: NumericIdentity = Default::default();
-            let status = unsafe { read_identity(bytes, position, ptr::from_mut(&mut v0)) };
-            if status == ReadStatus::Success {
-                unsafe {
-                    *output.cast::<IndexDomain>() = IndexDomain::Room(ValueIdentity::from_frame(v0))
-                };
-            }
-            status
-        }
-        DomainKind::Sum => {
-            let mut v0: NumericIdentity = Default::default();
-            let mut v1: NumericIdentity = Default::default();
-            let status = unsafe {
-                read_payload_identity_pair(
-                    bytes,
-                    position,
-                    ptr::from_mut(&mut v0),
-                    ptr::from_mut(&mut v1),
-                )
-            };
-            if status == ReadStatus::Success {
-                unsafe {
-                    *output.cast::<IndexDomain>() = IndexDomain::Sum(
-                        ValueIdentity::from_frame(v0),
-                        ValueIdentity::from_frame(v1),
-                    )
-                };
-            }
-            status
-        }
-        DomainKind::Shifted => {
-            let mut v0: NumericIdentity = Default::default();
-            let mut v1: NumericIdentity = Default::default();
-            let mut v2: u32 = Default::default();
-            let status = unsafe {
-                read_payload_shifted_identities(
-                    bytes,
-                    position,
-                    ptr::from_mut(&mut v0),
-                    ptr::from_mut(&mut v1),
-                    ptr::from_mut(&mut v2),
-                )
-            };
-            if status == ReadStatus::Success {
-                unsafe {
-                    *output.cast::<IndexDomain>() = IndexDomain::Shifted(
-                        ValueIdentity::from_frame(v0),
-                        ValueIdentity::from_frame(v1),
-                        v2,
-                    )
-                };
-            }
-            status
-        }
-        DomainKind::Offset => {
-            let mut v0: NumericIdentity = Default::default();
-            let mut v1: u32 = Default::default();
-            let status = unsafe {
-                read_payload_identity_distance(
-                    bytes,
-                    position,
-                    ptr::from_mut(&mut v0),
-                    ptr::from_mut(&mut v1),
-                )
-            };
-            if status == ReadStatus::Success {
-                unsafe {
-                    *output.cast::<IndexDomain>() =
-                        IndexDomain::Offset(ValueIdentity::from_frame(v0), v1)
-                };
-            }
-            status
-        }
-        DomainKind::Computed => {
-            let mut v0: NumericExpression = Default::default();
-            let status = unsafe { read_expression(bytes, position, ptr::from_mut(&mut v0)) };
-            if status == ReadStatus::Success {
-                unsafe {
-                    *output.cast::<IndexDomain>() =
-                        IndexDomain::Computed(IntegerExpression::from_frame(v0))
-                };
-            }
-            status
-        }
-        DomainKind::Lower => {
-            let mut v0: NumericIdentity = Default::default();
-            let mut v1: u32 = Default::default();
-            let status = unsafe {
-                read_payload_identity_distance(
-                    bytes,
-                    position,
-                    ptr::from_mut(&mut v0),
-                    ptr::from_mut(&mut v1),
-                )
-            };
-            if status == ReadStatus::Success {
-                unsafe {
-                    *output.cast::<IndexDomain>() =
-                        IndexDomain::Lower(ValueIdentity::from_frame(v0), v1)
-                };
-            }
-            status
-        }
-        DomainKind::CommonRange => {
-            let mut v0: NumericIdentity = Default::default();
-            let mut v1: ScalarTag = Default::default();
-            let mut v2: ScalarTag = Default::default();
-            let mut v3: ScalarTag = Default::default();
-            let mut v4: ScalarTag = Default::default();
-            let status = unsafe {
-                read_payload_common_range(
-                    bytes,
-                    position,
-                    ptr::from_mut(&mut v0),
-                    ptr::from_mut(&mut v1),
-                    ptr::from_mut(&mut v2),
-                    ptr::from_mut(&mut v3),
-                    ptr::from_mut(&mut v4),
-                )
-            };
-            if status == ReadStatus::Success {
-                unsafe {
-                    *output.cast::<IndexDomain>() = IndexDomain::CommonRange(
-                        ValueIdentity::from_frame(v0),
-                        Scalar::from_frame(v1),
-                        Scalar::from_frame(v2),
-                        Scalar::from_frame(v3),
-                        Scalar::from_frame(v4),
-                    )
-                };
-            }
-            status
-        }
-        DomainKind::KnownBits => {
-            let mut v0: ScalarTag = Default::default();
-            let mut v1: u64 = Default::default();
-            let mut v2: u64 = Default::default();
-            let status = unsafe {
-                read_payload_known_bits(
-                    bytes,
-                    position,
-                    ptr::from_mut(&mut v0),
-                    ptr::from_mut(&mut v1),
-                    ptr::from_mut(&mut v2),
-                )
-            };
-            if status == ReadStatus::Success {
-                unsafe {
-                    *output.cast::<IndexDomain>() =
-                        IndexDomain::KnownBits(Scalar::from_frame(v0), v1, v2)
-                };
-            }
-            status
-        }
-        DomainKind::Floating => {
-            let mut v0: NumericFloating = Default::default();
-            let status = unsafe { read_floating(bytes, position, ptr::from_mut(&mut v0)) };
-            if status == ReadStatus::Success {
-                unsafe {
-                    *output.cast::<IndexDomain>() =
-                        IndexDomain::Floating(FloatingBound::from_frame(v0))
-                };
-            }
-            status
-        }
-    }
-}
 pub(super) mod conditions;
 
 // Physical construction for the original public contract wire.

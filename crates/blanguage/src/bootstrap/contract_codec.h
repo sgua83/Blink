@@ -16,16 +16,16 @@ struct NumericInterval { u64 lower; u64 upper; };
 
 struct RangeWriter { cfn<void,address,address,u64> append; cfn<NumericInterval,address> ensures memory(read) interval; };
 
-struct DomainFields {DomainKind kind; address first; address second; address third; u64 ordinal; u32 distance; array<ScalarTag,4> scalars; u64 mask; u64 bits; address expression; address floating;};
-
 struct NumericWriter {
- cfn<void,address,address,u64> append;
- cfn<NumericExpression,address> ensures memory(read) expression;
- cfn<NumericFloating,address> ensures memory(read) floating;
- cfn<DomainFields,address> ensures memory(read) domain;
+    cfn<void,address,address,u64> append;
+    cfn<NumericExpression,address> ensures memory(read) expression;
+    cfn<NumericFloating,address> ensures memory(read) floating;
 };
 
-struct NumericReader {address context;cfn<ReadStatus,address,address,DomainKind> domain;};
+struct NumericReader {
+    cfn<void,NumericExpression,address> expression;
+    cfn<void,NumericFloating,address> floating;
+};
 
 enum NodeKind:u32 { Impossible=0; Facts=1; Both=2; Either=3; };
 
@@ -579,29 +579,13 @@ extern "C" void numeric_write_ranges(Span values,address output,RangeWriter host
 
 extern "C" ReadStatus numeric_read_ranges(Bytes input,inout u64 position,address output,cfn<void,address,u64,u64> push) on cpu requires nonzero(push);
 
-extern "C" void numeric_write_domain(address source,address output,NumericWriter host) on cpu requires nonzero(host.append) requires nonzero(host.expression) requires nonzero(host.floating) requires nonzero(host.domain);
+extern "C" void numeric_write_domain(address source,address output,NumericWriter host) on cpu requires nonzero(host.append) requires nonzero(host.expression) requires nonzero(host.floating);
 
-extern "C" ReadStatus numeric_read_domain(Bytes input,inout u64 position,address output,NumericReader host) on cpu requires nonzero(host.domain);
+extern "C" ReadStatus numeric_read_domain(Bytes input,inout u64 position,address output,NumericReader host) on cpu requires nonzero(host.expression) requires nonzero(host.floating);
 
-extern "C" void numeric_write_fact(address source,address output,NumericWriter host) on cpu requires nonzero(host.append) requires nonzero(host.expression) requires nonzero(host.floating) requires nonzero(host.domain);
+extern "C" void numeric_write_fact(address source,address output,NumericWriter host) on cpu requires nonzero(host.append) requires nonzero(host.expression) requires nonzero(host.floating);
 
-extern "C" ReadStatus numeric_read_fact(Bytes input,inout u64 position,address output,NumericReader host) on cpu requires nonzero(host.domain);
-
-extern "C" ReadStatus numeric_read_payload_ordinal(Bytes input,inout u64 position,inout u64 field0) on cpu;
-
-extern "C" ReadStatus numeric_read_payload_count(Bytes input,inout u64 position,inout u32 field0) on cpu;
-
-extern "C" ReadStatus numeric_read_payload_view_identities(Bytes input,inout u64 position,inout array<NumericIdentity,3> field0) on cpu;
-
-extern "C" ReadStatus numeric_read_payload_identity_distance(Bytes input,inout u64 position,inout NumericIdentity field0,inout u32 field1) on cpu;
-
-extern "C" ReadStatus numeric_read_payload_identity_pair(Bytes input,inout u64 position,inout NumericIdentity field0,inout NumericIdentity field1) on cpu;
-
-extern "C" ReadStatus numeric_read_payload_shifted_identities(Bytes input,inout u64 position,inout NumericIdentity field0,inout NumericIdentity field1,inout u32 field2) on cpu;
-
-extern "C" ReadStatus numeric_read_payload_common_range(Bytes input,inout u64 position,inout NumericIdentity field0,inout ScalarTag field1,inout ScalarTag field2,inout ScalarTag field3,inout ScalarTag field4) on cpu;
-
-extern "C" ReadStatus numeric_read_payload_known_bits(Bytes input,inout u64 position,inout ScalarTag field0,inout u64 field1,inout u64 field2) on cpu;
+extern "C" ReadStatus numeric_read_fact(Bytes input,inout u64 position,address output,NumericReader host) on cpu requires nonzero(host.expression) requires nonzero(host.floating);
 
 
 
@@ -617,7 +601,7 @@ extern "C" i32 compare_proof_condition(address left,address right,u64 left_count
  cfn<i32,address,address> compare_facts) on cpu
  requires nonzero(node) requires nonzero(root) requires nonzero(index) requires nonzero(compare_facts);
 
-extern "C" void write_fact_sequence(u64 count,address iterator,address output,NumericWriter host,cfn<address,address> next) on cpu requires nonzero(host.append) requires nonzero(host.expression) requires nonzero(host.floating) requires nonzero(host.domain) requires nonzero(next);
+extern "C" void write_fact_sequence(u64 count,address iterator,address output,NumericWriter host,cfn<address,address> next) on cpu requires nonzero(host.append) requires nonzero(host.expression) requires nonzero(host.floating) requires nonzero(next);
 
 extern "C" ReadStatus read_condition_nodes(Bytes input,inout u64 position,inout u32 present,address output,ConditionReader host) on cpu requires nonzero(host.impossible) requires nonzero(host.facts) requires nonzero(host.both) requires nonzero(host.either);
 
