@@ -1,6 +1,5 @@
 //! Synchronous projections of the original condition graph and containers.
 //! B owns canonical node IDs and the existing conditions wire grammar.
-use super::super::facts;
 use super::*;
 use crate::codec::{Result, Writer};
 use std::{ffi::c_void, ptr};
@@ -220,7 +219,6 @@ struct WriteHost {
     condition: unsafe extern "C" fn(*const c_void, usize) -> RootFields,
     node: unsafe extern "C" fn(*const c_void, usize) -> NodeFields,
     index: unsafe extern "C" fn(*const c_void, usize) -> usize,
-    facts: unsafe extern "C" fn(*const c_void, Slot),
 }
 unsafe extern "C" fn condition_at(context: *const c_void, index: usize) -> RootFields {
     unsafe { &*context.cast::<WriteContext<'_>>() }.conditions.at(index)
@@ -255,24 +253,6 @@ unsafe extern "C" fn node_at(context: *const c_void, index: usize) -> NodeFields
 unsafe extern "C" fn root_index(context: *const c_void, key: usize) -> usize {
     unsafe { &*context.cast::<WriteContext<'_>>() }.indices[&key]
 }
-unsafe extern "C" fn next_fact(context: Slot) -> *const c_void {
-    unsafe { &mut *context.cast::<facts::Iter<'_>>() }
-        .next()
-        .map_or(ptr::null(), |fact| ptr::from_ref(fact).cast())
-}
-unsafe extern "C" fn write_facts(source: *const c_void, output: Slot) {
-    let facts = unsafe { &*source.cast::<Facts>() };
-    let mut iter = facts.iter();
-    unsafe {
-        write_fact_sequence(
-            facts.len(),
-            slot(&mut iter),
-            output,
-            append,
-            next_fact,
-        )
-    };
-}
 unsafe extern "C" fn compare_facts(left: *const c_void, right: *const c_void) -> i32 {
     let a = unsafe { &*left.cast::<Facts>() };
     let b = unsafe { &*right.cast::<Facts>() };
@@ -282,8 +262,8 @@ unsafe extern "C" fn compare_facts(left: *const c_void, right: *const c_void) ->
     let mut a = Writer(Vec::new());
     let mut b = Writer(Vec::new());
     unsafe {
-        write_facts(left, slot(&mut a));
-        write_facts(right, slot(&mut b));
+        write_fact_sequence(left, slot(&mut a), append);
+        write_fact_sequence(right, slot(&mut b), append);
     }
     a.0.cmp(&b.0) as i32
 }
@@ -298,11 +278,9 @@ unsafe extern "C" {
     );
     #[link_name = "bootstrap.contract_codec::write_fact_sequence"]
     fn write_fact_sequence(
-        count: usize,
-        iterator: Slot,
+        facts: *const c_void,
         output: Slot,
         append: Append,
-        next: unsafe extern "C" fn(Slot) -> *const c_void,
     );
     #[link_name = "bootstrap.contract_codec::compare_proof_condition"]
     fn compare(
@@ -337,26 +315,15 @@ pub(in crate::check::bounds) fn write_borrowed(conditions:Conditions<'_>,writer:
                 condition: condition_at,
                 node: node_at,
                 index: root_index,
-                facts: write_facts,
             },
         )
     };
 }
 
-struct ReadContext {
-    input: Bytes,
-    position: *mut usize,
-}
-unsafe fn input(context: Slot) -> (Bytes, *mut usize) {
-    let context = unsafe { &*context.cast::<ReadContext>() };
-    (context.input, context.position)
-}
-
 #[repr(C)]
 struct ReadHost {
-    context: Slot,
     impossible: unsafe extern "C" fn(Slot),
-    facts: unsafe extern "C" fn(Slot, Slot) -> ReadStatus,
+    facts: unsafe extern "C" fn(Slot, Slot),
     both: unsafe extern "C" fn(Slot, usize, usize),
     either: unsafe extern "C" fn(Slot, usize, usize),
 }
@@ -369,25 +336,9 @@ unsafe extern "C" fn push_both(output: Slot, a: usize, b: usize) {
 unsafe extern "C" fn push_either(output: Slot, a: usize, b: usize) {
     unsafe { &mut *output.cast::<Vec<EncodedClause<Facts>>>() }.push(EncodedClause::Either(a, b));
 }
-unsafe extern "C" fn push_fact(context: Slot, output: Slot) -> ReadStatus {
-    let (bytes, position) = unsafe { input(context) };
-    let mut value = Fact::NonZero(ValueIdentity::TileLength);
-    let status = unsafe { read_fact(bytes, position, slot(&mut value)) };
-    if status == ReadStatus::Success {
-        unsafe { &mut *output.cast::<Facts>() }.insert(value);
-    }
-    status
-}
-unsafe extern "C" fn push_facts(context: Slot, output: Slot) -> ReadStatus {
-    let (bytes, position) = unsafe { input(context) };
-    let mut facts = Facts::new();
-    let status =
-        unsafe { read_fact_sequence(bytes, position, context, slot(&mut facts), push_fact) };
-    if status == ReadStatus::Success {
-        unsafe { &mut *output.cast::<Vec<EncodedClause<Facts>>>() }
-            .push(EncodedClause::Facts(facts));
-    }
-    status
+unsafe extern "C" fn take_facts(output: Slot, source: Slot) {
+    let facts = unsafe { source.cast::<Facts>().read() };
+    unsafe { &mut *output.cast::<Vec<EncodedClause<Facts>>>() }.push(EncodedClause::Facts(facts));
 }
 unsafe extern "C" fn push_root(output: Slot, present: u32, a: usize, b: usize) {
     unsafe { &mut *output.cast::<Vec<Option<[usize; 2]>>>() }
@@ -401,14 +352,6 @@ unsafe extern "C" {
         present: *mut u32,
         output: Slot,
         host: ReadHost,
-    ) -> ReadStatus;
-    #[link_name = "bootstrap.contract_codec::read_fact_sequence"]
-    fn read_fact_sequence(
-        input: Bytes,
-        position: *mut usize,
-        context: Slot,
-        output: Slot,
-        push: unsafe extern "C" fn(Slot, Slot) -> ReadStatus,
     ) -> ReadStatus;
     #[link_name = "bootstrap.contract_codec::read_condition_roots"]
     fn read_roots(
@@ -425,19 +368,8 @@ fn checked(status: ReadStatus) -> Result<()> {
     }
 }
 pub(in crate::check::bounds) unsafe fn read_borrowed(context:crate::codec::contracts::Slot)->Result<Vec<Option<Box<Condition>>>>{
-    let(bytes,position)=unsafe{crate::codec::contracts::input(context)};
-    let bytes=unsafe{std::slice::from_raw_parts(bytes.data,bytes.count)};
-    let position=unsafe{&mut *position};
+    let (bytes, position) = unsafe { contracts::input(context) };
     {
-        let bytes = Bytes {
-            data: bytes.as_ptr(),
-            count: bytes.len(),
-        };
-        let position = ptr::from_mut(position);
-        let mut context = ReadContext {
-            input: bytes,
-            position,
-        };
         let mut present = 0;
         let mut encoded = Vec::<EncodedClause<Facts>>::new();
         checked(unsafe {
@@ -447,9 +379,8 @@ pub(in crate::check::bounds) unsafe fn read_borrowed(context:crate::codec::contr
                 &mut present,
                 slot(&mut encoded),
                 ReadHost {
-                    context: slot(&mut context),
                     impossible: push_impossible,
-                    facts: push_facts,
+                    facts: take_facts,
                     both: push_both,
                     either: push_either,
                 },

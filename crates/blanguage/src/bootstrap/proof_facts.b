@@ -180,6 +180,16 @@ extern "C" void fact_tree_copy(address original, address output) on cpu {
     }
 }
 
+// The wire reader writes into the next real cell and publishes it by insert.
+address fact_tree_prepare_key(address owner) on cpu {
+    FactTree tree = unsafe_position<FactTree>(owner);
+    if (tree.capacity == tree.count) {
+        grow(owner,tree);
+        tree = unsafe_position<FactTree>(owner);
+    }
+    return payload(tree.records,tree.count + 1u64);
+}
+
 extern "C" u32 fact_tree_insert(address owner, address key) on cpu {
     FactTree tree = unsafe_position<FactTree>(owner);
     Search place = locate(tree.records,tree.root,key);
@@ -190,7 +200,8 @@ extern "C" u32 fact_tree_insert(address owner, address key) on cpu {
     }
     u64 fresh = tree.count + 1u64;
     unsafe_position<FactNode>(node(tree.records,fresh)) = FactNode(0u64,0u64,place.parent,1u64);
-    RtlMoveMemory(payload(tree.records,fresh),key,size_of<FactKey>());
+    address destination = payload(tree.records,fresh);
+    if (destination != key) { RtlMoveMemory(destination,key,size_of<FactKey>()); }
     if (place.parent == 0u64) {
         unsafe_position<FactTree>(owner).root = fresh;
     } else {

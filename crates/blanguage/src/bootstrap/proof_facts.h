@@ -6,6 +6,7 @@ struct FactBound { address key; u32 exclusive; };
 
 extern "C" void fact_tree_clear(address owner) on cpu;
 extern "C" void fact_tree_copy(address original, address output) on cpu;
+address fact_tree_prepare_key(address owner) on cpu;
 extern "C" u32 fact_tree_insert(address owner, address key) on cpu;
 extern "C" u32 fact_tree_remove(address owner, address key) on cpu;
 extern "C" u32 fact_tree_contains(address owner, address key) on cpu;

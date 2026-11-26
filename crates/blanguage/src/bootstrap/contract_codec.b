@@ -747,7 +747,7 @@ extern "C" void condition_node_ids(address context,CanonicalHost host,u32 keep_p
  }
 }
 
-extern "C" void write_proof_conditions(address context,u64 length,u64 count,address output,ConditionWriter host) on cpu requires nonzero(host.append) requires nonzero(host.condition) requires nonzero(host.node) requires nonzero(host.index) requires nonzero(host.facts) {
+extern "C" void write_proof_conditions(address context,u64 length,u64 count,address output,ConditionWriter host) on cpu requires nonzero(host.append) requires nonzero(host.condition) requires nonzero(host.node) requires nonzero(host.index) {
  u64 width=length;
  while(width!=0u64){RootFields last=host.condition(context,width-1u64);if(last.present!=0){break;}width-=1u64;}
  byte(width!=0u64?u8(1):u8(0),output,host.append);
@@ -757,7 +757,7 @@ extern "C" void write_proof_conditions(address context,u64 length,u64 count,addr
  while(index<count){
   NodeFields value=host.node(context,index);
   word(u32(value.kind),output,host.append);
-  if(value.kind==NodeKind::Facts){host.facts(value.facts,output);}
+  if(value.kind==NodeKind::Facts){write_fact_sequence(value.facts,output,host.append);}
   else if(value.kind==NodeKind::Both||value.kind==NodeKind::Either){
    wide(value.first,output,host.append);wide(value.second,output,host.append);
   }
@@ -810,16 +810,43 @@ extern "C" i32 compare_proof_condition(address left,address right,u64 left_count
  return compare_condition_index(index(left,a.second),index(right,b.second));
 }
 
-extern "C" void write_fact_sequence(u64 count,address iterator,address output,cfn<void,address,address,u64> append,cfn<address,address> next) on cpu requires nonzero(append) requires nonzero(next) {
- wide(count,output,append);u64 index=0u64;
- while(index<count){numeric_write_fact(next(iterator),output,append);index+=1u64;}
+extern "C" void write_fact_sequence(address facts,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
+    u64 count = unsafe_position<FactTree>(facts).count;
+    wide(count,output,append);
+    FactCursor cursor = fact_tree_cursor(facts);
+    u64 index = 0u64;
+    while (index < count) {
+        address key = fact_tree_next(facts,address_of(cursor),0);
+        numeric_write_fact(key,output,append);
+        index += 1u64;
+    }
 }
 
-extern "C" ReadStatus read_fact_sequence(Bytes input,inout u64 position,address context,address output,cfn<ReadStatus,address,address> push) on cpu requires nonzero(push) {
- ReadValue count=fixed_value(input,position,8);if(count.status!=ReadStatus::Success){return count.status;}
- u64 index=0u64;
- while(index<count.value){ReadStatus status=push(context,output);if(status!=ReadStatus::Success){return status;}index+=1u64;}
- return ReadStatus::Success;
+ReadStatus read_fact_sequence(Bytes input,inout u64 position,address output) on cpu {
+    ReadValue count = fixed_value(input,position,8);
+    if (count.status != ReadStatus::Success) { return count.status; }
+    u64 index = 0u64;
+    while (index < count.value) {
+        address key = fact_tree_prepare_key(output);
+        ReadStatus status = numeric_read_fact(input,position,key);
+        if (status != ReadStatus::Success) { return status; }
+        fact_tree_insert(output,key);
+        index += 1u64;
+    }
+    return ReadStatus::Success;
+}
+
+ReadStatus read_condition_facts(Bytes input,inout u64 position,address output,
+    cfn<void,address,address> take) on cpu requires nonzero(take) {
+    FactTree facts = FactTree(address(),0u64,0u64,0u64);
+    ReadStatus status = read_fact_sequence(input,position,address_of(facts));
+    if (status != ReadStatus::Success) {
+        fact_tree_clear(address_of(facts));
+        return status;
+    }
+    // The receiving encoded node takes the populated tree.
+    take(output,address_of(facts));
+    return ReadStatus::Success;
 }
 
 extern "C" ReadStatus read_condition_nodes(Bytes input,inout u64 position,inout u32 present,address output,ConditionReader host) on cpu requires nonzero(host.impossible) requires nonzero(host.facts) requires nonzero(host.both) requires nonzero(host.either) {
@@ -832,7 +859,7 @@ extern "C" ReadStatus read_condition_nodes(Bytes input,inout u64 position,inout 
  while(index<count.value){
   ReadValue tag=fixed_value(input,position,4);if(tag.status!=ReadStatus::Success){return tag.status;}
   if(tag.value==0u64){host.impossible(output);}
-  else if(tag.value==1u64){ReadStatus status=host.facts(host.context,output);if(status!=ReadStatus::Success){return status;}}
+  else if(tag.value==1u64){ReadStatus status=read_condition_facts(input,position,output,host.facts);if(status!=ReadStatus::Success){return status;}}
   else if(tag.value==2u64||tag.value==3u64){
    ReadValue a=fixed_value(input,position,8);if(a.status!=ReadStatus::Success){return a.status;}
    ReadValue b=fixed_value(input,position,8);if(b.status!=ReadStatus::Success){return b.status;}

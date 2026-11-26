@@ -1,6 +1,7 @@
 module bootstrap.contract_codec;
 import codec.value_format;
 import bootstrap.fact_key;
+import bootstrap.proof_facts;
 
 import codec.scalar_ranges;
 import bootstrap.scalar_fold;
@@ -31,13 +32,11 @@ struct ConditionWriter {
  cfn<RootFields,address,u64> ensures memory(read) condition;
  cfn<NodeFields,address,u64> ensures memory(read) node;
  cfn<u64,address,u64> ensures memory(read) index;
- cfn<void,address,address> facts;
 };
 
 struct ConditionReader {
- address context;
  cfn<void,address> impossible;
- cfn<ReadStatus,address,address> facts;
+ cfn<void,address,address> facts;
  cfn<void,address,u64,u64> both;
  cfn<void,address,u64,u64> either;
 };
@@ -556,18 +555,16 @@ extern "C" ReadStatus numeric_read_ranges(Bytes input,inout u64 position,address
 
 extern "C" void condition_node_ids(address context,CanonicalHost host,u32 keep_pairs) on cpu requires nonzero(host.next) requires nonzero(host.index) requires nonzero(host.len) requires nonzero(host.intern) requires nonzero(host.record) requires nonzero(host.bind);
 
-extern "C" void write_proof_conditions(address context,u64 length,u64 count,address output,ConditionWriter host) on cpu requires nonzero(host.append) requires nonzero(host.condition) requires nonzero(host.node) requires nonzero(host.index) requires nonzero(host.facts);
+extern "C" void write_proof_conditions(address context,u64 length,u64 count,address output,ConditionWriter host) on cpu requires nonzero(host.append) requires nonzero(host.condition) requires nonzero(host.node) requires nonzero(host.index);
 
 extern "C" i32 compare_proof_condition(address left,address right,u64 left_count,u64 right_count,
  cfn<NodeFields,address,u64> node,cfn<RootFields,address,u64> root,cfn<u64,address,u64> index,
  cfn<i32,address,address> compare_facts) on cpu
  requires nonzero(node) requires nonzero(root) requires nonzero(index) requires nonzero(compare_facts);
 
-extern "C" void write_fact_sequence(u64 count,address iterator,address output,cfn<void,address,address,u64> append,cfn<address,address> next) on cpu requires nonzero(append) requires nonzero(next);
+extern "C" void write_fact_sequence(address facts,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
 
 extern "C" ReadStatus read_condition_nodes(Bytes input,inout u64 position,inout u32 present,address output,ConditionReader host) on cpu requires nonzero(host.impossible) requires nonzero(host.facts) requires nonzero(host.both) requires nonzero(host.either);
-
-extern "C" ReadStatus read_fact_sequence(Bytes input,inout u64 position,address context,address output,cfn<ReadStatus,address,address> push) on cpu requires nonzero(push);
 
 extern "C" ReadStatus read_condition_roots(Bytes input,inout u64 position,address output,cfn<void,address,u32,u64,u64> push) on cpu requires nonzero(push);
 
