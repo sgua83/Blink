@@ -343,6 +343,9 @@ unsafe extern "C" {
     #[link_name = "bootstrap.object_read::object_sections"]
     fn object_sections(input: ReadBytes, headers: ReadBytes, rows: *mut ObjectSection, loadable: *mut u8,
         parts: &mut ObjectParts, table: &mut ReadSymbols, context: *mut c_void, validate: ValidateObjectName) -> ObjectScanStatus;
+    #[link_name = "bootstrap.object_read::object_metadata_sections"]
+    fn object_metadata_sections(input: ReadBytes, headers: ReadBytes, include_runtime: u32,
+        parts: &mut ObjectParts, table: &mut ReadSymbols, context: *mut c_void, validate: ValidateObjectName) -> ObjectScanStatus;
     #[link_name = "bootstrap.object_read::object_symbols"]
     fn object_symbols<'a>(input: ReadBytes, table: ReadSymbols, rows: *mut ObjectSymbol<'a>,
         definitions: *mut SectionDefinition, definition_count: usize, context: *mut c_void,
@@ -1101,16 +1104,25 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         Ok(parts)
     }
 
-    fn sections(&self, materialize: bool) -> Result<(ObjectParts, Vec<ObjectSection>, ReadSymbols)> {
+    fn sections(&self) -> Result<(ObjectParts, Vec<ObjectSection>, ReadSymbols)> {
         let count = self.headers.len() / 40;
-        let mut rows = Vec::with_capacity(if materialize { count } else { 0 });
-        let output = if materialize { rows.as_mut_ptr() } else { std::ptr::null_mut() };
+        let mut rows = Vec::with_capacity(count);
         let mut table = ReadSymbols::default();
-        let parts = self.read_sections(output, std::ptr::null_mut(), &mut table)?;
-        if materialize {
-            unsafe { rows.set_len(count) };
-        }
+        let parts = self.read_sections(rows.as_mut_ptr(), std::ptr::null_mut(), &mut table)?;
+        unsafe { rows.set_len(count) };
         Ok((parts, rows, table))
+    }
+
+    fn metadata_sections(&self, include_runtime: bool) -> Result<(ObjectParts, ReadSymbols)> {
+        let mut parts = ObjectParts::default();
+        let mut table = ReadSymbols::default();
+        read_object_names(|context| unsafe {
+            object_metadata_sections(
+                ReadBytes::new(self.bytes.as_ref()), ReadBytes::new(self.headers), u32::from(include_runtime),
+                &mut parts, &mut table, context, validate_object_name,
+            )
+        })?;
+        Ok((parts, table))
     }
     fn metadata(&self, bytes: ReadBytes) -> Result<&'a [u8]> {
         // B borrows this range from the same validated section rows.
@@ -1185,7 +1197,7 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
     pub(super) fn append_host_members(
         &self, name: &'a str, imports: &mut Vec<ImportKey<'a>>, members: &mut Vec<HostMember<'a>>,
     ) -> Result<bool> {
-        let (parts, raw, table) = self.sections(true)?;
+        let (parts, raw, table) = self.sections()?;
         if !self.is_module(parts.metadata)? { return Ok(false); }
         let mut definitions = vec![SectionDefinition::default(); self.headers.len() / 40];
         let (symbols, offset) = self.symbol_rows(&mut definitions, table)?;
@@ -1224,7 +1236,7 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
 
     /// 从库成员借用公开接口与合同。完整对象负责代码、重定位和诊断材料。
     pub(crate) fn interface(&self) -> Result<(String, Kind, BTreeMap<String, Vec<u8>>)> {
-        let (parts, _, table) = self.sections(false)?;
+        let (parts, table) = self.metadata_sections(false)?;
         let mut names = MetadataNames::default();
         let metadata = Metadata::read(self.metadata(parts.metadata)?, names.sink(REQUIREMENTS))?;
         let mut output = MetadataOutput { names, ..Default::default() };
@@ -1265,7 +1277,7 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
 impl<'a> Reader<'a, super::ObjectBytes> {
     /// 借用判等所需的名称，等采用后再恢复完整对象。
     pub(crate) fn reuse_inputs(self) -> Result<ReuseInputs<'a>> {
-        let (parts, _, table) = self.sections(false)?;
+        let (parts, table) = self.metadata_sections(true)?;
         let metadata = Metadata::read(self.metadata(parts.metadata)?, MetadataNames::default().sink(0))?;
         let mut cursor = metadata.bindings_cursor();
         let mut names = BTreeSet::new();

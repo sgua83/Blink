@@ -25,23 +25,33 @@ address row_address(ObjectRows rows,u64 index) on cpu {
 ObjectSection row_at(ObjectRows rows,u64 index) on cpu {
     return unsafe_position<ObjectSection>(row_address(rows,index));
 }
+enum SectionKind : u32 { Code = 0; Metadata = 1; Runtime = 2; Build = 3; };
+SectionKind section_kind(ReadBytes name) on cpu {
+    array<u8,7> meta = array<u8,7>(u8(46),u8(98),u8(108),u8(109),u8(101),u8(116),u8(97));
+    array<u8,5> runtime = array<u8,5>(u8(46),u8(98),u8(108),u8(114),u8(116));
+    array<u8,8> build = array<u8,8>(u8(46),u8(98),u8(108),u8(98),u8(117),u8(105),u8(108),u8(100));
+    if (matches<7>(name, meta, true)) { return SectionKind::Metadata; }
+    if (matches<5>(name, runtime, true)) { return SectionKind::Runtime; }
+    if (matches<8>(name, build, true)) { return SectionKind::Build; }
+    return SectionKind::Code;
+}
 ObjectSectionResult logical_section(ReadBytes input, ReadBytes headers, u64 index,
     inout u64 mapped, inout ObjectParts parts, inout ReadSymbols table) on cpu {
-    ReadSection row=resolved_section_with_symbols(input,headers,index,table);
-    ObjectSection value=ObjectSection(row.name,row.bytes,row.flags,row.relocations,row.relocation_count,0u64,row.zero_fill,unsafe_address(0u64),0u64);
-    if(row.error!=0){return ObjectSectionResult(value,row.error);}
-    array<u8,7> meta=array<u8,7>(u8(46),u8(98),u8(108),u8(109),u8(101),u8(116),u8(97));array<u8,5> runtime=array<u8,5>(u8(46),u8(98),u8(108),u8(114),u8(116));array<u8,8> build=array<u8,8>(u8(46),u8(98),u8(108),u8(98),u8(117),u8(105),u8(108),u8(100));
-    if (matches<7>(row.name,meta,true)) {
+    ReadSection row = resolved_section_with_symbols(input, headers, index, table);
+    ObjectSection value = ObjectSection(row.name,row.bytes,row.flags,row.relocations,row.relocation_count,0u64,row.zero_fill,unsafe_address(0u64),0u64);
+    if (row.error != 0) { return ObjectSectionResult(value, row.error); }
+    let kind = section_kind(row.name);
+    if (kind == SectionKind::Metadata) {
         if (address_bits(parts.metadata.bytes) == 0u64) { parts.metadata = row.bytes; }
-    } else if (matches<5>(row.name,runtime,true)) {
+    } else if (kind == SectionKind::Runtime) {
         if (address_bits(parts.runtime.bytes) == 0u64) { parts.runtime = row.bytes; }
-    } else if (matches<8>(row.name,build,true)) {
+    } else if (kind == SectionKind::Build) {
         if (parts.build_section == 0u64) { parts.build_section = index + 1u64; }
     } else {
         mapped += 1u64;
         value.mapped = mapped;
     }
-    return ObjectSectionResult(value,0);
+    return ObjectSectionResult(value, 0);
 }
 address definition_address(address definitions,u64 index) on cpu {
     return unsafe_address(address_bits(definitions)+index*4u64);
@@ -81,6 +91,29 @@ extern "C" ObjectScanStatus object_sections(ReadBytes input, ReadBytes headers, 
         } else if (keep_loadable) {
             address slot = unsafe_address(address_bits(loadable) + index);
             unsafe_position<u8>(slot) = section.value.mapped != 0u64 ? u8(1) : u8(0);
+        }
+        index += 1u64;
+    }
+    return ObjectScanStatus(0, 1);
+}
+
+extern "C" ObjectScanStatus object_metadata_sections(ReadBytes input, ReadBytes headers, u32 include_runtime,
+    inout ObjectParts parts, inout ReadSymbols table, address context, cfn<u32,address,ReadBytes> validate) on cpu
+    requires nonzero(validate) {
+    u64 index = 0u64;
+    u64 count = headers.length / 40u64;
+    while (index < count) {
+        let name = section_name_with_symbols(input, headers, index, table);
+        if (name.error != 0) { return ObjectScanStatus(name.error, 0); }
+        if (validate(context, name.bytes) == 0) { return ObjectScanStatus(0, 0); }
+        let kind = section_kind(name.bytes);
+        bool metadata = kind == SectionKind::Metadata;
+        if ((metadata && address_bits(parts.metadata.bytes) == 0u64)
+            || (include_runtime != 0 && kind == SectionKind::Runtime && address_bits(parts.runtime.bytes) == 0u64)) {
+            let row = section(input, headers, index);
+            if (row.error != 0) { return ObjectScanStatus(row.error, 0); }
+            if (metadata) { parts.metadata = row.bytes; }
+            else { parts.runtime = row.bytes; }
         }
         index += 1u64;
     }

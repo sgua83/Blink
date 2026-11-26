@@ -27,6 +27,8 @@ extern "C" ReadRelocation relocation(ReadBytes input,u64 offset,u64 index) on cp
 extern "C" ReadSection resolved_section(ReadBytes input,ReadBytes headers,u64 index) on cpu;
 // Start with an empty table or the symbol table already read from this input.
 extern "C" ReadSection resolved_section_with_symbols(ReadBytes input,ReadBytes headers,u64 index,inout ReadSymbols table) on cpu;
+extern "C" ReadRange section_name_with_symbols(ReadBytes input, ReadBytes headers, u64 index,
+    inout ReadSymbols table) on cpu;
 
 // Zero indicates success. Other results distinguish an unsupported kind,
 // a field beyond the section, and a value beyond the field.

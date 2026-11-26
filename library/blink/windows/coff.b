@@ -102,26 +102,35 @@ extern "C" ReadSection section(ReadBytes input,ReadBytes headers,u64 index) on c
     return ReadSection(inline_name(bytes),body.bytes,flags,little(bytes,24u64,4u64),
         little(bytes,32u64,2u64),zero_fill,body.error);
 }
-extern "C" ReadSection resolved_section_with_symbols(ReadBytes input,ReadBytes headers,u64 index,inout ReadSymbols table) on cpu {
-    ReadSection row=section(input,headers,index);
-    ReadBytes field=row.name;
-    if(row.error!=0 || field.length==0u64 || little(field.bytes,0u64,1u64)!=47u64){return row;}
+ReadRange resolve_section_name(ReadBytes input, ReadBytes field, inout ReadSymbols table) on cpu {
+    if (field.length == 0u64 || little(field.bytes, 0u64, 1u64) != 47u64) {
+        return ReadRange(field, 0);
+    }
 
     // The fixed-width field holds a slash and at most seven decimal digits.
-    u64 begin=0u64;
-    u64 i=1u64;
-    while(i<field.length){
-        u64 digit=little(field.bytes,i,1u64);
-        if(digit<48u64 || digit>57u64){row.error=4;return row;}
-        begin=begin*10u64+(digit-48u64);
-        i+=1u64;
+    u64 begin = 0u64;
+    u64 i = 1u64;
+    while (i < field.length) {
+        u64 digit = little(field.bytes, i, 1u64);
+        if (digit < 48u64 || digit > 57u64) { return ReadRange(field, 4); }
+        begin = begin * 10u64 + (digit - 48u64);
+        i += 1u64;
     }
-    if(begin<4u64){row.error=4;return row;}
-    if(address_bits(table.strings.bytes)==0u64){table=symbols(input);}
-    if(table.error!=0){row.error=table.error;return row;}
-    ReadRange resolved=string_name(table.strings,begin);
-    row.name=resolved.bytes;
-    row.error=resolved.error;
+    if (begin < 4u64) { return ReadRange(field, 4); }
+    if (address_bits(table.strings.bytes) == 0u64) { table = symbols(input); }
+    if (table.error != 0) { return ReadRange(field, table.error); }
+    return string_name(table.strings, begin);
+}
+extern "C" ReadRange section_name_with_symbols(ReadBytes input, ReadBytes headers, u64 index,
+    inout ReadSymbols table) on cpu {
+    return resolve_section_name(input, inline_name(at(headers.bytes, index * 40u64)), table);
+}
+extern "C" ReadSection resolved_section_with_symbols(ReadBytes input,ReadBytes headers,u64 index,inout ReadSymbols table) on cpu {
+    ReadSection row = section(input, headers, index);
+    if (row.error != 0) { return row; }
+    let name = resolve_section_name(input, row.name, table);
+    row.name = name.bytes;
+    row.error = name.error;
     return row;
 }
 extern "C" ReadSection resolved_section(ReadBytes input,ReadBytes headers,u64 index) on cpu {
