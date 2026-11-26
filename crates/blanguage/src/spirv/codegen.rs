@@ -1010,13 +1010,6 @@ unsafe extern "C" {
     fn encode_raw_bits(scalar: ScalarCode, value: u32, host: MemoryHost) -> u32;
     #[link_name = "bootstrap.spirv_envelope::page_address"]
     fn page_address(input: PageAddress, step: u32, body: *mut u32) -> PageAddressResult;
-    #[link_name = "bootstrap.spirv_envelope::summary_addresses"]
-    fn emit_summary_addresses(input: PageAddress, step: u32, pointers: *mut u32, count: u32,
-        body: *mut u32) -> PayloadWrite;
-    #[link_name = "bootstrap.spirv_envelope::read_summary_words"]
-    fn read_summary_words(body: *mut u32, type_id: u32, first: u32, pointers: *const u32, count: u32) -> u64;
-    #[link_name = "bootstrap.spirv_envelope::write_summary_words"]
-    fn write_summary_words(body: *mut u32, pointers: *const u32, values: *const u32, count: u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::emit_payload_load"]
     fn emit_payload_load(input: PayloadShape, operands: *const u32, result: u32, host: MemoryHost) -> u32;
     #[link_name = "bootstrap.spirv_envelope::pack_record"]
@@ -1028,8 +1021,6 @@ unsafe extern "C" {
     ) -> ControlWords;
     #[link_name = "bootstrap.spirv_envelope::end_shader_body"]
     fn end_shader_body(body: *mut u32) -> ControlWords;
-    #[link_name = "bootstrap.spirv_envelope::open_selection"]
-    fn open_selection(merge: u32, condition: u32, yes: u32, no: u32, body: *mut u32) -> ControlWords;
     #[link_name = "bootstrap.spirv_envelope::plain_load"]
     fn plain_load(body: *mut u32, at: u64, type_id: u32, result: u32, pointer: u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::plain_store"]
@@ -1038,6 +1029,10 @@ unsafe extern "C" {
     fn aligned_load(body: *mut u32, at: u64, type_id: u32, result: u32, pointer: u32, alignment: u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::read_shader_index"]
     fn read_shader_index(vector_type: u32, uint_type: u32, input: u32, global: u32, x: u32, body: *mut u32) -> u64;
+    #[link_name = "bootstrap.spirv_envelope::open_selection"]
+    fn open_selection(merge: u32, condition: u32, yes: u32, no: u32, body: *mut u32) -> ControlWords;
+    #[link_name = "bootstrap.spirv_envelope::next_control_block"]
+    fn next_control_block(target: u32, label: u32, reaches: u32, body: *mut u32) -> ControlWords;
     #[link_name = "bootstrap.spirv_envelope::unpack_summary_word"]
     fn unpack_summary_word(type_id: u32, result: u32, word: u32, shift: u32, body: *mut u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::declare_dispatch_continuation"]
@@ -1045,8 +1040,6 @@ unsafe extern "C" {
         definitions: *mut u32, decorations: *mut u32);
     #[link_name = "bootstrap.spirv_envelope::dispatch_count_index"]
     fn dispatch_count_index(push: DispatchPush, word: u32, field: u32, first: u32, body: *mut u32) -> PayloadRead;
-    #[link_name = "bootstrap.spirv_envelope::next_control_block"]
-    fn next_control_block(target: u32, label: u32, reaches: u32, body: *mut u32) -> ControlWords;
     #[link_name = "bootstrap.spirv_envelope::emit_instruction_block"]
     fn emit_instruction_block(code: Span, targets: ControlTargets, host: StructuredHost, emit: BlockHost) -> BlockFlow;
     #[link_name = "bootstrap.spirv_envelope::lower_return_loop"]
@@ -1427,30 +1420,6 @@ impl Emitter<'_> {
     fn store_pointer(&mut self, pointer: u32, value: u32) {
         self.emit_body(3, |body| unsafe { plain_store(body, 0, pointer, value) });
     }
-    fn read_summary_words(&mut self, pointers: &[u32]) -> Vec<u32> {
-        let at = self.body.len();
-        self.body.reserve(6 * pointers.len());
-        let first = self.next;
-        self.next += pointers.len() as u32;
-        unsafe {
-            let words = read_summary_words(self.body.as_mut_ptr().add(at),
-                self.types[&Scalar::U32], first, pointers.as_ptr(), pointers.len() as u32);
-            self.body.set_len(at + words as usize);
-        }
-        (first..self.next).collect()
-    }
-
-    fn write_summary_words(&mut self, pointers: &[u32], values: &[u32]) {
-        let count = pointers.len().min(values.len());
-        let at = self.body.len();
-        self.body.reserve(5 * count);
-        unsafe {
-            let words = write_summary_words(self.body.as_mut_ptr().add(at),
-                pointers.as_ptr(), values.as_ptr(), count as u32);
-            self.body.set_len(at + words as usize);
-        }
-    }
-
     fn workgroup_barrier(&mut self, memory_semantics: u32) {
         let scope = self.constant(Scalar::U32, 2);
         let semantics = self.constant(Scalar::U32, memory_semantics);
@@ -1487,25 +1456,6 @@ impl Emitter<'_> {
 
     fn address_scalar(&mut self, unit: Scalar, binding: usize, index: u32, word: u32) -> u32 {
         self.page_address(unit, self.buffers[binding], index, word, 0)
-    }
-
-    fn summary_addresses(&mut self, count: usize, binding: usize, index: u32) -> Vec<u32> {
-        if count == 0 {
-            return Vec::new();
-        }
-        let step = if count > 1 { self.constant(Scalar::U64, 4) } else { 0 };
-        let input = self.page_input(Scalar::U32, self.buffers[binding], index, Some(0), 0);
-        let at = self.body.len();
-        self.body.reserve(109 + 9 * (count - 1));
-        let mut pointers = Vec::with_capacity(count);
-        unsafe {
-            let emitted = emit_summary_addresses(input, step, pointers.as_mut_ptr(),
-                count as u32, self.body.as_mut_ptr().add(at));
-            self.body.set_len(at + emitted.words as usize);
-            self.next = emitted.next;
-            pointers.set_len(count);
-        }
-        pointers
     }
 
     fn page_address(&mut self, unit: Scalar, descriptor: u32, index: u32, word: u32, extra: u32) -> u32 {
@@ -1943,22 +1893,9 @@ impl ShaderBodyEmission<'_, '_> {
                 }
             }
             BodyStep::SegmentedRoot => e.segmented_root_add(unsafe { &*operation.cast::<Scan>() }),
-            BodyStep::CustomSegmented => {
-                e.custom_segmented_reduce(
-                    unsafe { &*operation.cast::<CustomSegmentedReduction>() }, self.kernel.unwrap(),
-                    self.pass, self.single_group, local, shared, pointer, active, count,
-                )?;
-            }
-            BodyStep::CustomScan => {
-                e.custom_scan(unsafe { &*operation.cast::<CustomScan>() }, self.kernel.unwrap(),
-                    flag, local, shared, pointer, active, count)?;
-            }
-            BodyStep::CustomScanAdd => {
-                e.custom_scan_add(unsafe { &*operation.cast::<CustomScan>() }, self.kernel.unwrap(), flag, active)?;
-            }
-            BodyStep::CustomReduce => {
-                e.custom_reduce(unsafe { &*operation.cast::<CustomReduction>() }, self.kernel.unwrap(),
-                    flag, local, shared, pointer, active, count)?;
+            BodyStep::CustomSegmented | BodyStep::CustomScan | BodyStep::CustomScanAdd | BodyStep::CustomReduce => {
+                let dispatch = reduce::NumericDispatch { lane: local, shared, pointer, active, count, before: e.current_label };
+                e.custom_collective(step, operation, self.kernel.unwrap(), self.pass, self.single_group, dispatch)?;
             }
             BodyStep::Reduce => e.reduce(
                 unsafe { &*operation.cast::<ReductionSpec>() }, flag, local, shared, pointer, active, count,

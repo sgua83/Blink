@@ -334,14 +334,11 @@ extern "C" PayloadWrite pack_record(PackingHost host, u32 word_type, u32 zero, u
     requires nonzero(host.field) requires nonzero(host.constant);
 // The original paged record contains count consecutive u32 words. The caller
 // provides count pointer slots; step is the constant ID for a four-byte advance.
-extern "C" PayloadWrite summary_addresses(PageAddress input, u32 step, address pointers, u32 count, address body) on cpu;
 // Operands are word IDs in Words mode and pointer IDs for storage accesses.
 // Shifts contains the original constant ID for each nonzero word position.
 // The emitter supplies count operand slots and 20*count (read) or 14*count
 // (write) body words. Only a Words write uses the output-ID buffer.
 // Summary cells are consecutive u32 result IDs or borrowed u32 value IDs.
-extern "C" u64 read_summary_words(address body, u32 type_id, u32 first, address pointers, u32 count) on cpu;
-extern "C" u64 write_summary_words(address body, address pointers, address values, u32 count) on cpu;
 struct PayloadShape { PayloadAccess access; BuiltinScalar scalar; BuiltinScalar unit; u32 count; };
 extern "C" u32 emit_payload_load(PayloadShape shape, address operands, u32 result, MemoryHost host) on cpu
     requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
@@ -576,8 +573,6 @@ struct CollectiveLayout {
 };
 struct CollectiveTree { u32 shared; u32 pointer; CollectiveOperation operation; };
 struct WordScratch { address context; cfn<address,address,usize> reserve; };
-// group_remaining writes 10 words and two IDs, with the count at first + 1.
-extern "C" void group_remaining(address body, u32 uint_type, u32 index, u32 lane, u32 count, u32 first) on cpu;
 struct CustomTree {
     u32 lane;
     u32 shared;
@@ -594,24 +589,14 @@ struct CustomMerge {
     u32 label;
 };
 
-struct CustomCombine {
+struct CustomCollectiveHost {
     address context;
-    // The checked emitter returns its final block label, or zero with its diagnostic.
-    cfn<u32,address,address,address,address,u32,u32> emit;
+    // The checked emitter returns its last block label, or zero with its diagnostic.
+    cfn<u32,address,address,u32> identity;
+    cfn<u32,address,address,u32,u32,u32> project;
+    cfn<u32,address,address,address,address,u32,u32> combine;
 };
 
-// Each workspace span has value_words + tag_words entries. Spans are offsets,
-// neighbor pointers, left, right and the reusable result.
-extern "C" u32 emit_custom_tree(CustomTree tree, address own, address workspace,
-    MemoryHost memory, CustomCombine combine) on cpu
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
-    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve)
-    requires nonzero(memory.finish_body) requires nonzero(combine.emit);
-extern "C" u32 emit_custom_merge(CustomMerge input, address left, address right, address result,
-    MemoryHost memory, CustomCombine combine) on cpu
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
-    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve)
-    requires nonzero(memory.finish_body) requires nonzero(combine.emit);
 
 struct TreeLayer {
     u32 uint_type;
@@ -640,10 +625,6 @@ struct CollectiveField {
     u32 shift;
     u32 slot;
 };
-extern "C" void collective_fields(CollectiveLayout layout, u32 source_word, u32 has_source,
-    MemoryHost host, address fields) on cpu
-    requires nonzero(layout.component) requires nonzero(host.scalars.constant)
-    requires nonzero(host.scalars.type_id) requires nonzero(host.pointer_type);
 
 struct ReductionWriteback {
     PageAddress target;
@@ -692,13 +673,13 @@ struct NumericGroupInput {
     u32 tail;
     NumericDispatch dispatch;
 };
-struct NumericBindings {
+struct CollectiveBindings {
     address descriptors;
     usize source; usize prefix; usize target; usize summary;
 };
 struct NumericScanOptions { u32 target_word; u32 root_operation; u32 normalized_input; };
 struct NumericOutput { usize binding; u32 word; u32 push_pointer; u32 push; };
-extern "C" TreeWords emit_numeric_scan(NumericGroupInput input, NumericBindings bindings, NumericScanOptions options,
+extern "C" TreeWords emit_numeric_scan(NumericGroupInput input, CollectiveBindings bindings, NumericScanOptions options,
     PageInputs raw_page, WordScratch temporary, MemoryHost host) on cpu
     requires nonzero(input.fields.component) requires nonzero(temporary.reserve)
     requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
@@ -706,11 +687,6 @@ extern "C" TreeWords emit_numeric_scan(NumericGroupInput input, NumericBindings 
 extern "C" TreeWords emit_numeric_reduction(NumericGroupInput input, u32 source, NumericOutput output,
     PageInputs raw_page, WordScratch temporary, MemoryHost host) on cpu
     requires nonzero(input.fields.component) requires nonzero(temporary.reserve)
-    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
-    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.pointer_type);
-extern "C" TreeWords emit_numeric_writeback(CollectiveLayout fields, NumericOutput output, PageInputs raw_page,
-    address pointers, u32 lane, WordScratch temporary, MemoryHost host) on cpu
-    requires nonzero(fields.component) requires nonzero(temporary.reserve)
     requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
     requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.pointer_type);
 
@@ -736,16 +712,13 @@ struct PhysicalField {
     u32 step;
     u32 shift;
 };
-extern "C" void physical_fields(CollectiveLayout layout, u32 first, MemoryHost host, address output) on cpu
-    requires nonzero(layout.component) requires nonzero(host.scalars.constant)
-    requires nonzero(host.scalars.type_id) requires nonzero(host.pointer_type);
 
 struct NumericPrefix {
     CollectiveLayout fields;
     CollectiveOperation operation;
     u32 target_word; u32 value_bytes; u32 root; u32 segmented; u32 label;
 };
-extern "C" TreeWords emit_numeric_prefix(NumericPrefix input, NumericBindings bindings,
+extern "C" TreeWords emit_numeric_prefix(NumericPrefix input, CollectiveBindings bindings,
     PageInputs raw_page, WordScratch temporary, MemoryHost host) on cpu
     requires nonzero(input.fields.component) requires nonzero(temporary.reserve)
     requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
@@ -753,6 +726,8 @@ extern "C" TreeWords emit_numeric_prefix(NumericPrefix input, NumericBindings bi
 
 struct CustomInput {
     PageInputs source;
+    CollectiveLayout layout;
+    u32 source_word;
     u32 summary_descriptor;
     u32 active;
     u32 lane;
@@ -763,22 +738,6 @@ struct CustomInput {
     u32 head_word;
     u32 tail;
 };
-
-struct CustomInputHost {
-    address context;
-    // The checked emitter returns its final block label, or zero with its diagnostic.
-    cfn<u32,address,address,u32> identity;
-    cfn<Span,address> fields;
-    cfn<u32,address,address,u32,u32,u32> project;
-};
-
-// Values holds max(source fields, value_words) + tag_words entries.
-extern "C" u32 emit_custom_input(CustomInput input, address own, address identity,
-    address values, MemoryHost memory, CustomInputHost host) on cpu
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
-    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve)
-    requires nonzero(memory.pointer_type) requires nonzero(memory.finish_body)
-    requires nonzero(host.identity) requires nonzero(host.fields) requires nonzero(host.project);
 
 struct CollectiveBranch {
     u64 words;
@@ -806,11 +765,6 @@ struct CustomSegmentOutput {
     u32 count_word;
 };
 
-// The workspace receives exclusive and parent summaries, words result IDs each.
-extern "C" CollectiveBranch open_custom_segment_finish(CustomSegmentPrefix input, address own,
-    address identity, u32 words, address workspace, address body) on cpu;
-extern "C" StageWords close_custom_segment_finish(CustomSegmentOutput input, address fields,
-    u32 field_count, address total, u32 segments, address body) on cpu;
 
 enum SummaryRootMode : u32 { Publish = 0; PublishReset = 1; EmptyCountReset = 2; };
 
@@ -838,9 +792,6 @@ struct SummaryRootWords {
     u32 group;
 };
 
-// Workspace spans hold root offsets/pointers, destination pointers and loaded values.
-extern "C" SummaryRootWords custom_summary_root(CustomSummaryRoot input, address identity,
-    u32 words, address workspace, address body) on cpu;
 
 struct CustomScanWrite {
     PageAddress target;
@@ -851,9 +802,6 @@ struct CustomScanWrite {
     u32 tail;
 };
 
-// Two workspace spans hold loaded summary values and recursive output pointers.
-extern "C" StageWords custom_scan_write(CustomScanWrite input, address own, address identity,
-    u32 words, address fields, u32 field_count, address workspace, address body) on cpu;
 
 struct CustomPrefix {
     PageAddress target;
@@ -877,11 +825,6 @@ struct CustomPrefixOpen {
     u32 head_end;
 };
 
-// Workspace holds prefix words, target words, and the target pointers used by the write.
-extern "C" CustomPrefixOpen open_custom_prefix(read CustomPrefix input, address fields,
-    address workspace, address body) on cpu;
-extern "C" StageWords close_custom_prefix(read CustomPrefix input, CustomPrefixOpen opened,
-    address fields, address locations, address values, u32 next, address body) on cpu;
 
 struct ScanLevel { u32 mask; u32 stride; };
 
@@ -1122,6 +1065,32 @@ enum BodyStep:u32 {
     SelectedIndex=27; Map=28;
 };
 enum BodyScan:u32 { Original=0; Selection=1; Compact=2; Sort=3; };
+struct CustomCollective {
+    CollectiveLayout source_layout;
+    CollectiveLayout value_layout;
+    u32 value_bytes;
+    EntryPass pass;
+    BodyStep step;
+    u32 tags;
+    u32 single_group;
+    u32 source_word;
+    u32 target_word;
+    u32 head_word;
+    u32 counter_word;
+    usize counter_binding;
+    u32 push_pointer;
+    u32 push;
+};
+
+extern "C" u32 emit_custom_collective(CustomCollective input, CollectiveBindings bindings,
+    NumericDispatch dispatch, PageInputs page, WordScratch temporary, MemoryHost memory, CustomCollectiveHost host) on cpu
+    requires nonzero(input.source_layout.component) requires nonzero(input.value_layout.component)
+    requires nonzero(temporary.reserve) requires nonzero(memory.scalars.constant)
+    requires nonzero(memory.scalars.type_id) requires nonzero(memory.scalars.ids)
+    requires nonzero(memory.scalars.reserve) requires nonzero(memory.pointer_type)
+    requires nonzero(memory.finish_body) requires nonzero(host.identity)
+    requires nonzero(host.project) requires nonzero(host.combine);
+
 enum BodyStepResult:u32 { Error=0; No=1; Yes=2; };
 enum ShaderBodyEnd:u32 { Plain=0; Prepared=1; BadSortPass=2; BadSegmentedPass=3; };
 struct ShaderBodySink {

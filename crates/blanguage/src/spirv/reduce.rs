@@ -23,18 +23,6 @@ struct CollectiveWords {
 }
 
 #[repr(C)]
-pub(super) struct CollectiveField {
-    source_offset: u32,
-    target_offset: u32,
-    unit_type: u32,
-    unit_bytes: u32,
-    pointer_type: u32,
-    step: u32,
-    shift: u32,
-    slot: u32,
-}
-
-#[repr(C)]
 struct CollectiveComponent {
     scalar: ScalarCode,
     offset: u32,
@@ -119,15 +107,9 @@ struct NumericOutput {
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.spirv_envelope::collective_fields"]
-    fn emit_collective_fields(layout: CollectiveLayout, source_word: u32, has_source: u32,
-        host: MemoryHost, fields: *mut CollectiveField);
     #[link_name = "bootstrap.spirv_envelope::emit_numeric_reduction"]
     fn emit_numeric_reduction(input: NumericGroupInput, source: u32, output: NumericOutput,
         page: PageInputs, temporary: WordScratch, host: MemoryHost) -> TreeWords;
-    #[link_name = "bootstrap.spirv_envelope::emit_numeric_writeback"]
-    fn emit_numeric_writeback(fields: CollectiveLayout, output: NumericOutput, page: PageInputs,
-        pointers: *const u32, lane: u32, temporary: WordScratch, host: MemoryHost) -> TreeWords;
     #[link_name = "bootstrap.spirv_envelope::collective_pair"]
     fn emit_collective_pair(input: CollectivePair, body: *mut u32, decorations: *mut u32) -> CollectiveWords;
 }
@@ -182,32 +164,8 @@ impl Emitter<'_> {
         self.finish_tree(result);
     }
 
-    pub(super) fn collective_fields(&mut self, ty: &Ty, source: Option<u32>) -> Vec<CollectiveField> {
-        let count = ty.components.len();
-        let mut fields = Vec::with_capacity(count);
-        unsafe {
-            emit_collective_fields(CollectiveLayout::borrow(ty), source.unwrap_or(0),
-                u32::from(source.is_some()), self.memory_host(), fields.as_mut_ptr());
-            fields.set_len(count);
-        }
-        fields
-    }
-
     fn numeric_output(&self, r: &Reduction) -> NumericOutput {
         NumericOutput { binding: r.target, word: r.target_word, push_pointer: self.ptr_push_u32, push: self.push }
-    }
-
-    pub(super) fn reduction_output(&mut self, r: &Reduction, ty: &Ty, pointers: &[u32], lane: u32) {
-        if ty.components.is_empty() {
-            return;
-        }
-        let page = self.page_inputs(self.buffers[r.target], self.index, None, 0);
-        let mut words = Vec::new();
-        let result = unsafe {
-            emit_numeric_writeback(CollectiveLayout::borrow(ty), self.numeric_output(r), page,
-                pointers.as_ptr(), lane, WordScratch::borrow(&mut words), self.memory_host())
-        };
-        self.finish_tree(result);
     }
 
     pub(super) fn finish_tree(&mut self, result: TreeWords) {

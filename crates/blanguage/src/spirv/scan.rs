@@ -24,7 +24,7 @@ pub(super) struct TreeWords {
 }
 
 #[repr(C)]
-struct NumericBindings {
+pub(super) struct CollectiveBindings {
     descriptors: *const u32,
     source: usize,
     prefix: usize,
@@ -50,31 +50,13 @@ struct NumericPrefix {
     label: u32,
 }
 
-#[repr(C)]
-pub(super) struct PhysicalField {
-    scalar: ScalarCode,
-    raw_type: u32,
-    value_type: u32,
-    unit_type: u32,
-    unit_bytes: u32,
-    pointer_type: u32,
-    offset: u32,
-    step: u32,
-    shift: u32,
-}
-
-
 unsafe extern "C" {
-    #[link_name = "bootstrap.spirv_envelope::physical_fields"]
-    fn emit_physical_fields(layout: CollectiveLayout, first: u32, host: MemoryHost, output: *mut PhysicalField);
     #[link_name = "bootstrap.spirv_envelope::emit_numeric_scan"]
-    fn emit_numeric_scan(input: NumericGroupInput, bindings: NumericBindings, options: NumericScanOptions,
+    fn emit_numeric_scan(input: NumericGroupInput, bindings: CollectiveBindings, options: NumericScanOptions,
         page: PageInputs, temporary: WordScratch, host: MemoryHost) -> TreeWords;
     #[link_name = "bootstrap.spirv_envelope::emit_numeric_prefix"]
-    fn emit_numeric_prefix(input: NumericPrefix, bindings: NumericBindings, page: PageInputs,
+    fn emit_numeric_prefix(input: NumericPrefix, bindings: CollectiveBindings, page: PageInputs,
         temporary: WordScratch, host: MemoryHost) -> TreeWords;
-    #[link_name = "bootstrap.spirv_envelope::group_remaining"]
-    fn emit_group_remaining(body: *mut u32, uint_type: u32, index: u32, lane: u32, count: u32, first: u32);
 }
 
 impl Emitter<'_> {
@@ -92,19 +74,6 @@ impl Emitter<'_> {
         } else {
             fields.source
         }
-    }
-
-    pub(super) fn group_remaining(&mut self, lane: u32, count: u32) -> u32 {
-        let at = self.body.len();
-        let first = self.next;
-        self.body.reserve(10);
-        unsafe {
-            emit_group_remaining(self.body.as_mut_ptr().add(at), self.types[&Scalar::U32],
-                self.index, lane, count, first);
-            self.body.set_len(at + 10);
-        }
-        self.next += 2;
-        first + 1
     }
 
     pub(super) fn scan_barrier(&mut self) {
@@ -132,7 +101,7 @@ impl Emitter<'_> {
         let page = self.page_inputs(0, self.index, None, 0);
         let mut words = Vec::new();
         let result = unsafe {
-            emit_numeric_scan(input, self.numeric_bindings(r), options, page,
+            emit_numeric_scan(input, self.collective_bindings(r), options, page,
                 WordScratch::borrow(&mut words), self.memory_host())
         };
         self.finish_tree(result);
@@ -146,18 +115,8 @@ impl Emitter<'_> {
         self.emit_scan_prefix(scan, true, true);
     }
 
-    pub(super) fn physical_fields(&mut self, ty: &Ty, first: u32) -> Vec<PhysicalField> {
-        let count = ty.components.len();
-        let mut fields = Vec::with_capacity(count);
-        unsafe {
-            emit_physical_fields(CollectiveLayout::borrow(ty), first, self.memory_host(), fields.as_mut_ptr());
-            fields.set_len(count);
-        }
-        fields
-    }
-
-    fn numeric_bindings(&self, r: &Reduction) -> NumericBindings {
-        NumericBindings {
+    pub(super) fn collective_bindings(&self, r: &Reduction) -> CollectiveBindings {
+        CollectiveBindings {
             descriptors: self.buffers.as_ptr(), source: r.source, prefix: self.scan_input_binding(r),
             target: r.target, summary: self.program.buffers.len(),
         }
@@ -176,7 +135,7 @@ impl Emitter<'_> {
         let page = self.page_inputs(0, self.index, None, 0);
         let mut words = Vec::new();
         let result = unsafe {
-            emit_numeric_prefix(input, self.numeric_bindings(&scan.values), page,
+            emit_numeric_prefix(input, self.collective_bindings(&scan.values), page,
                 WordScratch::borrow(&mut words), self.memory_host())
         };
         self.finish_tree(result);

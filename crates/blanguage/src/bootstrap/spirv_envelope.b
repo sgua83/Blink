@@ -1004,23 +1004,6 @@ extern "C" PageAddressResult page_address(PageAddress input, u32 step, address b
     return PageAddressResult(at, next + 3, next, next + 2);
 }
 
-extern "C" PayloadWrite summary_addresses(PageAddress input, u32 step, address pointers, u32 count, address body) on cpu {
-    PhysicalAddress start = physical_page_address(input, body, input.next);
-    u64 at = start.words;
-    u32 next = start.next;
-    u32 physical = start.value;
-    for (part in 0..count) {
-        if (part != 0) {
-            at = words_four(body, at, 128, input.u64_type, next, physical, step);
-            physical = next;
-            next += 1;
-        }
-        at = words_three(body, at, 120, input.result_pointer, next, physical);
-        put(pointers, u64(part), next);
-        next += 1;
-    }
-    return PayloadWrite(at, next);
-}
 
 struct StageCursor { address body; u64 words; u32 next; };
 
@@ -1094,7 +1077,7 @@ extern "C" u64 unpack_summary_word(u32 type_id, u32 result, u32 word, u32 shift,
     return words_four(body, 0u64, 194, type_id, result, word, shift);
 }
 
-extern "C" u64 read_summary_words(address body, u32 type_id, u32 first, address pointers, u32 count) on cpu {
+u64 read_summary_words(address body, u32 type_id, u32 first, address pointers, u32 count) on cpu {
     u64 at = 0u64;
     for (part in 0..count) {
         at = aligned_load(body, at, type_id, first + part, read_word(pointers, part), 4);
@@ -1102,7 +1085,7 @@ extern "C" u64 read_summary_words(address body, u32 type_id, u32 first, address 
     return at;
 }
 
-extern "C" u64 write_summary_words(address body, address pointers, address values, u32 count) on cpu {
+u64 write_summary_words(address body, address pointers, address values, u32 count) on cpu {
     u64 at = 0u64;
     for (part in 0..count) {
         at = aligned_store(body, at, read_word(pointers, part), read_word(values, part), 4);
@@ -3191,7 +3174,7 @@ u32 stage_group_remaining(inout StageCursor out, u32 uint_type, u32 index, u32 l
     return stage_op(out, 130, uint_type, count, begin);
 }
 
-extern "C" void group_remaining(address body, u32 uint_type, u32 index, u32 lane, u32 count, u32 first) on cpu {
+void group_remaining(address body, u32 uint_type, u32 index, u32 lane, u32 count, u32 first) on cpu {
     StageCursor out = StageCursor(body, 0u64, first);
     stage_group_remaining(out, uint_type, index, lane, count);
 }
@@ -3835,7 +3818,7 @@ void collective_tree(CollectiveLayout layout, CollectiveTree tree, ScalarHost ho
     }
 }
 
-extern "C" void collective_fields(CollectiveLayout layout, u32 source_word, u32 has_source,
+void collective_fields(CollectiveLayout layout, u32 source_word, u32 has_source,
     MemoryHost host, address fields) on cpu
     requires nonzero(layout.component) requires nonzero(host.scalars.constant)
     requires nonzero(host.scalars.type_id) requires nonzero(host.pointer_type) {
@@ -3874,7 +3857,7 @@ u32 high_word_shift(ScalarHost host, PhysicalShape shape) on cpu requires nonzer
     return shape.count == 2 ? host.constant(host.context, BuiltinScalar::U32, 32u64) : 0;
 }
 
-extern "C" void physical_fields(CollectiveLayout layout, u32 first, MemoryHost host, address output) on cpu
+void physical_fields(CollectiveLayout layout, u32 first, MemoryHost host, address output) on cpu
     requires nonzero(layout.component) requires nonzero(host.scalars.constant)
     requires nonzero(host.scalars.type_id) requires nonzero(host.pointer_type) {
     ScalarHost stream = host.scalars;
@@ -4418,14 +4401,14 @@ StageWords close_custom_segment(CustomSegmentJoin input, address left, address r
     return StageWords(out.words, out.next, input.end);
 }
 
-extern "C" u32 emit_custom_merge(CustomMerge input, address left, address right, address result,
-    MemoryHost memory, CustomCombine combine) on cpu
+u32 emit_custom_merge(CustomMerge input, address left, address right, address result,
+    MemoryHost memory, CustomCollectiveHost host) on cpu
     requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve)
-    requires nonzero(memory.finish_body) requires nonzero(combine.emit) {
+    requires nonzero(memory.finish_body) requires nonzero(host.combine) {
     u32 count = input.value_words;
     if (input.tag_words == 0) {
-        return combine.emit(combine.context, left, right, result, count, input.label);
+        return host.combine(host.context, left, right, result, count, input.label);
     }
     address context = memory.scalars.context;
     u32 uint_type = memory.scalars.type_id(context, BuiltinScalar::U32);
@@ -4436,7 +4419,7 @@ extern "C" u32 emit_custom_merge(CustomMerge input, address left, address right,
     CollectiveBranch opened = open_custom_segment(bool_type, read_word(right, count), zero, next, body);
     memory.finish_body(context, opened.words);
     memory.scalars.ids(context, opened.next - next);
-    u32 combined = combine.emit(combine.context, left, right, result, count, opened.run);
+    u32 combined = host.combine(host.context, left, right, result, count, opened.run);
     if (combined == 0) { return 0; }
 
     next = memory.scalars.ids(context, 0);
@@ -4596,11 +4579,19 @@ StageWords close_custom_tree(CustomTreeClose input, address own, address left,
     return StageWords(out.words, out.next, input.end);
 }
 
-extern "C" u32 emit_custom_tree(CustomTree tree, address own, address workspace,
-    MemoryHost memory, CustomCombine combine) on cpu
+void custom_plane_offsets(u32 words, address offsets, ScalarHost stream) on cpu
+    requires nonzero(stream.constant) {
+    for (part in 0..words) {
+        u32 offset = part == 0 ? 0 : stream.constant(stream.context, BuiltinScalar::U32, 64u64 * u64(part));
+        put(offsets, u64(part), offset);
+    }
+}
+
+u32 emit_custom_tree(CustomTree tree, address own, address workspace,
+    MemoryHost memory, CustomCollectiveHost host) on cpu
     requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve)
-    requires nonzero(memory.finish_body) requires nonzero(combine.emit) {
+    requires nonzero(memory.finish_body) requires nonzero(host.combine) {
     address context = memory.scalars.context;
     u32 uint_type = memory.scalars.type_id(context, BuiltinScalar::U32);
     u32 bool_type = memory.scalars.type_id(context, BuiltinScalar::Bool);
@@ -4613,9 +4604,7 @@ extern "C" u32 emit_custom_tree(CustomTree tree, address own, address workspace,
     address left = word_at(neighbors, span);
     address right = word_at(left, span);
     address result = word_at(right, span);
-    for (part in 1..count) {
-        put(workspace, u64(part), memory.scalars.constant(context, BuiltinScalar::U32, 64u64 * u64(part)));
-    }
+    custom_plane_offsets(count, workspace, memory.scalars);
 
     bool down = tree.down != 0;
     address before = down ? right : left;
@@ -4634,7 +4623,7 @@ extern "C" u32 emit_custom_tree(CustomTree tree, address own, address workspace,
         memory.scalars.ids(context, opened.next - next);
 
         u32 combined = emit_custom_merge(CustomMerge(tree.value_words, tree.tag_words, opened.run),
-            before, after, result, memory, combine);
+            before, after, result, memory, host);
         if (combined == 0) { return 0; }
         next = memory.scalars.ids(context, 0);
         body = memory.scalars.reserve(context, 12u64 + 12u64 * span, 0u64).body;
@@ -4696,6 +4685,24 @@ u64 segment_tree(inout StageCursor out, SegmentGroup input, u32 remaining, bool 
     return decorated;
 }
 
+PayloadWrite summary_addresses(PageAddress input, u32 step, address pointers, u32 count, address body) on cpu {
+    PhysicalAddress start = physical_page_address(input, body, input.next);
+    u64 at = start.words;
+    u32 next = start.next;
+    u32 physical = start.value;
+    for (part in 0..count) {
+        if (part != 0) {
+            at = words_four(body, at, 128, input.u64_type, next, physical, step);
+            physical = next;
+            next += 1;
+        }
+        at = words_three(body, at, 120, input.result_pointer, next, physical);
+        put(pointers, u64(part), next);
+        next += 1;
+    }
+    return PayloadWrite(at, next);
+}
+
 void segment_summary_addresses(inout StageCursor out, PageAddress source, u32 step, u32 words,
     address pointers) on cpu {
     PageAddress request = source;
@@ -4711,7 +4718,7 @@ void read_segment_summary(inout StageCursor out, PageAddress source, u32 step, u
     read_segment_values(out, source.u32_type, words, pointers, values);
 }
 
-extern "C" CustomPrefixOpen open_custom_prefix(read CustomPrefix input, address fields,
+CustomPrefixOpen open_custom_prefix(read CustomPrefix input, address fields,
     address workspace, address body) on cpu {
     StageCursor out = StageCursor(body, 0u64, input.target.next);
     StageBranch write = stage_open(out, input.active);
@@ -4746,7 +4753,7 @@ extern "C" CustomPrefixOpen open_custom_prefix(read CustomPrefix input, address 
     return CustomPrefixOpen(out.words, out.next, label, write.end, head_end);
 }
 
-extern "C" StageWords close_custom_prefix(read CustomPrefix input, CustomPrefixOpen opened,
+StageWords close_custom_prefix(read CustomPrefix input, CustomPrefixOpen opened,
     address fields, address locations, address values, u32 next, address body) on cpu {
     StageCursor out = StageCursor(body, 0u64, next);
     if (input.packed != 0) {
@@ -4939,21 +4946,19 @@ StageWords custom_collective_join(CustomCollectiveJoin input, address values,
     return StageWords(out.words, out.next, input.end);
 }
 
-extern "C" u32 emit_custom_input(CustomInput input, address own, address identity,
-    address values, MemoryHost memory, CustomInputHost host) on cpu
+u32 emit_custom_input(CustomInput input, address own, address identity,
+    address values, address fields, MemoryHost memory, CustomCollectiveHost host) on cpu
     requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve)
     requires nonzero(memory.pointer_type) requires nonzero(memory.finish_body)
-    requires nonzero(host.identity) requires nonzero(host.fields) requires nonzero(host.project) {
+    requires nonzero(input.layout.component) requires nonzero(host.identity) requires nonzero(host.project) {
     u32 inactive = host.identity(host.context, identity, input.value_words);
     if (inactive == 0) { return 0; }
     address context = memory.scalars.context;
     u32 zero = memory.scalars.constant(context, BuiltinScalar::U32, 0u64);
     u32 words = input.value_words + input.tag_words;
     for (part in input.value_words..words) { put(identity, u64(part), zero); }
-    for (part in 1..words) {
-        put(own, u64(part), memory.scalars.constant(context, BuiltinScalar::U32, 64u64 * u64(part)));
-    }
+    custom_plane_offsets(words, own, memory.scalars);
     u32 uint_type = memory.scalars.type_id(context, BuiltinScalar::U32);
     u32 next = memory.scalars.ids(context, 0);
     address body = memory.scalars.reserve(context, 5u64 + 10u64 * u64(words), 0u64).body;
@@ -4963,7 +4968,8 @@ extern "C" u32 emit_custom_input(CustomInput input, address own, address identit
     memory.scalars.ids(context, located.next - next);
 
     bool tail = input.tail != 0;
-    Span fields = tail ? Span(address(), 0u64, 0u64) : host.fields(host.context);
+    u64 count = tail ? 0u64 : input.layout.count;
+    if (!tail) { physical_fields(input.layout, input.source_word, memory, fields); }
     u32 head_offset = !tail && input.head_word != 0
         ? memory.scalars.constant(context, BuiltinScalar::U64, u64(input.head_word)) : 0;
     u32 step = tail && words > 1 ? memory.scalars.constant(context, BuiltinScalar::U64, 4u64) : 0;
@@ -4973,17 +4979,17 @@ extern "C" u32 emit_custom_input(CustomInput input, address own, address identit
     u32 bool_type = memory.scalars.type_id(context, BuiltinScalar::Bool);
     CustomCollectiveSource read = CustomCollectiveSource(source, input.active, input.lane, bool_type,
         input.value_words, input.tag_words, head_offset, step, input.tail);
-    body = memory.scalars.reserve(context, 155u64 + 74u64 * fields.count + 14u64 * u64(words), 0u64).body;
-    CollectiveBranch opened = custom_collective_read(read, fields.data, u32(fields.count), values, body);
+    body = memory.scalars.reserve(context, 155u64 + 74u64 * count + 14u64 * u64(words), 0u64).body;
+    CollectiveBranch opened = custom_collective_read(read, fields, u32(count), values, body);
     memory.finish_body(context, opened.words);
     memory.scalars.ids(context, opened.next - source.next);
     u32 from = opened.run;
     if (!tail) {
-        from = host.project(host.context, values, u32(fields.count), input.value_words, from);
+        from = host.project(host.context, values, u32(count), input.value_words, from);
         if (from == 0) { return 0; }
-        if (fields.count > u64(input.value_words)) {
+        if (count > u64(input.value_words)) {
             for (part in 0..input.tag_words) {
-                put(values, u64(input.value_words + part), read_word(values, u32(fields.count) + part));
+                put(values, u64(input.value_words + part), read_word(values, u32(count) + part));
             }
         }
     }
@@ -5118,7 +5124,7 @@ void publish_summary_root(inout StageCursor out, PageAddress target, u32 step, u
     out.words += write_summary_words(word_at(out.body, out.words), pointers, values, words);
 }
 
-extern "C" StageWords custom_scan_write(CustomScanWrite input, address own, address identity,
+StageWords custom_scan_write(CustomScanWrite input, address own, address identity,
     u32 words, address fields, u32 field_count, address workspace, address body) on cpu {
     StageCursor out = StageCursor(body, 0u64, input.target.next);
     u32 u = input.target.u32_type;
@@ -5155,7 +5161,7 @@ void reset_summary_root(inout StageCursor out, u32 end, u32 words, u32 scope, u3
     stage_barrier(out, scope, semantics);
 }
 
-extern "C" SummaryRootWords custom_summary_root(CustomSummaryRoot input, address identity,
+SummaryRootWords custom_summary_root(CustomSummaryRoot input, address identity,
     u32 words, address workspace, address body) on cpu {
     StageCursor out = StageCursor(body, 0u64, input.target.next);
     u32 u = input.target.u32_type;
@@ -5230,7 +5236,7 @@ void close_segment_output(inout StageCursor out, SegmentOutput output, PageAddre
     stage_close(out, counted.end);
 }
 
-extern "C" CollectiveBranch open_custom_segment_finish(CustomSegmentPrefix input, address own,
+CollectiveBranch open_custom_segment_finish(CustomSegmentPrefix input, address own,
     address identity, u32 words, address workspace, address body) on cpu {
     StageCursor out = StageCursor(body, 0u64, input.parent.next);
     StageBranch write = stage_open(out, input.active);
@@ -5240,7 +5246,7 @@ extern "C" CollectiveBranch open_custom_segment_finish(CustomSegmentPrefix input
     return CollectiveBranch(out.words, out.next, run, write.end);
 }
 
-extern "C" StageWords close_custom_segment_finish(CustomSegmentOutput input, address fields,
+StageWords close_custom_segment_finish(CustomSegmentOutput input, address fields,
     u32 field_count, address total, u32 segments, address body) on cpu {
     StageCursor out = StageCursor(body, 0u64, input.source.next);
     SegmentOutput output = open_segment_output(out, input.source, input.bool_type, input.length, input.from, segments);
@@ -5541,11 +5547,11 @@ CollectiveInput numeric_lanes(NumericDispatch dispatch, array<u32,2> identity, u
         dispatch.before, scope, semantics);
 }
 
-u32 numeric_descriptor(NumericBindings bindings, usize index) on cpu {
+u32 collective_descriptor(CollectiveBindings bindings, usize index) on cpu {
     return unsafe_position<u32>(word_at(bindings.descriptors, index));
 }
 
-extern "C" TreeWords emit_numeric_scan(NumericGroupInput input, NumericBindings bindings, NumericScanOptions options,
+extern "C" TreeWords emit_numeric_scan(NumericGroupInput input, CollectiveBindings bindings, NumericScanOptions options,
     PageInputs raw_page, WordScratch temporary, MemoryHost host) on cpu
     requires nonzero(input.fields.component) requires nonzero(temporary.reserve)
     requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
@@ -5559,13 +5565,13 @@ extern "C" TreeWords emit_numeric_scan(NumericGroupInput input, NumericBindings 
     u32 width = stream.constant(context, BuiltinScalar::U32, 64u64);
     bool tail = input.tail != 0;
     CollectiveInput lanes = numeric_lanes(input.dispatch, work.identity,
-        numeric_descriptor(bindings, tail ? bindings.prefix : bindings.source), stream);
+        collective_descriptor(bindings, tail ? bindings.prefix : bindings.source), stream);
     PageInputs page = raw_page;
-    page.descriptor = numeric_descriptor(bindings, bindings.target);
+    page.descriptor = collective_descriptor(bindings, bindings.target);
     page.word = options.target_word;
     page.has_word = u32(!tail && options.root_operation != 0 && options.target_word != 0);
     PageAddress target = prepare_page(page, host.pointer_type(context, BuiltinScalar::U32), stream);
-    ScanGroup group = ScanGroup(target, lanes, numeric_descriptor(bindings, bindings.summary), width,
+    ScanGroup group = ScanGroup(target, lanes, collective_descriptor(bindings, bindings.summary), width,
         last, stream.type_id(context, BuiltinScalar::Bool), u32(!tail && options.normalized_input != 0));
     ScalarStreams words = stream.reserve(context, 12u64 * (42u64 + 176u64 * count) + 430u64 + 128u64 * count,
         36u64 * count);
@@ -5605,24 +5611,8 @@ extern "C" TreeWords emit_numeric_reduction(NumericGroupInput input, u32 source,
         words.body, words.decorations);
 }
 
-extern "C" TreeWords emit_numeric_writeback(CollectiveLayout fields, NumericOutput output, PageInputs raw_page,
-    address pointers, u32 lane, WordScratch temporary, MemoryHost host) on cpu
-    requires nonzero(fields.component) requires nonzero(temporary.reserve)
-    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
-    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.pointer_type) {
-    ScalarHost stream = host.scalars;
-    address context = stream.context;
-    u64 count = fields.count;
-    address storage = temporary.reserve(temporary.context, count * size_of<CollectiveField>() / 4u64);
-    collective_fields(fields, 0, 0, host, storage);
-    u32 root = stream.constant(context, BuiltinScalar::U32, 63u64);
-    ReductionWriteback input = numeric_writeback(output, raw_page, host);
-    address body = stream.reserve(context, 180u64 + 44u64 * count, 0u64).body;
-    StageWords result = reduction_writeback(input, lane, root, storage, u32(count), pointers, body);
-    return TreeWords(result.words, 0u64, result.next, result.label);
-}
 
-extern "C" TreeWords emit_numeric_prefix(NumericPrefix input, NumericBindings bindings,
+extern "C" TreeWords emit_numeric_prefix(NumericPrefix input, CollectiveBindings bindings,
     PageInputs raw_page, WordScratch temporary, MemoryHost host) on cpu
     requires nonzero(input.fields.component) requires nonzero(temporary.reserve)
     requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
@@ -5636,19 +5626,283 @@ extern "C" TreeWords emit_numeric_prefix(NumericPrefix input, NumericBindings bi
     u32 head_descriptor = 0;
     u32 head_word = 0;
     if (input.segmented != 0) {
-        head_descriptor = numeric_descriptor(bindings, bindings.summary);
+        head_descriptor = collective_descriptor(bindings, bindings.summary);
         u32 value_words = input.value_bytes / 4 + u32(input.value_bytes % 4 != 0);
         head_word = stream.constant(context, BuiltinScalar::U32, u64(value_words * 4));
     }
     PageInputs page = raw_page;
-    page.descriptor = numeric_descriptor(bindings, bindings.target);
+    page.descriptor = collective_descriptor(bindings, bindings.target);
     page.word = input.target_word;
     page.has_word = u32(input.root != 0 && input.target_word != 0);
     PageAddress target = prepare_page(page, host.pointer_type(context, BuiltinScalar::U32), stream);
-    ScanPrefix prefix = ScanPrefix(target, numeric_descriptor(bindings, bindings.prefix), head_descriptor,
+    ScanPrefix prefix = ScanPrefix(target, collective_descriptor(bindings, bindings.prefix), head_descriptor,
         head_word, width, stream.type_id(context, BuiltinScalar::Bool), input.operation, input.label);
     ScalarStreams words = stream.reserve(context, 233u64 + 148u64 * u64(input.segmented) + 144u64 * count, 3u64 * count);
     return add_scan_prefix(prefix, fields, u32(count), words.body, words.decorations);
+}
+
+
+struct CustomWorkspace { address fields; address own; address identity; address item; address work; };
+
+PageAddress custom_page(PageInputs raw, u32 descriptor, u32 index, u32 word, u32 has_word, MemoryHost memory) on cpu
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.pointer_type) {
+    PageInputs page = raw;
+    page.descriptor = descriptor;
+    page.index = index;
+    page.word = word;
+    page.has_word = has_word;
+    u32 pointer = memory.pointer_type(memory.scalars.context, BuiltinScalar::U32);
+    return prepare_page(page, pointer, memory.scalars);
+}
+
+void custom_finish(MemoryHost memory, u64 words, u32 first, u32 next) on cpu
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.finish_body) {
+    address context = memory.scalars.context;
+    memory.finish_body(context, words);
+    memory.scalars.ids(context, next - first);
+}
+
+u32 custom_group_remaining(NumericDispatch dispatch, u32 index, MemoryHost memory) on cpu
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
+    ScalarHost stream = memory.scalars;
+    address context = stream.context;
+    u32 first = stream.ids(context, 0);
+    address body = stream.reserve(context, 10u64, 0u64).body;
+    group_remaining(body, stream.type_id(context, BuiltinScalar::U32), index, dispatch.lane, dispatch.count, first);
+    custom_finish(memory, 10u64, first, first + 2);
+    return first + 1;
+}
+
+SummaryRootWords emit_custom_root(PageInputs page, u32 descriptor, u32 word, SummaryRootMode mode,
+    NumericDispatch dispatch, u32 words, CustomWorkspace slots, MemoryHost memory) on cpu
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve)
+    requires nonzero(memory.pointer_type) requires nonzero(memory.finish_body) {
+    ScalarHost stream = memory.scalars;
+    address context = stream.context;
+    custom_plane_offsets(words, slots.work, stream);
+    u32 width = stream.constant(context, BuiltinScalar::U32, 64u64);
+    u32 last = stream.constant(context, BuiltinScalar::U32, 63u64);
+    u32 step = stream.constant(context, BuiltinScalar::U64, 4u64);
+    u32 scope = stream.constant(context, BuiltinScalar::U32, 2u64);
+    u32 semantics = stream.constant(context, BuiltinScalar::U32, 0x108u64);
+    u32 zero = stream.constant(context, BuiltinScalar::U32, 0u64);
+    PageAddress target = custom_page(page, descriptor, page.index, word, 1, memory);
+    u32 bool_type = stream.type_id(context, BuiltinScalar::Bool);
+    CustomSummaryRoot input = CustomSummaryRoot(target, mode, bool_type, zero, dispatch.lane,
+        dispatch.active, dispatch.count, width, last, dispatch.shared, dispatch.pointer, step, scope, semantics);
+    address body = stream.reserve(context, 169u64 + 36u64 * u64(words), 0u64).body;
+    SummaryRootWords result = custom_summary_root(input, slots.identity, words, slots.work, body);
+    custom_finish(memory, result.words, target.next, result.next);
+    return result;
+}
+
+u32 emit_custom_prefix_stage(CustomCollective input, CollectiveBindings bindings, NumericDispatch dispatch,
+    PageInputs page, u32 value_words, WordScratch temporary, MemoryHost memory, CustomCollectiveHost host) on cpu
+    requires nonzero(input.value_layout.component) requires nonzero(temporary.reserve)
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve)
+    requires nonzero(memory.pointer_type) requires nonzero(memory.finish_body) requires nonzero(host.combine) {
+    ScalarHost stream = memory.scalars;
+    address context = stream.context;
+    bool root = input.pass == EntryPass::ScanRootAdd;
+    u32 tags = root ? 0 : input.tags;
+    u32 words = value_words + tags;
+    u64 span = u64(words);
+    u64 field_count = root ? input.value_layout.count : 0u64;
+    u64 field_words = field_count * size_of<CollectiveField>() / 4u64;
+    u64 location_words = root ? 2u64 * field_count : span;
+    address fields = temporary.reserve(temporary.context, field_words + 3u64 * span + location_words);
+    address prefix = word_at(fields, field_words);
+    address target_words = word_at(prefix, span);
+    address locations = word_at(target_words, span);
+    address values = word_at(locations, location_words);
+
+    u32 width = stream.constant(context, BuiltinScalar::U32, 64u64);
+    u32 step = words > 1 ? stream.constant(context, BuiltinScalar::U64, 4u64) : 0;
+    bool has_head = root && input.tags != 0;
+    u32 head_descriptor = has_head ? collective_descriptor(bindings, bindings.summary) : 0;
+    u32 head_word = has_head ? stream.constant(context, BuiltinScalar::U32, u64(value_words) * 4u64) : 0;
+    if (root) { collective_fields(input.value_layout, 0, 0, memory, fields); }
+    u32 target_word = root ? input.target_word : 0;
+    PageAddress target = custom_page(page, collective_descriptor(bindings, bindings.target),
+        page.index, target_word, u32(!root || target_word != 0), memory);
+    u64 part = 0u64;
+    while (part < 2u64 * span + location_words) {
+        put(prefix, part, target.zero);
+        part += 1u64;
+    }
+
+    CustomPrefix request = CustomPrefix(target, collective_descriptor(bindings, bindings.prefix),
+        head_descriptor, head_word, width, stream.type_id(context, BuiltinScalar::Bool),
+        dispatch.active, step, u32(!root), words, u32(field_count));
+    address body = stream.reserve(context, 375u64 + 30u64 * span + 60u64 * field_count, 0u64).body;
+    CustomPrefixOpen opened = open_custom_prefix(request, fields, prefix, body);
+    custom_finish(memory, opened.words, target.next, opened.next);
+    u32 label = emit_custom_merge(CustomMerge(value_words, tags, opened.label), prefix, target_words, values, memory, host);
+    if (label == 0) { return 0; }
+    u32 first = stream.ids(context, 0);
+    body = stream.reserve(context, 8u64 + 5u64 * span + 44u64 * field_count, 0u64).body;
+    StageWords emitted = close_custom_prefix(request, opened, fields, locations, values, first, body);
+    custom_finish(memory, emitted.words, first, emitted.next);
+    return emitted.label;
+}
+
+u32 emit_custom_finish_stage(CustomCollective input, CollectiveBindings bindings, NumericDispatch dispatch,
+    PageInputs page, u32 group, u32 value_words, CustomWorkspace slots, MemoryHost memory, CustomCollectiveHost host) on cpu
+    requires nonzero(input.value_layout.component) requires nonzero(memory.scalars.constant)
+    requires nonzero(memory.scalars.type_id) requires nonzero(memory.scalars.ids)
+    requires nonzero(memory.scalars.reserve) requires nonzero(memory.pointer_type)
+    requires nonzero(memory.finish_body) requires nonzero(host.combine) {
+    ScalarHost stream = memory.scalars;
+    address context = stream.context;
+    u32 words = value_words + input.tags;
+    u64 span = u64(words);
+    u32 bool_type = stream.type_id(context, BuiltinScalar::Bool);
+    u32 step = stream.constant(context, BuiltinScalar::U64, 4u64);
+    u32 summary = input.single_group != 0 ? 0 : collective_descriptor(bindings, bindings.summary);
+    PageAddress parent = custom_page(page, summary, group, 0, 1, memory);
+    CustomSegmentPrefix prefix = CustomSegmentPrefix(parent, bool_type, dispatch.active, step);
+    address body = stream.reserve(context, 136u64 + 28u64 * span, 0u64).body;
+    CollectiveBranch opened = open_custom_segment_finish(prefix, slots.own, slots.identity, words, slots.work, body);
+    custom_finish(memory, opened.words, parent.next, opened.next);
+    address preceding = word_at(slots.work, span);
+    address inclusive = word_at(preceding, span);
+    address total = word_at(inclusive, span);
+    u32 label = emit_custom_merge(CustomMerge(value_words, input.tags, opened.run), slots.work, slots.item, inclusive, memory, host);
+    if (label == 0) { return 0; }
+    label = emit_custom_merge(CustomMerge(value_words, input.tags, label), preceding, inclusive, total, memory, host);
+    if (label == 0) { return 0; }
+
+    collective_fields(input.value_layout, 0, 0, memory, slots.fields);
+    u64 field_count = input.value_layout.count;
+    u32 target_word = input.target_word == 0 ? 0 : stream.constant(context, BuiltinScalar::U32, u64(input.target_word));
+    u32 counter_word = stream.constant(context, BuiltinScalar::U32, u64(input.counter_word));
+    PageAddress source = custom_page(page, collective_descriptor(bindings, bindings.source), page.index, input.head_word, 1, memory);
+    CustomSegmentOutput output = CustomSegmentOutput(source, bool_type, dispatch.count, label, opened.end,
+        collective_descriptor(bindings, bindings.target), target_word,
+        collective_descriptor(bindings, input.counter_binding), counter_word);
+    body = stream.reserve(context, 420u64 + 44u64 * field_count, 0u64).body;
+    StageWords emitted = close_custom_segment_finish(output, slots.fields, u32(field_count), total, read_word(total, words - 1), body);
+    custom_finish(memory, emitted.words, source.next, emitted.next);
+    return emitted.label;
+}
+
+u32 emit_custom_counted_tail(PageInputs page, u32 descriptor, u32 active, u32 words, CustomWorkspace slots,
+    MemoryHost memory) on cpu
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve)
+    requires nonzero(memory.pointer_type) requires nonzero(memory.finish_body) {
+    ScalarHost stream = memory.scalars;
+    address context = stream.context;
+    u64 span = u64(words);
+    u32 first = stream.ids(context, 0);
+    address body = stream.reserve(context, 6u64 * span + 9u64, 0u64).body;
+    StageCursor out = StageCursor(body, 0u64, first);
+    read_segment_values(out, stream.type_id(context, BuiltinScalar::U32), words, slots.own, slots.work);
+    StageBranch run = stage_open(out, active);
+    custom_finish(memory, out.words, first, out.next);
+
+    u32 step = words > 1 ? stream.constant(context, BuiltinScalar::U64, 4u64) : 0;
+    PageAddress target = custom_page(page, descriptor, page.index, 0, 1, memory);
+    body = stream.reserve(context, 113u64 + 14u64 * span, 0u64).body;
+    out = StageCursor(body, 0u64, target.next);
+    address pointers = word_at(slots.work, span);
+    segment_summary_addresses(out, target, step, words, pointers);
+    out.words += write_summary_words(word_at(body, out.words), pointers, slots.work, words);
+    stage_close(out, run.end);
+    custom_finish(memory, out.words, target.next, out.next);
+    return run.end;
+}
+
+extern "C" u32 emit_custom_collective(CustomCollective input, CollectiveBindings bindings,
+    NumericDispatch dispatch, PageInputs page, WordScratch temporary, MemoryHost memory, CustomCollectiveHost host) on cpu
+    requires nonzero(input.source_layout.component) requires nonzero(input.value_layout.component)
+    requires nonzero(temporary.reserve) requires nonzero(memory.scalars.constant)
+    requires nonzero(memory.scalars.type_id) requires nonzero(memory.scalars.ids)
+    requires nonzero(memory.scalars.reserve) requires nonzero(memory.pointer_type)
+    requires nonzero(memory.finish_body) requires nonzero(host.identity)
+    requires nonzero(host.project) requires nonzero(host.combine) {
+    u32 value_words = input.value_bytes / 4 + u32(input.value_bytes % 4 != 0);
+    bool counted = input.step == BodyStep::CustomSegmented;
+    if (input.step == BodyStep::CustomScanAdd || (counted && input.pass == EntryPass::ScanAdd)) {
+        return emit_custom_prefix_stage(input, bindings, dispatch, page, value_words, temporary, memory, host);
+    }
+
+    ScalarHost stream = memory.scalars;
+    address context = stream.context;
+    bool tail = input.pass == EntryPass::ScanTail || input.pass == EntryPass::ReductionTail;
+    bool reduce = input.step == BodyStep::CustomReduce;
+    bool publish_only = counted && input.pass == EntryPass::Main;
+    u32 words = value_words + input.tags;
+    u64 span = u64(words);
+    u64 source_count = tail ? 0u64 : input.source_layout.count;
+    u64 source_words = source_count * size_of<PhysicalField>() / 4u64;
+    u64 target_count = reduce || (!tail && !publish_only) ? input.value_layout.count : 0u64;
+    u64 target_words = target_count * size_of<CollectiveField>() / 4u64;
+    u64 field_words = source_words > target_words ? source_words : target_words;
+    u64 item_words = (source_count > u64(value_words) ? source_count : u64(value_words)) + u64(input.tags);
+    address fields = temporary.reserve(temporary.context, field_words + 7u64 * span + item_words);
+    address own = word_at(fields, field_words);
+    address identity = word_at(own, span);
+    address item = word_at(identity, span);
+    address work = word_at(item, item_words);
+    clear_workspace(own, 7u64 * span + item_words);
+    CustomWorkspace slots = CustomWorkspace(fields, own, identity, item, work);
+
+    PageInputs source = page;
+    source.descriptor = collective_descriptor(bindings, bindings.source);
+    u32 summary = tail ? collective_descriptor(bindings, bindings.prefix) : 0;
+    CustomInput read = CustomInput(source, input.source_layout, input.source_word, summary, dispatch.active,
+        dispatch.lane, dispatch.shared, dispatch.pointer, value_words, input.tags, input.head_word, u32(tail));
+    u32 label = emit_custom_input(read, own, identity, item, fields, memory, host);
+    if (label == 0) { return 0; }
+    u32 remaining = custom_group_remaining(dispatch, page.index, memory);
+    CustomTree tree = CustomTree(dispatch.lane, dispatch.shared, dispatch.pointer, remaining, value_words, input.tags, 0);
+    label = emit_custom_tree(tree, own, work, memory, host);
+    if (label == 0) { return 0; }
+    u32 descriptor = collective_descriptor(bindings, bindings.target);
+    if (reduce) {
+        if (target_count == 0u64) { return label; }
+        collective_fields(input.value_layout, 0, 0, memory, fields);
+        u32 root = stream.constant(context, BuiltinScalar::U32, 63u64);
+        PageInputs raw_target = page;
+        raw_target.descriptor = descriptor;
+        NumericOutput output = NumericOutput(bindings.target, input.target_word, input.push_pointer, input.push);
+        ReductionWriteback write = numeric_writeback(output, raw_target, memory);
+        address body = stream.reserve(context, 180u64 + 44u64 * target_count, 0u64).body;
+        StageWords emitted = reduction_writeback(write, dispatch.lane, root, fields, u32(target_count), own, body);
+        custom_finish(memory, emitted.words, write.target.next, emitted.next);
+        return emitted.label;
+    }
+
+    bool counted_end = counted && !tail && !publish_only;
+    usize binding = counted_end ? input.counter_binding : bindings.summary;
+    u32 word = counted_end ? input.counter_word : 0;
+    SummaryRootMode mode = publish_only ? SummaryRootMode::Publish
+        : (counted_end ? SummaryRootMode::EmptyCountReset : SummaryRootMode::PublishReset);
+    SummaryRootWords root = emit_custom_root(page, collective_descriptor(bindings, binding), word, mode, dispatch, words, slots, memory);
+    if (publish_only) { return root.label; }
+    tree.down = 1;
+    label = emit_custom_tree(tree, own, work, memory, host);
+    if (label == 0) { return 0; }
+    if (counted) {
+        if (tail) { return emit_custom_counted_tail(page, descriptor, dispatch.active, words, slots, memory); }
+        return emit_custom_finish_stage(input, bindings, dispatch, page, root.group, value_words, slots, memory, host);
+    }
+
+    u32 step = tail && words > 1 ? stream.constant(context, BuiltinScalar::U64, 4u64) : 0;
+    if (!tail) { collective_fields(input.value_layout, 0, 0, memory, fields); }
+    u32 target_word = tail ? 0 : input.target_word;
+    PageAddress target = custom_page(page, descriptor, page.index, target_word, u32(tail || target_word != 0), memory);
+    u32 head = !tail && input.tags != 0 ? read_word(item, value_words) : 0;
+    CustomScanWrite write = CustomScanWrite(target, dispatch.active, stream.type_id(context, BuiltinScalar::Bool), head, step, u32(tail));
+    address body = stream.reserve(context, 128u64 + 20u64 * span + 44u64 * target_count, 0u64).body;
+    StageWords emitted = custom_scan_write(write, own, identity, words, fields, u32(target_count), work, body);
+    custom_finish(memory, emitted.words, target.next, emitted.next);
+    return emitted.label;
 }
 
 const u32 ENTRY_MAP=0;
