@@ -399,11 +399,20 @@ impl RelationImport<'_, '_> {
 }
 
 
+struct PublicRelationValues<'a> {
+    function: &'a Function,
+    exposed: &'a BTreeMap<Origin, Borrow>,
+    guards: &'a bounds::PublicGuards<'a>,
+    relation: Option<&'a bounds::RelationGuards>,
+    parameters: &'a BTreeMap<ValueIdentity, bounds::Proof>,
+}
+
 #[derive(Clone, Copy)]
 enum RelationValues<'a> {
     Arguments(&'a BTreeMap<ValueIdentity, bounds::Proof>),
     Substitution(&'a BTreeMap<ValueIdentity, bounds::Proof>),
     Outputs(&'a BTreeMap<ValueIdentity, ValueIdentity>),
+    Public(&'a PublicRelationValues<'a>),
 }
 
 impl RelationValues<'_> {
@@ -412,6 +421,9 @@ impl RelationValues<'_> {
             Self::Arguments(values) => seed.at_call(values),
             Self::Substitution(values) => seed.substitute_values(values),
             Self::Outputs(values) => seed.output_bound(values),
+            Self::Public(public) => canonical_with_guards(
+                seed.clone(), public.function, None, public.exposed, public.guards, BorrowProjection::Input,
+            ),
         }
     }
 
@@ -420,6 +432,10 @@ impl RelationValues<'_> {
             Self::Arguments(values) => RelationPath::Guard(guard.project(values)),
             Self::Substitution(values) => RelationPath::Cases(guard.condition().substitute_values(values)),
             Self::Outputs(values) => RelationPath::Guard(guard.path().output_bound(values)),
+            Self::Public(public) => RelationPath::Guard(match public.relation {
+                Some(scope) => scope.edge(guard),
+                None => guard.project(public.parameters),
+            }),
         }
     }
 
@@ -428,25 +444,31 @@ impl RelationValues<'_> {
             Self::Arguments(values) => condition.at_call(values),
             Self::Substitution(values) => condition.substitute_values(values),
             Self::Outputs(values) => condition.output_bound(values),
+            Self::Public(public) => condition.at_call(public.parameters),
         }
     }
 
     fn operation(self, op: &Op) -> Op {
-        if let Op::Position(origin) = op {
-            return Op::Position(match self {
-                Self::Arguments(values) => origin.bound_at_call(values),
-                Self::Substitution(values) => origin.substitute_values(values),
-                Self::Outputs(values) => origin.bind_outputs(values),
-            });
+        match (self, op) {
+            (Self::Arguments(values), Op::Position(origin)) => Op::Position(origin.bound_at_call(values)),
+            (Self::Substitution(values), Op::Position(origin)) => Op::Position(origin.substitute_values(values)),
+            (Self::Outputs(values), Op::Position(origin)) => Op::Position(origin.bind_outputs(values)),
+            (Self::Public(public), Op::Position(origin)) => {
+                Op::Position(canonical_address(origin, public.function, public.exposed, public.guards))
+            }
+            (Self::Public(_), Op::Read { word, frame, .. }) => {
+                Op::Read { word: *word, epoch: Epoch::Input, frame: *frame }
+            }
+            (Self::Arguments(values), _) => Self::selectors(op, |index| Origin::index_at_call(index, values)),
+            (Self::Substitution(values), _) => Self::selectors(op, |index| Origin::index_substitute(index, values)),
+            _ => op.clone(),
         }
-        let (values, bind) = match self {
-            Self::Arguments(values) => (values, Origin::index_at_call as fn(_, _) -> _),
-            Self::Substitution(values) => (values, Origin::index_substitute as fn(_, _) -> _),
-            Self::Outputs(_) => return op.clone(),
-        };
+    }
+
+    fn selectors(op: &Op, bind: impl Fn(Option<bounds::Selector>) -> Option<bounds::Selector>) -> Op {
         match op {
-            Op::Element { fields, index } => Op::Element { fields: fields.clone(), index: bind(*index, values) },
-            Op::Select(indices) => Op::Select(indices.iter().map(|index| bind(*index, values)).collect()),
+            Op::Element { fields, index } => Op::Element { fields: fields.clone(), index: bind(*index) },
+            Op::Select(indices) => Op::Select(indices.iter().copied().map(bind).collect()),
             _ => op.clone(),
         }
     }
@@ -1292,7 +1314,10 @@ impl Graph {
                 nodes: Vec::with_capacity(self.nodes.len()),
                 variables: self.variables.clone(),
                 frames: Vec::with_capacity(self.frames.len()),
-                inputs: self.inputs.clone(),
+                inputs: match values {
+                    RelationValues::Public(_) => BTreeMap::new(),
+                    _ => self.inputs.clone(),
+                },
             },
         };
         unsafe {
@@ -1308,45 +1333,18 @@ impl Graph {
         &self, function: &Function, exposed: &BTreeMap<Origin, Borrow>,
         guards: &bounds::PublicGuards<'_>,
     ) -> Self {
-        let bindings = || residency::input_parameters(&function.parameters, function.input_width);
-        let relation = guards.relation(bindings);
-        let fallback = std::cell::LazyCell::new(bindings);
-        let input_parameters = relation.map_or_else(|| &*fallback, |scope| &scope.bindings);
-        let nodes = self.nodes.iter().map(|node| {
-            let seeds = canonical_with_guards(node.seeds.clone(), function, None, exposed, guards, BorrowProjection::Input);
-            let edges = node.edges.iter().map(|edge| {
-                let when = RelationPath::Guard(relation.map_or_else(
-                    || edge.when.project(input_parameters), |scope| scope.edge(&edge.when),
-                ));
-                let op = match &edge.op {
-                    Op::Read { word, frame, .. } => Op::Read {
-                        word: *word,
-                        epoch: Epoch::Input,
-                        frame: *frame,
-                    },
-                    Op::Position(origin) => {
-                        let borrow = Borrow::source(Origin::Position(Arc::new(origin.clone())));
-                        let value = canonical_with_guards(borrow, function, None, exposed, guards, BorrowProjection::Input);
-                        match value.sources.iter().next() {
-                            Some(Origin::Position(position)) => Op::Position(position.as_ref().clone()),
-                            _ => edge.op.clone(),
-                        }
-                    }
-                    other => other.clone(),
-                };
-                Edge { from: edge.from, op, when }
-            }).collect();
-            Node { seeds, edges }
-        }).collect();
-        let frames = self.frames.iter().map(|frame| Frame {
-            parent: frame.parent,
-            writes: frame.writes.iter().map(|write| Write {
-                target: write.target,
-                fields: write.fields.clone(),
-                when: write.when.at_call(input_parameters),
-            }).collect(),
-        }).collect();
-        Self { nodes, variables: self.variables.clone(), frames, inputs: BTreeMap::new() }
+        let input_parameters = || residency::input_parameters(&function.parameters, function.input_width);
+        let relation = guards.relation(input_parameters);
+        let local;
+        let parameters = match relation {
+            Some(scope) => &scope.bindings,
+            None => {
+                local = input_parameters();
+                &local
+            }
+        };
+        let public = PublicRelationValues { function, exposed, guards, relation, parameters };
+        self.bind_values(RelationValues::Public(&public))
     }
     fn extension(&self,other:&Graph)->bool{other.nodes.get(..self.nodes.len())==Some(self.nodes.as_slice())&&other.frames==self.frames&&other.variables==self.variables&&other.inputs==self.inputs}
     fn references(&self,source:&Origin)->bool{

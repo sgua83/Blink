@@ -1419,6 +1419,30 @@ fn canonical_relation(
     canonical_with_guards(borrow, function, resource, exposed, &bounds::PublicGuards::new(parameters), projection)
 }
 
+fn canonical_address(
+    origin: &address::Origin, function: &Function, exposed: &BTreeMap<Origin, Borrow>,
+    guards: &bounds::PublicGuards<'_>,
+) -> address::Origin {
+    let mut value = origin.map_borrows(|borrow| {
+        canonical_with_guards(borrow.clone(), function, None, exposed, guards, BorrowProjection::Input)
+    });
+    if let address::Root::External(address::Identity::Value(ids)) = &mut value.root {
+        *ids = ids.iter().filter_map(|id| function.parameters.get(id).copied().filter(|id| function.input(*id))).collect();
+    }
+    if let address::Root::Resource { borrow, index: Some(index) }
+        | address::Root::Dataset { borrow, index: Some(index) } = &mut value.root
+    {
+        match index.map(|id| function.parameters.get(&id).copied().filter(|id| function.input(*id))) {
+            Some(bound) => *index = bound,
+            None => *borrow = Borrow::source(Origin::Unresolved),
+        }
+    }
+    if !matches!(value.root, address::Root::Local { .. }) {
+        value.positions = Arc::from([]);
+    }
+    value
+}
+
 fn canonical_with_guards(
     mut borrow: Borrow, function: &Function, resource: Option<&Borrow>, exposed: &BTreeMap<Origin, Borrow>,
     guards: &bounds::PublicGuards<'_>, projection: BorrowProjection,
@@ -1433,20 +1457,6 @@ fn canonical_with_guards(
     let known=!borrow.sources.is_empty();
     borrow.sources.retain_paths(|path| guards.possible(path));
     if known&&borrow.sources.is_empty(){borrow.sources.insert(Origin::Inactive);}
-    let address=|origin:&address::Origin|{
-        let mut value=origin.map_borrows(|borrow|canonical_with_guards(borrow.clone(),function,None,exposed,guards,BorrowProjection::Input));
-            if let address::Root::External(address::Identity::Value(ids))=&mut value.root {
-                *ids=ids.iter().filter_map(|id|function.parameters.get(id).copied().filter(|id|function.input(*id))).collect();
-            }
-            if let address::Root::Resource{borrow,index:Some(index)}|address::Root::Dataset{borrow,index:Some(index)}=&mut value.root {
-                match index.map(|id|function.parameters.get(&id).copied().filter(|id|function.input(*id))) {
-                    Some(bound)=>*index=bound,
-                    None=>*borrow=Borrow::source(Origin::Unresolved),
-                }
-            }
-            if !matches!(value.root,address::Root::Local { .. }) {value.positions=Arc::from([]);}
-        value
-    };
     let renamed=|source, when: &bounds::Clause|{
         if matches!(&source,Origin::Element{..}|Origin::Projection{..}) && let Some(outputs)=exposed.get(&source){
             return match resource{Some(resource)=>resource.clone(),None=>outputs.clone()};
@@ -1475,8 +1485,8 @@ fn canonical_with_guards(
             }).collect(),
         }),
         Origin::TaskOutput{task,projection}=>canonical_with_guards(*task,function,None,exposed,guards,BorrowProjection::Input).task_projection(projection.map_result(|id|function.parameters.get(&id).copied())),
-        Origin::Position(origin)=>Borrow::source(Origin::Position(Arc::new(address(&origin)))),
-        Origin::Contents{origin,word}=>Borrow::source(Origin::Contents{origin:Arc::new(address(&origin)),word}),
+        Origin::Position(origin)=>Borrow::source(Origin::Position(Arc::new(canonical_address(&origin,function,exposed,guards)))),
+        Origin::Contents{origin,word}=>Borrow::source(Origin::Contents{origin:Arc::new(canonical_address(&origin,function,exposed,guards)),word}),
         Origin::Relation(graph,root)=>Borrow::source(Origin::Relation(Arc::new(graph.canonical(function,exposed,guards)),root)),
         Origin::Unresolved|Origin::Inactive|Origin::External=>Borrow::source(source),
     }};
