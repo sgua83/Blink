@@ -23,7 +23,7 @@ struct Origin { original: Borrowed, element: u32 }
 struct Frame<'a, P> {
     bindings: &'a P,
     domains: btree_set::Iter<'a, IndexDomain>,
-    domain: Option<IndexDomain>, predicate: Option<ScalarPredicate>,
+    domain: Option<IndexDomain>,
     facts: Facts, clause: Option<Clause>,
 }
 unsafe fn frame<'a, 'b, P>(slot: Slot) -> &'a mut Frame<'b, P> { unsafe { &mut *slot.cast() } }
@@ -150,15 +150,14 @@ unsafe extern "C" fn emit_common<P>(slot: Slot, target: Borrowed, source: Borrow
     let [from, low, extended, to] = unsafe { common_scalars(common) };
     unsafe { frame::<P>(slot) }.facts.insert(Fact::Index(unsafe { *target.cast() }, IndexDomain::CommonRange(unsafe { *source.cast() }, from, low, extended, to)));
 }
-unsafe extern "C" fn predicate<P: CallBindings>(slot: Slot, value: Borrowed) -> Borrowed {
-    let c = unsafe { frame::<P>(slot) }; c.predicate = unsafe { *value.cast::<ScalarPredicate>() }.at_call(c.bindings);
-    c.predicate.as_ref().map_or(ptr::null(), |v| ptr::from_ref(v).cast())
+unsafe extern "C" fn singleton(value: Borrowed) -> Range {
+    match unsafe { optional_proof(value) }.map(|proof| proof.interval_source(0)) {
+        Some([BitRange { lower, upper }]) => Range { lower: *lower, upper: *upper },
+        _ => Range { lower: 1, upper: 0 },
+    }
 }
-unsafe extern "C" fn comparison<P: CallBindings>(slot: Slot, scalar: Borrowed, a: Borrowed, b: Borrowed, strict: u32) -> Borrowed {
-    let c = unsafe { frame::<P>(slot) };
-    let op = if strict != 0 { Comparison::Less } else { Comparison::LessEqual };
-    c.predicate = ScalarPredicate::new(op, unsafe { *scalar.cast() }, Operand::Value(unsafe { *a.cast() }), Operand::Value(unsafe { *b.cast() })).at_call(c.bindings);
-    c.predicate.as_ref().map_or(ptr::null(), |v| ptr::from_ref(v).cast())
+unsafe extern "C" fn emit_predicate<P>(slot: Slot, value: fact_fields::PredicateView, truth: u32) {
+    unsafe { frame::<P>(slot) }.facts.insert(Fact::Predicate(unsafe { value.key() }, truth != 0));
 }
 #[repr(C)]
 struct Host {
@@ -180,8 +179,8 @@ struct Host {
     cast_domain: unsafe extern "C" fn(Slot, Borrowed, Common) -> Borrowed,
     origin: unsafe extern "C" fn(Input, usize) -> Origin,
     emit_common: unsafe extern "C" fn(Slot, Borrowed, Borrowed, Common),
-    predicate: unsafe extern "C" fn(Slot, Borrowed) -> Borrowed,
-    comparison: unsafe extern "C" fn(Slot, Borrowed, Borrowed, Borrowed, u32) -> Borrowed,
+    singleton: unsafe extern "C" fn(Borrowed) -> Range,
+    emit_predicate: unsafe extern "C" fn(Slot, fact_fields::PredicateView, u32),
     inspect_predicate: unsafe extern "C" fn(Borrowed) -> fact_fields::PredicateView,
     scalar: unsafe extern "C" fn(Borrowed) -> fact_fields::ScalarView,
     compare: unsafe extern "C" fn(Borrowed, Borrowed) -> i32,
@@ -192,12 +191,12 @@ unsafe extern "C" {
 }
 impl Proof {
     pub(super) fn call_fact<P: CallBindings>(value: Fact, bindings: &P) -> Option<Clause> {
-        let mut c = Frame { bindings, domains: btree_set::Iter::default(), domain: None, predicate: None, facts: Facts::new(), clause: None };
+        let mut c = Frame { bindings, domains: btree_set::Iter::default(), domain: None, facts: Facts::new(), clause: None };
         unsafe { project(ptr::from_mut(&mut c).cast(), fact_fields::Fields::from(&value), Host {
             input: input::<P>, range, boolean, select_case: case, include: include::<P>, include_cases: include_cases::<P>,
             impossible: impossible::<P>, emit: emit::<P>, commit: commit::<P>, count: count::<P>, below: below::<P>,
             mapped_domain: mapped_domain::<P>, common, converted, begin: begin::<P>, next: next::<P>,
-            cast_domain: cast_domain::<P>, origin, emit_common: emit_common::<P>, predicate: predicate::<P>, comparison: comparison::<P>,
+            cast_domain: cast_domain::<P>, origin, emit_common: emit_common::<P>, singleton, emit_predicate: emit_predicate::<P>,
             inspect_predicate: fact_fields::predicate, scalar: fact_fields::scalar, compare: fact_fields::compare,
         }) };
         c.clause

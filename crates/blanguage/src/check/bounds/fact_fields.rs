@@ -116,22 +116,46 @@ pub(super) fn operand(value: &Operand) -> OperandView {
         },
     }
 }
+// The comparison subset of bootstrap.scalar_fold::BinaryOperation.
+#[repr(u32)]
+enum PredicateOperation {
+    Equal = 10,
+    NotEqual = 11,
+    Less = 12,
+    Greater = 13,
+    LessEqual = 14,
+    GreaterEqual = 15,
+}
 #[repr(C)]
 pub(super) struct PredicateView {
     scalar: Borrowed,
-    operation: u32,
+    operation: PredicateOperation,
     left: OperandView,
     right: OperandView,
+}
+impl PredicateView {
+    pub(super) unsafe fn key(self) -> ScalarPredicate {
+        let operation = match self.operation {
+            PredicateOperation::Equal => Comparison::Equal,
+            PredicateOperation::NotEqual => Comparison::NotEqual,
+            PredicateOperation::Less => Comparison::Less,
+            PredicateOperation::Greater => Comparison::Greater,
+            PredicateOperation::LessEqual => Comparison::LessEqual,
+            PredicateOperation::GreaterEqual => Comparison::GreaterEqual,
+        };
+        let scalar = unsafe { *self.scalar.cast::<Scalar>() };
+        ScalarPredicate::new(operation, scalar, unsafe { operand_key(self.left) }, unsafe { operand_key(self.right) })
+    }
 }
 pub(super) unsafe extern "C" fn predicate(value: Borrowed) -> PredicateView {
     let value = unsafe { &*value.cast::<ScalarPredicate>() };
     let operation = match value.op {
-        Comparison::Equal => 10,
-        Comparison::NotEqual => 11,
-        Comparison::Less => 12,
-        Comparison::Greater => 13,
-        Comparison::LessEqual => 14,
-        Comparison::GreaterEqual => 15,
+        Comparison::Equal => PredicateOperation::Equal,
+        Comparison::NotEqual => PredicateOperation::NotEqual,
+        Comparison::Less => PredicateOperation::Less,
+        Comparison::Greater => PredicateOperation::Greater,
+        Comparison::LessEqual => PredicateOperation::LessEqual,
+        Comparison::GreaterEqual => PredicateOperation::GreaterEqual,
     };
     PredicateView {
         scalar: ptr::from_ref(&value.scalar).cast(),

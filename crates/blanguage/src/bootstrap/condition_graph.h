@@ -901,8 +901,8 @@ struct CallFactHost {
  cfn<address,address,address,CallFactCommon> cast_domain;
  cfn<CallFactOrigin,CallFactInput,usize> ensures memory(read) origin;
  cfn<void,address,address,address,CallFactCommon> emit_common;
- cfn<address,address,address> predicate;
- cfn<address,address,address,address,address,u32> comparison;
+ cfn<CallFactRange,address> ensures memory(read) singleton;
+ cfn<void,address,InternalPredicate,u32> emit_predicate;
  cfn<InternalPredicate,address> ensures memory(read) inspect_predicate;
  cfn<InternalScalar,address> ensures memory(read) scalar;
  cfn<i32,address,address> ensures memory(read) compare;
@@ -913,7 +913,7 @@ extern "C" void call_fact(address context,FactView fact,CallFactHost host) on cp
  requires nonzero(host.impossible) requires nonzero(host.emit) requires nonzero(host.commit) requires nonzero(host.count)
  requires nonzero(host.below) requires nonzero(host.mapped_domain) requires nonzero(host.common) requires nonzero(host.converted)
  requires nonzero(host.begin) requires nonzero(host.next) requires nonzero(host.cast_domain) requires nonzero(host.origin)
- requires nonzero(host.emit_common) requires nonzero(host.predicate) requires nonzero(host.comparison)
+ requires nonzero(host.emit_common) requires nonzero(host.singleton) requires nonzero(host.emit_predicate)
  requires nonzero(host.inspect_predicate) requires nonzero(host.scalar) requires nonzero(host.compare);
 void call_fact_domains(address context,CallFactHost host,CallFactInput input,address target,FactView key,u32 mode,CallFactCommon common) on cpu
  requires nonzero(host.begin) requires nonzero(host.next) requires nonzero(host.cast_domain) requires nonzero(host.emit);

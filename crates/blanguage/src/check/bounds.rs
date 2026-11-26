@@ -223,21 +223,6 @@ impl ScalarPredicate {
     fn map(self, identity: impl Fn(ValueIdentity) -> Option<ValueIdentity>) -> Option<Self> {
         Some(Self::new(self.op, self.scalar, self.a.map(&identity)?, self.b.map(&identity)?))
     }
-    fn at_call(self, bindings: &impl CallBindings) -> Option<Self> {
-        let operand = |operand| Some(match operand {
-            Operand::Value(id) => {
-                let input = bindings.input(id)?;
-                // Capture already preserves a constant's exact storage bits.
-                // This is identity substitution, never floating range inference.
-                match input.intervals() {
-                    [BitRange { lower, upper }] if lower == upper => Operand::Constant(self.scalar, if self.scalar.is_float(){floating::bits(self.scalar,*lower)}else{*lower^self.scalar.order_bias()}),
-                    _ => Operand::Value(input.identity()?),
-                }
-            }
-            constant => constant,
-        });
-        Some(Self::new(self.op, self.scalar, operand(self.a)?, operand(self.b)?))
-    }
 }
 
 

@@ -2146,13 +2146,31 @@ void call_fact_domains(address context,CallFactHost host,CallFactInput input,add
   domain=host.next(context);
  }
 }
+InternalOperand call_predicate_operand(InternalOperand operand,CallFactInput input,address scalar,CallFactHost host) on cpu
+ requires nonzero(host.singleton) requires nonzero(host.scalar) {
+ if(operand.is_constant!=0){return operand;}
+ if(has_call_input(input)){
+  CallFactRange point=host.singleton(input.original);
+  if(point.lower==point.upper){
+   InternalScalar encoding=host.scalar(scalar);
+   u64 bits=encoding.kind==2 ? float_bits(encoding.width,point.lower) : point.lower^encoding.bias;
+   return InternalOperand(address(),bits,scalar,1);
+  }
+ }
+ return InternalOperand(input.identity,0u64,address(),0);
+}
+
+bool has_call_operand(InternalOperand operand) on cpu {
+ return operand.is_constant!=0||address_bits(operand.identity)!=0;
+}
+
 extern "C" void call_fact(address context,FactView fact,CallFactHost host) on cpu
  requires nonzero(host.input) requires nonzero(host.range) requires nonzero(host.boolean)
  requires nonzero(host.select_case) requires nonzero(host.include) requires nonzero(host.include_cases)
  requires nonzero(host.impossible) requires nonzero(host.emit) requires nonzero(host.commit) requires nonzero(host.count)
  requires nonzero(host.below) requires nonzero(host.mapped_domain) requires nonzero(host.common) requires nonzero(host.converted)
  requires nonzero(host.begin) requires nonzero(host.next) requires nonzero(host.cast_domain) requires nonzero(host.origin)
- requires nonzero(host.emit_common) requires nonzero(host.predicate) requires nonzero(host.comparison)
+ requires nonzero(host.emit_common) requires nonzero(host.singleton) requires nonzero(host.emit_predicate)
  requires nonzero(host.inspect_predicate) requires nonzero(host.scalar) requires nonzero(host.compare) {
  if(fact.kind==FactKind::Boolean||fact.kind==FactKind::Zero||fact.kind==FactKind::NonZero){
   u32 truth=0;if(fact.kind==FactKind::Boolean){truth=fact.flag;}if(fact.kind==FactKind::NonZero){truth=1;}
@@ -2167,8 +2185,13 @@ extern "C" void call_fact(address context,FactView fact,CallFactHost host) on cp
   CallFactInput left=host.input(context,fact.first);CallFactInput right=host.input(context,fact.second);
   if(!has_call_input(left)||!has_call_input(right)){return;}
   if(address_bits(left.identity)!=0&&address_bits(right.identity)!=0){host.below(context,left,right,fact.flag,fact.scalar);return;}
-  address mapped=host.comparison(context,fact.scalar,fact.first,fact.second,fact.flag);
-  if(address_bits(mapped)!=0){FactView output=fact;output.kind=FactKind::Predicate;output.payload=mapped;output.flag=1;host.emit(context,output);host.commit(context);}
+  InternalOperand a=call_predicate_operand(InternalOperand(fact.first,0u64,address(),0),left,fact.scalar,host);
+  if(!has_call_operand(a)){return;}
+  InternalOperand b=call_predicate_operand(InternalOperand(fact.second,0u64,address(),0),right,fact.scalar,host);
+  if(!has_call_operand(b)){return;}
+  BinaryOperation operation=fact.flag!=0 ? BinaryOperation::Less : BinaryOperation::LessEqual;
+  host.emit_predicate(context,InternalPredicate(fact.scalar,operation,a,b),1);
+  host.commit(context);
   return;
  }
  if(fact.kind==FactKind::Equal||fact.kind==FactKind::NotEqual){
@@ -2235,14 +2258,19 @@ extern "C" void call_fact(address context,FactView fact,CallFactHost host) on cp
   if(address_bits(input.identity)!=0){FactView output=fact;output.first=input.identity;host.emit(context,output);host.commit(context);}return;
  }
  if(fact.kind==FactKind::Predicate){
-  address mapped=host.predicate(context,fact.payload);if(address_bits(mapped)==0){return;}
-  FactView output=fact;output.payload=mapped;host.emit(context,output);
-  InternalPredicate original=host.inspect_predicate(fact.payload);u32 side=0;
-  while(side<2){
-   InternalOperand operand=original.left;if(side!=0){operand=original.right;}
-   if(operand.is_constant==0){CallFactInput input=host.input(context,operand.identity);if(address_bits(input.identity)!=0){call_fact_domains(context,host,input,input.identity,fact,2,CallFactCommon(address(),address(),address(),address(),address()));}}
-   side+=1;
-  }
+  InternalPredicate original=host.inspect_predicate(fact.payload);
+  CallFactInput left=CallFactInput(address(),address(),0);
+  if(original.left.is_constant==0){left=host.input(context,original.left.identity);}
+  InternalOperand a=call_predicate_operand(original.left,left,original.scalar,host);
+  if(!has_call_operand(a)){return;}
+  CallFactInput right=CallFactInput(address(),address(),0);
+  if(original.right.is_constant==0){right=host.input(context,original.right.identity);}
+  InternalOperand b=call_predicate_operand(original.right,right,original.scalar,host);
+  if(!has_call_operand(b)){return;}
+  host.emit_predicate(context,InternalPredicate(original.scalar,original.operation,a,b),fact.flag);
+  CallFactCommon common=CallFactCommon(address(),address(),address(),address(),address());
+  if(address_bits(left.identity)!=0){call_fact_domains(context,host,left,left.identity,fact,2,common);}
+  if(address_bits(right.identity)!=0){call_fact_domains(context,host,right,right.identity,fact,2,common);}
   host.commit(context);
  }
 }
