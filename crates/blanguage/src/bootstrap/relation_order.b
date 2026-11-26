@@ -692,3 +692,32 @@ extern "C" void label_lexical_frames(WalkSlice runs, address frames, usize count
         index += 1u64;
     }
 }
+
+void bind_relation_items(address context, RelationBindSlice part, cfn<void,address,address,address,usize> emit) on cpu
+    requires nonzero(emit)
+{
+    usize index = 0u64;
+    while (index < part.source.count) {
+        emit(context,part.destination,part.source.data,index);
+        index += 1u64;
+    }
+}
+
+extern "C" void bind_relation_values(address context, usize nodes, usize frames, RelationBindOutput output) on cpu
+    requires nonzero(output.node) requires nonzero(output.edge)
+    requires nonzero(output.frame) requires nonzero(output.write)
+{
+    usize index = 0u64;
+    while (index < nodes) {
+        RelationBindSlice node = output.node(context,index);
+        bind_relation_items(context,node,output.edge);
+        index += 1u64;
+    }
+
+    index = 0u64;
+    while (index < frames) {
+        RelationBindSlice frame = output.frame(context,index);
+        bind_relation_items(context,frame,output.write);
+        index += 1u64;
+    }
+}

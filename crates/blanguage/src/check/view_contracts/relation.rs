@@ -398,6 +398,134 @@ impl RelationImport<'_, '_> {
     }
 }
 
+
+#[derive(Clone, Copy)]
+enum RelationValues<'a> {
+    Arguments(&'a BTreeMap<ValueIdentity, bounds::Proof>),
+    Substitution(&'a BTreeMap<ValueIdentity, bounds::Proof>),
+    Outputs(&'a BTreeMap<ValueIdentity, ValueIdentity>),
+}
+
+impl RelationValues<'_> {
+    fn seed(self, seed: &Borrow) -> Borrow {
+        match self {
+            Self::Arguments(values) => seed.at_call(values),
+            Self::Substitution(values) => seed.substitute_values(values),
+            Self::Outputs(values) => seed.output_bound(values),
+        }
+    }
+
+    fn guard(self, guard: &RelationPath) -> RelationPath {
+        match self {
+            Self::Arguments(values) => RelationPath::Guard(guard.project(values)),
+            Self::Substitution(values) => RelationPath::Cases(guard.condition().substitute_values(values)),
+            Self::Outputs(values) => RelationPath::Guard(guard.path().output_bound(values)),
+        }
+    }
+
+    fn condition(self, condition: &bounds::Condition) -> bounds::Condition {
+        match self {
+            Self::Arguments(values) => condition.at_call(values),
+            Self::Substitution(values) => condition.substitute_values(values),
+            Self::Outputs(values) => condition.output_bound(values),
+        }
+    }
+
+    fn operation(self, op: &Op) -> Op {
+        if let Op::Position(origin) = op {
+            return Op::Position(match self {
+                Self::Arguments(values) => origin.bound_at_call(values),
+                Self::Substitution(values) => origin.substitute_values(values),
+                Self::Outputs(values) => origin.bind_outputs(values),
+            });
+        }
+        let (values, bind) = match self {
+            Self::Arguments(values) => (values, Origin::index_at_call as fn(_, _) -> _),
+            Self::Substitution(values) => (values, Origin::index_substitute as fn(_, _) -> _),
+            Self::Outputs(_) => return op.clone(),
+        };
+        match op {
+            Op::Element { fields, index } => Op::Element { fields: fields.clone(), index: bind(*index, values) },
+            Op::Select(indices) => Op::Select(indices.iter().map(|index| bind(*index, values)).collect()),
+            _ => op.clone(),
+        }
+    }
+}
+
+#[repr(C)]
+struct RelationBindSlice {
+    source: WalkSlice,
+    destination: Slot,
+}
+
+#[repr(C)]
+struct RelationBindOutput {
+    node: unsafe extern "C" fn(Slot, usize) -> RelationBindSlice,
+    edge: unsafe extern "C" fn(Slot, Slot, Borrowed, usize),
+    frame: unsafe extern "C" fn(Slot, usize) -> RelationBindSlice,
+    write: unsafe extern "C" fn(Slot, Slot, Borrowed, usize),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.relation_order::bind_relation_values"]
+    fn bind_relation_values(context: Slot, nodes: usize, frames: usize, output: RelationBindOutput);
+}
+
+struct BindRelation<'a> {
+    source: &'a Graph,
+    values: RelationValues<'a>,
+    result: Graph,
+}
+
+impl BindRelation<'_> {
+    const OUTPUT: RelationBindOutput = RelationBindOutput {
+        node: Self::node, edge: Self::edge, frame: Self::frame, write: Self::write,
+    };
+
+    unsafe extern "C" fn node(context: Slot, index: usize) -> RelationBindSlice {
+        let binding = unsafe { &mut *context.cast::<Self>() };
+        let original = &binding.source.nodes[index];
+        binding.result.nodes.push(Node {
+            seeds: binding.values.seed(&original.seeds),
+            edges: Vec::with_capacity(original.edges.len()),
+        });
+        RelationBindSlice {
+            source: WalkSlice::of(&original.edges),
+            destination: ptr::from_mut(&mut binding.result.nodes[index]).cast(),
+        }
+    }
+
+    unsafe extern "C" fn edge(context: Slot, node: Slot, source: Borrowed, index: usize) {
+        let values = unsafe { ptr::addr_of!((*context.cast::<Self>()).values).read() };
+        let node = unsafe { &mut *node.cast::<Node>() };
+        let edge = unsafe { &*source.cast::<Edge>().add(index) };
+        let when = values.guard(&edge.when);
+        node.edges.push(Edge { from: edge.from, op: values.operation(&edge.op), when });
+    }
+
+    unsafe extern "C" fn frame(context: Slot, index: usize) -> RelationBindSlice {
+        let binding = unsafe { &mut *context.cast::<Self>() };
+        let original = &binding.source.frames[index];
+        RelationBindSlice {
+            source: WalkSlice::of(&original.writes),
+            destination: append_relation_frame(
+                &mut binding.result.frames, original.parent.unwrap_or(usize::MAX), original.writes.len(),
+            ),
+        }
+    }
+
+    unsafe extern "C" fn write(context: Slot, frame: Slot, source: Borrowed, index: usize) {
+        let values = unsafe { ptr::addr_of!((*context.cast::<Self>()).values).read() };
+        let frame = unsafe { &mut *frame.cast::<Frame>() };
+        let write = unsafe { &*source.cast::<Write>().add(index) };
+        frame.writes.push(Write {
+            target: write.target,
+            fields: write.fields.clone(),
+            when: values.condition(&write.when),
+        });
+    }
+}
+
 struct RelationWalk<'g, F> {
     graph: RelationView<'g>,
     accepts: F,
@@ -1144,9 +1272,37 @@ impl Graph {
         let (reachable, _) = self.reachable(root);
         reachable.into_iter().map(|id| &self.nodes[id].seeds).collect()
     }
-    pub(in crate::check) fn at_call(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{let mut v=self.clone();for n in &mut v.nodes{n.seeds=n.seeds.at_call(values);for e in &mut n.edges{e.when=RelationPath::Guard(e.when.project(values));match &mut e.op{Op::Position(p)=>*p=p.bound_at_call(values),Op::Element{index,..}=>*index=Origin::index_at_call(*index,values),Op::Select(indices)=>indices.iter_mut().for_each(|index|*index=Origin::index_at_call(*index,values)),_=>{}}}}for f in &mut v.frames{for w in &mut f.writes{w.when=w.when.at_call(values);}}v}
-    pub(in crate::check) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{let mut v=self.clone();for n in &mut v.nodes{n.seeds=n.seeds.substitute_values(values);for e in &mut n.edges{e.when=RelationPath::Cases(e.when.condition().substitute_values(values));match &mut e.op{Op::Position(p)=>*p=p.substitute_values(values),Op::Element{index,..}=>*index=Origin::index_substitute(*index,values),Op::Select(indices)=>indices.iter_mut().for_each(|index|*index=Origin::index_substitute(*index,values)),_=>{}}}}for f in &mut v.frames{for w in &mut f.writes{w.when=w.when.substitute_values(values);}}v}
-    pub(in crate::check) fn output_bound(&self,values:&BTreeMap<ValueIdentity,ValueIdentity>)->Self{let mut v=self.clone();for n in &mut v.nodes{n.seeds=n.seeds.output_bound(values);for e in &mut n.edges{e.when=RelationPath::Guard(e.when.path().output_bound(values));if let Op::Position(p)=&mut e.op{*p=p.bind_outputs(values);}}}for f in &mut v.frames{for w in &mut f.writes{w.when=w.when.output_bound(values);}}v}
+    pub(in crate::check) fn at_call(&self, values: &BTreeMap<ValueIdentity, bounds::Proof>) -> Self {
+        self.bind_values(RelationValues::Arguments(values))
+    }
+
+    pub(in crate::check) fn substitute_values(&self, values: &BTreeMap<ValueIdentity, bounds::Proof>) -> Self {
+        self.bind_values(RelationValues::Substitution(values))
+    }
+
+    pub(in crate::check) fn output_bound(&self, values: &BTreeMap<ValueIdentity, ValueIdentity>) -> Self {
+        self.bind_values(RelationValues::Outputs(values))
+    }
+
+    fn bind_values(&self, values: RelationValues<'_>) -> Self {
+        let mut binding = BindRelation {
+            source: self,
+            values,
+            result: Self {
+                nodes: Vec::with_capacity(self.nodes.len()),
+                variables: self.variables.clone(),
+                frames: Vec::with_capacity(self.frames.len()),
+                inputs: self.inputs.clone(),
+            },
+        };
+        unsafe {
+            bind_relation_values(
+                ptr::from_mut(&mut binding).cast(), self.nodes.len(), self.frames.len(), BindRelation::OUTPUT,
+            );
+        }
+        binding.result
+    }
+
     pub(in crate::check) fn normalize(&mut self,normal:&mut bounds::Normalizer){for n in &mut self.nodes{n.seeds.normalize_contract(normal);for e in &mut n.edges{e.when.normalize(normal);if let Op::Position(p)=&mut e.op{normal.origin(p);}}}for f in &mut self.frames{for w in &mut f.writes{w.when=normal.condition(&w.when);}}}
     pub(super) fn canonical(
         &self, function: &Function, exposed: &BTreeMap<Origin, Borrow>,
