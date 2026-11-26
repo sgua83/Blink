@@ -4648,6 +4648,22 @@ extern "C" StageWords close_custom_prefix(read CustomPrefix input, CustomPrefixO
     return StageWords(out.words, out.next, opened.end);
 }
 
+extern "C" void segment_identity(ScalarHost host, SegmentMerge merge, address source,
+    cfn<SegmentIdentityField,address,u32> field, u32 fields, address output) on cpu
+    requires nonzero(host.constant) requires nonzero(field) {
+    for (word in 0..(merge.value_words + 1 + merge.counted)) {
+        put(output, u64(word), merge.zero);
+    }
+    for (index in 0..fields) {
+        let component = field(source, index);
+        u64 word = u64(component.offset / 4);
+        put(output, word, host.constant(host.context, BuiltinScalar::U32, u64(u32(component.bits))));
+        if (scalar_definition(component.scalar).width == 64) {
+            put(output, word + 1u64, host.constant(host.context, BuiltinScalar::U32, component.bits >> 32u64));
+        }
+    }
+}
+
 extern "C" TreeWords segment_add(SegmentAdd input, address fields, u32 count,
     address workspace, address body, address decorations) on cpu {
     StageCursor out = StageCursor(body, 0u64, input.target.next);

@@ -854,6 +854,11 @@ struct SegmentMerge {
     u32 counted;
 };
 
+struct SegmentIdentityField { u64 bits; u32 offset; BuiltinScalar scalar; };
+extern "C" void segment_identity(ScalarHost host, SegmentMerge merge, address source,
+    cfn<SegmentIdentityField,address,u32> field, u32 fields, address output) on cpu
+    requires nonzero(host.constant) requires nonzero(field);
+
 struct ScanLevel { u32 mask; u32 stride; };
 struct SegmentAdd {
     SegmentMerge merge;

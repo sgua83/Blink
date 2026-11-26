@@ -10,6 +10,7 @@ struct SegmentField {
     shift: u32,
 }
 
+#[derive(Clone, Copy)]
 #[repr(C)]
 struct SegmentMerge {
     operator: u32,
@@ -18,6 +19,19 @@ struct SegmentMerge {
     zero: u32,
     value_words: u32,
     counted: u32,
+}
+
+#[repr(C)]
+struct SegmentIdentityField {
+    bits: Bits,
+    offset: u32,
+    scalar: ScalarCode,
+}
+
+unsafe extern "C" fn segment_identity_field(source: *const std::ffi::c_void, index: u32) -> SegmentIdentityField {
+    let segment = unsafe { &*source.cast::<Segment<'_>>() };
+    let (scalar, offset) = segment.ty.components[index as usize];
+    SegmentIdentityField { bits: segment.operator.identity(scalar), offset, scalar: scalar.into() }
 }
 
 #[repr(C)]
@@ -76,6 +90,10 @@ struct SegmentGroup {
 }
 
 unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::segment_identity"]
+    fn emit_segment_identity(host: ScalarHost, merge: SegmentMerge, source: *const std::ffi::c_void,
+        field: unsafe extern "C" fn(*const std::ffi::c_void, u32) -> SegmentIdentityField,
+        fields: u32, output: *mut u32);
     #[link_name = "bootstrap.spirv_envelope::segment_group"]
     fn emit_segment_group(input: SegmentGroup, levels: *const ScanLevel, fields: *const SegmentField,
         source_fields: *const SegmentStorageField, target_fields: *const SegmentStorageField,
@@ -109,17 +127,6 @@ impl Emitter<'_> {
         Segment { ty, operator, counted, fields }
     }
 
-    fn segment_identity(&mut self, scan: &Segment<'_>) -> Vec<u32> {
-        let zero = self.constant(Scalar::U32, 0);
-        let mut words=vec![zero;scan.summary_words()];
-        for (scalar,offset) in &scan.ty.components {
-            let value=self.raw_constant(*scalar,scan.operator.identity(*scalar));
-            for (part,word) in self.split_words(*scalar,value, Scalar::U32).into_iter().enumerate() {
-                words[(*offset/4) as usize+part]=word;
-            }
-        }
-        words
-    }
     fn segment_storage_fields(&mut self, scan: &Segment<'_>, first: u32) -> Vec<SegmentStorageField> {
         scan.ty.components.iter().map(|&(scalar, offset)| {
             let unit = Self::physical_unit(scalar);
@@ -203,9 +210,15 @@ impl Emitter<'_> {
         active: u32,
         count: u32,
     ) {
-        let identity = self.segment_identity(scan);
         let merge = self.segment_merge_input(scan);
         let words = scan.summary_words();
+        let fields = scan.fields.len();
+        let mut identity = Vec::with_capacity(words);
+        unsafe {
+            emit_segment_identity(self.scalar_host(), merge, std::ptr::from_ref(scan).cast(),
+                segment_identity_field, fields as u32, identity.as_mut_ptr());
+            identity.set_len(words);
+        }
         let levels = self.scan_levels();
         let mut workspace = vec![0; 8 * words];
         for (index, slot) in workspace[..words].iter_mut().enumerate().skip(1) {
@@ -250,7 +263,6 @@ impl Emitter<'_> {
         };
 
 
-        let fields = scan.fields.len();
         let layers = if scan.counted && pass == SegmentPass::Main { 6 } else { 12 };
         let final_merges = if pass == SegmentPass::Finish { 2 } else { 0 };
         let body = self.body.len();

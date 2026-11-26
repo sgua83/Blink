@@ -1019,9 +1019,6 @@ unsafe extern "C" {
     fn write_summary_words(body: *mut u32, pointers: *const u32, values: *const u32, count: u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::emit_payload_load"]
     fn emit_payload_load(input: PayloadShape, operands: *const u32, result: u32, host: MemoryHost) -> u32;
-    #[link_name = "bootstrap.spirv_envelope::emit_payload_store"]
-    fn emit_payload_store(input: PayloadShape, value: u32, pointers: *const u32,
-        output: *mut u32, host: MemoryHost);
     #[link_name = "bootstrap.spirv_envelope::pack_record"]
     fn pack_record(host: PackingHost, word_type: u32, zero: u32, next: u32,
         packed: *mut u32, body: *mut u32) -> PayloadWrite;
@@ -1647,25 +1644,12 @@ impl Emitter<'_> {
     fn raw_type(&self, scalar: Scalar) -> u32 {
         self.types[&Self::raw_scalar(scalar)]
     }
-    fn raw_constant(&mut self, scalar: Scalar, bits: Bits) -> u32 {
-        self.constant_bits(Self::raw_scalar(scalar), bits)
-    }
     fn raw_bits(&mut self, value: Reg) -> u32 {
         let scalar = self.stage.registers[value].into();
         let value = self.value(value);
         unsafe { encode_raw_bits(scalar, value, self.memory_host()) }
     }
 
-    fn split_words(&mut self, scalar: Scalar, bits: u32, unit: Scalar) -> Vec<u32> {
-        let count = scalar.size().div_ceil(unit.size());
-        let input = PayloadShape { access: PayloadAccess::Words, scalar: scalar.into(), unit: unit.into(), count };
-        let mut words = Vec::with_capacity(count as usize);
-        unsafe {
-            emit_payload_store(input, bits, std::ptr::null(), words.as_mut_ptr(), self.memory_host());
-            words.set_len(count as usize);
-        }
-        words
-    }
 
     fn physical_unit(scalar: Scalar) -> Scalar {
         Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 })
