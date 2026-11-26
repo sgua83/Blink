@@ -621,8 +621,8 @@ struct CpuRangeInput {
  Span initial; Span left; Span source_registers; Span projected; Span result;
 };
 struct CpuRangeBody {
- usize initialization_end; usize loop_end; usize carry; usize count_slot; usize length_slot;
- u32 history; u32 reset_on_head; u32 break_on_head;
+ usize initialization_end; usize loop_end; usize carry;
+ u32 break_on_head;
 };
 struct CpuRangeHost {
  cfn<usize,address,CpuRangeType,usize> reg;
@@ -632,11 +632,13 @@ struct CpuRangeHost {
  cfn<void,address,CpuRangeBlock> move_block;
  cfn<void,address,usize,CpuRangeBlock> branch;
  cfn<usize,address> ensures memory(read) size;
+ cfn<void,address,usize,bool> keep_slot;
 };
 extern "C" CpuRangePlan cpu_range_plan(CpuRangePass pass,usize words,u32 has_head,u32 counted) on cpu;
 extern "C" CpuRangeBody cpu_range_body(CpuRangeInput input,CpuRangePlan plan,address context,CpuRangeHost host) on cpu
  requires nonzero(host.reg) requires nonzero(host.local) requires nonzero(host.offset) requires nonzero(host.put)
- requires nonzero(host.move_block) requires nonzero(host.branch) requires nonzero(host.size);
+ requires nonzero(host.move_block) requires nonzero(host.branch) requires nonzero(host.size)
+ requires nonzero(host.keep_slot);
 
 
 

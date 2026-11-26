@@ -3,7 +3,7 @@ use super::*;
 use external::{AbiComponent, AbiValueComponent};
 use structure::{ScalarBodyStatus, ScalarHost};
 use crate::ir::dataflow::Span;
-use std::ffi::c_void;
+use std::{collections::BTreeSet, ffi::c_void};
 
 #[repr(u32)]
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -99,10 +99,6 @@ struct RangeBody {
     initialization_end: usize,
     loop_end: usize,
     carry: usize,
-    count_slot: usize,
-    length_slot: usize,
-    history: u32,
-    reset_on_head: u32,
     break_on_head: u32,
 }
 
@@ -129,6 +125,7 @@ struct RangeHost {
     move_block: unsafe extern "C" fn(*mut c_void, RangeBlock),
     branch: unsafe extern "C" fn(*mut c_void, Reg, RangeBlock),
     size: unsafe extern "C" fn(*mut c_void) -> usize,
+    keep_slot: unsafe extern "C" fn(*mut c_void, usize, bool),
 }
 
 unsafe extern "C" {
@@ -137,11 +134,15 @@ unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::cpu_range_body"]
     fn cpu_range_body(input: RangeInput, plan: RangePlan, context: *mut c_void,
         host: RangeHost) -> RangeBody;
+    #[link_name = "bootstrap.stage_fusion::private_range_live"]
+    fn private_range_live(code: Span, live: *mut BTreeSet<PrivateSlot>,
+        empty: *const BTreeSet<PrivateSlot>, host: PrivateLiveHost);
 }
 
 struct RangeWriter<'a> {
     lowered: &'a mut ReductionBody,
     reduction: &'a CustomReduction,
+    live: &'a mut BTreeSet<PrivateSlot>,
     project: Vec<Inst>,
     combine: Vec<Inst>,
     yes: Vec<Inst>,
@@ -227,9 +228,14 @@ unsafe extern "C" fn range_size(context: *mut c_void) -> usize {
     unsafe { &*context.cast::<RangeWriter<'_>>() }.lowered.code.len()
 }
 
+unsafe extern "C" fn keep_range_slot(context: *mut c_void, slot: usize, local: bool) {
+    let writer = unsafe { &mut *context.cast::<RangeWriter<'_>>() };
+    writer.live.insert(if local { PrivateSlot::Local(slot) } else { PrivateSlot::Register(slot) });
+}
+
 const RANGE_HOST: RangeHost = RangeHost {
     reg: range_reg, local: range_local, offset: range_offset, put: range_put,
-    move_block: range_move_block, branch: range_branch, size: range_size,
+    move_block: range_move_block, branch: range_branch, size: range_size, keep_slot: keep_range_slot,
 };
 
 #[repr(C)]
@@ -333,35 +339,20 @@ pub(super) fn emit(
         source_registers: Span::slice(&kernel.source), projected: Span::slice(&kernel.projected),
         result: Span::slice(&kernel.result),
     };
+    let mut live = BTreeSet::new();
     let mut writer = RangeWriter {
-        lowered: &mut lowered, reduction: r, project, combine, yes: Vec::new(), no: Vec::new(),
+        lowered: &mut lowered, reduction: r, live: &mut live, project, combine,
+        yes: Vec::new(), no: Vec::new(),
     };
     let body = unsafe { cpu_range_body(input, plan, std::ptr::from_mut(&mut writer).cast(), RANGE_HOST) };
     let carry = body.carry;
     let mut phase_ends = [body.initialization_end, body.loop_end];
     reads::place_phases(&mut lowered.code, &mut lowered.registers, &stage.writes, &mut phase_ends);
     let [initialize_end, loop_end] = phase_ends;
-    let mut live: std::collections::BTreeSet<_> =
-        (0..fields).map(|field| PrivateSlot::Local(carry + field)).collect();
-    if body.history != 0 {
-        live.insert(PrivateSlot::Local(carry + fields));
+    unsafe {
+        private_range_live(Span::slice(&lowered.code[initialize_end..loop_end]), &mut live,
+            &BTreeSet::new(), PRIVATE_LIVE_HOST);
     }
-    if counted {
-        live.insert(PrivateSlot::Local(body.count_slot));
-    }
-    if plan.finish != 0 {
-        live.insert(PrivateSlot::Local(body.length_slot));
-    }
-    if body.reset_on_head != 0 {
-        live.extend(kernel.initial.iter().map(|r| PrivateSlot::Register(*r)));
-    }
-    live.extend(live_before(
-        &lowered.code[initialize_end..loop_end],
-        live.clone(),
-        &live,
-        &live,
-        &std::collections::BTreeSet::new(),
-    ));
     let mut graph = allocation::Graph::with_live(&lowered.code, &lowered.registers, &lowered.locals, live);
     let allocation = Allocation::new(&lowered.locals, &mut graph, false);
     drop(graph);

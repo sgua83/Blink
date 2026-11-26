@@ -240,7 +240,7 @@ void private_instruction(View value,address live,address break_live,
     }
 }
 
-extern "C" void private_before(Span code,address live,address break_live,
+void private_before(Span code,address live,address break_live,
     address continue_live,address exit_live,address empty,LiveHost host) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.insert_register)
     requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change) {
@@ -251,6 +251,15 @@ extern "C" void private_before(Span code,address live,address break_live,
         View value=host.ir.inspect(Node(instruction,N_INSTRUCTION));
         private_instruction(value,live,break_live,continue_live,exit_live,empty,host);
     }
+}
+
+extern "C" void private_range_live(Span code, address live, address empty, LiveHost host) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.insert_register)
+    requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change) {
+    address header = host.clone_set(live);
+    private_before(code,header,live,live,empty,empty,host);
+    host.change(LiveSetAction::DrainUnion,live,header,0u64);
+    host.drop_set(header);
 }
 
 extern "C" void private_tile_phases(Span code, address live, address saved, address empty,

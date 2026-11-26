@@ -16,9 +16,6 @@ pub(crate) struct Host {
     change: Change,
 }
 unsafe extern "C" {
-    #[link_name = "bootstrap.stage_fusion::private_before"]
-    fn native_before(code: Span, live: *mut Slots, break_live: *const Slots,
-        continue_live: *const Slots, exit_live: *const Slots, empty: *const Slots, host: Host);
     #[link_name = "bootstrap.stage_fusion::private_tile_phases"]
     fn native_tile_phases(code: Span, live: *mut Slots, saved: *mut Slots, empty: *const Slots,
         host: Host, context: *mut c_void, emit: PhaseOutput);
@@ -77,11 +74,4 @@ pub(super) fn tile_phases(code: &[Inst]) -> Vec<TilePhase<'_>> {
     }
     output.phases.reverse();
     output.phases
-}
-
-pub(super) fn before(code: &[Inst], mut live: Slots, break_live: &Slots,
-    continue_live: &Slots, exit_live: &Slots) -> Slots {
-    let empty = Slots::new();
-    unsafe { native_before(Span::slice(code), &mut live, break_live, continue_live, exit_live, &empty, HOST) };
-    live
 }

@@ -61,8 +61,8 @@ struct LiveHost {
     cfn<void,LiveSetAction,address,address,u64> change;
 };
 
-extern "C" void private_before(Span code, address live, address break_live,
-    address continue_live, address exit_live, address empty, LiveHost host) on cpu
+// Add the scheduled collection loop's entry needs to its already-retained slots.
+extern "C" void private_range_live(Span code, address live, address empty, LiveHost host) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.insert_register)
     requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change);
 // Transfer the original computed loop-header set to the caller for mutation or release.

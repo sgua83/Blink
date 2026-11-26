@@ -2710,7 +2710,8 @@ void range_segment_tail(CpuRangeInput input,usize carry,usize index,usize length
 
 extern "C" CpuRangeBody cpu_range_body(CpuRangeInput input,CpuRangePlan plan,address context,CpuRangeHost host) on cpu
  requires nonzero(host.reg) requires nonzero(host.local) requires nonzero(host.offset) requires nonzero(host.put)
- requires nonzero(host.move_block) requires nonzero(host.branch) requires nonzero(host.size) {
+ requires nonzero(host.move_block) requires nonzero(host.branch) requires nonzero(host.size)
+ requires nonzero(host.keep_slot) {
  CpuRangeBlock body=CpuRangeBlock::Body;
  CpuRangeBlock yes=CpuRangeBlock::Yes;
  CpuRangeBlock no=CpuRangeBlock::No;
@@ -2727,12 +2728,23 @@ extern "C" CpuRangeBody cpu_range_body(CpuRangeInput input,CpuRangePlan plan,add
  usize carry=host.local(context,CpuRangeType::Value);
  usize flag_slot=carry+input.fields;
  if(has_head && !apply){host.local(context,CpuRangeType::Bool);}
- usize count_slot=counted ? host.local(context,CpuRangeType::U32) : 0u64;
+ usize field=0u64;
+ while(field<input.fields){
+  host.keep_slot(context,carry+field,true);
+  field+=1u64;
+ }
+ if(history){host.keep_slot(context,flag_slot,true);}
+ usize count_slot=0u64;
+ if(counted){
+  count_slot=host.local(context,CpuRangeType::U32);
+  host.keep_slot(context,count_slot,true);
+ }
  usize private_index=host.reg(context,CpuRangeType::U32,0u64);
  if(apply || finish){host.put(context,body,CpuRangeOp::Constant,private_index,0u64,0u64,0);}
  usize length_slot=0u64;
  if(finish) {
   length_slot=host.local(context,CpuRangeType::U32);
+  host.keep_slot(context,length_slot,true);
   usize length=host.reg(context,CpuRangeType::U32,0u64);
   host.put(context,body,CpuRangeOp::Load,length,input.temporary,private_index,input.payload_bytes);
   host.put(context,body,CpuRangeOp::LocalStore,length_slot,length,0u64,0);
@@ -2782,6 +2794,11 @@ extern "C" CpuRangeBody cpu_range_body(CpuRangeInput input,CpuRangePlan plan,add
    host.put(context,yes,CpuRangeOp::Break,0u64,0u64,0u64,0);
    host.branch(context,head,no);
   }else if(reset_on_head) {
+   usize initial=0u64;
+   while(initial<input.initial.count){
+    host.keep_slot(context,word_at(input.initial,initial),false);
+    initial+=1u64;
+   }
    range_store_locals(input.initial,carry,yes,context,host);
    if(history) {
     usize flag=host.reg(context,CpuRangeType::Bool,0u64);
@@ -2874,8 +2891,7 @@ extern "C" CpuRangeBody cpu_range_body(CpuRangeInput input,CpuRangePlan plan,add
   host.put(context,body,CpuRangeOp::LocalLoad,total,count_slot,0u64,0);
   host.put(context,body,CpuRangeOp::Store,total,input.count_binding,zero,input.count_word);
  }
- return CpuRangeBody(initialization_end,loop_end,carry,count_slot,length_slot,
-  u32(history),u32(reset_on_head),u32(apply && has_head));
+ return CpuRangeBody(initialization_end,loop_end,carry,u32(apply && has_head));
 }
 
 

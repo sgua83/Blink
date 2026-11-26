@@ -1346,7 +1346,7 @@ pub(crate) use tile::{PRIVATE_LIVE_HOST, PrivateLiveHost, TilePhase};
 #[cfg(feature = "compiler")]
 pub(crate) use dataflow::private_spans;
 #[cfg(feature = "compiler")]
-pub(crate) use tile::{PlacedTiles, PrivateSlot, live_before};
+pub(crate) use tile::{PlacedTiles, PrivateSlot};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum SubgroupOp {

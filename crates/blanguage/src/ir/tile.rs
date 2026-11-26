@@ -299,14 +299,6 @@ impl Stage {
     }
 }
 
-#[cfg(feature = "compiler")]
-pub(crate) fn live_before(
-    code: &[Inst], live: BTreeSet<PrivateSlot>, break_live: &BTreeSet<PrivateSlot>,
-    continue_live: &BTreeSet<PrivateSlot>, exit_live: &BTreeSet<PrivateSlot>,
-) -> BTreeSet<PrivateSlot> {
-    private_live::before(code, live, break_live, continue_live, exit_live)
-}
-
 impl Inst {
     #[cfg(feature = "compiler")]
     pub(crate) fn results(&self) -> impl Iterator<Item = Reg> {
