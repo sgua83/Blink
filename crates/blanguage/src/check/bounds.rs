@@ -1274,36 +1274,60 @@ impl Proof {
         }
     }
     pub(super) fn cast(value: &Value, target: Scalar) -> Self {
-        let mut proof = Self::capture(value);
-        for (i, &(source, _)) in value.ty.components.iter().enumerate() {
-            if source == target { continue; }
-            let source_domains = proof.domains.get_mut(i).map(std::mem::take).unwrap_or_default();
-            let (ranges, effect) = floating::cast(value, i, target, &mut proof);
-            proof.ranges[i] = ranges;
-            proof.nonzero[i] = effect.nonzero != 0;
+        let width = value.regs.len();
+        let mut proof = Self {
+            ranges: Vec::with_capacity(width),
+            nonzero: Vec::with_capacity(width),
+            origins: Vec::with_capacity(width),
+            conditions: Vec::with_capacity(width),
+            domains: vec![Domains::new(); value.proof.domains.len()],
+            views: value.proof.views.clone(),
+            addresses: value.proof.addresses.clone(),
+        };
+        for i in 0..width {
+            let source = value.ty.components[i].0;
+            let domains = value.proof.domains.get(i);
+            if source == target {
+                let (ranges, nonzero) = value.component_numeric_facts(i);
+                proof.ranges.push(ranges);
+                proof.nonzero.push(nonzero);
+                proof.origins.push(value.component_origins(i));
+                proof.conditions.push(Self::value_condition(value, i));
+                if let Some(domains) = domains {
+                    proof.domains[i] = domains.clone();
+                }
+                continue;
+            }
+
+            let identity = value.component_identity(i);
+            let (ranges, effect) = floating::cast(value, i, target, &identity, &mut proof.domains);
+            proof.ranges.push(ranges);
+            proof.nonzero.push(effect.nonzero != 0);
             if effect.address == 0 && let Some(address) = proof.addresses.get_mut(i) {
                 *address = None;
             }
-            if effect.condition == 0 {
-                proof.conditions[i] = None;
-            }
+            proof.conditions.push((effect.condition != 0).then(|| Self::value_condition(value, i)).flatten());
 
             let path = [source, target];
-            for domain in source_domains.into_iter().filter_map(|domain| cast_domain(domain, path)) {
+            for domain in domains.into_iter().flatten().copied().filter_map(|domain| cast_domain(domain, path)) {
                 proof.mark_domain(i, domain);
             }
-            match effect.origin {
-                floating::CastOrigin::Preserve => {}
-                floating::CastOrigin::Discard => proof.origins[i].clear(),
+            let origins = match effect.origin {
+                floating::CastOrigin::Preserve => value.component_origins(i),
+                floating::CastOrigin::Discard => Vec::new(),
                 floating::CastOrigin::Relate => {
-                    for id in std::mem::take(&mut proof.origins[i]) {
+                    let origins = value.proof.origins.get(i).filter(|origins| !origins.is_empty())
+                        .map_or(std::slice::from_ref(&identity), Vec::as_slice);
+                    for &id in origins {
                         let range = IndexDomain::CommonRange(id, source, source, source, source);
                         if let Some(domain) = cast_domain(range, path) {
                             proof.mark_domain(i, domain);
                         }
                     }
+                    Vec::new()
                 }
-            }
+            };
+            proof.origins.push(origins);
         }
         proof
     }

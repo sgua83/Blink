@@ -37,8 +37,11 @@ unsafe extern "C" {
     fn source_cast(
         source: Encoding,
         target: Encoding,
-        input: *const range_sets::RangeStorage,
+        records: *const BitRange,
+        count: usize,
         output: *mut range_sets::RangeStorage,
+        constant: Bits,
+        has_constant: u32,
         nonzero: u32,
         origin: *const ValueIdentity,
         context: *mut c_void,
@@ -145,19 +148,22 @@ unsafe extern "C" fn cast_fact(context: *mut c_void, fact: FloatCastFact) {
 }
 
 pub(in crate::check::bounds) fn cast(
-    value: &Value, component: usize, target: Scalar, proof: &mut Proof,
+    value: &Value, component: usize, target: Scalar, origin: &ValueIdentity, domains: &mut Vec<Domains>,
 ) -> (ScalarRanges, CastEffect) {
     let source = value.ty.components[component].0;
+    let records = value.proof.interval_source(component);
+    let constant = value.constant.as_ref().map(|bits| bits[component]);
     let mut ranges = range_sets::RangeStorage::empty();
     let mut input = FloatCast {
         source,
         component,
         relations: value.proof.domains.get(component).map(Domains::iter).unwrap_or_default(),
-        domains: &mut proof.domains,
+        domains,
     };
     let effect = unsafe {
-        source_cast(encoding(source), encoding(target), &proof.ranges[component].0, &mut ranges,
-            u32::from(proof.nonzero[component]), &proof.origins[component][0],
+        source_cast(encoding(source), encoding(target), records.as_ptr(), records.len(), &mut ranges,
+            constant.unwrap_or_default(), u32::from(constant.is_some()),
+            u32::from(value.proof.nonzero.get(component) == Some(&true)), origin,
             ptr::from_mut(&mut input).cast(), cast_relation, cast_fact)
     };
     (ScalarRanges(ranges), effect)
