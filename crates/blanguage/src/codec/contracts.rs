@@ -306,12 +306,13 @@ impl<T: Native + Ord> Native for BTreeSet<T> {
         unsafe { read_sequence(bytes, position, context, slot(output), insert_set::<T>) }
     }
 }
-struct MapIterator<'a, K, V> {
-    iterator: std::collections::btree_map::Iter<'a, K, V>,
-    current: Option<(&'a K, &'a V)>,
+struct EntryIterator<I: Iterator> {
+    iterator: I,
+    current: Option<I::Item>,
 }
-unsafe extern "C" fn next_map<'a, K: Ord + 'a, V: 'a>(iterator: Slot) -> Address {
-    let iterator = unsafe { &mut *iterator.cast::<MapIterator<'a, K, V>>() };
+
+unsafe extern "C" fn next_entry<I: Iterator>(iterator: Slot) -> Address {
+    let iterator = unsafe { &mut *iterator.cast::<EntryIterator<I>>() };
     iterator.current = iterator.iterator.next();
     iterator.current.as_ref().map_or(ptr::null(), address)
 }
@@ -347,24 +348,10 @@ impl<K: Native + Ord, V: Native> Native for BTreeMap<K, V> {
         BTreeMap::new()
     }
     unsafe fn write(&self, output: Slot) {
-        let mut iterator = MapIterator {
-            iterator: self.iter(),
-            current: None,
-        };
-        unsafe {
-            write_sequence(
-                self.len(),
-                slot(&mut iterator),
-                output,
-                next_map::<K, V>,
-                write_entry::<K, V>,
-                append,
-            )
-        }
+        unsafe { write_map_with(self, output, write_entry::<K, V>) }
     }
     unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
-        let (bytes, position) = unsafe { input(context) };
-        unsafe { read_sequence(bytes, position, context, slot(output), insert_map::<K, V>) }
+        unsafe { read_entries(context, slot(output), insert_map::<K, V>) }
     }
 }
 
@@ -573,20 +560,24 @@ pub(crate) unsafe fn write_map_with<K: Ord, V>(
     output: Slot,
     element: Write,
 ) {
-    let mut iterator = MapIterator {
-        iterator: values.iter(),
-        current: None,
-    };
+    unsafe { write_entries(values.len(), values.iter(), output, element) }
+}
+
+pub(crate) unsafe fn write_entries<I: Iterator>(
+    count: usize,
+    entries: I,
+    output: Slot,
+    element: Write,
+) {
+    let mut iterator = EntryIterator { iterator: entries, current: None };
     unsafe {
-        write_sequence(
-            values.len(),
-            slot(&mut iterator),
-            output,
-            next_map::<K, V>,
-            element,
-            append,
-        )
+        write_sequence(count, slot(&mut iterator), output, next_entry::<I>, element, append)
     }
+}
+
+pub(crate) unsafe fn read_entries(context: Slot, output: Slot, element: Read) -> ReadStatus {
+    let (bytes, position) = unsafe { input(context) };
+    unsafe { read_sequence(bytes, position, context, output, element) }
 }
 pub(crate) unsafe fn write_pair_with(
     first: Address,

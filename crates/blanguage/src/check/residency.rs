@@ -359,7 +359,8 @@ impl Residency {
         self.bind_into(arguments, &mut result, true).then_some(result)
     }
 }
-pub(super) type Requirements=BTreeMap<(Input,Target),BTreeSet<bounds::Condition>>;
+type TargetRequirements = BTreeMap<Target, BTreeSet<bounds::Condition>>;
+type Requirements = BTreeMap<Input, TargetRequirements>;
 
 #[repr(C)]
 struct ResidencyBinding {
@@ -541,7 +542,7 @@ pub(super) struct Contract {
 }
 impl Contract {
     pub(super) fn normalize_contract(&mut self,normal:&mut bounds::Normalizer) {
-        for conditions in self.required.values_mut() {
+        for conditions in self.required.values_mut().flat_map(BTreeMap::values_mut) {
             let mut result=normal.condition(&bounds::Condition::constant(false));
             for condition in std::mem::take(conditions){result=normal.union(&result,&condition);}
             conditions.insert(result);
@@ -604,10 +605,23 @@ fn known(value: &Residency, target: Target, path: &bounds::Clause) -> bool {
     let visit = ResidencyVisit::new(value, target, path, ResidencyCheckMode::Known);
     unsafe { visit.run(ptr::null_mut()) }.accepted != 0
 }
-fn insert(required:&mut Requirements,input:Input,target:Target,when:bounds::Condition)->bool{
-    if !when.active(){return true;}
-    if required.iter().any(|((other,place),guards)|*other==input&&*place!=target&&guards.iter().any(|guard|guard.assume(&when.assume(&bounds::Clause::default(),true),true).overlaps(&bounds::Clause::default()))){return false;}
-    required.entry((input,target)).or_default().insert(when);true
+fn insert(required: &mut Requirements, input: Input, target: Target, when: bounds::Condition) -> bool {
+    if !when.active() {
+        return true;
+    }
+    let targets = required.entry(input).or_default();
+    if targets.iter().any(|(place, guards)| {
+        if *place == target {
+            return false;
+        }
+        let base = bounds::Clause::default();
+        let path = when.assume(&base, true);
+        guards.iter().any(|guard| guard.assume(&path, true).overlaps(&base))
+    }) {
+        return false;
+    }
+    targets.entry(target).or_default().insert(when);
+    true
 }
 
 fn consume(required: &mut Requirements, value: &Residency, target: Target, path: &bounds::Clause) -> bool {
@@ -617,18 +631,31 @@ fn consume(required: &mut Requirements, value: &Residency, target: Target, path:
 pub(super) fn input_parameters(parameters:&BTreeMap<ValueIdentity,ValueIdentity>,width:usize)->BTreeMap<ValueIdentity,bounds::Proof>{
     parameters.iter().filter(|(_,target)|match target{ValueIdentity::Register(n)=>*n<width,ValueIdentity::ParameterContent(..)|ValueIdentity::ResourceParameter(..)=>true,_=>false}).map(|(source,target)|(*source,bounds::Proof::default().with_identity(*target))).collect()
 }
-pub(super) fn canonical(required:&Requirements,parameters:&BTreeMap<ValueIdentity,bounds::Proof>,source:&Source,span:Span)->Result<Requirements>{
-    let mut result=Requirements::new();
-    for((input,target),guards)in required{let bindings=scoped_indices(parameters,input.depth());for guard in guards{
-        if !insert(&mut result,input.at_call(&bindings),*target,guard.guard_at_call(&bindings)){return source.fail(span,"B266","输入资源在同一接口条件下同时要求CPU和GPU存储");}
-    }}Ok(result)
+fn canonical(
+    required: &Requirements,
+    parameters: &BTreeMap<ValueIdentity, bounds::Proof>,
+    source: &Source,
+    span: Span,
+) -> Result<Requirements> {
+    let mut result = Requirements::new();
+    for (input, targets) in required {
+        let bindings = scoped_indices(parameters, input.depth());
+        let input = input.at_call(&bindings);
+        for (&target, guards) in targets {
+            for guard in guards {
+                if !insert(&mut result, input.clone(), target, guard.guard_at_call(&bindings)) {
+                    return source.fail(span, "B266", "输入资源在同一接口条件下同时要求CPU和GPU存储");
+                }
+            }
+        }
+    }
+    Ok(result)
 }
-type LoopRequirements = BTreeMap<Input, BTreeMap<Target, BTreeSet<bounds::Condition>>>;
 
 fn local_loop_requirements(
     required: Requirements,
     parameters: &BTreeMap<ValueIdentity, bounds::Proof>,
-) -> LoopRequirements {
+) -> Requirements {
     let mut inverse = BTreeMap::new();
     for (source, target) in parameters {
         let target = target.known_identity(0).unwrap();
@@ -637,11 +664,14 @@ fn local_loop_requirements(
             *entry = bounds::Proof::default().with_identity(*source);
         }
     }
-    let mut local = LoopRequirements::new();
-    for ((input, target), guards) in required {
+    let mut local = Requirements::new();
+    for (input, targets) in required {
         let bindings = scoped_indices(&inverse, input.depth());
-        local.entry(input.at_call(&bindings)).or_default().entry(target).or_default()
-            .extend(guards.into_iter().map(|guard| guard.guard_at_call(&bindings)));
+        let local_targets = local.entry(input.at_call(&bindings)).or_default();
+        for (target, guards) in targets {
+            local_targets.entry(target).or_default()
+                .extend(guards.into_iter().map(|guard| guard.guard_at_call(&bindings)));
+        }
     }
     local
 }
@@ -1011,34 +1041,67 @@ struct ResidencyQuery<'a> {
     error: Option<Diagnostic>,
 }
 
-impl<'a> ResidencyQuery<'a> {
-    fn consume(&mut self) -> Result<()> {
-        let call = &self.current.call;
-        for ((input, target), guards) in self.current.required {
-            if guards.is_empty() {
+impl ResidencyQuery<'_> {
+    fn consume(&mut self) -> bool {
+        for (input, targets) in self.current.required {
+            let mut guards = guard_entries(targets);
+            let mut cursor = ResidencyGuardCursor(&mut guards);
+            let first = cursor.next();
+            if first.condition.is_null() {
                 continue;
             }
+            let call = &self.current.call;
             let bindings = scoped_indices(&call.bindings, input.depth());
             let Some(value) = argument_value(&call.arguments, input, || {
                 input.selection().into_iter().map(|(index, proof)| {
                     (index, proof.at_call(&bindings))
                 }).collect()
             }) else { continue; };
-            for guard in guards {
-                let path = bounds::Clause::both(&call.path, &guard.projected_case(true, &bindings));
-                let value = evaluate(&value, self.outputs, &path);
-                if !query_consume(&mut self.required, &mut self.deferred, self.wanted, &value, *target, &path) {
-                    let place = if *target == Target::Cpu { "CPU" } else { "GPU" };
-                    return self.source.fail(self.span, "B266", format!(
-                        "函数 {} 的第 {} 个资源参数（资源路径 {:?}）不满足实际生效条件下的{}存储要求",
-                        call.function, input.parameter + 1, input.fields, place,
-                    ));
-                }
+            let mut bound = BoundQueryInput { query: self, input, bindings, value };
+            let host = ResidencyQueryGuardsHost { next: next_residency_guard, check: consume_query_guard };
+            let accepted = unsafe {
+                check_residency_query_guards(
+                    ptr::from_mut(&mut bound).cast(), ptr::from_mut(&mut cursor).cast(), first, host,
+                )
+            };
+            if accepted == 0 {
+                return false;
             }
         }
-        Ok(())
+        true
     }
+}
 
+struct BoundQueryInput<'a, 'q> {
+    query: &'q mut ResidencyQuery<'a>,
+    input: &'a Input,
+    bindings: BTreeMap<ValueIdentity, bounds::Proof>,
+    value: Residency,
+}
+
+#[repr(C)]
+struct ResidencyQueryGuardsHost {
+    next: unsafe extern "C" fn(Context) -> ResidencyGuard,
+    check: unsafe extern "C" fn(Context, ResidencyGuard) -> u32,
+}
+
+unsafe extern "C" fn consume_query_guard(context: Context, guard: ResidencyGuard) -> u32 {
+    let bound = unsafe { &mut *context.cast::<BoundQueryInput<'_, '_>>() };
+    let query = &mut *bound.query;
+    let call = &query.current.call;
+    let target = unsafe { *guard.target.cast::<Target>() };
+    let condition = unsafe { &*guard.condition.cast::<bounds::Condition>() };
+    let path = bounds::Clause::both(&call.path, &condition.projected_case(true, &bound.bindings));
+    let value = evaluate(&bound.value, query.outputs, &path);
+    if query_consume(&mut query.required, &mut query.deferred, query.wanted, &value, target, &path) {
+        return 1;
+    }
+    let place = if target == Target::Cpu { "CPU" } else { "GPU" };
+    query.error = query.source.fail::<()>(query.span, "B266", format!(
+        "函数 {} 的第 {} 个资源参数（资源路径 {:?}）不满足实际生效条件下的{}存储要求",
+        call.function, bound.input.parameter + 1, bound.input.fields, place,
+    )).err();
+    0
 }
 
 #[repr(C)]
@@ -1057,6 +1120,8 @@ struct ResidencyQueryChildHost {
 }
 
 unsafe extern "C" {
+    #[link_name = "bootstrap.ownership_path::check_residency_query_guards"]
+    fn check_residency_query_guards(context: Context, cursor: Context, first: ResidencyGuard, host: ResidencyQueryGuardsHost) -> u32;
     #[link_name = "bootstrap.ownership_path::traverse_residency_query"]
     fn traverse_residency_query(context: Context, host: ResidencyQueryHost);
     #[link_name = "bootstrap.ownership_path::enter_residency_query_child"]
@@ -1065,8 +1130,7 @@ unsafe extern "C" {
 
 unsafe extern "C" fn consume_query_frame(context: Context) -> u32 {
     let query = unsafe { &mut *context.cast::<ResidencyQuery<'_>>() };
-    query.error = query.consume().err();
-    u32::from(query.error.is_none())
+    u32::from(query.consume())
 }
 
 unsafe extern "C" fn next_query_child(context: Context) -> Borrowed {
@@ -1183,15 +1247,15 @@ struct LoopRefineOriginsHost {
 }
 
 #[repr(C)]
-struct LoopRefineGuard {
+struct ResidencyGuard {
     condition: Borrowed,
-    cpu: u32,
+    target: Borrowed,
 }
 
 #[repr(C)]
 struct LoopRefineGuardsHost {
-    next: unsafe extern "C" fn(Context) -> LoopRefineGuard,
-    select: unsafe extern "C" fn(Context, LoopRefineGuard),
+    next: unsafe extern "C" fn(Context) -> ResidencyGuard,
+    select: unsafe extern "C" fn(Context, ResidencyGuard),
 }
 
 unsafe extern "C" {
@@ -1209,7 +1273,7 @@ const LOOP_REFINE_HOST: LoopRefineHost = LoopRefineHost {
     origins: refine_loop_origin_set,
 };
 
-fn refine(mut value: Residency, required: &LoopRequirements) -> Residency {
+fn refine(mut value: Residency, required: &Requirements) -> Residency {
     unsafe { refine_loop_residency(ptr::from_ref(required).cast(), ptr::from_mut(&mut value).cast(), LOOP_REFINE_HOST) };
     value
 }
@@ -1231,7 +1295,7 @@ unsafe extern "C" fn inspect_loop_refinement(value: Context) -> LoopRefineNode {
 }
 
 unsafe extern "C" fn refine_loop_branch(required: Borrowed, value: Context, node: LoopRefineNode) {
-    let required = unsafe { &*required.cast::<LoopRequirements>() };
+    let required = unsafe { &*required.cast::<Requirements>() };
     let condition = std::mem::take(unsafe { &mut *node.condition.cast::<bounds::Condition>() });
     let yes = std::mem::replace(unsafe { &mut *node.yes.cast::<Residency>() }, Residency::Absent);
     let no = std::mem::replace(unsafe { &mut *node.no.cast::<Residency>() }, Residency::Absent);
@@ -1239,14 +1303,14 @@ unsafe extern "C" fn refine_loop_branch(required: Borrowed, value: Context, node
 }
 
 struct LoopRefinement<'a> {
-    required: &'a LoopRequirements,
+    required: &'a Requirements,
     origins: std::collections::btree_set::IntoIter<Origin>,
     current: Residency,
     result: Residency,
 }
 
 unsafe extern "C" fn refine_loop_origin_set(required: Borrowed, value: Context, origins: Context) {
-    let required = unsafe { &*required.cast::<LoopRequirements>() };
+    let required = unsafe { &*required.cast::<Requirements>() };
     let origins = std::mem::take(unsafe { &mut *origins.cast::<BTreeSet<Origin>>() });
     let mut state = LoopRefinement {
         required,
@@ -1288,28 +1352,38 @@ unsafe extern "C" fn merge_refined_origin(context: Context) {
     merge_bound_source(&mut state.result, current);
 }
 
-struct LoopGuardCursor<'a>(&'a mut dyn Iterator<Item = (Target, &'a bounds::Condition)>);
+fn guard_entries(targets: &TargetRequirements) -> impl Iterator<Item = (&Target, &bounds::Condition)> {
+    targets.iter().flat_map(|(target, entries)| entries.iter().map(move |guard| (target, guard)))
+}
+
+struct ResidencyGuardCursor<'a, 'cursor>(&'cursor mut dyn Iterator<Item = (&'a Target, &'a bounds::Condition)>);
 
 unsafe extern "C" fn apply_origin_requirements(context: Context, requirements: Borrowed) {
     let state = unsafe { &mut *context.cast::<LoopRefinement<'_>>() };
-    let requirements = unsafe { &*requirements.cast::<BTreeMap<Target, BTreeSet<bounds::Condition>>>() };
-    let mut guards = requirements.iter().flat_map(|(&target, entries)| entries.iter().map(move |guard| (target, guard)));
-    let mut cursor = LoopGuardCursor(&mut guards);
-    let host = LoopRefineGuardsHost { next: next_refinement_guard, select: apply_refinement_guard };
+    let requirements = unsafe { &*requirements.cast::<TargetRequirements>() };
+    let mut guards = guard_entries(requirements);
+    let mut cursor = ResidencyGuardCursor(&mut guards);
+    let host = LoopRefineGuardsHost { next: next_residency_guard, select: apply_refinement_guard };
     unsafe { refine_loop_guards(ptr::from_mut(&mut state.current).cast(), ptr::from_mut(&mut cursor).cast(), host) };
 }
 
-unsafe extern "C" fn next_refinement_guard(cursor: Context) -> LoopRefineGuard {
-    let cursor = unsafe { &mut *cursor.cast::<LoopGuardCursor<'_>>() };
-    cursor.0.next().map_or(LoopRefineGuard { condition: ptr::null(), cpu: 0 }, |(target, condition)| {
-        LoopRefineGuard { condition: ptr::from_ref(condition).cast(), cpu: u32::from(target == Target::Cpu) }
-    })
+impl ResidencyGuardCursor<'_, '_> {
+    fn next(&mut self) -> ResidencyGuard {
+        self.0.next().map_or(ResidencyGuard { condition: ptr::null(), target: ptr::null() }, |(target, condition)| {
+            ResidencyGuard { condition: ptr::from_ref(condition).cast(), target: ptr::from_ref(target).cast() }
+        })
+    }
 }
 
-unsafe extern "C" fn apply_refinement_guard(value: Context, guard: LoopRefineGuard) {
+unsafe extern "C" fn next_residency_guard(cursor: Context) -> ResidencyGuard {
+    unsafe { &mut *cursor.cast::<ResidencyGuardCursor<'_, '_>>() }.next()
+}
+
+unsafe extern "C" fn apply_refinement_guard(value: Context, guard: ResidencyGuard) {
     let value = unsafe { &mut *value.cast::<Residency>() };
     let condition = unsafe { &*guard.condition.cast::<bounds::Condition>() };
-    let physical = if guard.cpu != 0 { Residency::cpu() } else { Residency::gpu() };
+    let target = unsafe { *guard.target.cast::<Target>() };
+    let physical = if target == Target::Cpu { Residency::cpu() } else { Residency::gpu() };
     *value = Residency::conditional(condition.clone(), physical, std::mem::take(value));
 }
 
@@ -1689,8 +1763,11 @@ pub(super) fn check_loops(
                 path: bounds::Clause::default(), source: None, span: Span::default(),
             });
             let (queried, _) = query(call, known, outputs, Some(&input), source, span, false)?;
-            for (key, guards) in queried {
-                required.entry(key).or_default().extend(guards);
+            for (input, targets) in queried {
+                let required_targets = required.entry(input).or_default();
+                for (target, guards) in targets {
+                    required_targets.entry(target).or_default().extend(guards);
+                }
             }
         }
     }
@@ -3416,13 +3493,16 @@ const _: () = {
         fn read(context: Slot, fields: Fields, host: Reader) -> ReadStatus;
     }
     unsafe extern "C" fn write_required(value: Address, output: Slot) {
-        unsafe {
-            contracts::write_map_with(&*value.cast::<Requirements>(), output, write_requirement)
-        }
+        let required = unsafe { &*value.cast::<Requirements>() };
+        let count = required.values().map(BTreeMap::len).sum();
+        let entries = required.iter().flat_map(|(input, targets)| {
+            targets.iter().map(move |(target, guards)| ((input, target), guards))
+        });
+        unsafe { contracts::write_entries(count, entries, output, write_requirement) }
     }
     unsafe extern "C" fn write_requirement(value: Address, output: Slot) {
         let (key, guards) =
-            unsafe { &*value.cast::<(&(Input, Target), &BTreeSet<bounds::Condition>)>() };
+            unsafe { &*value.cast::<((&Input, &Target), &BTreeSet<bounds::Condition>)>() };
         let condition = guards
             .iter()
             .cloned()
@@ -3442,14 +3522,36 @@ const _: () = {
         }
         unsafe {
             write(
-                contracts::address(*key),
+                contracts::address(key),
                 contracts::address(&condition),
                 output,
-                contracts::write_value::<(Input, Target)>,
+                write_requirement_key,
                 contracts::write_value::<bounds::Condition>,
                 contracts::append,
             )
         }
+    }
+    unsafe extern "C" fn write_requirement_key(value: Address, output: Slot) {
+        let (input, target) = unsafe { *value.cast::<(&Input, &Target)>() };
+        unsafe {
+            contracts::write_pair_with(
+                contracts::address(input), contracts::address(target), output,
+                contracts::write_value::<Input>, contracts::write_value::<Target>,
+            )
+        }
+    }
+    unsafe extern "C" fn read_required(context: Slot, output: Slot) -> ReadStatus {
+        unsafe { contracts::read_entries(context, output, read_requirement) }
+    }
+    unsafe extern "C" fn read_requirement(context: Slot, output: Slot) -> ReadStatus {
+        type Entry = ((Input, Target), BTreeSet<bounds::Condition>);
+        let mut entry = Entry::empty();
+        let status = unsafe { Entry::read(context, &mut entry) };
+        if status == ReadStatus::Success {
+            let ((input, target), guards) = entry;
+            unsafe { &mut *output.cast::<Requirements>() }.entry(input).or_default().insert(target, guards);
+        }
+        status
     }
     impl Native for Contract {
         fn empty() -> Self {
@@ -3471,7 +3573,7 @@ const _: () = {
             }
         }
         unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
-            let mut required = <Requirements as Native>::empty();
+            let mut required = Requirements::new();
             let mut calls = <Vec<Call> as Native>::empty();
             let status = unsafe {
                 read(
@@ -3481,7 +3583,7 @@ const _: () = {
                         calls: contracts::slot(&mut calls),
                     },
                     Reader {
-                        required: contracts::read_value::<Requirements>,
+                        required: read_required,
                         calls: contracts::read_value::<Vec<Call>>,
                     },
                 )

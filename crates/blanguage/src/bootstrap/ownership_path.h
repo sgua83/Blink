@@ -260,11 +260,17 @@ struct LoopRefineOriginsHost {
     cfn<void,address,address> apply;
     cfn<void,address> merge;
 };
-struct LoopRefineGuard { address condition; u32 cpu; };
+struct ResidencyGuard { address condition; address target; };
 struct LoopRefineGuardsHost {
-    cfn<LoopRefineGuard,address> next;
-    cfn<void,address,LoopRefineGuard> select;
+    cfn<ResidencyGuard,address> next;
+    cfn<void,address,ResidencyGuard> select;
 };
+struct ResidencyQueryGuardsHost {
+    cfn<ResidencyGuard,address> next;
+    cfn<u32,address,ResidencyGuard> check;
+};
+extern "C" u32 check_residency_query_guards(address context,address cursor,ResidencyGuard first,ResidencyQueryGuardsHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.check);
 extern "C" void refine_loop_residency(address required,address value,LoopRefineHost host) on cpu
     requires nonzero(host.inspect) requires nonzero(host.branch) requires nonzero(host.origins);
 extern "C" void refine_loop_origins(address context,LoopRefineOriginsHost host) on cpu

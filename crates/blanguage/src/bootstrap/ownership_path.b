@@ -559,9 +559,19 @@ extern "C" void refine_loop_origins(address context,LoopRefineOriginsHost host) 
     }
 }
 
+extern "C" u32 check_residency_query_guards(address context,address cursor,ResidencyGuard first,ResidencyQueryGuardsHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.check) {
+    ResidencyGuard guard=first;
+    while(true){
+        if(host.check(context,guard)==0){return 0;}
+        guard=host.next(cursor);
+        if(guard.condition==address()){return 1;}
+    }
+}
+
 extern "C" void refine_loop_guards(address value,address cursor,LoopRefineGuardsHost host) on cpu
     requires nonzero(host.next) requires nonzero(host.select) {
-    LoopRefineGuard guard=host.next(cursor);
+    ResidencyGuard guard=host.next(cursor);
     while(guard.condition!=address()){
         host.select(value,guard);
         guard=host.next(cursor);
