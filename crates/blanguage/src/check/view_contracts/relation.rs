@@ -1,6 +1,9 @@
 use super::*;
 use bounds::RelationPath;
-use std::borrow::Cow;
+use std::{borrow::Cow, ffi::c_void, ptr};
+
+type Borrowed = *const c_void;
+type Slot = *mut c_void;
 
 const PLAN_REACHABLE: u64 = 1;
 const PLAN_VARIABLE: u64 = 2;
@@ -88,6 +91,152 @@ struct Frame { parent:Option<usize>, writes:Vec<Write> }
 #[derive(Clone,Default,PartialEq,Eq,PartialOrd,Ord)]
 pub(in crate::check) struct Graph { nodes:Vec<Node>, variables:BTreeSet<usize>, frames:Vec<Frame>, inputs:BTreeMap<LoopInput,usize> }
 
+
+#[repr(C)]
+struct WalkSlice { data: Borrowed, count: usize }
+impl WalkSlice {
+    fn of<T>(values: &[T]) -> Self { Self { data: values.as_ptr().cast(), count: values.len() } }
+}
+
+#[repr(C)]
+struct WalkVisit { node: usize, read: u32 }
+#[repr(C)]
+struct WalkEdge { source: usize, frame: usize, read: u32 }
+#[repr(C)]
+struct WalkFrame { parent: usize, writes: WalkSlice }
+#[repr(C)]
+struct WalkWrite { target: usize, fields: WalkSlice }
+
+#[repr(C)]
+struct WalkEdges {
+    edges: unsafe extern "C" fn(Borrowed, usize) -> WalkSlice,
+    edge: unsafe extern "C" fn(Borrowed, usize) -> WalkEdge,
+    frame: unsafe extern "C" fn(Borrowed, usize) -> WalkFrame,
+    write: unsafe extern "C" fn(Borrowed, usize) -> WalkWrite,
+    field: unsafe extern "C" fn(Borrowed, usize) -> usize,
+    mark_frame: unsafe extern "C" fn(Slot, WalkVisit) -> u32,
+    publish: unsafe extern "C" fn(Slot, WalkVisit),
+}
+
+#[repr(C)]
+struct WalkHost {
+    edges: WalkEdges,
+    pop: unsafe extern "C" fn(Slot) -> WalkVisit,
+    visit: unsafe extern "C" fn(Slot, WalkVisit) -> u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.relation_order::walk_relation"]
+    fn walk_relation(graph: Borrowed, work: Slot, root: usize, feedback: u32, host: WalkHost) -> u32;
+    #[link_name = "bootstrap.relation_order::relation_dependencies"]
+    fn relation_dependencies(graph: Borrowed, work: Slot, root: usize, host: WalkEdges);
+    #[link_name = "bootstrap.relation_order::historical_relation_frames"]
+    fn historical_relation_frames(
+        graph: Borrowed, work: Slot, roots: Slot, next: unsafe extern "C" fn(Slot) -> usize, host: WalkEdges,
+    );
+}
+
+unsafe extern "C" fn walk_edges(graph: Borrowed, node: usize) -> WalkSlice {
+    let graph = unsafe { &*graph.cast::<Graph>() };
+    WalkSlice::of(&graph.nodes[node].edges)
+}
+
+unsafe extern "C" fn walk_edge(edges: Borrowed, index: usize) -> WalkEdge {
+    let edge = unsafe { &*edges.cast::<Edge>().add(index) };
+    let (frame, read) = match edge.op {
+        Op::Read { frame, .. } => (frame, 1),
+        Op::Initial { frame, .. } => (frame, 0),
+        _ => (None, 0),
+    };
+    WalkEdge { source: edge.from, frame: frame.unwrap_or(usize::MAX), read }
+}
+
+unsafe extern "C" fn walk_frame(graph: Borrowed, frame: usize) -> WalkFrame {
+    let graph = unsafe { &*graph.cast::<Graph>() };
+    let frame = &graph.frames[frame];
+    WalkFrame { parent: frame.parent.unwrap_or(usize::MAX), writes: WalkSlice::of(&frame.writes) }
+}
+
+unsafe extern "C" fn walk_write(writes: Borrowed, index: usize) -> WalkWrite {
+    let write = unsafe { &*writes.cast::<Write>().add(index) };
+    WalkWrite { target: write.target, fields: WalkSlice::of(write.fields.as_deref().unwrap_or_default()) }
+}
+
+unsafe extern "C" fn walk_field(fields: Borrowed, index: usize) -> usize {
+    unsafe { (*fields.cast::<(u32, usize)>().add(index)).1 }
+}
+
+struct RelationWalk<'g, F> {
+    graph: &'g Graph,
+    accepts: F,
+    pending: Vec<WalkVisit>,
+    nodes: [BTreeSet<usize>; 2],
+    frames: [BTreeSet<usize>; 2],
+}
+
+impl<'g, F: FnMut(&Node) -> bool> RelationWalk<'g, F> {
+    fn new(graph: &'g Graph, accepts: F) -> Self {
+        Self { graph, accepts, pending: Vec::new(), nodes: Default::default(), frames: Default::default() }
+    }
+
+    fn edges(publish: unsafe extern "C" fn(Slot, WalkVisit)) -> WalkEdges {
+        WalkEdges {
+            edges: walk_edges, edge: walk_edge, frame: walk_frame, write: walk_write, field: walk_field,
+            mark_frame: Self::mark_frame, publish,
+        }
+    }
+
+    unsafe extern "C" fn mark_frame(work: Slot, visit: WalkVisit) -> u32 {
+        let work = unsafe { &mut *work.cast::<Self>() };
+        u32::from(work.frames[visit.read as usize].insert(visit.node))
+    }
+
+    unsafe extern "C" fn push(work: Slot, visit: WalkVisit) {
+        unsafe { &mut *work.cast::<Self>() }.pending.push(visit);
+    }
+
+    unsafe extern "C" fn pop(work: Slot) -> WalkVisit {
+        unsafe { &mut *work.cast::<Self>() }.pending.pop()
+            .unwrap_or(WalkVisit { node: usize::MAX, read: 0 })
+    }
+
+    unsafe extern "C" fn visit(work: Slot, visit: WalkVisit) -> u32 {
+        let work = unsafe { &mut *work.cast::<Self>() };
+        if !work.nodes[visit.read as usize].insert(visit.node) {
+            return 0;
+        }
+        if (work.accepts)(&work.graph.nodes[visit.node]) { 2 } else { 1 }
+    }
+
+    unsafe extern "C" fn collect(work: Slot, visit: WalkVisit) {
+        unsafe { &mut *work.cast::<Self>() }.nodes[0].insert(visit.node);
+    }
+
+    fn walk(&mut self, root: usize, feedback: bool) -> bool {
+        let host = WalkHost { edges: Self::edges(Self::push), pop: Self::pop, visit: Self::visit };
+        unsafe {
+            walk_relation(ptr::from_ref(self.graph).cast(), ptr::from_mut(self).cast(), root, u32::from(feedback), host) != 0
+        }
+    }
+
+    fn historical_frames<I: Iterator<Item = usize>>(&mut self, mut roots: I) {
+        unsafe extern "C" fn next<I: Iterator<Item = usize>>(roots: Slot) -> usize {
+            unsafe { &mut *roots.cast::<I>() }.next().unwrap_or(usize::MAX)
+        }
+        unsafe {
+            historical_relation_frames(
+                ptr::from_ref(self.graph).cast(), ptr::from_mut(self).cast(), ptr::from_mut(&mut roots).cast(),
+                next::<I>, Self::edges(Self::collect),
+            );
+        }
+    }
+
+    fn dependencies(&mut self, root: usize) {
+        unsafe {
+            relation_dependencies(ptr::from_ref(self.graph).cast(), ptr::from_mut(self).cast(), root, Self::edges(Self::collect));
+        }
+    }
+}
 
 #[derive(Clone,PartialEq,Eq,PartialOrd,Ord)]
 enum Key { Loop(LoopInput), Read(ContentRead), Call(CallResult) }
@@ -530,103 +679,27 @@ impl Graph {
         }
     }
 
-    fn visit_frames(
-        &self,
-        node: &Node,
-        visited: &mut BTreeSet<usize>,
-        mut visit: impl FnMut(&Frame),
-    ) {
-        for edge in &node.edges {
-            let (Op::Read { frame, .. } | Op::Initial { frame, .. }) = &edge.op else {
-                continue;
-            };
-            let mut next = *frame;
-            while let Some(id) = next {
-                if !visited.insert(id) {
-                    break;
-                }
-                let frame = &self.frames[id];
-                visit(frame);
-                next = frame.parent;
-            }
-        }
-    }
-
     fn read_feedback(&self, root: usize) -> bool {
-        let mut todo = vec![(root, false)];
-        let mut seen = BTreeSet::new();
-        let mut frames = [BTreeSet::new(), BTreeSet::new()];
-        while let Some((id, read)) = todo.pop() {
-            if id == root && read {
-                return true;
-            }
-            if !seen.insert((id, read)) {
-                continue;
-            }
-            let node = &self.nodes[id];
-            let mut frame_read = read;
-            for edge in &node.edges {
-                let reads = matches!(edge.op, Op::Read { .. });
-                todo.push((edge.from, read || reads));
-                frame_read |= reads;
-            }
-            self.visit_frames(node, &mut frames[usize::from(frame_read)], |frame| {
-                for write in &frame.writes {
-                    todo.push((write.target, frame_read));
-                    todo.extend(write.fields.iter().flatten().map(|(_, source)| (*source, frame_read)));
-                }
-            });
-        }
-        false
-    }
-
-    fn walk_reachable(
-        &self,
-        root: usize,
-        found: &mut BTreeSet<usize>,
-        frames: &mut BTreeSet<usize>,
-        mut accepts: impl FnMut(&Node) -> bool,
-    ) -> bool {
-        let mut todo = vec![root];
-        while let Some(id) = todo.pop() {
-            if !found.insert(id) {
-                continue;
-            }
-            let node = &self.nodes[id];
-            if accepts(node) {
-                return true;
-            }
-            todo.extend(node.edges.iter().map(|edge| edge.from));
-            self.visit_frames(node, frames, |frame| {
-                for write in &frame.writes {
-                    todo.push(write.target);
-                    todo.extend(write.fields.iter().flatten().map(|(_, source)| *source));
-                }
-            });
-        }
-        false
+        RelationWalk::new(self, |_| false).walk(root, true)
     }
 
     fn reachable(&self, root: usize) -> (BTreeSet<usize>, BTreeSet<usize>) {
-        let mut nodes = BTreeSet::new();
-        let mut frames = BTreeSet::new();
-        self.walk_reachable(root, &mut nodes, &mut frames, |_| false);
+        let mut work = RelationWalk::new(self, |_| false);
+        work.walk(root, false);
+        let [nodes, _] = work.nodes;
+        let [frames, _] = work.frames;
         (nodes, frames)
     }
 
     fn any_reachable(&self, root: usize, accepts: impl FnMut(&Node) -> bool) -> bool {
-        self.walk_reachable(root, &mut BTreeSet::new(), &mut BTreeSet::new(), accepts)
+        RelationWalk::new(self, accepts).walk(root, false)
     }
 
     fn evaluation_dependencies(&self, id: usize) -> BTreeSet<usize> {
-        let node = &self.nodes[id];
-        let mut dependencies: BTreeSet<_> = node.edges.iter().map(|edge| edge.from).collect();
-        self.visit_frames(node, &mut BTreeSet::new(), |frame| {
-            dependencies.extend(frame.writes.iter().flat_map(|write| {
-                std::iter::once(write.target).chain(write.fields.iter().flatten().map(|(_, value)| *value))
-            }));
-        });
-        dependencies
+        let mut work = RelationWalk::new(self, |_| false);
+        work.dependencies(id);
+        let [nodes, _] = work.nodes;
+        nodes
     }
 
     fn evaluation_plan(
@@ -845,10 +918,9 @@ impl Graph {
                 }
             }
         }
-        let mut frames = BTreeSet::new();
-        for &id in query.values.keys().chain(query.variables.keys()) {
-            self.visit_frames(&self.nodes[id], &mut frames, |_| {});
-        }
+        let mut work = RelationWalk::new(self, |_| false);
+        work.historical_frames(query.values.keys().chain(query.variables.keys()).copied());
+        let [frames, _] = work.frames;
         for id in frames {
             let frame=&mut residual.frames[id];
             frame.writes.retain(|write|query.node(write.target).sources.entries().any(|(source,when)|when.possible()&&!self.private(source)));

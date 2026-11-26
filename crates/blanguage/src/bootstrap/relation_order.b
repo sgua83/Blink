@@ -26,6 +26,95 @@ address cell(address data, usize index, u64 stride) on cpu {
     return unsafe_address(address_bits(data) + u64(index) * stride);
 }
 
+
+const usize WALK_END = 18446744073709551615u64;
+const u32 WALK_SEEN = 0;
+const u32 WALK_MATCHED = 2;
+
+void walk_frames(address graph,address work,WalkSlice edges,u32 frame_read,u32 sources,WalkEdges host) on cpu
+    requires nonzero(host.edge) requires nonzero(host.frame) requires nonzero(host.write)
+    requires nonzero(host.field) requires nonzero(host.mark_frame) requires nonzero(host.publish)
+{
+    usize index = 0u64;
+    while (index < edges.count) {
+        usize frame = host.edge(edges.data,index).frame;
+        index += 1u64;
+        while (frame != WALK_END && host.mark_frame(work,WalkVisit(frame,frame_read)) != 0) {
+            WalkFrame current = host.frame(graph,frame);
+            frame = current.parent;
+            if (sources == 0) { continue; }
+            usize item = 0u64;
+            while (item < current.writes.count) {
+                WalkWrite write = host.write(current.writes.data,item);
+                item += 1u64;
+                host.publish(work,WalkVisit(write.target,frame_read));
+                usize field = 0u64;
+                while (field < write.fields.count) {
+                    host.publish(work,WalkVisit(host.field(write.fields.data,field),frame_read));
+                    field += 1u64;
+                }
+            }
+        }
+    }
+}
+
+void walk_inputs(address graph,address work,WalkVisit visit,u32 feedback,WalkEdges host) on cpu
+    requires nonzero(host.edges) requires nonzero(host.edge)
+    requires nonzero(host.frame) requires nonzero(host.write)
+    requires nonzero(host.field) requires nonzero(host.mark_frame) requires nonzero(host.publish)
+{
+    WalkSlice edges = host.edges(graph,visit.node);
+    u32 frame_read = visit.read;
+    usize index = 0u64;
+    while (index < edges.count) {
+        WalkEdge edge = host.edge(edges.data,index);
+        u32 read = visit.read | (feedback & edge.read);
+        frame_read |= read;
+        host.publish(work,WalkVisit(edge.source,read));
+        index += 1u64;
+    }
+
+    walk_frames(graph,work,edges,frame_read,1,host);
+}
+
+extern "C" u32 walk_relation(address graph,address work,usize root,u32 feedback,WalkHost host) on cpu
+    requires nonzero(host.edges.edges) requires nonzero(host.edges.edge)
+    requires nonzero(host.edges.frame) requires nonzero(host.edges.write)
+    requires nonzero(host.edges.field) requires nonzero(host.edges.mark_frame)
+    requires nonzero(host.edges.publish) requires nonzero(host.pop) requires nonzero(host.visit)
+{
+    host.edges.publish(work,WalkVisit(root,0));
+    while (true) {
+        WalkVisit visit = host.pop(work);
+        if (visit.node == WALK_END) { return 0; }
+        if (visit.node == root && visit.read != 0) { return 1; }
+        u32 discovered = host.visit(work,visit);
+        if (discovered == WALK_MATCHED) { return 1; }
+        if (discovered == WALK_SEEN) { continue; }
+        walk_inputs(graph,work,visit,feedback,host.edges);
+    }
+}
+
+extern "C" void relation_dependencies(address graph,address work,usize root,WalkEdges host) on cpu
+    requires nonzero(host.edges) requires nonzero(host.edge)
+    requires nonzero(host.frame) requires nonzero(host.write)
+    requires nonzero(host.field) requires nonzero(host.mark_frame) requires nonzero(host.publish)
+{
+    walk_inputs(graph,work,WalkVisit(root,0),0,host);
+}
+
+extern "C" void historical_relation_frames(address graph,address work,address roots,cfn<usize,address> next,WalkEdges host) on cpu
+    requires nonzero(next) requires nonzero(host.edges) requires nonzero(host.edge)
+    requires nonzero(host.frame) requires nonzero(host.write) requires nonzero(host.field)
+    requires nonzero(host.mark_frame) requires nonzero(host.publish)
+{
+    usize root = next(roots);
+    while (root != WALK_END) {
+        walk_frames(graph,work,host.edges(graph,root),0,0,host);
+        root = next(roots);
+    }
+}
+
 Dependencies input_row(Input input, usize index) on cpu {
     return unsafe_position<Dependencies>(cell(input.rows, index, 24u64));
 }
