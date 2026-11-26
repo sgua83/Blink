@@ -77,6 +77,8 @@ unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::collective_tree"]
     fn emit_collective_tree(layout: CollectiveLayout, tree: CollectiveTree, host: ScalarHost,
         components: *mut TreeComponent);
+    #[link_name = "bootstrap.spirv_envelope::physical_fields"]
+    fn emit_physical_fields(layout: CollectiveLayout, first: u32, host: MemoryHost, output: *mut PhysicalField);
     #[link_name = "bootstrap.spirv_envelope::scan_group"]
     fn emit_scan_group(input: ScanGroup, levels: *const ScanLevel, components: *const TreeComponent,
         fields: *const CollectiveField, count: u32, workspace: *mut u32, body: *mut u32,
@@ -204,26 +206,13 @@ impl Emitter<'_> {
     }
 
     pub(super) fn physical_fields(&mut self, ty: &Ty, first: u32) -> Vec<PhysicalField> {
-        ty.components.iter().map(|&(scalar, offset)| {
-            let unit = Self::physical_unit(scalar);
-            let (step, shift) = if scalar.size() == 8 {
-                (self.constant(Scalar::U64, 4), self.constant(Scalar::U32, 32))
-            } else {
-                (0, 0)
-            };
-            let offset = first + offset;
-            PhysicalField {
-                scalar: scalar.into(),
-                raw_type: self.raw_type(scalar),
-                value_type: self.types[&scalar],
-                unit_type: self.types[&unit],
-                unit_bytes: unit.size(),
-                pointer_type: self.physical_pointers[&unit],
-                offset: if offset == 0 { 0 } else { self.constant(Scalar::U64, offset) },
-                step,
-                shift,
-            }
-        }).collect()
+        let count = ty.components.len();
+        let mut fields = Vec::with_capacity(count);
+        unsafe {
+            emit_physical_fields(CollectiveLayout::borrow(ty), first, self.memory_host(), fields.as_mut_ptr());
+            fields.set_len(count);
+        }
+        fields
     }
 
     fn emit_scan_prefix(&mut self, scan: &Scan, target_word: u32, head: Option<u32>) {

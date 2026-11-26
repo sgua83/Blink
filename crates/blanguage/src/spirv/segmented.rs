@@ -1,5 +1,5 @@
 //! 分段摘要携带尾段值与段头标记；归约额外携带段数，摘要始终留在设备。
-use super::{scan::{ScanLevel, TreeWords}, *};
+use super::{reduce::CollectiveLayout, scan::{ScanLevel, TreeWords}, *};
 
 #[repr(C)]
 struct SegmentField {
@@ -90,6 +90,11 @@ struct SegmentGroup {
 }
 
 unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::segment_fields"]
+    fn emit_segment_fields(layout: CollectiveLayout, host: ScalarHost, output: *mut SegmentField);
+    #[link_name = "bootstrap.spirv_envelope::segment_storage_fields"]
+    fn emit_segment_storage_fields(layout: CollectiveLayout, first: u32, host: MemoryHost,
+        output: *mut SegmentStorageField);
     #[link_name = "bootstrap.spirv_envelope::segment_identity"]
     fn emit_segment_identity(host: ScalarHost, merge: SegmentMerge, source: *const std::ffi::c_void,
         field: unsafe extern "C" fn(*const std::ffi::c_void, u32) -> SegmentIdentityField,
@@ -117,29 +122,23 @@ impl Segment<'_> {
 }
 impl Emitter<'_> {
     fn segment<'a>(&mut self, ty: &'a Ty, operator: CollectiveOperator, counted: bool) -> Segment<'a> {
-        let fields = ty.components.iter().map(|&(scalar, offset)| SegmentField {
-            scalar: scalar.into(),
-            word: offset / 4,
-            raw_type: self.raw_type(scalar),
-            value_type: self.types[&scalar],
-            shift: if scalar.size() == 8 { self.constant(Scalar::U32, 32) } else { 0 },
-        }).collect();
+        let count = ty.components.len();
+        let mut fields = Vec::with_capacity(count);
+        unsafe {
+            emit_segment_fields(CollectiveLayout::borrow(ty), self.scalar_host(), fields.as_mut_ptr());
+            fields.set_len(count);
+        }
         Segment { ty, operator, counted, fields }
     }
 
     fn segment_storage_fields(&mut self, scan: &Segment<'_>, first: u32) -> Vec<SegmentStorageField> {
-        scan.ty.components.iter().map(|&(scalar, offset)| {
-            let unit = Self::physical_unit(scalar);
-            let byte = first + offset;
-            SegmentStorageField {
-                word: offset / 4,
-                offset: if byte == 0 { 0 } else { self.constant(Scalar::U64, byte) },
-                unit_type: self.types[&unit],
-                unit_bytes: unit.size(),
-                pointer_type: self.physical_pointers[&unit],
-                step: if scalar.size() == 8 { self.constant(Scalar::U64, 4) } else { 0 },
-            }
-        }).collect()
+        let count = scan.ty.components.len();
+        let mut fields = Vec::with_capacity(count);
+        unsafe {
+            emit_segment_storage_fields(CollectiveLayout::borrow(scan.ty), first, self.memory_host(), fields.as_mut_ptr());
+            fields.set_len(count);
+        }
+        fields
     }
 
     fn segment_merge_input(&mut self, scan: &Segment<'_>) -> SegmentMerge {

@@ -3844,23 +3844,52 @@ extern "C" void collective_fields(CollectiveLayout layout, u32 source_word, u32 
     usize index = 0u64;
     while (index < layout.count) {
         CollectiveComponent field = layout.component(layout.source, index);
-        u32 width = scalar_definition(field.scalar).width;
-        u32 unit_bytes = width < 32 ? width / 8 : 4;
-        BuiltinScalar unit = unsigned_scalar(unit_bytes * 8);
+        PhysicalShape shape = physical_shape(field.scalar);
         u32 source = 0;
         u32 slot = field.offset / 4;
         if (has_source != 0) {
-            u32 offset = source_word + field.offset;
-            if (offset != 0) { source = stream.constant(context, BuiltinScalar::U64, u64(offset)); }
+            source = field_byte_id(stream, source_word + field.offset);
             slot = 2 * u32(index);
         }
-        u32 target = field.offset == 0 ? 0 : stream.constant(context, BuiltinScalar::U64, u64(field.offset));
-        u32 step = width == 64 ? stream.constant(context, BuiltinScalar::U64, 4u64) : 0;
+        u32 target = field_byte_id(stream, field.offset);
+        u32 step = high_word_step(stream, shape);
         u32 byte = field.offset % 4;
-        u32 shift = width < 32 && byte != 0 ? stream.constant(context, BuiltinScalar::U32, u64(byte * 8)) : 0;
+        u32 shift = shape.bytes < 4 && byte != 0 ? stream.constant(context, BuiltinScalar::U32, u64(byte * 8)) : 0;
         address at = unsafe_address(address_bits(fields) + index * size_of<CollectiveField>());
-        unsafe_position<CollectiveField>(at) = CollectiveField(source, target, stream.type_id(context, unit),
-            unit_bytes, host.pointer_type(context, unit), step, shift, slot);
+        unsafe_position<CollectiveField>(at) = CollectiveField(source, target, stream.type_id(context, shape.unit),
+            shape.bytes, host.pointer_type(context, shape.unit), step, shift, slot);
+        index += 1u64;
+    }
+}
+
+u32 field_byte_id(ScalarHost host, u32 byte_offset) on cpu requires nonzero(host.constant) {
+    return byte_offset == 0 ? 0 : host.constant(host.context, BuiltinScalar::U64, u64(byte_offset));
+}
+
+u32 high_word_step(ScalarHost host, PhysicalShape shape) on cpu requires nonzero(host.constant) {
+    return shape.count == 2 ? host.constant(host.context, BuiltinScalar::U64, u64(shape.bytes)) : 0;
+}
+
+u32 high_word_shift(ScalarHost host, PhysicalShape shape) on cpu requires nonzero(host.constant) {
+    return shape.count == 2 ? host.constant(host.context, BuiltinScalar::U32, 32u64) : 0;
+}
+
+extern "C" void physical_fields(CollectiveLayout layout, u32 first, MemoryHost host, address output) on cpu
+    requires nonzero(layout.component) requires nonzero(host.scalars.constant)
+    requires nonzero(host.scalars.type_id) requires nonzero(host.pointer_type) {
+    ScalarHost stream = host.scalars;
+    address context = stream.context;
+    usize index = 0u64;
+    while (index < layout.count) {
+        CollectiveComponent component = layout.component(layout.source, index);
+        PhysicalShape shape = physical_shape(component.scalar);
+        u32 step = high_word_step(stream, shape);
+        u32 shift = high_word_shift(stream, shape);
+        u32 offset = field_byte_id(stream, first + component.offset);
+        address at = unsafe_address(address_bits(output) + index * size_of<PhysicalField>());
+        unsafe_position<PhysicalField>(at) = PhysicalField(component.scalar, stream.type_id(context, shape.raw),
+            stream.type_id(context, component.scalar), stream.type_id(context, shape.unit), shape.bytes,
+            host.pointer_type(context, shape.unit), offset, step, shift);
         index += 1u64;
     }
 }
@@ -4701,6 +4730,38 @@ extern "C" StageWords close_custom_prefix(read CustomPrefix input, CustomPrefixO
     if (opened.head_end != 0) { stage_close(out, opened.head_end); }
     stage_close(out, opened.end);
     return StageWords(out.words, out.next, opened.end);
+}
+
+extern "C" void segment_fields(CollectiveLayout layout, ScalarHost host, address output) on cpu
+    requires nonzero(layout.component) requires nonzero(host.constant) requires nonzero(host.type_id) {
+    usize index = 0u64;
+    while (index < layout.count) {
+        CollectiveComponent component = layout.component(layout.source, index);
+        PhysicalShape shape = physical_shape(component.scalar);
+        u32 shift = high_word_shift(host, shape);
+        address at = unsafe_address(address_bits(output) + index * size_of<SegmentField>());
+        unsafe_position<SegmentField>(at) = SegmentField(component.scalar, component.offset / 4,
+            host.type_id(host.context, shape.raw), host.type_id(host.context, component.scalar), shift);
+        index += 1u64;
+    }
+}
+
+extern "C" void segment_storage_fields(CollectiveLayout layout, u32 first, MemoryHost host, address output) on cpu
+    requires nonzero(layout.component) requires nonzero(host.scalars.constant)
+    requires nonzero(host.scalars.type_id) requires nonzero(host.pointer_type) {
+    ScalarHost stream = host.scalars;
+    address context = stream.context;
+    usize index = 0u64;
+    while (index < layout.count) {
+        CollectiveComponent component = layout.component(layout.source, index);
+        PhysicalShape shape = physical_shape(component.scalar);
+        u32 offset = field_byte_id(stream, first + component.offset);
+        u32 step = high_word_step(stream, shape);
+        address at = unsafe_address(address_bits(output) + index * size_of<SegmentStorageField>());
+        unsafe_position<SegmentStorageField>(at) = SegmentStorageField(component.offset / 4, offset,
+            stream.type_id(context, shape.unit), shape.bytes, host.pointer_type(context, shape.unit), step);
+        index += 1u64;
+    }
 }
 
 extern "C" void segment_identity(ScalarHost host, SegmentMerge merge, address source,

@@ -1649,11 +1649,6 @@ impl Emitter<'_> {
         let value = self.value(value);
         unsafe { encode_raw_bits(scalar, value, self.memory_host()) }
     }
-
-
-    fn physical_unit(scalar: Scalar) -> Scalar {
-        Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 })
-    }
 }
 pub fn emit(program: &Program, stage_index: usize) -> Result<Vec<u32>, &'static str> {
     emit_pass(program, stage_index, Pass::Main)

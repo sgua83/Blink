@@ -713,6 +713,9 @@ struct PhysicalField {
     u32 step;
     u32 shift;
 };
+extern "C" void physical_fields(CollectiveLayout layout, u32 first, MemoryHost host, address output) on cpu
+    requires nonzero(layout.component) requires nonzero(host.scalars.constant)
+    requires nonzero(host.scalars.type_id) requires nonzero(host.pointer_type);
 
 // The caller provides 233 + 144*count body words and 3*count decoration words.
 // A segment head descriptor uses a further 148 body words for its load and branch.
@@ -858,6 +861,8 @@ struct SegmentField {
     u32 value_type;
     u32 shift;
 };
+extern "C" void segment_fields(CollectiveLayout layout, ScalarHost host, address output) on cpu
+    requires nonzero(layout.component) requires nonzero(host.constant) requires nonzero(host.type_id);
 
 struct SegmentMerge {
     CollectiveOperation operation;
@@ -898,6 +903,9 @@ struct SegmentStorageField {
     u32 pointer_type;
     u32 step;
 };
+extern "C" void segment_storage_fields(CollectiveLayout layout, u32 first, MemoryHost host, address output) on cpu
+    requires nonzero(layout.component) requires nonzero(host.scalars.constant)
+    requires nonzero(host.scalars.type_id) requires nonzero(host.pointer_type);
 
 enum SegmentPass : u32 { Main = 0; Tail = 1; Finish = 2; };
 
