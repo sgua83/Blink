@@ -347,16 +347,9 @@ pub(super) fn emit(
     };
     let body = unsafe { cpu_range_body(input, plan, std::ptr::from_mut(&mut writer).cast(), RANGE_HOST) };
     let carry = body.carry;
-    // Each actual range phase owns its own producers; no value crosses these cuts.
-    let mut after_code = stage.code.split_off(body.loop_end);
-    let mut loop_code = stage.code.split_off(body.initialization_end);
-    reads::place(&mut stage.code, &mut stage.registers, &stage.writes);
-    reads::place(&mut loop_code, &mut stage.registers, &stage.writes);
-    reads::place(&mut after_code, &mut stage.registers, &stage.writes);
-    let initialize_end = stage.code.len();
-    stage.code.extend(loop_code);
-    let loop_end = stage.code.len();
-    stage.code.extend(after_code);
+    let mut phase_ends = [body.initialization_end, body.loop_end];
+    reads::place_phases(&mut stage.code, &mut stage.registers, &stage.writes, &mut phase_ends);
+    let [initialize_end, loop_end] = phase_ends;
     let mut live: std::collections::BTreeSet<_> =
         (0..fields).map(|field| PrivateSlot::Local(carry + field)).collect();
     if body.history != 0 {

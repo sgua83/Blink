@@ -2534,12 +2534,12 @@ bool binding_written(Span writes,usize binding) on cpu {
  return false;
 }
 
-extern "C" void place_read_block(address input,address pending,address scratch,Span writes,ReadHost host) on cpu
+extern "C" void place_read_block(address input,address pending,address scratch,Span writes,usize tail,ReadHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.math_outgoing)
  requires nonzero(host.next) requires nonzero(host.sample) requires nonzero(host.child)
  requires nonzero(host.store) requires nonzero(host.queued) requires nonzero(host.emit) requires nonzero(host.clear) {
  while(true){
-  Node node=host.next(input);
+  Node node=host.next(input,tail);
   if(address_bits(node.data)==0u64){break;}
   View inst=host.ir.inspect(node);
   u32 tag=inst.tag;
@@ -2589,17 +2589,27 @@ extern "C" void place_read_block(address input,address pending,address scratch,S
  read_finish(pending,scratch,host);
 }
 
-extern "C" void place_reads(address input,address pending,Span writes,usize registers,ReadHost host) on cpu
+extern "C" void place_reads(address input,address pending,Span writes,ReadPhases phases,ReadHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.math_outgoing)
  requires nonzero(host.next) requires nonzero(host.sample) requires nonzero(host.child)
- requires nonzero(host.store) requires nonzero(host.queued) requires nonzero(host.emit) requires nonzero(host.clear) {
+ requires nonzero(host.store) requires nonzero(host.queued) requires nonzero(host.emit)
+ requires nonzero(host.clear) requires nonzero(host.written) {
  ReadStorage empty=ReadStorage(address(),0u64);
  ReadList list=ReadList(empty,0u64);
  ReadScratch scratch=ReadScratch(empty,list,list,list,0u64);
  // Every operand is an index in the original register table. Texture lowering
  // is its only producer during placement and publishes each new length.
- reserve_reads(scratch.producers,registers,size_of<usize>(),READ_HEAP_ZERO);
- place_read_block(input,pending,address_of(scratch),writes,host);
+ reserve_reads(scratch.producers,phases.registers,size_of<usize>(),READ_HEAP_ZERO);
+ usize phase=0u64;
+ while(phase<phases.ends.count){
+  address end=unsafe_address(address_bits(phases.ends.data)+phase*phases.ends.stride);
+  usize tail=phases.instructions-unsafe_position<usize>(end);
+  // All pending definitions are emitted before the next phase starts.
+  place_read_block(input,pending,address_of(scratch),writes,tail,host);
+  unsafe_position<usize>(end)=host.written(pending);
+  phase+=1u64;
+ }
+ place_read_block(input,pending,address_of(scratch),writes,0u64,host);
  release_reads(scratch.producers);
  release_reads(scratch.work.storage);
  release_reads(scratch.shared.storage);

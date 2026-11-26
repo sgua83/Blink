@@ -18,30 +18,40 @@ struct Input<'a> {
 }
 
 #[repr(C)]
+struct ReadPhases {
+    ends: Span,
+    instructions: usize,
+    registers: usize,
+}
+
+#[repr(C)]
 #[derive(Clone, Copy)]
 struct Host {
     ir: dataflow::Host,
     math_outgoing: unsafe extern "C" fn(u32) -> u64,
-    next: unsafe extern "C" fn(*mut Input<'_>) -> Node,
+    next: unsafe extern "C" fn(*mut Input<'_>, usize) -> Node,
     sample: unsafe extern "C" fn(*mut Input<'_>) -> usize,
     child: unsafe extern "C" fn(*mut Input<'_>, u32, *mut c_void),
     store: unsafe extern "C" fn(*mut Input<'_>, *mut Pending, bool),
     queued: unsafe extern "C" fn(*const Pending, usize) -> Node,
     emit: unsafe extern "C" fn(*mut Pending, usize),
     clear: unsafe extern "C" fn(*mut Pending),
+    written: unsafe extern "C" fn(*const Pending) -> usize,
 }
 
 unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::place_reads"]
-    fn place_reads(input: *mut c_void, pending: *mut c_void, writes: Span, registers: usize, host: Host);
+    fn place_reads(input: *mut c_void, pending: *mut c_void, writes: Span, phases: ReadPhases, host: Host);
     #[link_name = "bootstrap.ir_dataflow::place_read_block"]
     fn place_read_block(input: *mut c_void, pending: *mut c_void,
-        scratch: *mut c_void, writes: Span, host: Host);
+        scratch: *mut c_void, writes: Span, tail: usize, host: Host);
 }
 
-unsafe extern "C" fn next(input: *mut Input<'_>) -> Node {
+unsafe extern "C" fn next(input: *mut Input<'_>, tail: usize) -> Node {
     let input = unsafe { &mut *input };
-    input.current = input.expanded.next().or_else(|| input.remaining.next());
+    input.current = input.expanded.next().or_else(|| {
+        if input.remaining.len() == tail { None } else { input.remaining.next() }
+    });
     input.current.as_ref().map_or(Node::EMPTY, Node::instruction)
 }
 
@@ -71,7 +81,7 @@ unsafe extern "C" fn child(input: *mut Input<'_>, index: u32, scratch: *mut c_vo
         _ => unsafe { std::hint::unreachable_unchecked() },
     };
     place_block(body, input.registers, input.writes, |input, pending, writes| unsafe {
-        place_read_block(input.cast(), pending.cast(), scratch, writes, HOST)
+        place_read_block(input.cast(), pending.cast(), scratch, writes, 0, HOST)
     });
 }
 
@@ -100,16 +110,28 @@ unsafe extern "C" fn clear(pending: *mut Pending) {
     unsafe { &mut (*pending).code }.clear();
 }
 
+unsafe extern "C" fn written(pending: *const Pending) -> usize {
+    unsafe { &*pending }.out.len()
+}
+
 const HOST: Host = Host {
     ir: dataflow::HOST,
     math_outgoing: operands::scalar_math_outgoing,
-    next, sample, child, store, queued, emit, clear,
+    next, sample, child, store, queued, emit, clear, written,
 };
 
 pub(super) fn place(code: &mut Vec<Inst>, registers: &mut Vec<Scalar>, writes: &[usize]) {
-    let register_count = registers.len();
+    place_phases(code, registers, writes, &mut []);
+}
+
+pub(super) fn place_phases(
+    code: &mut Vec<Inst>, registers: &mut Vec<Scalar>, writes: &[usize], phase_ends: &mut [usize],
+) {
+    let phases = ReadPhases {
+        ends: Span::mutable(phase_ends), instructions: code.len(), registers: registers.len(),
+    };
     place_block(code, registers, writes, |input, pending, writes| unsafe {
-        place_reads(input.cast(), pending.cast(), writes, register_count, HOST)
+        place_reads(input.cast(), pending.cast(), writes, phases, HOST)
     });
 }
 

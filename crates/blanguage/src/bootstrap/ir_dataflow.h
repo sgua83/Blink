@@ -568,23 +568,27 @@ extern "C" u32 program_maximal_reconvergence(Span stages,Host host) on cpu requi
 extern "C" u32 shader_pages_fit(Span buffers,u32 bytes,Host host) on cpu requires nonzero(host.inspect);
 
 // The host moves whole IR instructions. The scheduler owns all pending metadata.
+// Each explicit cut changes from an input end to the corresponding output end.
+struct ReadPhases { Span ends; usize instructions; usize registers; };
 struct ReadHost {
  Host ir;
  cfn<u64,u32> math_outgoing;
- cfn<Node,address> next;
+ cfn<Node,address,usize> next;
  cfn<usize,address> sample;
  cfn<void,address,u32,address> child;
  cfn<void,address,address,bool> store;
  cfn<Node,address,usize> queued;
  cfn<void,address,usize> emit;
  cfn<void,address> clear;
+ cfn<usize,address> ensures memory(read) written;
 };
-extern "C" void place_reads(address input,address pending,Span writes,usize registers,ReadHost host) on cpu
+extern "C" void place_reads(address input,address pending,Span writes,ReadPhases phases,ReadHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.math_outgoing)
  requires nonzero(host.next) requires nonzero(host.sample) requires nonzero(host.child)
- requires nonzero(host.store) requires nonzero(host.queued) requires nonzero(host.emit) requires nonzero(host.clear);
+ requires nonzero(host.store) requires nonzero(host.queued) requires nonzero(host.emit)
+ requires nonzero(host.clear) requires nonzero(host.written);
 // Only a synchronous child of the current placement may borrow its scratch.
-extern "C" void place_read_block(address input,address pending,address scratch,Span writes,ReadHost host) on cpu
+extern "C" void place_read_block(address input,address pending,address scratch,Span writes,usize tail,ReadHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.math_outgoing)
  requires nonzero(host.next) requires nonzero(host.sample) requires nonzero(host.child)
  requires nonzero(host.store) requires nonzero(host.queued) requires nonzero(host.emit) requires nonzero(host.clear);
