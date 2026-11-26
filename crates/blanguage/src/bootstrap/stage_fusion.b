@@ -509,14 +509,6 @@ VfRows vf_copy_rows(VfRows original,cfn<address,address,u64,u64> resize) on cpu
     return copy;
 }
 
-extern "C" void value_copy_registers(address target,address source,u32 locals,
-    cfn<address,address,u64,u64> resize) on cpu requires nonzero(resize) {
-    VfRegisters original=unsafe_position<VfRegisters>(source);
-    VfRows aliases=vf_copy_rows(original.aliases,resize);
-    VfRows local=locals!=0 ? vf_copy_rows(original.locals,resize) : vf_empty_rows();
-    unsafe_position<VfRegisters>(target)=VfRegisters(aliases,local);
-}
-
 extern "C" void value_release_registers(address values,cfn<address,address,u64,u64> resize) on cpu
     requires nonzero(resize) {
     VfRegisters registers=unsafe_position<VfRegisters>(values);
@@ -524,7 +516,7 @@ extern "C" void value_release_registers(address values,cfn<address,address,u64,u
     vf_release(registers.locals,resize);
 }
 
-extern "C" void value_merge_aliases(address target,address source,cfn<address,address,u64,u64> resize) on cpu
+void vf_merge_aliases(address target,address source,cfn<address,address,u64,u64> resize) on cpu
     requires nonzero(resize) {
     VfRows left=unsafe_position<VfRegisters>(target).aliases;
     VfRows right=unsafe_position<VfRegisters>(source).aliases;
@@ -685,7 +677,7 @@ extern "C" void value_release_memory(address state,VfMemoryHost memory) on cpu
     vf_release(unsafe_position<VfRows>(state),memory.resize);
 }
 
-extern "C" void value_copy_memory(address target,address source,VfMemoryHost memory) on cpu
+void vf_copy_memory(address target,address source,VfMemoryHost memory) on cpu
     requires nonzero(memory.resize) requires nonzero(memory.copy_origin) {
     VfRows original=unsafe_position<VfRows>(source);
     VfRows rows=vf_empty_rows();
@@ -834,10 +826,11 @@ VfValues vf_empty_values() on cpu {
 
 VfValues vf_fork_values(address values,VfHost host) on cpu
     requires nonzero(host.resize_rows) requires nonzero(host.memory.resize) requires nonzero(host.memory.copy_origin) {
-    VfValues child=vf_empty_values();
-    address output=address_of(child);
-    value_copy_registers(vf_registers(output),vf_registers(values),1,host.resize_rows);
-    value_copy_memory(vf_memory_rows(output),vf_memory_rows(values),host.memory);
+    VfRegisters original=unsafe_position<VfRegisters>(vf_registers(values));
+    VfRows aliases=vf_copy_rows(original.aliases,host.resize_rows);
+    VfRows locals=vf_copy_rows(original.locals,host.resize_rows);
+    VfValues child=VfValues(VfRegisters(aliases,locals),vf_empty_rows());
+    vf_copy_memory(vf_memory_rows(address_of(child)),vf_memory_rows(values),host.memory);
     return child;
 }
 
@@ -1142,21 +1135,23 @@ extern "C" void value_retain_origins(RewriteSpan code,address state,Host read,Re
     }
 }
 
-extern "C" void value_take_input_origins(address state,u64 result,address sink,VfOriginHost host,
+extern "C" bool value_take_input_origins(address state,u64 result,address sink,VfOriginHost host,
     cfn<void,address,address> accept) on cpu requires nonzero(host.discard) requires nonzero(accept) {
     VfOriginBook book=unsafe_position<VfOriginBook>(state);
     u64 at=vf_origin_lower(book,result,host.stride);
+    bool accepted=false;
     while(at<book.order.count){
         address fact=vf_ordered_origin(book,at,host.stride);
         VfOriginHead head=unsafe_position<VfOriginHead>(fact);
         if(head.result!=result || head.pending==0){break;}
-        if(head.kind==u32(VfReuseKind::LocalRead)){accept(sink,fact);}
+        if(head.kind==u32(VfReuseKind::LocalRead)){accept(sink,fact);accepted=true;}
         else{host.discard(fact);}
         unsafe_position<VfOriginHead>(fact).pending=0;
         book.facts.count-=1u64;
         at+=1u64;
     }
     unsafe_position<VfOriginBook>(state).facts.count=book.facts.count;
+    return accepted;
 }
 
 extern "C" void value_release_origins(address state,cfn<address,address,u64,u64> resize,VfOriginHost host) on cpu
@@ -1322,7 +1317,7 @@ VfAction value_instruction(address instruction,address retained_at,address value
         vf_merge(branches.next,other.next,host.resize_rows);
         vf_merge(branches.exits,other.exits,host.resize_rows);
         vf_move_rows(register_state,vf_registers(yes),VfRegMap::Aliases,host.resize_rows);
-        value_merge_aliases(register_state,vf_registers(no),host.resize_rows);
+        vf_merge_aliases(register_state,vf_registers(no),host.resize_rows);
         continuing=vf_resume(values,flow,branches,host);
         vf_release_values(yes,host);
         vf_release_values(no,host);
@@ -1390,4 +1385,80 @@ extern "C" void value_discard_flow(VfFlow flow,cfn<address,address,u64,u64> resi
     requires nonzero(resize) {
     vf_release(flow.next.rows,resize);
     vf_release(flow.exits.rows,resize);
+}
+
+address vf_reduction_part(address blocks,u64 part) on cpu {
+    return unsafe_position<address>(unsafe_address(address_bits(blocks)+part*size_of<address>()));
+}
+
+RewriteSpan vf_reduction_root(address roots,u64 index) on cpu {
+    return unsafe_position<RewriteSpan>(unsafe_address(address_bits(roots)+index*size_of<RewriteSpan>()));
+}
+
+extern "C" void value_reduction(VfReduction input,VfHost host,VfOriginWriter writer,VfReductionOrigins origins) on cpu
+    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.scalar) requires nonzero(host.storage)
+    requires nonzero(host.rewrite.inspect) requires nonzero(host.resize_rows) requires nonzero(host.scratch)
+    requires nonzero(host.rewrite_division) requires nonzero(host.pair)
+    requires nonzero(host.origin.capture) requires nonzero(host.origin.resize) requires nonzero(host.origin.discard)
+    requires nonzero(host.memory.resize) requires nonzero(host.memory.move_rows)
+    requires nonzero(host.memory.capture_origin) requires nonzero(host.memory.drop_origin) requires nonzero(host.memory.copy_origin)
+    requires nonzero(host.instruction_span) requires nonzero(host.swap_instructions) requires nonzero(host.truncate)
+    requires nonzero(writer.collect) requires nonzero(writer.attach)
+    requires nonzero(origins.accept) requires nonzero(origins.finish_input) {
+    VfValues entry=vf_empty_values();
+    VfExpressions expressions=VfExpressions(vf_empty_rows(),vf_empty_rows(),vf_empty_rows());
+    VfOriginBook pending=VfOriginBook(vf_empty_rows(),vf_empty_rows());
+    address state=address_of(entry);
+    address table=address_of(expressions);
+    address book=address_of(pending);
+    address entry_block=vf_reduction_part(input.parts,0u64);
+    value_discard_flow(value_block(entry_block,state,table,book,input.registers,host,true),host.resize_rows);
+    VfRows seed=unsafe_position<VfRegisters>(vf_registers(state)).aliases;
+    VfRegisters aliases=VfRegisters(vf_copy_rows(seed,host.resize_rows),vf_empty_rows());
+    address merged=address_of(aliases);
+    u64 last=3u64;
+    while(last!=0u64 && host.instruction_span(vf_reduction_part(input.parts,last)).count==0u64){last-=1u64;}
+    u64 part=1u64;
+    while(part<=last){
+        address block=vf_reduction_part(input.parts,part);
+        if(host.instruction_span(block).count!=0u64){
+            bool final_part=part==last;
+            VfValues working=final_part ? vf_take_values(state) : vf_fork_values(state,host);
+            address active=address_of(working);
+            value_discard_flow(value_block(block,active,table,book,input.registers,host,final_part),host.resize_rows);
+            vf_merge_aliases(merged,vf_registers(active),host.resize_rows);
+            vf_release_values(active,host);
+        }
+        part+=1u64;
+    }
+    vf_release_values(state,host);
+    value_release_expressions(table,host.scratch);
+    value_order_origins(book,host.origin.stride);
+    part=0u64;
+    while(part<4u64){
+        Span code=host.instruction_span(vf_reduction_part(input.parts,part));
+        value_retain_origins(RewriteSpan(code.data,code.count,code.stride),book,host.values.ir,host.rewrite,host.origin.stride,writer);
+        part+=1u64;
+    }
+    // The original input registers still identify the reads waiting for a real input.
+    u64 role=0u64;
+    while(role<3u64){
+        RewriteSpan root=vf_reduction_root(input.roots,role==2u64 ? 0u64 : 3u64+role);
+        u64 index=0u64;
+        while(index<root.count){
+            u64 reg=unsafe_position<u64>(unsafe_address(address_bits(root.data)+index*root.stride));
+            if(value_take_input_origins(book,reg,origins.reads,host.origin,origins.accept)){
+                origins.finish_input(origins.reads,origins.inputs,u32(role),index);
+            }
+            index+=1u64;
+        }
+        role+=1u64;
+    }
+    value_release_origins(book,host.scratch,host.origin);
+    u64 root=0u64;
+    while(root<6u64){
+        value_rebind_roots(merged,vf_reduction_root(input.roots,root));
+        root+=1u64;
+    }
+    value_release_registers(merged,host.resize_rows);
 }

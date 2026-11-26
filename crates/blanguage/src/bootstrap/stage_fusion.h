@@ -128,6 +128,13 @@ struct VfOriginWriter {
     cfn<void,address,address,VfResultLocation> collect;
     cfn<void,address,address,VfReuseKind> attach;
 };
+struct VfReduction { address parts; Span registers; address roots; };
+struct VfReductionOrigins {
+    address reads;
+    address inputs;
+    cfn<void,address,address> accept;
+    cfn<void,address,address,u32,u64> finish_input;
+};
 struct VfRows { usize data; u64 count; u64 capacity; };
 struct VfRegisters { VfRows aliases; VfRows locals; };
 struct VfExpressions { VfRows entries; VfRows arguments; VfRows buckets; };
@@ -159,23 +166,17 @@ struct VfHost {
 // All pointers borrow this invocation's actual nodes or native owning containers.
 extern "C" u64 value_root(address values,u64 reg) on cpu;
 extern "C" void value_rebind_roots(address registers,RewriteSpan roots) on cpu;
-extern "C" void value_copy_registers(address target,address source,u32 locals,
-    cfn<address,address,u64,u64> resize) on cpu requires nonzero(resize);
 extern "C" void value_release_registers(address values,cfn<address,address,u64,u64> resize) on cpu
-    requires nonzero(resize);
-extern "C" void value_merge_aliases(address target,address source,cfn<address,address,u64,u64> resize) on cpu
     requires nonzero(resize);
 extern "C" void value_release_memory(address state,VfMemoryHost memory) on cpu
     requires nonzero(memory.resize) requires nonzero(memory.drop_origin);
-extern "C" void value_copy_memory(address target,address source,VfMemoryHost memory) on cpu
-    requires nonzero(memory.resize) requires nonzero(memory.copy_origin);
 extern "C" void value_release_expressions(address state,cfn<address,address,u64,u64> resize) on cpu
     requires nonzero(resize);
 extern "C" void value_order_origins(address state,u64 stride) on cpu;
 extern "C" void value_retain_origins(RewriteSpan code,address state,Host read,RewriteHost write,
     u64 stride,VfOriginWriter writer) on cpu requires nonzero(read.inspect) requires nonzero(write.inspect)
     requires nonzero(writer.collect) requires nonzero(writer.attach);
-extern "C" void value_take_input_origins(address state,u64 result,address sink,VfOriginHost host,
+extern "C" bool value_take_input_origins(address state,u64 result,address sink,VfOriginHost host,
     cfn<void,address,address> accept) on cpu requires nonzero(host.discard) requires nonzero(accept);
 extern "C" void value_release_origins(address state,cfn<address,address,u64,u64> resize,VfOriginHost host) on cpu
     requires nonzero(resize) requires nonzero(host.resize) requires nonzero(host.discard);
@@ -190,3 +191,14 @@ extern "C" VfFlow value_block(address block,address values,address expressions,a
     requires nonzero(host.instruction_span) requires nonzero(host.swap_instructions) requires nonzero(host.truncate);
 extern "C" void value_discard_flow(VfFlow flow,cfn<address,address,u64,u64> resize) on cpu
     requires nonzero(resize);
+
+extern "C" void value_reduction(VfReduction input,VfHost host,VfOriginWriter writer,VfReductionOrigins origins) on cpu
+    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.scalar) requires nonzero(host.storage)
+    requires nonzero(host.rewrite.inspect) requires nonzero(host.resize_rows) requires nonzero(host.scratch)
+    requires nonzero(host.rewrite_division) requires nonzero(host.pair)
+    requires nonzero(host.origin.capture) requires nonzero(host.origin.resize) requires nonzero(host.origin.discard)
+    requires nonzero(host.memory.resize) requires nonzero(host.memory.move_rows)
+    requires nonzero(host.memory.capture_origin) requires nonzero(host.memory.drop_origin) requires nonzero(host.memory.copy_origin)
+    requires nonzero(host.instruction_span) requires nonzero(host.swap_instructions) requires nonzero(host.truncate)
+    requires nonzero(writer.collect) requires nonzero(writer.attach)
+    requires nonzero(origins.accept) requires nonzero(origins.finish_input);

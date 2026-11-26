@@ -5,8 +5,6 @@ use std::{ffi::c_void, mem::MaybeUninit, ptr, sync::Arc};
 
 mod host;
 
-pub(super) use host::value_rebind_roots;
-
 #[repr(u32)]
 #[derive(Clone, Copy)]
 enum ReuseKind { Expression, LocalRead, IndexedStoreRead, IndexedRead }
@@ -87,49 +85,28 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut host::Reuses) {
 pub(super) fn run(code: &mut Vec<Inst>, registers: &[Scalar]) {
     run_code(code, registers, &mut []);
 }
-// Only the original entry snapshot, merged SSA aliases and pending origins for
-// this one reduction. B selects the independent bodies and the final transfer.
-#[derive(Default)]
-pub(super) struct ReductionFlow {
-    entry: host::Values,
-    expressions: host::Expressions,
-    aliases: host::Values,
-    reuses: host::Reuses,
-    forwarded: Vec<ReductionInputReadForward>,
+pub(super) fn run_reduction(parts: &mut [Vec<Inst>; 4], kernel: &mut ReductionKernel) {
+    let mut origins = Origins::default();
+    let mut reads = Vec::new();
+    let mut inputs = Vec::new();
+    host::run_reduction(parts, kernel, &mut origins, &mut reads, &mut inputs);
+    if !inputs.is_empty() {
+        let retained = kernel.stage.generated_origin.take();
+        kernel.stage.generated_origin = Some(Arc::new(GeneratedOrigin {
+            reason: GenerationReason::LocalReadForward,
+            trigger: Some(GenerationAnchor::ReductionInputForward { retained, inputs }),
+        }));
+    }
 }
-impl ReductionFlow {
-    pub(super) fn entry(&mut self, code: &mut Vec<Inst>, registers: &[Scalar]) {
-        host::run(code, &mut self.entry, &mut self.expressions, registers, &mut self.reuses, true);
-    }
-    pub(super) fn seed(&mut self) { self.aliases = host::aliases_only(&self.entry); }
-    pub(super) fn body(&mut self, code: &mut Vec<Inst>, registers: &[Scalar], take: bool) {
-        let mut values = if take { std::mem::take(&mut self.entry) } else { self.entry.clone() };
-        host::run(code, &mut values, &mut self.expressions, registers, &mut self.reuses, take);
-        if take {
-            self.expressions = host::Expressions::default();
-            self.reuses.order();
-        }
-        host::extend_aliases(&mut self.aliases, values);
-    }
-    pub(super) fn retain(&mut self, code: &mut [Inst]) { retain_reuses(code, &mut self.reuses); }
-    pub(super) fn forward(&mut self, role: ReductionInputRole, component_index: usize, reg: Reg) {
-        let reads = input_reads(reg, &mut self.reuses);
-        if !reads.is_empty() { self.forwarded.push(ReductionInputReadForward { role, component_index, reads }); }
-    }
-    pub(super) fn origin(&mut self, target: &mut Option<std::sync::Arc<GeneratedOrigin>>) {
-        if !self.forwarded.is_empty() {
-            let retained = target.take();
-            *target = Some(std::sync::Arc::new(GeneratedOrigin {
-                reason: GenerationReason::LocalReadForward,
-                trigger: Some(GenerationAnchor::ReductionInputForward {
-                    retained, inputs: std::mem::take(&mut self.forwarded),
-                }),
-            }));
-        }
-    }
-    pub(super) fn alias_address(&self) -> *const c_void {
-        host::alias_address(&self.aliases)
-    }
+
+unsafe extern "C" fn finish_reduction_input(
+    reads: *mut c_void, inputs: *mut c_void, position: u32, component_index: usize,
+) {
+    let role = match position { 0 => ReductionInputRole::Left, 1 => ReductionInputRole::Right, _ => ReductionInputRole::Source };
+    let reads = std::mem::take(unsafe { &mut *reads.cast::<Vec<OperationOrigin>>() });
+    unsafe { &mut *inputs.cast::<Vec<ReductionInputReadForward>>() }.push(
+        ReductionInputReadForward { role, component_index, reads },
+    );
 }
 
 unsafe extern "C" fn accept_input(context: *mut c_void, row: *mut OriginRow) {

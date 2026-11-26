@@ -15,14 +15,6 @@ struct Rows { data: usize, count: usize, capacity: usize }
 #[derive(Default)]
 struct Registers { aliases: Rows, locals: Rows }
 
-impl Clone for Registers {
-    fn clone(&self) -> Self {
-        let mut copy = Self::default();
-        unsafe { value_copy_registers(&mut copy, self, 1, resize_rows::<LocalValue>); }
-        copy
-    }
-}
-
 impl Drop for Registers {
     fn drop(&mut self) {
         unsafe { value_release_registers(self, resize_rows::<LocalValue>); }
@@ -48,14 +40,6 @@ struct MemoryRow {
 #[derive(Default)]
 struct MemoryRows(Rows);
 
-impl Clone for MemoryRows {
-    fn clone(&self) -> Self {
-        let mut copy = Self::default();
-        unsafe { value_copy_memory(&mut copy.0, &self.0, MEMORY_HOST); }
-        copy
-    }
-}
-
 impl Drop for MemoryRows {
     fn drop(&mut self) {
         unsafe { value_release_memory(&mut self.0, MEMORY_HOST); }
@@ -63,7 +47,7 @@ impl Drop for MemoryRows {
 }
 
 #[repr(C)]
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub(super) struct Values {
     registers: Registers,
     memory: MemoryRows,
@@ -93,6 +77,22 @@ pub(super) struct Reuses { order: Rows, facts: Rows }
 type CollectOrigin = unsafe extern "C" fn(*mut c_void, *mut OriginRow, ResultLocation);
 type AttachOrigin = unsafe extern "C" fn(*mut c_void, *mut Inst, ReuseKind);
 type AcceptOrigin = unsafe extern "C" fn(*mut c_void, *mut OriginRow);
+type FinishReductionInput = unsafe extern "C" fn(*mut c_void, *mut c_void, u32, usize);
+
+#[repr(C)]
+struct Reduction {
+    parts: *const *mut Vec<Inst>,
+    registers: Span,
+    roots: *const rewrite::Span,
+}
+
+#[repr(C)]
+struct ReductionOrigins {
+    reads: *mut c_void,
+    inputs: *mut c_void,
+    accept: AcceptOrigin,
+    finish_input: FinishReductionInput,
+}
 
 #[repr(C)]
 struct OriginWriter {
@@ -167,13 +167,15 @@ struct Host {
 }
 
 unsafe extern "C" {
+    #[link_name = "bootstrap.stage_fusion::value_reduction"]
+    fn value_reduction(input: Reduction, host: Host, writer: OriginWriter, origins: ReductionOrigins);
     #[link_name = "bootstrap.stage_fusion::value_order_origins"]
     fn value_order_origins(state: *mut Reuses, stride: usize);
     #[link_name = "bootstrap.stage_fusion::value_retain_origins"]
     fn value_retain_origins(code: rewrite::Span, state: *mut Reuses, read: crate::ir::dataflow::Host,
         write: rewrite::Host, stride: usize, writer: OriginWriter);
     #[link_name = "bootstrap.stage_fusion::value_take_input_origins"]
-    fn value_take_input_origins(state: *mut Reuses, reg: Reg, sink: *mut c_void, host: OriginHost, accept: AcceptOrigin);
+    fn value_take_input_origins(state: *mut Reuses, reg: Reg, sink: *mut c_void, host: OriginHost, accept: AcceptOrigin) -> bool;
     #[link_name = "bootstrap.stage_fusion::value_release_origins"]
     fn value_release_origins(state: *mut Reuses, resize: ResizeRows, host: OriginHost);
     #[link_name = "bootstrap.stage_fusion::value_block"]
@@ -184,25 +186,36 @@ unsafe extern "C" {
     #[link_name = "bootstrap.stage_fusion::value_discard_flow"]
     fn value_discard_flow(flow: Flow, resize: ResizeRows);
     #[link_name = "bootstrap.stage_fusion::value_rebind_roots"]
-    pub(in crate::optimize) fn value_rebind_roots(registers: *const c_void, roots: rewrite::Span);
-    #[link_name = "bootstrap.stage_fusion::value_copy_registers"]
-    fn value_copy_registers(target: *mut Registers, source: *const Registers, locals: u32, resize: ResizeRows);
+    fn value_rebind_roots(registers: *const c_void, roots: rewrite::Span);
     #[link_name = "bootstrap.stage_fusion::value_release_registers"]
     fn value_release_registers(values: *mut Registers, resize: ResizeRows);
-    #[link_name = "bootstrap.stage_fusion::value_merge_aliases"]
-    fn value_merge_aliases(target: *mut Registers, source: *const Registers, resize: ResizeRows);
-    #[link_name = "bootstrap.stage_fusion::value_copy_memory"]
-    fn value_copy_memory(target: *mut Rows, source: *const Rows, memory: MemoryHost);
     #[link_name = "bootstrap.stage_fusion::value_release_memory"]
     fn value_release_memory(values: *mut Rows, memory: MemoryHost);
 }
-pub(super) fn alias_address(values: &Values) -> *const c_void {
-    ptr::from_ref(&values.registers).cast()
+pub(super) fn rebind_roots(values: &Values, outputs: &mut [Reg]) {
+    let registers = ptr::from_ref(&values.registers).cast();
+    unsafe { value_rebind_roots(registers, rewrite::Span::slice(outputs)); }
 }
 
-pub(super) fn rebind_roots(values: &Values, outputs: &mut [Reg]) {
-    unsafe { value_rebind_roots(alias_address(values), rewrite::Span::slice(outputs)); }
+pub(super) fn run_reduction(
+    parts: &mut [Vec<Inst>; 4], kernel: &mut ReductionKernel, origins: &mut Origins,
+    reads: &mut Vec<OperationOrigin>, inputs: &mut Vec<ReductionInputReadForward>,
+) {
+    let blocks = parts.each_mut().map(ptr::from_mut);
+    let roots = [
+        rewrite::Span::slice(&mut kernel.source), rewrite::Span::slice(&mut kernel.projected),
+        rewrite::Span::slice(&mut kernel.initial), rewrite::Span::slice(&mut kernel.left),
+        rewrite::Span::slice(&mut kernel.right), rewrite::Span::slice(&mut kernel.result),
+    ];
+    let input = Reduction { parts: blocks.as_ptr(), registers: Span::slice(&kernel.stage.registers), roots: roots.as_ptr() };
+    let writer = OriginWriter { sink: ptr::from_mut(origins).cast(), collect: collect_origin, attach: attach_origin };
+    let input_origins = ReductionOrigins {
+        reads: ptr::from_mut(reads).cast(), inputs: ptr::from_mut(inputs).cast(),
+        accept: accept_input, finish_input: finish_reduction_input,
+    };
+    unsafe { value_reduction(input, HOST, writer, input_origins); }
 }
+
 pub(super) fn run(code: &mut Vec<Inst>, values: &mut Values, expressions: &mut Expressions,
     registers: &[Scalar], reuses: &mut Reuses, keep_expressions: bool,
 ) {
@@ -211,16 +224,6 @@ pub(super) fn run(code: &mut Vec<Inst>, values: &mut Values, expressions: &mut E
         value_discard_flow(flow, resize_rows::<LocalValue>);
     }
 }
-pub(super) fn extend_aliases(target: &mut Values, source: Values) {
-    unsafe { value_merge_aliases(&mut target.registers, &source.registers, resize_rows::<LocalValue>); }
-}
-
-pub(super) fn aliases_only(values: &Values) -> Values {
-    let mut target = Values::default();
-    unsafe { value_copy_registers(&mut target.registers, &values.registers, 0, resize_rows::<LocalValue>); }
-    target
-}
-
 unsafe extern "C" fn resize_rows<T>(rows: *mut c_void, old: usize, new: usize) -> *mut c_void {
     use std::alloc::{alloc, dealloc, handle_alloc_error, realloc, Layout};
     if new == 0 {

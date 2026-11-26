@@ -180,19 +180,11 @@ struct ReductionHost {
  cfn<void,address,usize,Node,usize> clone;
  cfn<void,address,usize,usize,usize> remap;
  cfn<void,address,usize,usize> push_root;
- cfn<RewriteSpan,address,usize> roots;
  cfn<Span,address,usize> part;
  cfn<address,address,usize> uniform;
  cfn<void,address,usize,address> extract;
  cfn<void,address> release_uniform;
- cfn<void,address> entry;
- cfn<void,address> seed;
- cfn<void,address,usize,u32> body;
- cfn<void,address,usize> retain;
- cfn<void,address,usize,usize,usize> forward;
- cfn<void,address> origin;
- cfn<address,address> ensures memory(read) aliases;
- cfn<void,address,RewriteSpan> rebind;
+ cfn<void,address> value_flow;
  cfn<void,address,usize> invariant;
  cfn<void,address,usize,usize,usize> boundaries;
  cfn<void,address,usize> append;
@@ -200,7 +192,7 @@ struct ReductionHost {
 };
 
 extern "C" ReductionExtract reduction_extract(Node source,address uniform,Host ir) on cpu requires nonzero(ir.inspect);
-extern "C" void reduction_kernel(ReductionInput input,ReductionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.header) requires nonzero(host.clone) requires nonzero(host.remap) requires nonzero(host.push_root) requires nonzero(host.roots) requires nonzero(host.part) requires nonzero(host.uniform) requires nonzero(host.extract) requires nonzero(host.release_uniform) requires nonzero(host.entry) requires nonzero(host.seed) requires nonzero(host.body) requires nonzero(host.retain) requires nonzero(host.forward) requires nonzero(host.origin) requires nonzero(host.aliases) requires nonzero(host.rebind) requires nonzero(host.invariant) requires nonzero(host.boundaries) requires nonzero(host.append) requires nonzero(host.finish);
+extern "C" void reduction_kernel(ReductionInput input,ReductionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.header) requires nonzero(host.clone) requires nonzero(host.remap) requires nonzero(host.push_root) requires nonzero(host.part) requires nonzero(host.uniform) requires nonzero(host.extract) requires nonzero(host.release_uniform) requires nonzero(host.value_flow) requires nonzero(host.invariant) requires nonzero(host.boundaries) requires nonzero(host.append) requires nonzero(host.finish);
 
 // Complete Select control borrows one original Stage. Scratch is overwritten
 // before every plan; output rows live only until that branch is emitted.

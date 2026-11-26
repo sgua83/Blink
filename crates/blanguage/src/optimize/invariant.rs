@@ -1,5 +1,5 @@
 //! B owns complete custom-kernel preparation. Rust retains only the original
-//! typed bodies, native value-flow containers and source construction.
+//! typed bodies and source construction.
 use super::*;
 use std::{ffi::c_void, mem::{self, size_of}, ptr};
 
@@ -27,19 +27,11 @@ struct Host {
     clone: unsafe extern "C" fn(*mut c_void, usize, Node, usize),
     remap: unsafe extern "C" fn(*mut c_void, usize, usize, usize),
     push_root: unsafe extern "C" fn(*mut c_void, usize, Reg),
-    roots: unsafe extern "C" fn(*mut c_void, usize) -> crate::ir::rewrite::Span,
     part: unsafe extern "C" fn(*mut c_void, usize) -> Span,
     uniform: unsafe extern "C" fn(*mut c_void, usize) -> *mut u8,
     extract: unsafe extern "C" fn(*mut c_void, usize, *mut u8),
     release_uniform: unsafe extern "C" fn(*mut c_void),
-    entry: unsafe extern "C" fn(*mut c_void),
-    seed: unsafe extern "C" fn(*mut c_void),
-    body: unsafe extern "C" fn(*mut c_void, usize, u32),
-    retain: unsafe extern "C" fn(*mut c_void, usize),
-    forward: unsafe extern "C" fn(*mut c_void, usize, usize, Reg),
-    origin: unsafe extern "C" fn(*mut c_void),
-    aliases: unsafe extern "C" fn(*const c_void) -> *const c_void,
-    rebind: unsafe extern "C" fn(*const c_void, crate::ir::rewrite::Span),
+    value_flow: unsafe extern "C" fn(*mut c_void),
     invariant: unsafe extern "C" fn(*mut c_void, Reg),
     boundaries: unsafe extern "C" fn(*mut c_void, usize, usize, usize),
     append: unsafe extern "C" fn(*mut c_void, usize),
@@ -53,13 +45,11 @@ struct State {
     kernel: ReductionKernel,
     parts: [Vec<Inst>; 4],
     uniform: Vec<u8>,
-    flow: value_flow::ReductionFlow,
 }
 impl State {
     fn host(&mut self) -> Host {
         Host { ir: crate::ir::dataflow::HOST, context: ptr::from_mut(self).cast(),
-            header, clone, remap, push_root, roots, part, uniform, extract, release_uniform,
-            entry, seed, body, retain, forward, origin, aliases, rebind: value_flow::value_rebind_roots,
+            header, clone, remap, push_root, part, uniform, extract, release_uniform, value_flow,
             invariant, boundaries, append, finish }
     }
 }
@@ -78,7 +68,7 @@ pub(crate) fn kernel(reduction: &CustomReduction, stage: &Stage, project: bool, 
     let kernel = ReductionKernel { stage, invariant_end: 0, invariants: BTreeSet::new(),
         initialize_end: 0, project_end: 0, source: Vec::new(), projected: Vec::new(),
         initial: Vec::new(), left: Vec::new(), right: Vec::new(), result: Vec::new() };
-    let mut state = State { kernel, parts: Default::default(), uniform: Vec::new(), flow: Default::default() };
+    let mut state = State { kernel, parts: Default::default(), uniform: Vec::new() };
     let input = Input { source: Node { data: ptr::from_ref(reduction).cast(), kind: 23 },
         project: u32::from(project), identity: u32::from(identity) };
     let host = state.host();
@@ -108,11 +98,6 @@ fn root_values(kernel: &mut ReductionKernel, root: usize) -> &mut Vec<Reg> {
 }
 unsafe extern "C" fn push_root(context: *mut c_void, root: usize, reg: Reg) {
     root_values(unsafe { &mut (*context.cast::<State>()).kernel }, root).push(reg);
-}
-unsafe extern "C" fn roots(context: *mut c_void, root: usize) -> crate::ir::rewrite::Span {
-    // During rebinding the alias table is borrowed from the disjoint flow field.
-    let kernel = unsafe { &mut (*context.cast::<State>()).kernel };
-    crate::ir::rewrite::Span::slice(root_values(kernel, root))
 }
 unsafe extern "C" fn part(context: *mut c_void, part: usize) -> Span {
     Span::of(unsafe { &(*context.cast::<State>()).parts[part] })
@@ -147,29 +132,9 @@ unsafe extern "C" fn extract(context: *mut c_void, part: usize, uniform: *mut u8
 unsafe extern "C" fn release_uniform(context: *mut c_void) {
     unsafe { (*context.cast::<State>()).uniform = Vec::new(); }
 }
-unsafe extern "C" fn entry(context: *mut c_void) {
+unsafe extern "C" fn value_flow(context: *mut c_void) {
     let state = unsafe { &mut *context.cast::<State>() };
-    state.flow.entry(&mut state.parts[0], &state.kernel.stage.registers);
-}
-unsafe extern "C" fn seed(context: *mut c_void) { unsafe { (*context.cast::<State>()).flow.seed(); } }
-unsafe extern "C" fn body(context: *mut c_void, part: usize, take: u32) {
-    let state = unsafe { &mut *context.cast::<State>() };
-    state.flow.body(&mut state.parts[part], &state.kernel.stage.registers, take != 0);
-}
-unsafe extern "C" fn retain(context: *mut c_void, part: usize) {
-    let state = unsafe { &mut *context.cast::<State>() };
-    state.flow.retain(&mut state.parts[part]);
-}
-unsafe extern "C" fn forward(context: *mut c_void, root: usize, component: usize, reg: Reg) {
-    let role = match root { 3 => ReductionInputRole::Left, 4 => ReductionInputRole::Right, _ => ReductionInputRole::Source };
-    unsafe { (*context.cast::<State>()).flow.forward(role, component, reg); }
-}
-unsafe extern "C" fn origin(context: *mut c_void) {
-    let state = unsafe { &mut *context.cast::<State>() };
-    state.flow.origin(&mut state.kernel.stage.generated_origin);
-}
-unsafe extern "C" fn aliases(context: *const c_void) -> *const c_void {
-    unsafe { (&(*context.cast::<State>()).flow).alias_address() }
+    value_flow::run_reduction(&mut state.parts, &mut state.kernel);
 }
 unsafe extern "C" fn invariant(context: *mut c_void, reg: Reg) { unsafe { (*context.cast::<State>()).kernel.invariants.insert(reg); } }
 unsafe extern "C" fn boundaries(context: *mut c_void, invariant: usize, initialize: usize, project: usize) {
