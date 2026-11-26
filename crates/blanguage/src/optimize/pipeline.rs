@@ -101,11 +101,10 @@ struct RootEdit { action: RootAction, count: usize }
 #[repr(C)]
 struct MapInput {
     code: Span, tiles: Span, prefix: Field, selection: Field,
-    flags: *mut u8, binding_count: usize,
-    reads: *mut usize, writes: *mut usize, cross: *mut usize, cross_count: usize,
+    flags: *mut u64, flag_words: usize,
+    output: *mut c_void, append: unsafe extern "C" fn(*mut c_void, usize, bool),
+    cross: *mut usize, cross_count: usize,
 }
-#[repr(C)]
-struct AccessCounts { reads: usize, writes: usize, cross: usize }
 unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::optimize_program"] fn b_program(count: usize, host: ProgramHost);
     #[link_name = "bootstrap.ir_dataflow::optimize_stage"] fn b_stage(host: StageHost, has_tiles: u32);
@@ -113,7 +112,7 @@ unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::optimize_root"]
     fn b_root(instruction: *mut c_void, preserve: u32, host: ReadHost, rewrite: crate::ir::rewrite::Host) -> RootEdit;
     #[link_name = "bootstrap.ir_dataflow::optimize_bindings"]
-    fn b_bindings(input: MapInput, ir: crate::ir::dataflow::Host, host: ReadHost) -> AccessCounts;
+    fn b_bindings(input: MapInput, ir: crate::ir::dataflow::Host, host: ReadHost) -> usize;
 }
 
 struct ProgramState<'a> {
@@ -335,27 +334,38 @@ unsafe extern "C" fn select(context: *mut c_void) -> u32 {
     let local_count = stage.locals.last_key_value().map_or(0, |(&end, _)| end);
     u32::from(selection::run(&mut stage.code, &stage.registers, stage.domain, local_count))
 }
+struct BindingOutput<'a> {
+    reads: &'a mut Vec<usize>,
+    writes: &'a mut Vec<usize>,
+}
+unsafe extern "C" fn append_binding(context: *mut c_void, binding: usize, write: bool) {
+    let output = unsafe { &mut *context.cast::<BindingOutput<'_>>() };
+    if write {
+        output.writes.push(binding);
+    } else {
+        output.reads.push(binding);
+    }
+}
 unsafe extern "C" fn bindings_map(context: *mut c_void) {
     let state = unsafe { &mut *context.cast::<StageState<'_>>() };
     let stage = &mut state.stage;
-    let mut flags = vec![0; state.bindings];
-    stage.reads.clear(); stage.reads.reserve(state.bindings);
-    stage.writes.clear(); stage.writes.reserve(state.bindings);
+    // The B access walk keeps two bits for each binding in each machine word.
+    let mut flags = vec![0u64; state.bindings.div_ceil(u64::BITS as usize / 2)];
+    stage.reads.clear();
+    stage.writes.clear();
+    let mut output = BindingOutput { reads: &mut stage.reads, writes: &mut stage.writes };
     let input = MapInput {
         code: Span::of(&stage.code), tiles: Span::of(&stage.tiles),
         prefix: stage.prefix.map(|v| (v.binding, v.word)).into(),
         selection: stage.selection.map(|v| (v.binding, v.word)).into(),
-        flags: flags.as_mut_ptr(), binding_count: state.bindings,
-        reads: stage.reads.as_mut_ptr(), writes: stage.writes.as_mut_ptr(),
+        flags: flags.as_mut_ptr(), flag_words: flags.len(),
+        output: ptr::from_mut(&mut output).cast(), append: append_binding,
         cross: stage.cross_access.as_mut_ptr(), cross_count: stage.cross_access.len(),
     };
     let read = ReadState { words: &state.words, registers: &stage.registers };
-    unsafe {
-        let counts = b_bindings(input, crate::ir::dataflow::HOST, read.host());
-        stage.reads.set_len(counts.reads); stage.writes.set_len(counts.writes);
-        stage.cross_access.truncate(counts.cross);
-    }
-    stage.write_regions.retain(|binding, _| flags[*binding] & 2 != 0);
+    let cross = unsafe { b_bindings(input, crate::ir::dataflow::HOST, read.host()) };
+    stage.cross_access.truncate(cross);
+    stage.write_regions.retain(|binding, _| stage.writes.binary_search(binding).is_ok());
 }
 unsafe extern "C" fn stage_compact(context: *mut c_void) {
     let stage = &mut unsafe { &mut *context.cast::<StageState<'_>>() }.stage;

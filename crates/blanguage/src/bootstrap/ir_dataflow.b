@@ -1161,11 +1161,16 @@ extern "C" PipelineRootEdit optimize_root(address instruction,u32 preserve_scope
  if(count!=root.first.count){return PipelineRootEdit(PipelineRootAction::Trim,count);}
  return PipelineRootEdit(PipelineRootAction::Keep,count);
 }
-address pipeline_flag(address flags,usize binding) on cpu {
- return unsafe_address(address_bits(flags)+u64(binding));
+const u64 PIPELINE_BINDINGS_PER_WORD=32u64;
+address pipeline_flag_word(address flags,usize word) on cpu {
+ return unsafe_address(address_bits(flags)+u64(word)*size_of<u64>());
+}
+u64 pipeline_flag_shift(usize binding) on cpu {
+ return (binding%PIPELINE_BINDINGS_PER_WORD)*2u64;
 }
 void pipeline_mark(address flags,usize binding,u8 mode) on cpu {
- address at=pipeline_flag(flags,binding);unsafe_position<u8>(at)=unsafe_position<u8>(at)|mode;
+ address at=pipeline_flag_word(flags,binding/PIPELINE_BINDINGS_PER_WORD);
+ unsafe_position<u64>(at)=unsafe_position<u64>(at)|(u64(mode)<<pipeline_flag_shift(binding));
 }
 u8 pipeline_access(usize access) on cpu {
  return (accessed(access,0) ? u8(1) : u8(0))|(accessed(access,1) ? u8(2) : u8(0));
@@ -1235,28 +1240,34 @@ void pipeline_tile_access(Span tiles,address flags,Host ir,PipelineRead host) on
   index+=1u64;
  }
 }
-void pipeline_write_binding(address output,usize index,usize binding) on cpu {
- unsafe_position<usize>(unsafe_address(address_bits(output)+u64(index)*size_of<usize>()))=binding;
-}
-extern "C" PipelineAccessCounts optimize_bindings(PipelineMap input,Host ir,PipelineRead host) on cpu
- requires nonzero(ir.inspect) requires nonzero(host.contains) {
+extern "C" usize optimize_bindings(PipelineMap input,Host ir,PipelineRead host) on cpu
+ requires nonzero(ir.inspect) requires nonzero(host.contains) requires nonzero(input.append) {
  pipeline_code_access(input.code,input.flags,ir);pipeline_tile_access(input.tiles,input.flags,ir,host);
  if(input.prefix.present!=0){pipeline_mark(input.flags,input.prefix.binding,u8(1));}
  if(input.selection.present!=0){pipeline_mark(input.flags,input.selection.binding,u8(1));}
- usize reads=0u64;usize writes=0u64;usize binding=0u64;
- while(binding<input.binding_count){
-  u8 flag=unsafe_position<u8>(pipeline_flag(input.flags,binding));
-  if((flag&u8(1))!=u8(0)){pipeline_write_binding(input.reads,reads,binding);reads+=1u64;}
-  if((flag&u8(2))!=u8(0)){pipeline_write_binding(input.writes,writes,binding);writes+=1u64;}
-  binding+=1u64;
+ usize word=0u64;
+ while(word<input.flag_words){
+  u64 flags=unsafe_position<u64>(pipeline_flag_word(input.flags,word));
+  usize binding=word*PIPELINE_BINDINGS_PER_WORD;
+  while(flags!=0u64){
+   if((flags&1u64)!=0u64){input.append(input.output,binding,false);}
+   if((flags&2u64)!=0u64){input.append(input.output,binding,true);}
+   flags=flags>>2;
+   binding+=1u64;
+  }
+  word+=1u64;
  }
  usize cross=0u64;usize at=0u64;
  while(at<input.cross_count){
-  binding=unsafe_position<usize>(unsafe_address(address_bits(input.cross)+u64(at)*size_of<usize>()));
-  if(unsafe_position<u8>(pipeline_flag(input.flags,binding))!=u8(0)){pipeline_write_binding(input.cross,cross,binding);cross+=1u64;}
+  usize binding=unsafe_position<usize>(unsafe_address(address_bits(input.cross)+u64(at)*size_of<usize>()));
+  u64 flags=unsafe_position<u64>(pipeline_flag_word(input.flags,binding/PIPELINE_BINDINGS_PER_WORD));
+  if(((flags>>pipeline_flag_shift(binding))&3u64)!=0u64){
+   unsafe_position<usize>(unsafe_address(address_bits(input.cross)+u64(cross)*size_of<usize>()))=binding;
+   cross+=1u64;
+  }
   at+=1u64;
  }
- return PipelineAccessCounts(reads,writes,cross);
+ return cross;
 }
 
 

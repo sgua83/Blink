@@ -297,10 +297,10 @@ enum PipelineRootAction:u32 { Keep=0; Drop=1; Trim=2; };
 struct PipelineRootEdit { PipelineRootAction action; usize count; };
 struct PipelineMap {
  Span code; Span tiles; PipelineField prefix; PipelineField selection;
- address flags; usize binding_count;
- address reads; address writes; address cross; usize cross_count;
+ address flags; usize flag_words;
+ address output; cfn<void,address,usize,bool> append;
+ address cross; usize cross_count;
 };
-struct PipelineAccessCounts { usize reads; usize writes; usize cross; };
 extern "C" void optimize_program(usize count,PipelineProgram host) on cpu
  requires nonzero(host.fusion.ir.inspect) requires nonzero(host.fusion.at)
  requires nonzero(host.fusion.access) requires nonzero(host.fusion.swap) requires nonzero(host.fusion.truncate)
@@ -316,8 +316,8 @@ extern "C" void optimize_stage(PipelineStageHost host,u32 has_tiles) on cpu
  requires nonzero(host.release_words) requires nonzero(host.compact);
 extern "C" void optimize_value(address value,PipelineValue host) on cpu
  requires nonzero(host.flow) requires nonzero(host.eliminate) requires nonzero(host.compact);
-extern "C" PipelineAccessCounts optimize_bindings(PipelineMap input,Host ir,PipelineRead host) on cpu
- requires nonzero(ir.inspect) requires nonzero(host.contains);
+extern "C" usize optimize_bindings(PipelineMap input,Host ir,PipelineRead host) on cpu
+ requires nonzero(ir.inspect) requires nonzero(host.contains) requires nonzero(input.append);
 
 
 extern "C" PipelineRootEdit optimize_root(address instruction,u32 preserve_scope,PipelineRead host,RewriteHost rewrite) on cpu
