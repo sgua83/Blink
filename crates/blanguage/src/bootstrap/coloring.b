@@ -52,7 +52,8 @@ u64 neighbor_at(address rows,u64 index) on cpu {
     return unsafe_position<u64>(adjacency_at(rows,index));
 }
 
-address graph_storage(u64 count,u64 registers,address places) on cpu {
+address graph_storage(u64 count,u64 registers) on cpu {
+    address places=HeapAlloc(GetProcessHeap(),HEAP_GENERATE_EXCEPTIONS,count*size_of<ColorPlace>());
     address graph=HeapAlloc(GetProcessHeap(),HEAP_GENERATE_EXCEPTIONS|HEAP_ZERO_MEMORY,
         size_of<GraphData>()+size_of<GraphWalk>()+count*size_of<ColorNode>());
     unsafe_position<GraphData>(graph)=GraphData(count,registers,0u64,address(),0u64,0u64,address(),places);
@@ -65,6 +66,7 @@ extern "C" void graph_release(address graph) on cpu {
     GraphData data=unsafe_position<GraphData>(graph);
     release_graph_memory(data.pairs);
     release_graph_memory(data.adjacency);
+    release_graph_memory(data.places);
     HeapFree(GetProcessHeap(),0,graph);
 }
 
@@ -157,9 +159,8 @@ void write_neighbor(address graph,address adjacency,u64 node,u64 neighbor,u64 ki
 extern "C" bool neighbor_before(address left,address right,address context) on cpu {
     return unsafe_position<u64>(left)<unsafe_position<u64>(right);
 }
-extern "C" void graph_seal(address graph) on cpu {
+void graph_seal(address graph) on cpu {
     GraphData data=unsafe_position<GraphData>(graph);
-    unsafe_position<GraphData>(graph).places=address();
     if(data.length==0u64){return;}
     u64 count=reserve_neighbor_rows(graph,data.count);
     address adjacency=HeapAlloc(GetProcessHeap(),HEAP_GENERATE_EXCEPTIONS,count*size_of<u64>());
@@ -303,12 +304,13 @@ u64 packet_order(address graph,u64 count,address places,address order,Span uses)
     return pending;
 }
 
-ColorLayout color_locations(address graph,u64 count,address places,u32 mode,Span packet_uses) on cpu {
+ColorLayout color_locations(address graph,address places,u32 mode,Span packet_uses) on cpu {
+    GraphData data=unsafe_position<GraphData>(graph);
+    u64 count=data.count;
     address order=address();
     if(count!=0u64){
         order=HeapAlloc(GetProcessHeap(),HEAP_GENERATE_EXCEPTIONS,count*size_of<array<u64,3>>());
     }
-    GraphData data=unsafe_position<GraphData>(graph);
     u64 pending = 0u64;
     u64 id = 0u64;
     if (mode == 2) {
@@ -407,8 +409,15 @@ ColorLayout color_locations(address graph,u64 count,address places,u32 mode,Span
     return ColorLayout(end,saved_gpr,saved_xmm);
 }
 
-extern "C" ColorLayout color(address graph,u64 count,address places,u32 mode) on cpu {
-    return color_locations(graph, count, places, mode, Span(address(), 0u64, 0u64));
+extern "C" ScalarAllocation finish_scalar(address graph,u32 mode,address context,
+    cfn<PrivateDeclaration,address> next) on cpu requires nonzero(next) {
+    graph_seal(graph);
+    GraphData data=unsafe_position<GraphData>(graph);
+    ColorLayout layout=color_locations(graph,data.places,mode,Span(address(),0u64,0u64));
+    layout.end=place_private(data.places,layout.end,data.registers,context,next);
+    unsafe_position<GraphData>(graph).places=address();
+    ColorPositions positions=ColorPositions(Span(data.places,data.count,size_of<ColorPlace>()),data.registers);
+    return ScalarAllocation(positions,layout);
 }
 
 struct PreparedPacket { Span code; Span places; ColorLayout layout; };
@@ -422,17 +431,17 @@ extern "C" bool prepare_packet(address graph, address context, Span code, Packet
 
     u64 count = unsafe_position<GraphData>(graph).count;
     address places = HeapAlloc(GetProcessHeap(), HEAP_GENERATE_EXCEPTIONS, count * size_of<ColorPlace>());
-    ColorLayout layout = color_locations(graph, count, places, 2, plan.uses);
+    ColorLayout layout = color_locations(graph, places, 2, plan.uses);
     release_graph_memory(plan.uses.data);
     unsafe_position<PreparedPacket>(output) = PreparedPacket(plan.code, Span(places, count, size_of<ColorPlace>()), layout);
     return true;
 }
 
-extern "C" void packet_colors_drop(Span places) on cpu {
+extern "C" void color_places_drop(Span places) on cpu {
     HeapFree(GetProcessHeap(), 0, places.data);
 }
 
-extern "C" u64 place_private(address places, u64 data_end, usize registers, address context,
+u64 place_private(address places, u64 data_end, usize registers, address context,
     cfn<PrivateDeclaration,address> next) on cpu requires nonzero(next) {
     u64 end = data_end;
     while (true) {
@@ -454,7 +463,7 @@ extern "C" u64 place_private(address places, u64 data_end, usize registers, addr
     }
 }
 
-extern "C" void record_definition(address place, u32 literal, u64 bits) on cpu {
+void record_definition(address place, u32 literal, u64 bits) on cpu {
     ColorPlaceKind kind = unsafe_position<ColorPlace>(place).kind;
     if (literal != 0 && (kind == ColorPlaceKind::Unseen
         || (kind == ColorPlaceKind::Immediate && unsafe_position<ColorPlace>(place).value == bits))) {
@@ -569,7 +578,7 @@ u32 graph_instruction(address graph,View node,Span registers,address live,
     u64 source=node.b;
     if(node.tag==OP_LOAD_LOCAL){transfer=1;source+=unsafe_position<GraphData>(graph).registers;}
     else if(node.tag==OP_STORE_LOCAL){transfer=1;destination+=unsafe_position<GraphData>(graph).registers;}
-    else if(node.tag==OP_CAST && bit_copy(host.scalar(registers,node.b),host.scalar(registers,node.a))){
+    else if(node.tag==OP_CAST && bit_copy(graph_scalar(registers,node.b,host.scalar),graph_scalar(registers,node.a,host.scalar))){
         transfer=1;
     }
     if(transfer!=0 && (unsafe_position<ColorPlace>(place_at(unsafe_position<GraphData>(graph).places,destination)).width==0 ||
@@ -780,14 +789,53 @@ u32 walk_graph(address graph,GraphRequest input,GraphHost host) on cpu
     unsafe_position<GraphWalk>(work)=GraphWalk(address(),0u64,0u64);
     return uses_r15;
 }
+ScalarEncoding graph_scalar(Span scalars,usize index,cfn<ScalarEncoding,address> ensures memory(read) scalar) on cpu
+    requires nonzero(scalar) {
+    return scalar(color_offset(scalars.data,index*u64(scalars.stride)));
+}
+
+usize initialize_scalar_span(address places,usize first,Span scalars,
+    cfn<ScalarEncoding,address> ensures memory(read) scalar) on cpu requires nonzero(scalar) {
+    usize index=0u64;
+    while(index<scalars.count){
+        ScalarEncoding input=graph_scalar(scalars,index,scalar);
+        unsafe_position<ColorPlace>(place_at(places,first+index))=
+            ColorPlace(0u64,ColorPlaceKind::Unseen,u8(input.width/8),input.kind==ScalarKind::Float?u8(1):u8(0));
+        index+=1u64;
+    }
+    return first+index;
+}
+
+void initialize_scalar_places(address graph,GraphRequest input,GraphHost host) on cpu
+    requires nonzero(host.scalar) requires nonzero(host.next_local) requires nonzero(host.next_private) {
+    address places=unsafe_position<GraphData>(graph).places;
+    usize first=initialize_scalar_span(places,0u64,input.registers,host.scalar);
+    while(true){
+        Span scalars=host.next_local(input.locals);
+        if(address_bits(scalars.data)==0u64){break;}
+        first=initialize_scalar_span(places,first,scalars,host.scalar);
+    }
+    while(true){
+        PrivateDeclaration declaration=host.next_private(input.private);
+        if(address_bits(declaration.offsets.data)==0u64){break;}
+        usize slot=declaration.begin;
+        while(slot<declaration.end){
+            unsafe_position<ColorPlace>(place_at(places,input.registers.count+slot)).width=u8(0);
+            slot+=1u64;
+        }
+    }
+}
+
 extern "C" GraphBuilt graph_create(address request,GraphHost host) on cpu
     requires nonzero(host.core.visit_set)
     requires nonzero(host.live.ir.inspect) requires nonzero(host.scalar)
+    requires nonzero(host.next_local) requires nonzero(host.next_private)
     requires nonzero(host.call_abi) requires nonzero(host.call_argument)
     requires nonzero(host.live.clone_set) requires nonzero(host.live.drop_set) requires nonzero(host.live.change)
     requires nonzero(host.live.insert_register) requires nonzero(host.register_operand) {
     GraphRequest input=unsafe_position<GraphRequest>(request);
-    address graph=graph_storage(input.count,input.registers.count,input.places);
+    address graph=graph_storage(input.registers.count+input.local_slots,input.registers.count);
+    initialize_scalar_places(graph,input,host);
     graph_together(graph,input.live,host.core);
     u32 uses_r15=walk_graph(graph,input,host);
     return GraphBuilt(graph,uses_r15);

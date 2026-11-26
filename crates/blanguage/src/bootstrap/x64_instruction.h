@@ -325,7 +325,7 @@ struct PacketPlanDecision {
 enum ColorPlaceKind:u32 { Unseen=0; Immediate=1; Gpr=2; Xmm=3; Stack=4; Varying=5; };
 struct ColorPlace { u64 value; ColorPlaceKind kind; u8 width; u8 floating; };
 // The packet emission context begins with the original color table and local base.
-struct PacketPositions { Span rows; usize registers; };
+struct ColorPositions { Span rows; usize registers; };
 struct PacketLayout { u32 sparse; u32 slots; u32 buffer_bytes; u32 stride_field; };
 struct PacketBodyHost {
     ControlHost control;

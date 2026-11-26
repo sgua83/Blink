@@ -18,20 +18,19 @@ pub(super) struct ColorLayout {
     xmm: u32,
 }
 
-#[derive(Default)]
+#[repr(C)]
 pub(super) struct Allocation {
-    locations: Vec<ColorPlace>,
-    registers: usize,
+    positions: ColorPositions,
     layout: ColorLayout,
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub(super) struct PacketPositions {
+pub(super) struct ColorPositions {
     rows: Span,
     registers: usize,
 }
 pub(super) struct PacketAllocation {
-    pub(super) positions: PacketPositions,
+    pub(super) positions: ColorPositions,
     layout: ColorLayout,
 }
 #[repr(C)]
@@ -116,10 +115,8 @@ pub(super) struct Frame {
     pub tile_private: std::collections::BTreeMap<PrivateSlot, u32>,
 }
 pub(super) struct Graph {
-    locations: Vec<ColorPlace>,
     private: BTreeSet<(usize, usize)>,
     pub(super) state: *mut c_void,
-    registers: usize,
     pub(super) needs_r15: bool,
 }
 #[path = "allocation/graph.rs"]
@@ -139,27 +136,9 @@ impl Graph {
         locals: &std::collections::BTreeMap<usize, Ty>,
         mut live: BTreeSet<PrivateSlot>,
     ) -> Self {
-        let registers = scalars.len();
-        let slots = registers + locals.last_key_value().map_or(0, |(end, _)| *end);
         let private = private_spans(code);
-        let mut locations: Vec<_> = scalars.iter()
-            .chain(locals.values().flat_map(|ty| ty.components.iter().map(|(scalar, _)| scalar)))
-            .map(|scalar| ColorPlace::new(scalar.size() as u8, scalar.is_float()))
-            .collect();
-        for &(begin, end) in &private {
-            for location in &mut locations[registers + begin..registers + end] {
-                location.width = 0;
-            }
-        }
-        let empty = BTreeSet::new();
-        let (state, needs_r15) = graph::build(&mut locations, slots, code, scalars, &mut live, &empty);
-        Self {
-            locations,
-            private,
-            state,
-            registers,
-            needs_r15,
-        }
+        let (state, needs_r15) = graph::build(code, scalars, locals, &private, &mut live);
+        Self { private, state, needs_r15 }
     }
 
     pub(super) fn tile_interference(&mut self, phases: &[TilePhase<'_>]) {
@@ -185,15 +164,11 @@ struct ColorPlace {
     floating: u8,
 }
 impl ColorPlace {
-    const UNSEEN: u32 = 0;
     const IMMEDIATE: u32 = 1;
     const GPR: u32 = 2;
     const XMM: u32 = 3;
     const STACK: u32 = 4;
 
-    fn new(width: u8, floating: bool) -> Self {
-        Self { value: 0, kind: Self::UNSEEN, width, floating: u8::from(floating) }
-    }
     fn scalar(self) -> Location {
         match self.kind {
             Self::IMMEDIATE => Location::Immediate(self.value),
@@ -210,6 +185,7 @@ impl ColorPlace {
 struct PrivateDeclaration {
     offsets: Span,
     begin: usize,
+    end: usize,
     size: u32,
     alignment: u32,
 }
@@ -222,31 +198,26 @@ struct PrivateDeclarations<'a> {
 unsafe extern "C" fn next_private_declaration(context: *mut c_void) -> PrivateDeclaration {
     let state = unsafe { &mut *context.cast::<PrivateDeclarations<'_>>() };
     let Some(&(begin, end)) = state.spans.next() else {
-        return PrivateDeclaration { offsets: Span::EMPTY, begin: 0, size: 0, alignment: 0 };
+        return PrivateDeclaration { offsets: Span::EMPTY, begin: 0, end: 0, size: 0, alignment: 0 };
     };
     let ty = &state.locals[&end];
     PrivateDeclaration {
         offsets: Span::field(&ty.components, |component| &component.1),
         begin,
+        end,
         size: ty.size,
         alignment: ty.align,
     }
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.coloring::packet_colors_drop"]
-    fn packet_colors_drop(places: Span);
-    #[link_name = "bootstrap.coloring::graph_seal"]
-    fn graph_seal(graph: *mut c_void);
+    #[link_name = "bootstrap.coloring::color_places_drop"]
+    fn color_places_drop(places: Span);
     #[link_name = "bootstrap.coloring::graph_release"]
     fn graph_release(graph: *mut c_void);
-    #[link_name = "bootstrap.coloring::color"]
-    fn color(graph: *const c_void, count: usize, places: *mut ColorPlace, mode: u32) -> ColorLayout;
-    #[link_name = "bootstrap.coloring::place_private"]
-    fn place_private(
-        places: *mut ColorPlace, data_end: u64, registers: usize, context: *mut c_void,
-        next: unsafe extern "C" fn(*mut c_void) -> PrivateDeclaration,
-    ) -> u64;
+    #[link_name = "bootstrap.coloring::finish_scalar"]
+    fn finish_scalar(graph: *mut c_void, mode: u32, context: *mut c_void,
+        next: unsafe extern "C" fn(*mut c_void) -> PrivateDeclaration) -> Allocation;
 }
 impl Allocation {
     pub fn new(
@@ -254,38 +225,32 @@ impl Allocation {
     ) -> Self {
         // All entry and tile interference has now been collected. Packet coloring
         // borrows these same ordered rows after scalar coloring returns.
-        let mut locations = std::mem::take(&mut graph.locations);
-        let mut layout = unsafe {
-            graph_seal(graph.state);
-            color(graph.state, locations.len(), locations.as_mut_ptr(), u32::from(tile_scope))
-        };
         let mut private = PrivateDeclarations { spans: graph.private.iter(), locals };
-        layout.end = unsafe {
-            place_private(locations.as_mut_ptr(), layout.end, graph.registers,
-                std::ptr::from_mut(&mut private).cast(), next_private_declaration)
-        };
-        Self {
-            locations,
-            registers: graph.registers,
-            layout,
-        }
+        unsafe { finish_scalar(graph.state, u32::from(tile_scope),
+            ptr::from_mut(&mut private).cast(), next_private_declaration) }
     }
     pub fn location(&self, slot: PrivateSlot) -> Location {
-        self.locations[match slot {
+        let locations = unsafe { self.positions.rows.as_slice::<ColorPlace>() };
+        locations[match slot {
             PrivateSlot::Register(r) => r,
-            PrivateSlot::Local(s) => self.registers + s,
+            PrivateSlot::Local(s) => self.positions.registers + s,
         }].scalar()
+    }
+}
+impl Drop for Allocation {
+    fn drop(&mut self) {
+        unsafe { color_places_drop(self.positions.rows) };
     }
 }
 impl PacketAllocation {
     // The result transfers the B color table and all its initialized rows.
     pub(super) unsafe fn from_b(registers: usize, locations: Span, layout: ColorLayout) -> Self {
-        Self { positions: PacketPositions { rows: locations, registers }, layout }
+        Self { positions: ColorPositions { rows: locations, registers }, layout }
     }
 }
 impl Drop for PacketAllocation {
     fn drop(&mut self) {
-        unsafe { packet_colors_drop(self.positions.rows) };
+        unsafe { color_places_drop(self.positions.rows) };
     }
 }
 impl Frame {

@@ -2381,7 +2381,7 @@ struct PacketView {
     u64 stride; u32 offset; bool dynamic_stride; PacketViewAddress mode;
 };
 
-MoveLocation packet_location(PacketPositions positions, usize slot) on cpu {
+MoveLocation packet_location(ColorPositions positions, usize slot) on cpu {
     Span rows = positions.rows;
     address source = unsafe_address(address_bits(rows.data) + slot * u64(rows.stride));
     ColorPlace place = unsafe_position<ColorPlace>(source);
@@ -2389,7 +2389,7 @@ MoveLocation packet_location(PacketPositions positions, usize slot) on cpu {
     return resource_stack(u64(u32(place.value)));
 }
 
-u64 emit_packet_step(address context, View value, PacketPlanDecision decision, PacketPositions positions,
+u64 emit_packet_step(address context, View value, PacketPlanDecision decision, ColorPositions positions,
     PacketLayout layout, PacketBodyHost host, address output) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
     PacketPlanOperation operation = decision.operation;
@@ -2487,7 +2487,7 @@ extern "C" void emit_packet_body(address context, address emitter, Span code, Co
     requires nonzero(host.ir.inspect) requires nonzero(host.scalar)
     requires nonzero(host.control.emit) requires nonzero(host.control.load) requires nonzero(host.control.buffer)
     requires nonzero(host.control.commit) {
-    PacketPositions positions = unsafe_position<PacketPositions>(context);
+    ColorPositions positions = unsafe_position<ColorPositions>(context);
     u64 index = 0u64;
     while (index < code.count) {
         address entry = unsafe_address(address_bits(code.data) + index * u64(code.stride));
@@ -2628,7 +2628,7 @@ u64 view_element_base(ViewElement source, address output) on cpu {
 
 extern "C" u64 packet_condition(address context, usize register, address output) on cpu {
     u64 start = address_bits(output);
-    MoveLocation source = packet_location(unsafe_position<PacketPositions>(context), register);
+    MoveLocation source = packet_location(unsafe_position<ColorPositions>(context), register);
     return packet_lane_at(start, source, u8(0), u8(0)) - start;
 }
 

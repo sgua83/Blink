@@ -1,6 +1,6 @@
 //! 四个独立元素的 SSE2 降低；计划只包含已证明的访问与可表达指令，尾部共用标量 IR。
 use super::*;
-use allocation::{ColorLayout, Graph, PacketAllocation, PacketPositions};
+use allocation::{ColorLayout, Graph, PacketAllocation, ColorPositions};
 use crate::ir::dataflow;
 use crate::builtin_types::ScalarEncoding;
 use crate::ir::dataflow::{HOST, Span};
@@ -59,7 +59,7 @@ struct PacketBodyHost {
 
 #[repr(C)]
 struct PacketBody<'a> {
-    positions: PacketPositions,
+    positions: ColorPositions,
     registers: &'a [Scalar],
     layout: PacketLayout,
 }

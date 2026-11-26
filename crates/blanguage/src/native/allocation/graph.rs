@@ -21,7 +21,9 @@ struct Core {
 struct Host {
     core: Core,
     live: PrivateLiveHost,
-    scalar: unsafe extern "C" fn(Span, Reg) -> ScalarEncoding,
+    scalar: unsafe extern "C" fn(*const Scalar) -> ScalarEncoding,
+    next_local: unsafe extern "C" fn(*mut c_void) -> Span,
+    next_private: unsafe extern "C" fn(*mut c_void) -> PrivateDeclaration,
     call_abi: unsafe extern "C" fn(*const Call) -> external::CallAbi,
     call_argument: external::ArgumentType,
     register_operand: unsafe extern "C" fn(*mut c_void, Reg) -> u32,
@@ -30,8 +32,9 @@ struct Host {
 struct Request {
     code: Span,
     registers: Span,
-    places: *mut ColorPlace,
-    count: usize,
+    local_slots: usize,
+    locals: *mut c_void,
+    private: *mut c_void,
     live: *mut Slots,
     empty: *const Slots,
 }
@@ -53,11 +56,16 @@ unsafe extern "C" {
     #[link_name = "bootstrap.coloring::graph_register_read"]
     fn graph_register_read(graph: *mut c_void, index: usize, weight: u64);
 }
-pub(super) fn build(places: &mut [ColorPlace], count: usize, code: &[Inst],
-    registers: &[Scalar], live: &mut Slots, empty: &Slots) -> (*mut c_void, bool) {
+pub(super) fn build(code: &[Inst], registers: &[Scalar], locals: &BTreeMap<usize, Ty>,
+    private: &BTreeSet<(usize, usize)>, live: &mut Slots) -> (*mut c_void, bool) {
+    let local_slots = locals.last_key_value().map_or(0, |(&end, _)| end);
+    let mut types = locals.values();
+    let mut declarations = PrivateDeclarations { spans: private.iter(), locals };
+    let empty = Slots::new();
     let request = Request {
-        code: Span::slice(code), registers: Span::slice(registers),
-        places: places.as_mut_ptr(), count, live, empty,
+        code: Span::slice(code), registers: Span::slice(registers), local_slots,
+        locals: ptr::from_mut(&mut types).cast(), private: ptr::from_mut(&mut declarations).cast(),
+        live, empty: &empty,
     };
     let built = unsafe { graph_create(&request, HOST) };
     (built.state, built.uses_r15 != 0)
@@ -65,9 +73,13 @@ pub(super) fn build(places: &mut [ColorPlace], count: usize, code: &[Inst],
 pub(super) fn together(graph: &mut Graph, live: &Slots) { unsafe { graph_together(graph.state, live, CORE) } }
 pub(super) fn inputs(graph: &mut Graph, inputs: &[Reg]) { unsafe { graph_inputs(graph.state, inputs.as_ptr(), inputs.len()) } }
 
-unsafe extern "C" fn scalar(registers: Span, register: Reg) -> ScalarEncoding {
-    let registers = unsafe { registers.as_slice::<Scalar>() };
-    registers[register].into()
+unsafe extern "C" fn scalar(value: *const Scalar) -> ScalarEncoding {
+    unsafe { *value }.into()
+}
+
+unsafe extern "C" fn next_local(context: *mut c_void) -> Span {
+    let types = unsafe { &mut *context.cast::<btree_map::Values<'_, usize, Ty>>() };
+    types.next().map_or(Span::EMPTY, |ty| Span::field(&ty.components, |component| &component.0))
 }
 unsafe extern "C" fn visit_set(live: *const Slots, limit: usize, graph: *mut c_void, event: Event) {
     for (ordinal, slot) in unsafe { &*live }.iter().take(limit).enumerate() {
@@ -92,6 +104,6 @@ unsafe extern "C" fn register_operand(context: *mut c_void, register: Reg) -> u3
 
 const CORE: Core = Core { visit_set };
 const HOST: Host = Host {
-    core: CORE, live: PRIVATE_LIVE_HOST, scalar,
+    core: CORE, live: PRIVATE_LIVE_HOST, scalar, next_local, next_private: next_private_declaration,
     call_abi: external::call_abi, call_argument: external::argument_type, register_operand,
 };
