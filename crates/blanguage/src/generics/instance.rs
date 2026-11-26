@@ -596,21 +596,15 @@ unsafe extern "C" fn name(raw: *mut c_void) {
 }
 unsafe extern "C" fn type_argument(raw: *mut c_void, name: NameBytes) {
     let f = unsafe { instance_frame(raw) };
-    f.bindings.types.insert(
-        unsafe { text(name) }.into(),
-        f.arguments.next().unwrap().syntax,
-    );
+    f.bindings.add_type(unsafe { text(name) }, f.arguments.next().unwrap().syntax);
 }
 unsafe extern "C" fn value_argument(raw: *mut c_void, name: NameBytes, index: u64) {
     let f = unsafe { instance_frame(raw) };
-    f.bindings.values.insert(
-        unsafe { text(name) }.into(),
-        f.values.as_slice()[index as usize],
-    );
+    f.bindings.add_value(unsafe { text(name) }, f.values.as_slice()[index as usize]);
 }
 unsafe extern "C" fn constant(raw: *mut c_void, name: NameBytes) -> wire::Optional<u32> {
     let f = unsafe { &*raw.cast::<InstanceFrame<'_>>() };
-    optional(f.bindings.values.get(unsafe { text(name) }).copied())
+    optional(f.bindings.value(unsafe { text(name) }))
 }
 unsafe extern "C" fn nonzero_error(raw: *mut c_void, index: u64, name: NameBytes) {
     let f = unsafe { instance_frame(raw) };

@@ -1125,10 +1125,10 @@ async fn stage_root(
             StageRootNeed::Bound => return Ok(bound.unwrap().clone()
                 .reference_literal(|| operation_source(instance, arg.span(), SourceSyntax::Expression, domain_path))),
             StageRootNeed::Scope => {
-                value = instance.bindings.values.get(name);
+                value = instance.bindings.value(name);
                 facts.present = u32::from(value.is_some());
             }
-            StageRootNeed::ScopeValue => return Ok(Root::Literal(Ty::scalar(Scalar::U32), vec![Bits::from(*value.unwrap())], None)
+            StageRootNeed::ScopeValue => return Ok(Root::Literal(Ty::scalar(Scalar::U32), vec![Bits::from(value.unwrap())], None)
                 .reference_literal(|| operation_source(instance, arg.span(), SourceSyntax::Expression, domain_path))),
             StageRootNeed::Resolve => {
                 key = world.resolve(name, &d.module, &d.imports, true).unique();
@@ -2557,7 +2557,7 @@ impl<'a> Builder<'a> {
     async fn name_expr(&mut self,name:&str,span:Span)->Result<Value> {
         let mut cursor=SourceValueCursor {phase:0};let mut facts=NameValueFacts {present:0,kind:0,constant:0};let mut scope_value=None;let mut place=None;let mut key=None;
         loop {let step=unsafe {name_value_step(cursor,NameValueFacts {..facts})};cursor=step.cursor;match step.need {
-            NameValueNeed::Scope=>{scope_value=self.scope.bindings().values.get(name).copied();facts.present=u32::from(scope_value.is_some());},
+            NameValueNeed::Scope=>{scope_value=self.scope.bindings().value(name);facts.present=u32::from(scope_value.is_some());},
             NameValueNeed::ScopeValue=>return Ok(self.constant(Scalar::U32,Bits::from(scope_value.unwrap()))),
             NameValueNeed::Binding=>facts.kind=named_binding_kind(self.env.get(name)),
             NameValueNeed::Value=>{let Some(Binding::Value(value))=self.env.get(name)else{unsafe {std::hint::unreachable_unchecked()}};return Ok(value.clone());},

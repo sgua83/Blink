@@ -518,7 +518,7 @@ async fn shape_value(world:&World,parts:ShapeParts<'_>,bindings:Option<&Arc<crat
    ShapeNeed::Absent=>return Ok(None),
    ShapeNeed::Literal=>return Ok(Some(parts.literal)),
    ShapeNeed::Binding=>{
-    bound=unsafe{bindings.unwrap_unchecked()}.values.get(unsafe{parts.name.unwrap_unchecked()}).copied();
+    bound=unsafe{bindings.unwrap_unchecked()}.value(unsafe{parts.name.unwrap_unchecked()});
     present=u32::from(bound.is_some());
    }
    ShapeNeed::Bound=>return Ok(bound),
@@ -540,8 +540,8 @@ async fn shape_value(world:&World,parts:ShapeParts<'_>,bindings:Option<&Arc<crat
     return match unsafe{parts.expression.as_ref().unwrap_unchecked()}{
      ShapeExpression::Source(expression)=>{
       let bindings=unsafe{bindings.unwrap_unchecked()};
-      let key=format!("<shape>:{}:{module}:{:?}:{:?}:{:?}:{:?}",
-       source.path.display(),expression,expression.span(),bindings.types,bindings.values);
+      let key=format!("<shape>:{}:{module}:{:?}:{:?}:{}",
+       source.path.display(),expression,expression.span(),bindings.shape_identity());
       unsafe{world.call(integer_expression(world,&key,source,module,imports,&Ty::scalar(Scalar::U32),
        expression,bindings,("B234","形状或const实参必须完全在编译期求值，不能包含运行期运算或副作用"))).await}.map(Some)
      }

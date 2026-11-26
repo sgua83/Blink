@@ -21,8 +21,6 @@ enum RequestKind { Complete, Type, Shape }
 struct BindingRequest { kind: RequestKind, reference: u64 }
 #[repr(C)]
 struct BindingHost {
-    actual: unsafe extern "C" fn(*mut c_void,wire::Text)->*const c_void,
-    value: unsafe extern "C" fn(*mut c_void,wire::Text)->wire::Optional<u32>,
     reserve: unsafe extern "C" fn(*mut c_void,u64),
     check: unsafe extern "C" fn(*mut c_void,wire::TypeRef)->u32,
     append_value: unsafe extern "C" fn(*mut c_void,u32),
@@ -39,10 +37,9 @@ unsafe extern "C" {
     #[link_name="bootstrap.source_bind::arguments_start"]
     fn arguments_start(storage:wire::StorageView,arguments:wire::Slice,checked:u32)->BindingCursor;
     #[link_name="bootstrap.source_bind::binding_step"]
-    fn binding_step(state:*mut BindingCursor,context:*mut c_void,host:BindingHost)->BindingRequest;
+    fn binding_step(state:*mut BindingCursor,bindings:BindingView<'_>,context:*mut c_void,host:BindingHost)->BindingRequest;
     #[link_name="bootstrap.source_bind::condition"]
-    fn condition_b(source:wire::SignatureNode,parameters:wire::Optional<u64>,output:u32,context:*mut c_void,
-        value:unsafe extern "C" fn(*mut c_void,wire::Text)->wire::Optional<u32>,
+    fn condition_b(source:wire::SignatureNode,bindings:BindingView<'_>,parameters:wire::Optional<u64>,output:u32,context:*mut c_void,
         construct:unsafe extern "C" fn(*mut c_void,wire::ConditionNode));
     #[link_name="bootstrap.source_bind::predicate"]
     fn predicate_b(source:wire::SignatureNode,parameters:wire::Optional<u64>,context:*mut c_void,
@@ -50,16 +47,9 @@ unsafe extern "C" {
         append_interval:unsafe extern "C" fn(*mut c_void,wire::ConditionRef,wire::ConditionRef),
         construct:unsafe extern "C" fn(*mut c_void,wire::PredicateNode,u32));
     #[link_name="bootstrap.source_bind::runtime_contract"]
-    fn runtime_contract_b(source:wire::SignatureNode,context:*mut c_void,
-        value:unsafe extern "C" fn(*mut c_void,wire::Text)->wire::Optional<u32>)->bool;
+    fn runtime_contract_b(source:wire::SignatureNode,bindings:BindingView<'_>)->bool;
 }
 
-fn bound_value(source:syntax::SourceView<'_>,values:&BTreeMap<String,u32>,name:wire::Text)->wire::Optional<u32> {
-    match values.get(source.text(name)) {
-        Some(&value)=>wire::Optional{present:1,value},
-        None=>wire::Optional{present:0,value:0},
-    }
-}
 fn count(value:wire::Optional<u32>)->Option<Shape> {
     (value.present!=0).then_some(Shape::Literal(value.value))
 }
@@ -95,13 +85,6 @@ impl<'a> BindingFrame<'a> {
     }
 }
 unsafe fn type_frame<'a,'b>(raw:*mut c_void)->&'a mut TypeFrame<'b> {unsafe{&mut *raw.cast()}}
-unsafe extern "C" fn type_value(raw:*mut c_void,name:wire::Text)->wire::Optional<u32> {
-    let f=unsafe{type_frame(raw)};bound_value(f.source.view(),&f.bindings.values,name)
-}
-unsafe extern "C" fn actual_type(raw:*mut c_void,name:wire::Text)->*const c_void {
-    let f=unsafe{type_frame(raw)};
-    f.bindings.types.get(f.source.view().text(name)).map_or(std::ptr::null(),|ty|(ty as *const TypeName).cast())
-}
 unsafe extern "C" fn reserve_arguments(raw:*mut c_void,count:u64) {
     unsafe{type_frame(raw)}.arguments.reserve(count as usize);
 }
@@ -119,7 +102,7 @@ unsafe extern "C" fn begin_contracts(raw:*mut c_void,count:u64) {
 }
 unsafe extern "C" fn append_predicate(raw:*mut c_void,reference:wire::PredicateRef,parameters:u64) {
     let f=unsafe{type_frame(raw)};
-    f.contracts.push(predicate(f.source.view(),&f.bindings.values,reference,wire::Optional{present:1,value:parameters}));
+    f.contracts.push(predicate(f.source.view(),f.bindings.view(),reference,wire::Optional{present:1,value:parameters}));
 }
 unsafe extern "C" fn construct_type(raw:*mut c_void,name:wire::Text,canonical:u32,size:wire::Optional<u32>,contracts:u32) {
     let f=unsafe{type_frame(raw)};
@@ -163,8 +146,8 @@ impl<'a> SourceBinding<'a> {
     pub(super) fn advance(mut self)->Result<BindingProgress<'a>> {
         loop {
             let frame=self.frames.last_mut().unwrap();
-            let request=unsafe{binding_step(&mut frame.cursor,(&mut frame.data as *mut TypeFrame<'_>).cast(),BindingHost{
-                actual:actual_type,value:type_value,reserve:reserve_arguments,check:check_type,append_value,
+            let request=unsafe{binding_step(&mut frame.cursor,frame.data.bindings.view(),(&mut frame.data as *mut TypeFrame<'_>).cast(),BindingHost{
+                reserve:reserve_arguments,check:check_type,append_value,
                 begin_contracts,append_predicate,construct:construct_type,clone_actual,wrap:wrap_type,
             })};
             if let Some(error)=frame.data.error.take(){return Err(error);}
@@ -218,17 +201,14 @@ pub(super) async fn arguments(bindings:&Arc<Bindings>,world:&World,arguments:&sy
 }
 
 struct ConditionFrame<'a> {
-    source:syntax::SourceView<'a>,values:&'a BTreeMap<String,u32>,
+    source:syntax::SourceView<'a>,bindings:BindingView<'a>,
     parameters:wire::Optional<u64>,output:u32,result:MaybeUninit<OutputCondition>,
-}
-unsafe extern "C" fn condition_value(raw:*mut c_void,name:wire::Text)->wire::Optional<u32> {
-    let f=unsafe{&*raw.cast::<ConditionFrame<'_>>()};bound_value(f.source,f.values,name)
 }
 unsafe extern "C" fn construct_condition(raw:*mut c_void,node:wire::ConditionNode) {
     let f=unsafe{&mut *raw.cast::<ConditionFrame<'_>>()};
     // The descriptor is selected by B. Native construction lends each actual
     // child destination back to the same B binder; no Rust source walk remains.
-    let child=|reference:wire::ConditionRef|condition(f.source,f.values,reference,f.parameters,f.output);
+    let child=|reference:wire::ConditionRef|condition(f.source,f.bindings,reference,f.parameters,f.output);
     let text=|value|f.source.text(value).to_owned();
     let value=match node {
         wire::ConditionNode::Name(v)=>OutputCondition::Name(text(v)),
@@ -241,15 +221,15 @@ unsafe extern "C" fn construct_condition(raw:*mut c_void,node:wire::ConditionNod
     };
     f.result.write(value);
 }
-fn condition(source:syntax::SourceView<'_>,values:&BTreeMap<String,u32>,reference:wire::ConditionRef,
+fn condition(source:syntax::SourceView<'_>,bindings:BindingView<'_>,reference:wire::ConditionRef,
     parameters:wire::Optional<u64>,output:u32)->OutputCondition {
-    let mut frame=ConditionFrame{source,values,parameters,output,result:MaybeUninit::uninit()};
-    unsafe{condition_b(wire::SignatureNode{storage:source.storage(),offset:reference.offset},parameters,output,
-        (&mut frame as *mut ConditionFrame<'_>).cast(),condition_value,construct_condition);
+    let mut frame=ConditionFrame{source,bindings,parameters,output,result:MaybeUninit::uninit()};
+    unsafe{condition_b(wire::SignatureNode{storage:source.storage(),offset:reference.offset},bindings,parameters,output,
+        (&mut frame as *mut ConditionFrame<'_>).cast(),construct_condition);
         frame.result.assume_init()}
 }
 struct PredicateFrame<'a> {
-    source:syntax::SourceView<'a>,values:&'a BTreeMap<String,u32>,parameters:wire::Optional<u64>,
+    source:syntax::SourceView<'a>,bindings:BindingView<'a>,parameters:wire::Optional<u64>,
     intervals:Vec<(OutputCondition,OutputCondition)>,result:MaybeUninit<ContractPredicate>,
 }
 unsafe extern "C" fn reserve_intervals(raw:*mut c_void,count:u64) {
@@ -257,12 +237,12 @@ unsafe extern "C" fn reserve_intervals(raw:*mut c_void,count:u64) {
 }
 unsafe extern "C" fn append_interval(raw:*mut c_void,lower:wire::ConditionRef,upper:wire::ConditionRef) {
     let f=unsafe{&mut *raw.cast::<PredicateFrame<'_>>()};
-    f.intervals.push((condition(f.source,f.values,lower,f.parameters,0),condition(f.source,f.values,upper,f.parameters,0)));
+    f.intervals.push((condition(f.source,f.bindings,lower,f.parameters,0),condition(f.source,f.bindings,upper,f.parameters,0)));
 }
 unsafe extern "C" fn construct_predicate(raw:*mut c_void,node:wire::PredicateNode,output:u32) {
     let f=unsafe{&mut *raw.cast::<PredicateFrame<'_>>()};
     let text=|value|f.source.text(value).to_owned();
-    let child=|reference|condition(f.source,f.values,reference,f.parameters,output);
+    let child=|reference|condition(f.source,f.bindings,reference,f.parameters,output);
     let value=match node {
         wire::PredicateNode::Prefix(v)=>ContractPredicate::Prefix{data:text(v.data),count:text(v.count),field:text(v.field)},
         wire::PredicateNode::Nonzero(v)=>ContractPredicate::Nonzero(text(v)),
@@ -277,21 +257,17 @@ unsafe extern "C" fn construct_predicate(raw:*mut c_void,node:wire::PredicateNod
     };
     f.result.write(value);
 }
-fn predicate(source:syntax::SourceView<'_>,values:&BTreeMap<String,u32>,reference:wire::PredicateRef,
+fn predicate(source:syntax::SourceView<'_>,bindings:BindingView<'_>,reference:wire::PredicateRef,
     parameters:wire::Optional<u64>)->ContractPredicate {
-    let mut frame=PredicateFrame{source,values,parameters,intervals:Vec::new(),result:MaybeUninit::uninit()};
+    let mut frame=PredicateFrame{source,bindings,parameters,intervals:Vec::new(),result:MaybeUninit::uninit()};
     unsafe{predicate_b(wire::SignatureNode{storage:source.storage(),offset:reference.offset},parameters,
         (&mut frame as *mut PredicateFrame<'_>).cast(),reserve_intervals,append_interval,construct_predicate);
         frame.result.assume_init()}
 }
-struct ContractFrame<'a> {source:syntax::SourceView<'a>,values:&'a BTreeMap<String,u32>}
-unsafe extern "C" fn contract_value(raw:*mut c_void,name:wire::Text)->wire::Optional<u32> {
-    let f=unsafe{&*raw.cast::<ContractFrame<'_>>()};bound_value(f.source,f.values,name)
-}
-pub(super) fn contract(contract:syntax::Contract,values:&BTreeMap<String,u32>)->Option<FunctionContract> {
-    let source=contract.source_view();let mut frame=ContractFrame{source,values};
-    if !unsafe{runtime_contract_b(contract.signature_node(),(&mut frame as *mut ContractFrame<'_>).cast(),contract_value)} {return None;}
+pub(super) fn contract(contract:syntax::Contract,bindings:BindingView<'_>)->Option<FunctionContract> {
+    let source=contract.source_view();
+    if !unsafe{runtime_contract_b(contract.signature_node(),bindings)} {return None;}
     Some(FunctionContract{kind:contract.kind(),
-        predicate:predicate(source,values,wire::PredicateRef{offset:contract.predicate().signature_node().offset},wire::Optional{present:0,value:0}),
+        predicate:predicate(source,bindings,wire::PredicateRef{offset:contract.predicate().signature_node().offset},wire::Optional{present:0,value:0}),
         span:contract.span()})
 }

@@ -65,7 +65,7 @@ impl<'b, 'w> Scope<'b, 'w> {
         }
     }
     async fn name(&self, name: &str, span: Span, limit: usize) -> Result<Option<ExpressionType>> {
-        if self.lexical.bindings().values.contains_key(name) {
+        if self.lexical.bindings().value(name).is_some() {
             return Ok(Some(ExpressionType::Value(Ty::scalar(Scalar::U32))));
         }
         let context = (self.lexical.source(), self.lexical.module(), self.lexical.imports());
@@ -131,7 +131,7 @@ impl<'b, 'w> Scope<'b, 'w> {
         Ok(None)
     }
     fn bound(&self, name: &str, limit: usize) -> bool {
-        self.lexical.bindings().values.contains_key(name)
+        self.lexical.bindings().value(name).is_some()
             || self.bindings[..limit].iter().any(|(bound, _)| *bound == name)
             || self.builder.is_some_and(|builder| builder.env.contains_key(name))
             || self.lexical.parameters().any(|param| param.name() == name)

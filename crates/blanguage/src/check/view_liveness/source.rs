@@ -178,7 +178,7 @@ unsafe extern "C" fn literal(context: Address, expression: wire::ExprRef) -> wir
     let expression: crate::syntax::Expr = context.source.node(expression.offset);
     let value = match expression.kind() {
         ExprKind::StaticU32(value) => Some(value),
-        ExprKind::Name(name) => context.instance.bindings.values.get(name).copied(),
+        ExprKind::Name(name) => context.instance.bindings.value(name),
         ExprKind::Number(text) => number(&context.instance.definition.source, expression.span(), text).ok()
             .and_then(|(ty, value)| (ty == Ty::scalar(Scalar::U32)).then_some(value as u32)),
         _ => None,

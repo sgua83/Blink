@@ -10,7 +10,7 @@ use crate::{
     syntax,
 };
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     ffi::c_void,
     mem, ptr,
     sync::Arc,
@@ -187,9 +187,7 @@ struct RecordState<'a> {
     key: String,
     arguments: Vec<Ty>,
     values: Vec<u32>,
-    replacements: BTreeMap<String, TypeName>,
-    constants: BTreeMap<String, u32>,
-    bindings: Option<Arc<generics::Bindings>>,
+    bindings: Arc<generics::Bindings>,
     ty: Option<Ty>,
     representation: Option<Ty>,
     variants: Vec<ir::Variant>,
@@ -565,7 +563,7 @@ async fn bind(f:&mut Frame<'_>,which:Binding,index:u64)->Result<TypeInfo> {
                 Binding::Field=>{let field=r.source.fields().at(index as usize);(field.ty(),field.span())},
                 _=>{let variant=r.source.variants().at(index as usize);(variant.payload(),variant.span())},
             };
-            unsafe { f.context.world.call(r.bindings.as_ref().unwrap().type_name(f.context.world,&node,
+            unsafe { f.context.world.call(r.bindings.type_name(f.context.world,&node,
                 (r.context.source,r.context.module,r.context.imports),span)).await }?
         }
         Binding::CleanupResult=>{
@@ -812,9 +810,7 @@ unsafe extern "C" fn record(raw: *mut c_void) -> RecordInfo {
         key,
         arguments: Vec::new(),
         values: Vec::new(),
-        replacements: BTreeMap::new(),
-        constants: BTreeMap::new(),
-        bindings: None,
+        bindings: Arc::new(generics::Bindings::default()),
         ty: None,
         representation: None,
         variants: Vec::new(),
@@ -833,8 +829,8 @@ unsafe extern "C" fn type_argument(raw: *mut c_void, index: u64) {
     let f = unsafe { frame(raw) };
     let r = f.record.as_mut().unwrap();
     let actual = f.current.take().unwrap();
-    r.replacements.insert(
-        r.source.types().at(index as usize).name().to_owned(),
+    Arc::get_mut(&mut r.bindings).unwrap().add_type(
+        r.source.types().at(index as usize).name(),
         actual.syntax(),
     );
     r.arguments.push(actual);
@@ -852,17 +848,13 @@ unsafe extern "C" fn const_domain(raw: *mut c_void, index: u64, value: u32) -> u
 unsafe extern "C" fn const_argument(raw: *mut c_void, index: u64, value: u32) {
     let r = unsafe { frame(raw) }.record.as_mut().unwrap();
     r.values.push(value);
-    r.constants.insert(
-        r.source.values().at(index as usize).name().to_owned(),
+    Arc::get_mut(&mut r.bindings).unwrap().add_value(
+        r.source.values().at(index as usize).name(),
         value,
     );
 }
 unsafe extern "C" fn arguments_done(raw: *mut c_void) {
     let r = unsafe { frame(raw) }.record.as_mut().unwrap();
-    r.bindings = Some(Arc::new(generics::Bindings {
-        types: mem::take(&mut r.replacements),
-        values: mem::take(&mut r.constants),
-    }));
     if !r.arguments.is_empty() || !r.values.is_empty() {
         r.key = generics::key(
             &r.key,
@@ -898,7 +890,7 @@ async fn variant_tag(f:&mut Frame<'_>,index:u64)->Result<u32> {
     let r=f.record.as_ref().unwrap();let variant=r.source.variants().at(index as usize);
     let expression=variant.discriminant();let c=r.context;
     unsafe { c.world.call(crate::check::variant_discriminant(c.world,&format!("{}::{}",r.key,variant.name()),
-        c.source,c.module,c.imports,r.representation.as_ref().unwrap(),&expression,r.bindings.as_ref().unwrap())).await }
+        c.source,c.module,c.imports,r.representation.as_ref().unwrap(),&expression,&r.bindings)).await }
 }
 
 unsafe extern "C" fn unique_variant_tag(raw: *mut c_void, tag: u32) -> u32 {
@@ -1015,7 +1007,7 @@ unsafe extern "C" fn record_done(raw: *mut c_void) -> u32 {
 }
 async fn record_stride(f:&mut Frame<'_>)->Result<u32> {
     let r=f.record.as_ref().unwrap();let c=r.context;
-    unsafe { c.world.call(c.world.source_shape(&r.source.stride().unwrap(),r.bindings.as_ref().unwrap(),
+    unsafe { c.world.call(c.world.source_shape(&r.source.stride().unwrap(),&r.bindings,
         c.source,c.span,c.module,c.imports)).await }
 }
 

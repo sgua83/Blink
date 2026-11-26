@@ -3,7 +3,7 @@
 use super::super::*;
 use super::RecordDeclaration;
 use crate::{builtin_types::{Builtin,Kind},syntax::wire::Optional};
-use std::{borrow::Cow,collections::BTreeMap,ffi::c_void,mem::{self,MaybeUninit},ptr,slice,str,sync::Arc};
+use std::{borrow::Cow,ffi::c_void,mem::{self,MaybeUninit},ptr,slice,str,sync::Arc};
 
 #[repr(C)]
 #[derive(Clone,Copy)]
@@ -276,14 +276,14 @@ impl World {
                 PathAction::RecordNumeric => return source.fail(span, "B147", "结构体和资源视图不能作为数值进行运算"),
             };
             let (record, record_source, record_module, record_imports) = declaration;
+            let mut bindings = crate::generics::Bindings::default();
             let mut arguments = name.arguments.into_iter();
-            let types = record.types().iter().zip(&mut arguments).map(|(parameter, argument)| {
+            for (parameter, argument) in record.types().iter().zip(&mut arguments) {
                 let GenericArgument::Type(ty) = argument else {
                     return source.fail(span, "B232", "此记录参数需要类型实参");
                 };
-                Ok((parameter.name().to_owned(), ty))
-            }).collect::<Result<_>>()?;
-            let mut values = BTreeMap::new();
+                bindings.add_type(parameter.name(), ty);
+            }
             for (parameter, argument) in record.values().iter().zip(arguments) {
                 let value = match argument {
                     GenericArgument::Value(Shape::Literal(value)) => value,
@@ -291,9 +291,9 @@ impl World {
                         self.call(self.shape(&Some(argument.shape().unwrap()), source, span, module, imports)).await
                     }?.unwrap(),
                 };
-                values.insert(parameter.name().to_owned(), value);
+                bindings.add_value(parameter.name(), value);
             }
-            let bindings = Arc::new(crate::generics::Bindings { types, values });
+            let bindings = Arc::new(bindings);
             scope = (record_source, record_module, record_imports);
             input = Cow::Owned(unsafe { self.call(bindings.type_name(self, &field_type, scope, span)).await }?);
         }

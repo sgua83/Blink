@@ -1,6 +1,5 @@
 module bootstrap.static_uses;
 import bootstrap.ast_storage;
-import bootstrap.names;
 
 address at(address bytes, u64 offset) on cpu {
     return unsafe_address(address_bits(bytes) + offset);
@@ -15,18 +14,7 @@ u64 member_at(UseContext context, Slice list, u64 index) on cpu {
 }
 
 u32 binding(UseContext context, Text name, u32 kind) on cpu {
-    address bytes = context.storage.source;
-    if (name.kind != 0) { bytes = context.storage.text; }
-    NameBytes text = NameBytes(at(bytes, name.range.start), name.range.end - name.range.start);
-    u64 index = 0u64;
-    while (index < context.count) {
-        BoundName entry = unsafe_position<BoundName>(at(context.bindings, index * size_of<BoundName>()));
-        if (entry.kind == kind && compare_name(text, NameBytes(entry.bytes, entry.length)) == i32(0)) {
-            return 1 + entry.wrapped;
-        }
-        index += 1u64;
-    }
-    return 0;
+    return use_kind(context.bindings, binding_text(context.storage, name), kind);
 }
 
 result<void,UseError> argument_uses(UseContext context, Slice list, Span span) on cpu {

@@ -472,7 +472,7 @@ impl<'b, 'w> Scope<'b, 'w> {
 
     async fn input_snapshot(&self,expr:&Expr,limit:usize,access:Access,element:Option<(&DataProjection<'_>,&bounds::Clause)>,ordinal:Option<&str>)->Result<Option<(Ty,bounds::Proof,view::Borrow)>> {
         if let ExprKind::Name(name) = expr.kind()
-            && let Some(value) = self.lexical.bindings().values.get(name).copied()
+            && let Some(value) = self.lexical.bindings().value(name)
         {
             return Ok(Some((Ty::scalar(Scalar::U32), bounds::Proof::unsigned(value, value), view::Borrow::default())));
         }

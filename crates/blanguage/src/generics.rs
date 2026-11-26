@@ -1,6 +1,6 @@
 //! 从声明绑定具体类型与静态值；具体实例沿原入口检查和 IR 执行。
 use crate::{World, ast::*, ir::Ty};
-use std::collections::{BTreeMap, BTreeSet};
+use std::{collections::BTreeSet, ffi::c_void, fmt, marker::PhantomData};
 
 mod source_bind;
 mod instance;
@@ -66,35 +66,122 @@ pub(crate) fn record_key_matches(base: &str, actual: &Ty) -> bool {
         unsafe { matches_instance_key(name, NameBytes::new(&actual.name)) }
     })
 }
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct BindingView<'a> {
+    rows: *mut c_void,
+    count: u64,
+    owner: PhantomData<&'a Bindings>,
+}
+
+#[repr(C)]
 #[derive(Default)]
-pub(crate) struct Bindings {
-    pub types:BTreeMap<String,TypeName>,
-    pub values:BTreeMap<String,u32>,
+struct BindingTable {
+    view: BindingView<'static>,
+    capacity: u64,
+}
+
+#[repr(C)]
+struct BindingEntry {
+    name: NameBytes,
+    type_value: *const c_void,
+    const_value: u32,
+    kind: u32,
+}
+
+#[derive(Default)]
+pub(crate) struct Bindings(BindingTable);
+
+// Insertion requires exclusive ownership. Published instances share immutable
+// B rows and TypeName values, and the last owner releases both.
+unsafe impl Send for Bindings {}
+unsafe impl Sync for Bindings {}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.generic_bindings::bind_type"]
+    fn bind_type(table: &mut BindingTable, name: NameBytes, value: *mut c_void, wrapped: u32,
+        release: unsafe extern "C" fn(*mut c_void)) -> bool;
+    #[link_name = "bootstrap.generic_bindings::bind_value"]
+    fn bind_value(table: &mut BindingTable, name: NameBytes, value: u32) -> bool;
+    #[link_name = "bootstrap.generic_bindings::bound_type"]
+    fn bound_type(table: BindingView<'_>, name: NameBytes) -> *const c_void;
+    #[link_name = "bootstrap.generic_bindings::bound_value"]
+    fn bound_value(table: BindingView<'_>, name: NameBytes) -> crate::syntax::wire::Optional<u32>;
+    #[link_name = "bootstrap.generic_bindings::entry_at"]
+    fn binding_entry(table: BindingView<'_>, index: u64) -> BindingEntry;
+    #[link_name = "bootstrap.generic_bindings::release"]
+    fn release_bindings(table: BindingView<'_>, release: unsafe extern "C" fn(*mut c_void));
+}
+
+unsafe extern "C" fn release_type(value: *mut c_void) {
+    drop(unsafe { Box::from_raw(value.cast::<TypeName>()) });
+}
+
+impl Drop for Bindings {
+    fn drop(&mut self) {
+        if !self.0.view.rows.is_null() {
+            unsafe { release_bindings(self.view(), release_type) };
+        }
+    }
 }
 
 // A bound call reads the original instance; it does not rewrite its source node.
 pub(crate) enum TypeCall<'a> { Builtin(&'a str), Construct(&'a TypeName) }
 impl Bindings {
+    pub(crate) fn view(&self) -> BindingView<'_> { self.0.view }
+    pub(crate) fn add_type(&mut self, name: &str, value: TypeName) {
+        let wrapped = u32::from(value.dataset || value.view || value.tile);
+        let value = Box::into_raw(Box::new(value)).cast();
+        if !unsafe { bind_type(&mut self.0, NameBytes::new(name), value, wrapped, release_type) } {
+            std::process::abort();
+        }
+    }
+    pub(crate) fn add_value(&mut self, name: &str, value: u32) {
+        if !unsafe { bind_value(&mut self.0, NameBytes::new(name), value) } {
+            std::process::abort();
+        }
+    }
+    pub(crate) fn value(&self, name: &str) -> Option<u32> {
+        let value = unsafe { bound_value(self.view(), NameBytes::new(name)) };
+        (value.present != 0).then_some(value.value)
+    }
+    pub(crate) fn shape_identity(&self) -> impl fmt::Display + '_ {
+        fmt::from_fn(|format| {
+            self.format_entries(format, 1)?;
+            format.write_str(":")?;
+            self.format_entries(format, 2)
+        })
+    }
+    fn format_entries(&self, format: &mut fmt::Formatter<'_>, kind: u32) -> fmt::Result {
+        let mut map = format.debug_map();
+        for index in 0..self.0.view.count {
+            let entry = unsafe { binding_entry(self.view(), index) };
+            if entry.kind != kind { continue; }
+            let name = unsafe {
+                std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+                    entry.name.bytes, entry.name.length as usize,
+                ))
+            };
+            if kind == 1 {
+                map.entry(&name, unsafe { &*entry.type_value.cast::<TypeName>() });
+            } else {
+                map.entry(&name, &entry.const_value);
+            }
+        }
+        map.finish()
+    }
     pub(crate) fn type_call(&self,name:&str)->Option<TypeCall<'_>> {
-        let actual=self.types.get(name)?;
+        let actual = unsafe { bound_type(self.view(), NameBytes::new(name)).cast::<TypeName>().as_ref()? };
         Some(if actual.arguments.is_empty()&&crate::builtin_types::Builtin::recognize(&actual.name).is_scalar() {
             TypeCall::Builtin(&actual.name)
         }else{TypeCall::Construct(actual)})
     }
-    fn use_names(&self) -> Vec<crate::syntax::wire::BoundName> {
-        self.types.iter().map(|(name, ty)| crate::syntax::wire::BoundName {
-            bytes: name.as_ptr(), length: name.len() as u64, kind: 1,
-            wrapped: u32::from(ty.dataset || ty.view || ty.tile),
-        }).chain(self.values.keys().map(|name| crate::syntax::wire::BoundName {
-            bytes: name.as_ptr(), length: name.len() as u64, kind: 2, wrapped: 0,
-        })).collect()
-    }
     fn check_uses(
         &self, source: &Source,
-        inspect: impl FnOnce(&[crate::syntax::wire::BoundName]) -> crate::syntax::wire::UseError,
+        inspect: impl FnOnce(BindingView<'_>) -> crate::syntax::wire::UseError,
     ) -> Result<()> {
-        if self.types.is_empty() && self.values.is_empty() { return Ok(()); }
-        let error = inspect(&self.use_names());
+        if self.0.view.count == 0 { return Ok(()); }
+        let error = inspect(self.view());
         if error.code == 0 { return Ok(()); }
         let (code, message) = [
             ("B232", "类型参数已代表完整具体类型，不能再附加类型实参"),
@@ -150,7 +237,7 @@ impl Instance {
     }
     pub(crate) fn contracts(&self) -> impl Iterator<Item = FunctionContract> + '_ {
         self.definition.function.contracts().iter()
-            .filter_map(|contract| source_bind::contract(contract, &self.bindings.values))
+            .filter_map(|contract| source_bind::contract(contract, self.bindings.view()))
     }
 }
 #[derive(Clone)]

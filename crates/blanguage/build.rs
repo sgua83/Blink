@@ -241,6 +241,7 @@ const MODULES: &[&str] = &[
     "ir_dataflow",
     "stage_fusion",
     "source_bind",
+    "generic_bindings",
     "type_reference",
     "c_function",
     "type_value",

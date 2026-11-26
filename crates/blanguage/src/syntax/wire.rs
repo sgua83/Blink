@@ -296,10 +296,7 @@ pub struct SignatureNode {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct BoundName { pub bytes: *const u8, pub length: u64, pub kind: u32, pub wrapped: u32 }
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct UseContext { pub storage: StorageView, pub bindings: *const BoundName, pub count: u64 }
+pub struct UseContext<'a> { pub storage: StorageView, pub bindings: crate::generics::BindingView<'a> }
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct UseError { pub code: u32, pub span: Span }

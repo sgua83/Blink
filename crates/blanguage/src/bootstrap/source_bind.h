@@ -2,6 +2,7 @@ module bootstrap.source_bind;
 import bootstrap.ast_storage;
 import bootstrap.signatures;
 import bootstrap.cli;
+import bootstrap.generic_bindings;
 
 // The original source-binding query owns this cursor and its partial native values.
 // Requests end the native call; the same cursor consumes the actual child result.
@@ -11,8 +12,6 @@ struct BindingCursor {
 };
 struct BindingRequest { u32 kind; u64 reference; };
 struct BindingHost {
-    cfn<address,address,Text> actual;
-    cfn<Optional<u32>,address,Text> value;
     cfn<void,address,u64> reserve;
     cfn<bool,address,TypeRef> check;
     cfn<void,address,u32> append_value;
@@ -24,18 +23,16 @@ struct BindingHost {
 };
 extern "C" BindingCursor type_start(SignatureNode source) on cpu;
 extern "C" BindingCursor arguments_start(StorageView storage,Slice arguments,u32 checked) on cpu;
-extern "C" BindingRequest binding_step(address state,address context,BindingHost host) on cpu
-    requires nonzero(host.actual) requires nonzero(host.value) requires nonzero(host.reserve)
+extern "C" BindingRequest binding_step(address state, BindingView bindings, address context, BindingHost host) on cpu
+    requires nonzero(host.reserve)
     requires nonzero(host.check) requires nonzero(host.append_value) requires nonzero(host.begin_contracts)
     requires nonzero(host.append_predicate) requires nonzero(host.construct)
     requires nonzero(host.clone_actual) requires nonzero(host.wrap);
 
 // parameters is present only for a cfn signature. returned remains a runtime
 // output name only in initialized/cleanup conditions, as in the source contract.
-extern "C" void condition(SignatureNode source, Optional<u64> parameters, u32 output, address context,
-    cfn<Optional<u32>,address,Text> value,
-    cfn<void,address,ConditionNode> construct) on cpu
-    requires nonzero(value) requires nonzero(construct);
+extern "C" void condition(SignatureNode source, BindingView bindings, Optional<u64> parameters, u32 output,
+    address context, cfn<void,address,ConditionNode> construct) on cpu requires nonzero(construct);
 
 extern "C" void predicate(SignatureNode source, Optional<u64> parameters, address context,
     cfn<void,address,u64> reserve,
@@ -43,8 +40,7 @@ extern "C" void predicate(SignatureNode source, Optional<u64> parameters, addres
     cfn<void,address,PredicateNode,u32> construct) on cpu
     requires nonzero(reserve) requires nonzero(append_interval) requires nonzero(construct);
 
-extern "C" bool runtime_contract(SignatureNode source, address context,
-    cfn<Optional<u32>,address,Text> value) on cpu requires nonzero(value);
+extern "C" bool runtime_contract(SignatureNode source, BindingView bindings) on cpu;
 
 // An unrecognized or unrepresentable name returns the maximum u64 index.
 extern "C" u64 positional_index(address bytes,u64 length) on cpu;

@@ -1,4 +1,5 @@
 module bootstrap.source_bind;
+import bootstrap.names;
 
 address at(address data, u64 offset) on cpu {
     return unsafe_address(address_bits(data) + offset);
@@ -43,8 +44,8 @@ BindingRequest binding_request(address state,BindingCursor cursor,u32 kind,u64 r
     unsafe_position<BindingCursor>(state)=cursor;
     return BindingRequest(kind,reference);
 }
-extern "C" BindingRequest binding_step(address state,address context,BindingHost host) on cpu
-    requires nonzero(host.actual) requires nonzero(host.value) requires nonzero(host.reserve)
+extern "C" BindingRequest binding_step(address state, BindingView bindings, address context, BindingHost host) on cpu
+    requires nonzero(host.reserve)
     requires nonzero(host.check) requires nonzero(host.append_value) requires nonzero(host.begin_contracts)
     requires nonzero(host.append_predicate) requires nonzero(host.construct)
     requires nonzero(host.clone_actual) requires nonzero(host.wrap) {
@@ -64,7 +65,7 @@ extern "C" BindingRequest binding_step(address state,address context,BindingHost
                     ArgumentNode::Type(reference){
                         TypeNode ty=unsafe_position<TypeNode>(at(cursor.storage.nodes,reference.offset));
                         if(ty.arguments.count==0u64&&ty.dataset==0&&ty.view==0&&ty.tile==0){
-                            Optional<u32> bound=host.value(context,ty.name);
+                            Optional<u32> bound=bound_value(bindings,binding_text(cursor.storage,ty.name));
                             if(bound.present!=0){host.append_value(context,bound.value);cursor.index+=1u64;continue;}
                         }
                         if(cursor.checked!=0&&!host.check(context,reference)){
@@ -98,7 +99,7 @@ extern "C" BindingRequest binding_step(address state,address context,BindingHost
         if(cursor.stage==6){cursor.stage=7;}
         if(cursor.stage==7){
             TypeNode ty=unsafe_position<TypeNode>(at(cursor.storage.nodes,cursor.offset));
-            address bound=host.actual(context,ty.name);
+            address bound=bound_type(bindings,binding_text(cursor.storage,ty.name));
             if(address_bits(bound)!=0u64){host.clone_actual(context,bound);}
             else{
                 if(ty.contracts.present!=0){
@@ -118,20 +119,16 @@ extern "C" BindingRequest binding_step(address state,address context,BindingHost
     }
 }
 
-extern "C" void condition(SignatureNode source, Optional<u64> parameters, u32 output, address context,
-    cfn<Optional<u32>,address,Text> value,
-    cfn<void,address,ConditionNode> construct) on cpu
-    requires nonzero(value) requires nonzero(construct) {
+extern "C" void condition(SignatureNode source, BindingView bindings, Optional<u64> parameters, u32 output,
+    address context, cfn<void,address,ConditionNode> construct) on cpu requires nonzero(construct) {
     ConditionNode node = unsafe_position<ConditionNode>(at(source.storage.nodes, source.offset));
     match (node) {
         ConditionNode::Name(name) {
-            address data=name.kind==0 ? source.storage.source : source.storage.text;
-            address bytes=at(data,name.range.start);
-            u64 length=name.range.end-name.range.start;
-            bool local = (output!=0 && length==8u64 && word(bytes,"returned"))
-                || (parameters.present!=0 && positional_index(bytes,length)<parameters.value);
+            NameBytes text = binding_text(source.storage, name);
+            bool local = (output!=0 && text.length==8u64 && word(text.bytes,"returned"))
+                || (parameters.present!=0 && positional_index(text.bytes,text.length)<parameters.value);
             if (!local) {
-                Optional<u32> bound = value(context, name);
+                Optional<u32> bound = bound_value(bindings, text);
                 if (bound.present != 0) { construct(context, ConditionNode::StaticU32(bound.value)); return; }
             }
         }
@@ -175,13 +172,14 @@ extern "C" void predicate(SignatureNode source, Optional<u64> parameters, addres
     construct(context, node, output);
 }
 
-extern "C" bool runtime_contract(SignatureNode source, address context,
-    cfn<Optional<u32>,address,Text> value) on cpu requires nonzero(value) {
+extern "C" bool runtime_contract(SignatureNode source, BindingView bindings) on cpu {
     ContractNode contract = unsafe_position<ContractNode>(at(source.storage.nodes, source.offset));
     if (contract.kind == 0) {
         PredicateNode predicate = unsafe_position<PredicateNode>(at(source.storage.nodes, contract.predicate.offset));
         match (predicate) {
-            PredicateNode::Nonzero(name) { return value(context, name).present == 0; }
+            PredicateNode::Nonzero(name) {
+                return bound_value(bindings, binding_text(source.storage, name)).present == 0;
+            }
             PredicateNode::Prefix(prefix) {}
             PredicateNode::Nonempty(name) {}
             PredicateNode::Index(index) {}

@@ -1,8 +1,8 @@
 module bootstrap.static_uses;
 import bootstrap.ast_storage;
+import bootstrap.generic_bindings;
 
-struct BoundName { address bytes; u64 length; u32 kind; u32 wrapped; };
-struct UseContext { StorageView storage; address bindings; u64 count; };
+struct UseContext { StorageView storage; BindingView bindings; };
 struct UseError { u32 code; Span span; };
 
 extern "C" UseError check_function(UseContext context, FunctionRef function) on cpu;
