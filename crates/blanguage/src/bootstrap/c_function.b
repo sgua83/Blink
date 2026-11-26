@@ -1,6 +1,6 @@
 module bootstrap.c_function;
 
-bool word<const N:u32 in {4,5}>(Text text,read array<u8,N> name) on cpu {
+bool word<const N:u32 in {4,5,6}>(Text text,read array<u8,N> name) on cpu {
     if(text.length!=u64(N)){return false;}
     for(index in 0..N){
         if(unsafe_position<u8>(unsafe_address(address_bits(text.bytes)+u64(index)))!=name[index]){return false;}
@@ -51,6 +51,7 @@ extern "C" BindingNeed binding_step(address state,address context,BindingHost ho
                 if(word(value.name,"read")){access=Access::Read;}
                 else if(word(value.name,"write")){access=Access::Write;}
                 else if(word(value.name,"inout")){access=Access::InOut;}
+                else if(word(value.name,"atomic")){access=Access::Atomic;}
             }
             if(access!=Access::Value){
                 if(value.arguments!=1u64){host.fail(context,Problem::Position);return give_binding(state,cursor,BindingNeed::Done);}

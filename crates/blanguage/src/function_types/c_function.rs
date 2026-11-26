@@ -100,7 +100,7 @@ impl Context<'_> {
         let(code,message)=match problem {
             Problem::MissingResult=>("B263","cfn<R,P...>至少需要一个返回类型"),
             Problem::TypeArgument=>("B263","cfn签名只接受类型，不接受const数值"),
-            Problem::Position=>("B263","cfn位置参数使用read<T>／write<T>／inout<T>"),
+            Problem::Position=>("B263","cfn位置参数使用read<T>／write<T>／inout<T>／atomic<T>"),
             Problem::Resource=>("B224","cfn普通C签名不能交接Blink拥有资源"),
             Problem::EmptyOrView=>("B263","cfn需要普通非空C布局，不能交接Blink资源引用"),
         };

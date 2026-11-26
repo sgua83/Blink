@@ -117,7 +117,7 @@ impl Builder<'_> {
     #[inline(never)]
     async fn c_call(&mut self, target: CallTarget, parameters: &[CallParameter], args: Vec<Argument>, result: Option<Ty>,
         never: bool, definition: Option<outputs::Contract<'_>>, span: Span, generated_origin: Option<Arc<GeneratedOrigin>>) -> Result<Option<Value>> {
-        fn kind(argument:&Argument)->CArgumentKind {match argument {Argument::Scoped{..}=>CArgumentKind::Scoped,Argument::Value(_)=>CArgumentKind::Value,Argument::Reference(_)=>CArgumentKind::Reference,_=>CArgumentKind::Other}}
+        fn kind(argument:&Argument)->CArgumentKind {match argument {Argument::Scoped{..}=>CArgumentKind::Scoped,Argument::Value(_)=>CArgumentKind::Value,Argument::Reference(_)=>CArgumentKind::Reference,Argument::Atomic(_)=>CArgumentKind::Atomic,_=>CArgumentKind::Other}}
         let mut cursor=CCallCursor {index:0,phase:0};
         let mut facts=CCallFacts {cpu:u32::from(self.program.target==Target::Cpu),never:u32::from(never),contract:u32::from(definition.is_some()),capture_names:0,reference:0,access:Access::Value,kind:CArgumentKind::Other,captured:0,declared:0};
         let count=parameters.len().min(args.len()) as u64;let mut source=args.into_iter();
@@ -134,7 +134,30 @@ impl Builder<'_> {
             CCallNeed::Value=>{let(CallParameterKind::Value(ty),Argument::Value(value))=(&parameters[index].kind,argument.as_ref().unwrap())else{unsafe{std::hint::unreachable_unchecked()}};self.require_same(ty,&value.ty,span)?;memory[0].0.union(&self.address_contents(&value.ty,&value.proof));},
             CCallNeed::CaptureName=>{let name=definition.unwrap().parameter_name(index);facts.captured=u32::from(capture_names.contains(&name));captured=Some(name);},
             CCallNeed::CapturedValue|CCallNeed::PlainValue=>{let Argument::Value(value)=argument.take().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};let registers=if matches!(step.need,CCallNeed::CapturedValue){let registers=value.regs.clone();output_inputs.insert(captured.take().unwrap(),value);registers}else{value.regs};let CallParameterKind::Value(ty)=&parameters[index].kind else{unsafe{std::hint::unreachable_unchecked()}};arguments.push(CallArgument::Value{#[cfg(feature="compiler")]origin:None,dataset_borrow:None,ty:ty.clone(),values:registers});},
-            CCallNeed::Reference=>{let Argument::Reference(owner)=argument.take().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};let CallParameterKind::Reference{ty,..}=&parameters[index].kind else{unsafe{std::hint::unreachable_unchecked()}};if step.reading!=0{memory[0].0.union(&self.address_contents(ty,&owner.proof));}place=Some(owner.place);self.require_same(ty,place.as_ref().unwrap().ty(),span)?;let origin=unsafe{self.world.call(self.position_origin(place.as_ref().unwrap(),span)).await}?;memory.push((view::Borrow::source(view::Source::Position(Arc::new(origin))),Some(facts.access)));},
+            CCallNeed::Reference => {
+                let CallParameterKind::Reference { ty, .. } = &parameters[index].kind else {
+                    unreachable!()
+                };
+                let borrowed = match argument.take().unwrap() {
+                    Argument::Reference(owner) => {
+                        if step.reading != 0 {
+                            memory[0].0.union(&self.address_contents(ty, &owner.proof));
+                        }
+                        owner.place
+                    }
+                    Argument::Atomic(place) => place,
+                    _ => unreachable!(),
+                };
+                self.require_same(ty, borrowed.ty(), span)?;
+                let borrow = if facts.access == Access::Atomic {
+                    unsafe { self.world.call(self.atomic_position_borrows(&borrowed, span)).await }?
+                } else {
+                    let origin = unsafe { self.world.call(self.position_origin(&borrowed, span)).await }?;
+                    view::Borrow::source(view::Source::Position(Arc::new(origin)))
+                };
+                memory.push((borrow, Some(facts.access)));
+                place = Some(borrowed);
+            },
             CCallNeed::Address=>address=Some(unsafe{self.world.call(self.external_reference(place.as_ref().unwrap(),facts.access,facts.access.writes(),span)).await}?),
             CCallNeed::WrittenReference|CCallNeed::PlainReference=>{let CallParameterKind::Reference{ty,access}=&parameters[index].kind else{unsafe{std::hint::unreachable_unchecked()}};if matches!(step.need,CCallNeed::WrittenReference){written.push((index,place.take().unwrap()));}else{place=None;}arguments.push(CallArgument::Reference{#[cfg(feature="compiler")]origin:None,ty:ty.clone(),access:*access,address:address.take().unwrap()});},
             CCallNeed::Invalid=>return self.fail(span,"B263","C ABI实参只接收普通值及实际位置"),
@@ -277,7 +300,7 @@ unsafe extern "C" {
 unsafe extern "C" {#[link_name="bootstrap.call_arguments::call_reference_step"]fn call_reference_step(cursor:ReadInputCursor,facts:CallReferenceFacts)->CallReferenceStep;}
 
 #[repr(C)]#[derive(Clone,Copy)]struct CCallCursor {index:u64,phase:u32}
-#[repr(u32)]#[derive(Clone,Copy)]enum CArgumentKind {Other,Value,Reference,Scoped}
+#[repr(u32)]#[derive(Clone,Copy)]enum CArgumentKind {Other,Value,Reference,Scoped,Atomic}
 #[repr(C)]#[derive(Clone,Copy)]struct CCallFacts {cpu:u32,never:u32,contract:u32,capture_names:u32,reference:u32,access:Access,kind:CArgumentKind,captured:u32,declared:u32}
 #[repr(u32)]enum CCallNeed {BadTarget,Inputs,Inspect,Scoped,Materialize,Value,CaptureName,CapturedValue,PlainValue,Reference,Address,WrittenReference,PlainReference,Invalid,Prove,Registers,Memory,Emit,Stop,Returned,WrittenInspect,Guards,Forget,AllGuards,Assign,Initialize,Finish,Complete}
 #[repr(C)]struct CCallStep {cursor:CCallCursor,need:CCallNeed,reading:u32}

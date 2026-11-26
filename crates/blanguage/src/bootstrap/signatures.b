@@ -496,7 +496,7 @@ bool c_signature_allowed(StorageView store, FunctionNode function, bool imported
     while (index < function.params.count) {
         ParamNode parameter = read_node<ParamNode>(store, child_at(store, function.params, index));
         TypeNode ty = read_node<TypeNode>(store, parameter.ty.offset);
-        if (ty.dataset != 0 || ty.tile != 0 || parameter.access == ACCESS_ATOMIC) { return false; }
+        if (ty.dataset != 0 || ty.tile != 0) { return false; }
         index += 1u64;
     }
     TypeNode result = read_node<TypeNode>(store, function.result.offset);

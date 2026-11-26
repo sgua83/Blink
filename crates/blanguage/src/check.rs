@@ -1243,7 +1243,7 @@ pub(crate) fn validate_signature(d: &Definition) -> Result<()> {
     let error = unsafe { signature_error(d.function.signature_node(), domain) };
     let (code, message) = match error.kind {
         Kind::Valid => return Ok(()),
-        Kind::CAbi => ("B263", "extern C 需要 on cpu 普通C签名，只接收普通值及 read／write／inout 位置；from导入是无正文的固定符号，B定义可实例化，输入可声明 requires nonzero，输出可声明 ensures initialized，不透明内存效果可声明 ensures memory"),
+        Kind::CAbi => ("B263", "extern C 需要 on cpu 普通C签名，只接收普通值及 read／write／inout／atomic 位置；from导入是无正文的固定符号，B定义可实例化，输入可声明 requires nonzero，输出可声明 ensures initialized，不透明内存效果可声明 ensures memory"),
         Kind::OwnedResult => ("B224", "拥有的 dataset 返回属于普通 CPU 应用函数，借用与并行实例不转移资源所有权"),
         Kind::MissingTile => ("B207", "cooperative 接口需要至少一个 tile<T> 借用来声明块范围"),
         Kind::OwnedParameter => ("B224", "拥有聚合参数只支持普通CPU函数"),

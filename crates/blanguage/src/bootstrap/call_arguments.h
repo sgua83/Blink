@@ -65,7 +65,7 @@ enum CallReferenceNeed:u32 {Kind=0;BadAtomic=1;Base=2;ElementFacts=3;Read=4;Writ
 struct CallReferenceStep {Phase cursor;CallReferenceNeed need;};
 extern "C" CallReferenceStep call_reference_step(Phase cursor,CallReferenceFacts facts) on cpu;
 
-enum CCallArgument:u32 {Other=0;Value=1;Reference=2;Scoped=3;};
+enum CCallArgument:u32 {Other=0;Value=1;Reference=2;Scoped=3;Atomic=4;};
 struct CCallCursor {u64 index;u32 phase;};
 struct CCallFacts {u32 cpu;u32 never;u32 contract;u32 capture_names;u32 reference;CallAccess access;CCallArgument kind;u32 captured;u32 declared;};
 enum CCallNeed:u32 {BadTarget=0;Inputs=1;Inspect=2;Scoped=3;Materialize=4;Value=5;CaptureName=6;CapturedValue=7;PlainValue=8;Reference=9;Address=10;WrittenReference=11;PlainReference=12;Invalid=13;Prove=14;Registers=15;Memory=16;Emit=17;Stop=18;Returned=19;WrittenInspect=20;Guards=21;Forget=22;AllGuards=23;Assign=24;Initialize=25;Finish=26;Complete=27;};
