@@ -62,3 +62,14 @@ struct CallGraph { address rows; address callees; usize count; };
 struct CallWork { address states; address visits; address active; };
 
 extern "C" void recursive_call_groups(CallGraph graph, CallWork work, address groups) on cpu;
+
+struct FeedbackEdge { usize from; u32 identity; };
+struct FeedbackNode { address edges; usize count; u32 variable; u32 seeded; };
+struct IdentityFeedbackHost {
+    cfn<FeedbackEdge,address,usize> edge;
+    cfn<FeedbackNode,address,usize> node;
+    cfn<void,address,usize,usize> exchange;
+};
+
+extern "C" usize prune_identity_feedback(address graph,address edges,usize count,usize variable,IdentityFeedbackHost host) on cpu
+    requires nonzero(host.edge) requires nonzero(host.node) requires nonzero(host.exchange);

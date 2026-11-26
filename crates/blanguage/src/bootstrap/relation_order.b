@@ -347,3 +347,32 @@ extern "C" void recursive_call_groups(CallGraph graph, CallWork work, address gr
         }
     }
 }
+
+bool returns_unchanged(address graph,usize variable,FeedbackEdge first,IdentityFeedbackHost host) on cpu
+    requires nonzero(host.edge) requires nonzero(host.node)
+{
+    FeedbackEdge edge = first;
+    while (edge.identity != 0) {
+        if (edge.from == variable) { return true; }
+        FeedbackNode node = host.node(graph,edge.from);
+        if (node.variable != 0 || node.count != 1u64 || node.seeded != 0) { return false; }
+        edge = host.edge(node.edges,0u64);
+    }
+    return false;
+}
+
+extern "C" usize prune_identity_feedback(address graph,address edges,usize count,usize variable,IdentityFeedbackHost host) on cpu
+    requires nonzero(host.edge) requires nonzero(host.node) requires nonzero(host.exchange)
+{
+    usize index = 0u64;
+    usize retained = 0u64;
+    while (index < count) {
+        FeedbackEdge edge = host.edge(edges,index);
+        if (!returns_unchanged(graph,variable,edge,host)) {
+            if (retained != index) { host.exchange(edges,retained,index); }
+            retained += 1u64;
+        }
+        index += 1u64;
+    }
+    return retained;
+}

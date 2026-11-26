@@ -240,6 +240,47 @@ impl<'g, F: FnMut(&Node) -> bool> RelationWalk<'g, F> {
 
 #[derive(Clone,PartialEq,Eq,PartialOrd,Ord)]
 enum Key { Loop(LoopInput), Read(ContentRead), Call(CallResult) }
+#[repr(C)]
+struct FeedbackEdge { from: usize, identity: u32 }
+#[repr(C)]
+struct FeedbackNode { edges: *const std::ffi::c_void, count: usize, variable: u32, seeded: u32 }
+
+#[repr(C)]
+struct IdentityFeedbackHost {
+    edge: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> FeedbackEdge,
+    node: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> FeedbackNode,
+    exchange: unsafe extern "C" fn(*mut std::ffi::c_void, usize, usize),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.relation_order::prune_identity_feedback"]
+    fn prune_identity_feedback(
+        graph: *const std::ffi::c_void, edges: *mut std::ffi::c_void, count: usize,
+        variable: usize, host: IdentityFeedbackHost,
+    ) -> usize;
+}
+
+unsafe extern "C" fn identity_feedback_edge(edges: *const std::ffi::c_void, index: usize) -> FeedbackEdge {
+    let edge = unsafe { &*edges.cast::<Edge>().add(index) };
+    FeedbackEdge { from: edge.from, identity: u32::from(matches!(edge.op, Op::Identity)) }
+}
+
+unsafe extern "C" fn identity_feedback_node(graph: *const std::ffi::c_void, index: usize) -> FeedbackNode {
+    let graph = unsafe { &*graph.cast::<Graph>() };
+    let node = &graph.nodes[index];
+    FeedbackNode {
+        edges: node.edges.as_ptr().cast(),
+        count: node.edges.len(),
+        variable: u32::from(graph.variables.contains(&index)),
+        seeded: u32::from(!node.seeds.empty()),
+    }
+}
+
+unsafe extern "C" fn exchange_feedback_edges(edges: *mut std::ffi::c_void, retained: usize, next: usize) {
+    let edges = edges.cast::<Edge>();
+    unsafe { std::ptr::swap(edges.add(retained), edges.add(next)) };
+}
+
 struct Builder<'a> { function:&'a Function,state:LoopScope<'a>,known:&'a States<'a>,keys:BTreeMap<Key,usize>,prefix:Vec<Option<usize>>,graph:Graph,parameters:BTreeMap<ValueIdentity,usize> }
 impl Builder<'_> {
     fn empty(&mut self)->usize{let id=self.graph.nodes.len();self.graph.nodes.push(Node::default());id}
@@ -657,24 +698,15 @@ impl Graph {
     fn remove_identity_feedback(&mut self) {
         for &variable in &self.variables {
             let mut edges = std::mem::take(&mut self.nodes[variable].edges);
-            edges.retain(|edge| {
-                let mut edge = edge;
-                while edge.op == Op::Identity {
-                    if edge.from == variable {
-                        return false;
-                    }
-                    if self.variables.contains(&edge.from) {
-                        break;
-                    }
-                    let next = &self.nodes[edge.from];
-                    let [next_edge] = next.edges.as_slice() else { break; };
-                    if !next.seeds.empty() {
-                        break;
-                    }
-                    edge = next_edge;
-                }
-                true
-            });
+            let retained = unsafe {
+                prune_identity_feedback(
+                    std::ptr::from_ref(self).cast(), edges.as_mut_ptr().cast(), edges.len(), variable,
+                    IdentityFeedbackHost {
+                        edge: identity_feedback_edge, node: identity_feedback_node, exchange: exchange_feedback_edges,
+                    },
+                )
+            };
+            edges.truncate(retained);
             self.nodes[variable].edges = edges;
         }
     }
