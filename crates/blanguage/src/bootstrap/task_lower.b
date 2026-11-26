@@ -66,37 +66,56 @@ extern "C" Step<RewriteNeed> rewrite_step(Cursor state) on cpu {
  if(state.phase==6){return Step<RewriteNeed>(c,RewriteNeed::Symbol);}
  return Step<RewriteNeed>(c,RewriteNeed::Complete);
 }
-extern "C" Step<EntryNeed> entry_step(Cursor state,EntryFacts facts) on cpu {
- Cursor c=state;
- if(c.phase==0){c.phase=1;return Step<EntryNeed>(c,EntryNeed::Body);}
- if(c.phase==1){c.phase=2;return Step<EntryNeed>(c,EntryNeed::Zero);}
- if(c.phase==2){if(c.index<facts.parameters){c.part=0u64;c.phase=3;return Step<EntryNeed>(c,EntryNeed::Parameter);}c.phase=30;return Step<EntryNeed>(c,EntryNeed::Extra);}
- if(c.phase==3){
-  if(facts.role==Role::ReturnSource){if(facts.result==0){return Step<EntryNeed>(c,EntryNeed::MissingResult);}c.phase=20;return Step<EntryNeed>(c,EntryNeed::ReturnSource);}
-  if(facts.role==Role::Completion){c.phase=4;return Step<EntryNeed>(c,EntryNeed::CompletionField);}
-  if(facts.role==Role::Frame){c.phase=10;return Step<EntryNeed>(c,EntryNeed::Frame);}
-  c.phase=5;return Step<EntryNeed>(c,EntryNeed::Field);
+extern "C" EntryStatus emit_entry(address context,EntrySpec spec,EntryHost host) on cpu
+ requires nonzero(host.parameter) requires nonzero(host.field) requires nonzero(host.valid)
+ requires nonzero(host.pointer) requires nonzero(host.reference) requires nonzero(host.load_value)
+ requires nonzero(host.value) requires nonzero(host.call) requires nonzero(host.raise_error)
+ requires nonzero(host.store) requires nonzero(host.selector) {
+ usize index=0u64;
+ usize argument=0u64;
+ while(index<spec.parameters){
+  EntryParameter parameter=host.parameter(context,index);
+  if(parameter.role==Role::ReturnSource){
+   if(spec.has_result==0){return EntryStatus::MissingResult;}
+   host.reference(context,index,parameter.role,EntryAddress(4u64,5u64),spec.result_bytes);
+  }else if(parameter.role==Role::Frame){
+   if(parameter.size!=0){host.value(context,index,0u64,2u64);}
+  }else{
+   if(argument==spec.fields){
+    return parameter.role==Role::Completion ? EntryStatus::MissingCompletion : EntryStatus::MissingArgument;
+   }
+   EntryField field=host.field(context,argument);
+   argument+=1u64;
+   if(parameter.role==Role::Completion){
+    host.reference(context,index,parameter.role,EntryAddress(field.buffer,field.buffer+1u64),field.offset);
+   }else if(parameter.reference!=0){
+    if(host.valid(context,index,field.ty,parameter.reference)==0){return EntryStatus::BadAddress;}
+    EntryAddress pointer=host.pointer(context,field);
+    host.reference(context,index,parameter.role,pointer,0);
+   }else{
+    if(host.valid(context,index,field.ty,0)==0){return EntryStatus::BadType;}
+    usize first=0u64;
+    if(parameter.components!=0u64){
+     first=host.load_value(context,index,0u64,field);
+     usize part=1u64;
+     while(part<parameter.components){
+      host.load_value(context,index,part,field);
+      part+=1u64;
+     }
+    }
+    if(parameter.size!=0){host.value(context,index,first,parameter.components);}
+   }
+  }
+  index+=1u64;
  }
- if(c.phase==4){if(facts.field==0){return Step<EntryNeed>(c,EntryNeed::MissingCompletion);}c.phase=20;return Step<EntryNeed>(c,EntryNeed::CompletionReference);}
- if(c.phase==5){if(facts.field==0){return Step<EntryNeed>(c,EntryNeed::MissingArgument);}if(facts.reference!=0){c.phase=6;return Step<EntryNeed>(c,EntryNeed::ValidateAddress);}c.phase=9;return Step<EntryNeed>(c,EntryNeed::ValidateType);}
- if(c.phase==6){
-  if(facts.address==0){return Step<EntryNeed>(c,EntryNeed::BadAddress);}c.phase=7;return Step<EntryNeed>(c,EntryNeed::AddressLow);
+ if(argument<spec.fields){return EntryStatus::Unused;}
+ EntryCall call=host.call(context,spec.fallible);
+ if(spec.fallible!=0){host.raise_error(context,call.error);}
+ usize part=0u64;
+ while(part<spec.results){
+  host.store(context,part,call.result+part);
+  part+=1u64;
  }
- if(c.phase==7){c.phase=8;return Step<EntryNeed>(c,EntryNeed::AddressHigh);}
- if(c.phase==8){c.phase=20;return Step<EntryNeed>(c,EntryNeed::Reference);}
- if(c.phase==9){if(facts.same==0){return Step<EntryNeed>(c,EntryNeed::BadType);}c.part=0u64;c.phase=11;return Step<EntryNeed>(c,EntryNeed::Next);}
- if(c.phase==11){if(c.part<facts.components){c.phase=12;return Step<EntryNeed>(c,EntryNeed::LoadValue);}c.phase=20;if(facts.size!=0){return Step<EntryNeed>(c,EntryNeed::Value);}return Step<EntryNeed>(c,EntryNeed::Next);}
- if(c.phase==12){c.part+=1u64;c.phase=11;return Step<EntryNeed>(c,EntryNeed::Next);}
- if(c.phase==10){c.phase=20;if(facts.size!=0){return Step<EntryNeed>(c,EntryNeed::Value);}return Step<EntryNeed>(c,EntryNeed::Next);}
- if(c.phase==20){c.index+=1u64;c.phase=2;return Step<EntryNeed>(c,EntryNeed::Next);}
- if(c.phase==30){if(facts.extra!=0){return Step<EntryNeed>(c,EntryNeed::Unused);}c.part=0u64;c.phase=31;return Step<EntryNeed>(c,EntryNeed::ResultBase);}
- if(c.phase==31){if(c.part<facts.result_components){c.phase=32;return Step<EntryNeed>(c,EntryNeed::ResultReg);}c.phase=33;if(facts.fallible!=0){return Step<EntryNeed>(c,EntryNeed::ErrorReg);}return Step<EntryNeed>(c,EntryNeed::Next);}
- if(c.phase==32){c.part+=1u64;c.phase=31;return Step<EntryNeed>(c,EntryNeed::Next);}
- if(c.phase==33){c.phase=34;return Step<EntryNeed>(c,EntryNeed::Call);}
- if(c.phase==34){if(facts.fallible!=0){c.phase=35;return Step<EntryNeed>(c,EntryNeed::ErrorZero);}c.part=0u64;c.phase=38;return Step<EntryNeed>(c,EntryNeed::Next);}
- if(c.phase==35){c.phase=36;return Step<EntryNeed>(c,EntryNeed::ErrorCompare);}
- if(c.phase==36){c.part=0u64;c.phase=38;return Step<EntryNeed>(c,EntryNeed::ErrorIf);}
- if(c.phase==38){if(c.part<facts.result_components){c.phase=39;return Step<EntryNeed>(c,EntryNeed::Store);}c.phase=40;if(facts.selector!=0){return Step<EntryNeed>(c,EntryNeed::Selector);}return Step<EntryNeed>(c,EntryNeed::Next);}
- if(c.phase==39){c.part+=1u64;c.phase=38;return Step<EntryNeed>(c,EntryNeed::Next);}
- return Step<EntryNeed>(c,EntryNeed::Finish);
+ if(spec.selector!=0){host.selector(context);}
+ return EntryStatus::Complete;
 }

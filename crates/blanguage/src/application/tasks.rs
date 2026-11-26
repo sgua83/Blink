@@ -28,8 +28,46 @@ mod wire{
  #[derive(Clone,Copy,Default)]#[repr(C)]pub(super)struct NewFacts{pub(super)fields:u64,pub(super)parameters:u64,pub(super)frame:u32,pub(super)owned:u32,pub(super)reference:u32,pub(super)inout:u32,pub(super)has_result:u32}
  #[repr(u32)]pub(super)enum NewNeed{CompletionResult=0,CompletionUnit=1,Output=2,Index=3,Layout=4,Parameter=5,Field=6,RenameWrite=7,RenameInOut=8,PositionType=9,Name=10,Entry=11,Types=12,Positions=13,Binding=14,Complete=15,Next=16}
  #[repr(u32)]pub(super)enum RewriteNeed{Registers=0,Address=1,Index=2,Worker=3,Trim=4,Argument=5,Symbol=6,Complete=7}
- #[derive(Clone,Copy)]#[repr(C)]pub(super)struct EntryFacts{pub(super)parameters:u64,pub(super)components:u64,pub(super)result_components:u64,pub(super)role:Role,pub(super)reference:u32,pub(super)address:u32,pub(super)same:u32,pub(super)size:u32,pub(super)fallible:u32,pub(super)result:u32,pub(super)selector:u32,pub(super)field:u32,pub(super)extra:u32}
- #[repr(u32)]pub(super)enum EntryNeed{Body=0,Zero=1,Parameter=2,MissingResult=3,ReturnSource=4,CompletionField=5,MissingCompletion=6,CompletionReference=7,Frame=8,Field=9,MissingArgument=10,ValidateAddress=11,BadAddress=12,AddressLow=13,AddressHigh=14,Reference=15,ValidateType=16,BadType=17,LoadValue=18,Value=19,Extra=20,Unused=21,ResultBase=22,ResultReg=23,ErrorReg=24,Call=25,ErrorZero=26,ErrorCompare=27,ErrorIf=28,Store=29,Selector=30,Finish=31,Next=32}
+ #[repr(C)]pub(super)struct EntrySpec {
+  pub(super) parameters: usize,
+  pub(super) fields: usize,
+  pub(super) results: usize,
+  pub(super) result_bytes: u32,
+  pub(super) has_result: u32,
+  pub(super) fallible: u32,
+  pub(super) selector: u32,
+ }
+ #[repr(C)]pub(super)struct EntryParameter {
+  pub(super) role: Role,
+  pub(super) reference: u32,
+  pub(super) size: u32,
+  pub(super) components: usize,
+ }
+ #[derive(Clone, Copy)]
+ #[repr(C)]pub(super)struct EntryField {
+  pub(super) ty: *const super::Ty,
+  pub(super) offset: u32,
+  pub(super) buffer: usize,
+ }
+ #[repr(C)]pub(super)struct EntryAddress { pub(super) low: usize, pub(super) high: usize }
+ #[repr(C)]pub(super)struct EntryCall { pub(super) result: usize, pub(super) error: usize }
+ #[allow(dead_code)] // Produced by bootstrap.task_lower.
+ #[repr(u32)]pub(super)enum EntryStatus {
+  Complete, MissingResult, MissingCompletion, MissingArgument, BadAddress, BadType, Unused,
+ }
+ #[repr(C)]pub(super)struct EntryHost {
+  pub(super) parameter: unsafe extern "C" fn(*mut c_void, usize) -> EntryParameter,
+  pub(super) field: unsafe extern "C" fn(*mut c_void, usize) -> EntryField,
+  pub(super) valid: unsafe extern "C" fn(*mut c_void, usize, *const super::Ty, u32) -> u32,
+  pub(super) pointer: unsafe extern "C" fn(*mut c_void, EntryField) -> EntryAddress,
+  pub(super) reference: unsafe extern "C" fn(*mut c_void, usize, Role, EntryAddress, u32),
+  pub(super) load_value: unsafe extern "C" fn(*mut c_void, usize, usize, EntryField) -> usize,
+  pub(super) value: unsafe extern "C" fn(*mut c_void, usize, usize, usize),
+  pub(super) call: unsafe extern "C" fn(*mut c_void, u32) -> EntryCall,
+  pub(super) raise_error: unsafe extern "C" fn(*mut c_void, usize),
+  pub(super) store: unsafe extern "C" fn(*mut c_void, usize, usize),
+  pub(super) selector: unsafe extern "C" fn(*mut c_void),
+ }
  unsafe extern "C"{
   #[link_name="bootstrap.task_lower::start"]pub(super)fn start()->Cursor;
   #[link_name="bootstrap.task_lower::bind"]
@@ -39,11 +77,11 @@ mod wire{
   #[link_name="bootstrap.task_lower::lookup_step"]pub(super)fn lookup_step(state:Cursor,facts:LookupFacts)->Step<LookupNeed>;
   #[link_name="bootstrap.task_lower::new_step"]pub(super)fn new_step(state:Cursor,facts:NewFacts)->Step<NewNeed>;
   #[link_name="bootstrap.task_lower::rewrite_step"]pub(super)fn rewrite_step(state:Cursor)->Step<RewriteNeed>;
-  #[link_name="bootstrap.task_lower::entry_step"]pub(super)fn entry_step(state:Cursor,facts:EntryFacts)->Step<EntryNeed>;
+  #[link_name="bootstrap.task_lower::emit_entry"]
+  pub(super) fn emit_entry(context: *mut c_void, spec: EntrySpec, host: EntryHost) -> EntryStatus;
  }
 }
 use wire as w;
-struct TaskInput<'a>{ty:&'a Ty,offset:u32,buffer:[usize;2]}
 struct TaskBinding{worker:String,input:Ty,start:Ty,index:usize,entry:FunctionBody,selector:Option<String>}
 fn is_start(call: &Call) -> bool {
  matches!(&call.target, CallTarget::External(name) if name.symbol == "blink_task_start")
@@ -289,9 +327,7 @@ fn new_binding(worker:&str,input:&Ty,start:&Ty,selector:Option<&str>,functions:&
   w::NewNeed::Name=>{name=Some(format!("{worker}@task{}",tasks.len()));}
   w::NewNeed::Entry=>{
    let work_output=unsafe{output.unwrap_unchecked()};
-   let fields=input.fields.iter().map(|(_,offset,ty)|TaskInput{ty,offset:*offset,buffer:[2,3]})
-    .chain(work_output.fields.iter().map(|(_,offset,ty)|TaskInput{ty,offset:*offset,buffer:[4,5]}));
-   entry=Some(task_entry(unsafe{name.take().unwrap_unchecked()},worker,&parameters,result.as_deref(),fallible,fields,selector)?);
+   entry=Some(task_entry(unsafe{name.take().unwrap_unchecked()},worker,&parameters,result.as_deref(),fallible,input,work_output,selector)?);
   }
   w::NewNeed::Types=>{types.added.extend([unsafe{layout.take().unwrap_unchecked()},unsafe{completion.take().unwrap_unchecked()},start.clone()]);}
   w::NewNeed::Positions=>{types.added.extend(std::mem::take(&mut position_types));}
@@ -321,72 +357,174 @@ fn load(body:&mut ValueCode,zero:usize,scalar:Scalar,address:[usize;2],word:u32)
  let dst=register(body,scalar);body.code.push(Inst::new(InstKind::LoadIndexed{dst,source:buffer(address,zero),offset:zero,word}));dst
 }
 
-fn task_entry<'a>(name:String,worker:&str,parameters:&[CallParameter],result:Option<&Ty>,fallible:bool,mut fields:impl Iterator<Item=TaskInput<'a>>,selector:Option<&str>)->Result<FunctionBody,&'static str>{
- let pointer=Ty::vector(Scalar::U32,2);let mut body:Option<ValueCode>=None;
- let mut cursor=unsafe{w::start()};let mut facts=w::EntryFacts{parameters:parameters.len()as u64,components:0,result_components:result.map_or(0,|ty|ty.components.len())as u64,role:w::Role::Ordinary,reference:0,address:0,same:0,size:0,fallible:u32::from(fallible),result:u32::from(result.is_some()),selector:u32::from(selector.is_some()),field:0,extra:0};
- let mut zero=0;let mut arguments=Vec::new();let mut field:Option<TaskInput<'a>>=None;let mut parameter_values=Vec::new();let mut address=[0;2];let mut results=Vec::new();let mut result_base=0;let mut error=None;let mut none=0;let mut failed=0;
- loop{let next=unsafe{w::entry_step(cursor,facts)};cursor=next.cursor;match next.need{
-  w::EntryNeed::Body=>{body=Some(ValueCode{entry_origin:None,generated_origin:None,registers:vec![Scalar::U32;6],locals:Default::default(),code:Vec::new(),inputs:(0..6).collect(),outputs:Vec::new()});}
-  w::EntryNeed::Zero=>{let b=unsafe{body.as_mut().unwrap_unchecked()};zero=register(b,Scalar::U32);b.code.push(Inst::new(InstKind::Constant(zero,Scalar::U32,0)));}
-  w::EntryNeed::Parameter=>{
-   let(ty,access)=parameter(&parameters[cursor.index as usize]);field=None;parameter_values.clear();
-   facts.role=if ty.name==Ty::TASK_RETURN_SOURCE{w::Role::ReturnSource}else if ty.name==Ty::TASK_COMPLETION{w::Role::Completion}else if ty.name=="__blink_frame"{w::Role::Frame}else{w::Role::Ordinary};
-   facts.reference=u32::from(access.is_some());facts.components=ty.components.len()as u64;facts.size=ty.size;
-  }
-  w::EntryNeed::MissingResult=>return Err("missing result for task return source"),
-  w::EntryNeed::ReturnSource=>{
-   let ty=parameter(&parameters[cursor.index as usize]).0;let word=unsafe{result.unwrap_unchecked()}.size;
-   arguments.push(CallArgument::Reference{origin:None,ty:ty.clone(),access:Access::Write,address:CallReference{storage:CallStorage::Indexed(buffer([4,5],zero)),offset:None,word}});
-  }
-  w::EntryNeed::CompletionField|w::EntryNeed::Field=>{field=fields.next();facts.field=u32::from(field.is_some());}
-  w::EntryNeed::MissingCompletion=>return Err("missing task input completion field"),
-  w::EntryNeed::CompletionReference=>{
-   let field=unsafe{field.as_ref().unwrap_unchecked()};let ty=parameter(&parameters[cursor.index as usize]).0;
-   arguments.push(CallArgument::Reference{origin:None,ty:ty.clone(),access:Access::InOut,address:CallReference{storage:CallStorage::Indexed(buffer(field.buffer,zero)),offset:None,word:field.offset}});
-  }
-  w::EntryNeed::Frame=>{parameter_values=vec![0,1];}
-  w::EntryNeed::MissingArgument=>return Err("missing task argument"),
-  w::EntryNeed::ValidateAddress=>{facts.address=u32::from(unsafe{field.as_ref().unwrap_unchecked()}.ty.is_address());}
-  w::EntryNeed::BadAddress=>return Err("task reference needs the original position address"),
-  w::EntryNeed::AddressLow=>{
-   let field=unsafe{field.as_ref().unwrap_unchecked()};address[0]=load(unsafe{body.as_mut().unwrap_unchecked()},zero,Scalar::U32,field.buffer,field.offset);
-  }
-  w::EntryNeed::AddressHigh=>{
-   let field=unsafe{field.as_ref().unwrap_unchecked()};address[1]=load(unsafe{body.as_mut().unwrap_unchecked()},zero,Scalar::U32,field.buffer,field.offset+4);
-  }
-  w::EntryNeed::Reference=>{
-   let(ty,access)=parameter(&parameters[cursor.index as usize]);
-   arguments.push(CallArgument::Reference{ty:ty.clone(),access:unsafe{access.unwrap_unchecked()},origin:None,address:CallReference{storage:CallStorage::Indexed(buffer(address,zero)),offset:None,word:0}});
-  }
-  w::EntryNeed::ValidateType=>{facts.same=u32::from(unsafe{field.as_ref().unwrap_unchecked()}.ty==parameter(&parameters[cursor.index as usize]).0);}
-  w::EntryNeed::BadType=>return Err("task input layout differs from the ordinary parameter"),
-  w::EntryNeed::LoadValue=>{
-   let field=unsafe{field.as_ref().unwrap_unchecked()};let(scalar,offset)=parameter(&parameters[cursor.index as usize]).0.components[cursor.part as usize];
-   parameter_values.push(load(unsafe{body.as_mut().unwrap_unchecked()},zero,scalar,field.buffer,field.offset+offset));
-  }
-  w::EntryNeed::Value=>{arguments.push(CallArgument::Value{ty:parameter(&parameters[cursor.index as usize]).0.clone(),values:std::mem::take(&mut parameter_values),dataset_borrow:None,origin:None});}
-  w::EntryNeed::Extra=>{facts.extra=u32::from(fields.next().is_some());}
-  w::EntryNeed::Unused=>return Err("unused task argument"),
-  w::EntryNeed::ResultBase=>{result_base=unsafe{body.as_ref().unwrap_unchecked()}.registers.len();}
-  w::EntryNeed::ResultReg=>{let scalar=unsafe{result.unwrap_unchecked()}.components[cursor.part as usize].0;results.push(register(unsafe{body.as_mut().unwrap_unchecked()},scalar));}
-  w::EntryNeed::ErrorReg=>{error=Some(register(unsafe{body.as_mut().unwrap_unchecked()},Scalar::U64));}
-  w::EntryNeed::Call=>{
-   unsafe{body.as_mut().unwrap_unchecked()}.code.push(Inst::new(InstKind::Call(Call{failure:None,error,target:CallTarget::Defined(worker.into()),arguments:std::mem::take(&mut arguments),memory:Vec::new(),memory_use:None,result:result.cloned(),values:std::mem::take(&mut results)})));
-  }
-  w::EntryNeed::ErrorZero=>{let b=unsafe{body.as_mut().unwrap_unchecked()};none=register(b,Scalar::U64);b.code.push(Inst::new(InstKind::Constant(none,Scalar::U64,0)));}
-  w::EntryNeed::ErrorCompare=>{
-   let b=unsafe{body.as_mut().unwrap_unchecked()};failed=register(b,Scalar::Bool);b.code.push(Inst::new(InstKind::Binary{dst:failed,op:BinaryOp::Compare(Comparison::NotEqual),a:unsafe{error.unwrap_unchecked()},b:none}));
-  }
-  w::EntryNeed::ErrorIf=>{unsafe{body.as_mut().unwrap_unchecked()}.code.push(Inst::new(InstKind::If{condition:failed,yes:vec![Inst::new(InstKind::Raise(unsafe{error.unwrap_unchecked()}))],no:Vec::new()}));}
-  w::EntryNeed::Store=>{
-   let word=unsafe{result.unwrap_unchecked()}.components[cursor.part as usize].1;
-   unsafe{body.as_mut().unwrap_unchecked()}.code.push(Inst::new(InstKind::StoreIndexed{source:buffer([4,5],zero),offset:zero,word,value:result_base+cursor.part as usize}));
-  }
-  w::EntryNeed::Selector=>{
-   let arguments=[[2,3],[4,5]].into_iter().map(|values|CallArgument::Value{ty:pointer.clone(),values:values.to_vec(),dataset_borrow:None,origin:None}).collect();
-   unsafe{body.as_mut().unwrap_unchecked()}.code.push(Inst::new(InstKind::Call(Call{failure:None,error:None,target:CallTarget::Defined(unsafe{selector.unwrap_unchecked()}.into()),arguments,memory:Vec::new(),memory_use:None,result:None,values:Vec::new()})));
-  }
-  w::EntryNeed::Finish=>return Ok(FunctionBody{name,fallible:true,source_origin:None,parameters:vec![CallParameter::value(pointer);3],result:None,body:unsafe{body.take().unwrap_unchecked()}}),
-  w::EntryNeed::Next=>{},
- }}
+struct TaskEntry<'a> {
+ body: ValueCode,
+ arguments: Vec<CallArgument>,
+ worker: &'a str,
+ parameters: &'a [CallParameter],
+ result: Option<&'a Ty>,
+ input: &'a Ty,
+ output: &'a Ty,
+ selector: Option<&'a str>,
+ zero: usize,
+}
+
+unsafe extern "C" fn entry_parameter(context: *mut c_void, index: usize) -> w::EntryParameter {
+ let state = unsafe { &*context.cast::<TaskEntry<'_>>() };
+ let (ty, access) = parameter(&state.parameters[index]);
+ let role = match ty.name.as_str() {
+  Ty::TASK_RETURN_SOURCE => w::Role::ReturnSource,
+  Ty::TASK_COMPLETION => w::Role::Completion,
+  "__blink_frame" => w::Role::Frame,
+  _ => w::Role::Ordinary,
+ };
+ w::EntryParameter {
+  role, reference: u32::from(access.is_some()), size: ty.size, components: ty.components.len(),
+ }
+}
+
+unsafe extern "C" fn entry_field(context: *mut c_void, index: usize) -> w::EntryField {
+ let state = unsafe { &*context.cast::<TaskEntry<'_>>() };
+ let inputs = state.input.fields.len();
+ let ((_, offset, ty), buffer) = if index < inputs {
+  (&state.input.fields[index], 2)
+ } else {
+  (&state.output.fields[index - inputs], 4)
+ };
+ w::EntryField { ty: ty.as_ref(), offset: *offset, buffer }
+}
+
+unsafe extern "C" fn entry_valid(context: *mut c_void, index: usize, ty: *const Ty, reference: u32) -> u32 {
+ let state = unsafe { &*context.cast::<TaskEntry<'_>>() };
+ let actual = unsafe { &*ty };
+ u32::from(if reference != 0 {
+  actual.is_address()
+ } else {
+  actual == parameter(&state.parameters[index]).0
+ })
+}
+
+unsafe extern "C" fn entry_pointer(context: *mut c_void, field: w::EntryField) -> w::EntryAddress {
+ let state = unsafe { &mut *context.cast::<TaskEntry<'_>>() };
+ let buffer = [field.buffer, field.buffer + 1];
+ let low = load(&mut state.body, state.zero, Scalar::U32, buffer, field.offset);
+ let high = load(&mut state.body, state.zero, Scalar::U32, buffer, field.offset + 4);
+ w::EntryAddress { low, high }
+}
+
+unsafe extern "C" fn entry_reference(context: *mut c_void, index: usize, role: w::Role, address: w::EntryAddress, word: u32) {
+ let state = unsafe { &mut *context.cast::<TaskEntry<'_>>() };
+ let (ty, access) = parameter(&state.parameters[index]);
+ let access = match role {
+  w::Role::ReturnSource => Access::Write,
+  w::Role::Completion => Access::InOut,
+  _ => unsafe { access.unwrap_unchecked() },
+ };
+ state.arguments.push(CallArgument::Reference {
+  ty: ty.clone(), access, origin: None,
+  address: CallReference {
+   storage: CallStorage::Indexed(buffer([address.low, address.high], state.zero)),
+   offset: None, word,
+  },
+ });
+}
+
+unsafe extern "C" fn entry_load_value(context: *mut c_void, index: usize, part: usize, field: w::EntryField) -> usize {
+ let state = unsafe { &mut *context.cast::<TaskEntry<'_>>() };
+ let (scalar, offset) = parameter(&state.parameters[index]).0.components[part];
+ load(&mut state.body, state.zero, scalar, [field.buffer, field.buffer + 1], field.offset + offset)
+}
+
+unsafe extern "C" fn entry_value(context: *mut c_void, index: usize, first: usize, count: usize) {
+ let state = unsafe { &mut *context.cast::<TaskEntry<'_>>() };
+ state.arguments.push(CallArgument::Value {
+  ty: parameter(&state.parameters[index]).0.clone(), values: (first..first + count).collect(),
+  dataset_borrow: None, origin: None,
+ });
+}
+
+unsafe extern "C" fn entry_call(context: *mut c_void, fallible: u32) -> w::EntryCall {
+ let state = unsafe { &mut *context.cast::<TaskEntry<'_>>() };
+ let result = state.body.registers.len();
+ if let Some(ty) = state.result {
+  state.body.registers.extend(ty.components.iter().map(|field| field.0));
+ }
+ let values = (result..state.body.registers.len()).collect();
+ let error = (fallible != 0).then(|| register(&mut state.body, Scalar::U64));
+ state.body.code.push(Inst::new(InstKind::Call(Call {
+  target: CallTarget::Defined(state.worker.into()), arguments: std::mem::take(&mut state.arguments),
+  failure: None, error, memory: Vec::new(), memory_use: None, result: state.result.cloned(), values,
+ })));
+ w::EntryCall { result, error: error.unwrap_or(0) }
+}
+
+unsafe extern "C" fn entry_raise_error(context: *mut c_void, error: usize) {
+ let state = unsafe { &mut *context.cast::<TaskEntry<'_>>() };
+ let code = &mut state.body;
+ let none = register(code, Scalar::U64);
+ code.code.push(Inst::new(InstKind::Constant(none, Scalar::U64, 0)));
+ let failed = register(code, Scalar::Bool);
+ code.code.push(Inst::new(InstKind::Binary {
+  dst: failed, op: BinaryOp::Compare(Comparison::NotEqual), a: error, b: none,
+ }));
+ code.code.push(Inst::new(InstKind::If {
+  condition: failed, yes: vec![Inst::new(InstKind::Raise(error))], no: Vec::new(),
+ }));
+}
+
+unsafe extern "C" fn entry_store(context: *mut c_void, part: usize, reg: usize) {
+ let state = unsafe { &mut *context.cast::<TaskEntry<'_>>() };
+ let word = unsafe { state.result.unwrap_unchecked() }.components[part].1;
+ state.body.code.push(Inst::new(InstKind::StoreIndexed {
+  source: buffer([4, 5], state.zero), offset: state.zero, word, value: reg,
+ }));
+}
+
+unsafe extern "C" fn entry_selector(context: *mut c_void) {
+ let state = unsafe { &mut *context.cast::<TaskEntry<'_>>() };
+ let pointer = Ty::vector(Scalar::U32, 2);
+ let arguments = [[2, 3], [4, 5]].into_iter().map(|values| CallArgument::Value {
+  ty: pointer.clone(), values: values.to_vec(), dataset_borrow: None, origin: None,
+ }).collect();
+ let target = CallTarget::Defined(unsafe { state.selector.unwrap_unchecked() }.into());
+ state.body.code.push(Inst::new(InstKind::Call(Call {
+  target, arguments, failure: None, error: None, memory: Vec::new(), memory_use: None,
+  result: None, values: Vec::new(),
+ })));
+}
+
+fn task_entry(
+ name: String, worker: &str, parameters: &[CallParameter], result: Option<&Ty>,
+ fallible: bool, input: &Ty, output: &Ty, selector: Option<&str>,
+) -> Result<FunctionBody, &'static str> {
+ let mut body = ValueCode {
+  entry_origin: None, generated_origin: None, registers: vec![Scalar::U32; 6],
+  locals: Default::default(), code: Vec::new(), inputs: (0..6).collect(), outputs: Vec::new(),
+ };
+ let zero = register(&mut body, Scalar::U32);
+ body.code.push(Inst::new(InstKind::Constant(zero, Scalar::U32, 0)));
+ let mut state = TaskEntry { body, arguments: Vec::new(), worker, parameters, result, input, output, selector, zero };
+ let spec = w::EntrySpec {
+  parameters: parameters.len(), fields: input.fields.len() + output.fields.len(),
+  results: result.map_or(0, |ty| ty.components.len()), result_bytes: result.map_or(0, |ty| ty.size),
+  has_result: u32::from(result.is_some()), fallible: u32::from(fallible), selector: u32::from(selector.is_some()),
+ };
+ let host = w::EntryHost {
+  parameter: entry_parameter, field: entry_field, valid: entry_valid, pointer: entry_pointer,
+  reference: entry_reference, load_value: entry_load_value, value: entry_value,
+  call: entry_call, raise_error: entry_raise_error, store: entry_store, selector: entry_selector,
+ };
+ match unsafe { w::emit_entry(ptr::from_mut(&mut state).cast(), spec, host) } {
+  w::EntryStatus::Complete => Ok(FunctionBody {
+   name, fallible: true, source_origin: None,
+   parameters: vec![CallParameter::value(Ty::vector(Scalar::U32, 2)); 3],
+   result: None, body: state.body,
+  }),
+  w::EntryStatus::MissingResult => Err("missing result for task return source"),
+  w::EntryStatus::MissingCompletion => Err("missing task input completion field"),
+  w::EntryStatus::MissingArgument => Err("missing task argument"),
+  w::EntryStatus::BadAddress => Err("task reference needs the original position address"),
+  w::EntryStatus::BadType => Err("task input layout differs from the ordinary parameter"),
+  w::EntryStatus::Unused => Err("unused task argument"),
+ }
 }
