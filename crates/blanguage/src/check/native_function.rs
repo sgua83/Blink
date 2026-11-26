@@ -881,10 +881,11 @@ impl Builder<'_> {
         let output_inputs=unsafe { self.world.call(outputs::inputs(self,d,&env)).await }?;
         let mut view_arguments=actual.iter().enumerate().filter_map(|(index,proof)|proof.clone().map(|proof|(ValueIdentity::Register(index),proof))).collect::<BTreeMap<_,_>>();
         view_arguments.extend(contents.clone());view_arguments.extend(resource_inputs.clone());view_arguments.extend(storage_inputs.clone());view_arguments.extend(element_inputs.clone());
-        if !locations.is_empty() {
+        let mut locations = (!locations.is_empty()).then(|| Arc::new(locations));
+        if let Some(arguments) = &locations {
             let call = residency::Call {
                 function: name.to_owned(),
-                arguments: locations.clone(),
+                arguments: Arc::clone(arguments),
                 bindings: view_arguments.iter().map(|(id,proof)|(*id,proof.numeric_facts())).collect(),
                 path: self.residency_path(),
                 source: Some(self.scope.source().clone()),
@@ -1043,7 +1044,7 @@ impl Builder<'_> {
             }
             let path = self.residency_path();
             for (kind, mut output) in transferred {
-                residency::output(&mut output, name, kind, &locations, &view_arguments);
+                residency::output(&mut output, name, kind, &mut locations, &view_arguments);
                 residency::visit(&mut output, &mut residency::Input::new(0), &mut |data, _| {
                     if data.ownership.may_own() {
                         let active = data.ownership.presence().condition().assume(&path, true);
@@ -1301,7 +1302,7 @@ impl Builder<'_> {
                 let mut data=reference.data.clone();data.ty=reference.element_layout().1.clone();data.elements=application::ElementFacts::Unknown;data.prefixes.clear();
                 let mut updated=Returned::Dataset(data);
                 if let Some(Some(model))=writes.get(index){translate_returned(&mut updated,model,&bindings,false);}
-                residency::output(&mut updated,name,residency::OutputKind::Written(index),&locations,&view_arguments);
+                residency::output(&mut updated,name,residency::OutputKind::Written(index),&mut locations,&view_arguments);
                 let Returned::Dataset(mut updated)=updated else{unreachable!()};
                 let ty = reference.element_layout().1;
                 let conditional = outputs::declared(d, index);
@@ -1349,8 +1350,8 @@ impl Builder<'_> {
             if place.ty().owns_resources(){
                 let regs=written_registers[&index].clone();
                 let mut result=unsafe { self.world.call(self.template_returned(Value{ty:place.ty().clone(),regs,proof:proof.clone(),uniform:false,literal:false,constant:None},true)).await }?;
-                if let Some(Some(model))=writes.get(index){translate_returned(&mut result,model,&bindings,false);residency::returned(&mut result,&locations);}
-                residency::output(&mut result,name,residency::OutputKind::Written(index),&locations,&view_arguments);
+                if let Some(Some(model))=writes.get(index){translate_returned(&mut result,model,&bindings,false);residency::returned(&mut result,locations.as_deref());}
+                residency::output(&mut result,name,residency::OutputKind::Written(index),&mut locations,&view_arguments);
                 if !views_closed && let Some(call)=view_call{view_contracts::set_resource_outputs(&mut result,|resource|self.view_model.result(call,view_contracts::Output::WrittenResource(index,resource)));}
                 if outputs::declared(d,index){outputs::apply_ownership(&mut result,place.ty(),0,&guards);}
                 let Returned::OwnedValue(mut value)=result else{unreachable!()};proof=bounds::Proof::capture(&value.value);value.value.proof=proof.clone();owned_output=Some(Returned::OwnedValue(value));
@@ -1408,9 +1409,9 @@ impl Builder<'_> {
                     }
                 }
             }
-            residency::returned(&mut returned, &locations);
+            residency::returned(&mut returned, locations.as_deref());
         }
-        residency::output(&mut returned, name,residency::OutputKind::Returned, &locations,&view_arguments);
+        residency::output(&mut returned, name,residency::OutputKind::Returned, &mut locations,&view_arguments);
         if !views_closed && let Some(call)=view_call{view_contracts::set_resource_outputs(&mut returned,|resource|self.view_model.result(call,view_contracts::Output::ReturnedResource(resource)));}
         if let (Some(call),Some(value))=(view_call,returned.view_value_mut()) {
             for component in view_contracts::components(&value.ty){

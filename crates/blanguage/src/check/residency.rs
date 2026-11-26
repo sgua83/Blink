@@ -1,7 +1,7 @@
 //! 资源位置属于函数的静态访问合同；逻辑输入路径不成为运行期状态。
 use super::*;
 use returns::Returned;
-use std::{borrow::Cow, ffi::c_void, ptr, rc::Rc};
+use std::{borrow::Cow, ffi::c_void, ptr, rc::Rc, sync::Arc};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Part {
@@ -266,7 +266,7 @@ impl Residency {
     }
     pub(super) fn at_call(&self,bindings:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{match self{
         Self::Selected(when,a,b)=>Self::conditional(when.at_call(bindings),a.at_call(bindings),b.at_call(bindings)),
-        Self::Origins(origins)=>Self::Origins(origins.iter().map(|origin|match origin{Origin::Input(input)=>Origin::Input(input.at_call(bindings)),Origin::Output(output)=>Origin::Output(Output{function:output.function.clone(),kind:output.kind.clone(),fields:output.fields.clone(),arguments:output.arguments.iter().map(|(input,value)|(input.clone(),value.at_call(&scoped_indices(bindings,input.depth())))).collect(),bindings:output.bindings.iter().map(|(input,value)|(*input,value.at_call(bindings))).collect()}),_=>origin.clone()}).collect()),
+        Self::Origins(origins)=>Self::Origins(origins.iter().map(|origin|match origin{Origin::Input(input)=>Origin::Input(input.at_call(bindings)),Origin::Output(output)=>Origin::Output(Output{function:output.function.clone(),kind:output.kind.clone(),fields:output.fields.clone(),arguments:Arc::new(output.arguments.iter().map(|(input,value)|(input.clone(),value.at_call(&scoped_indices(bindings,input.depth())))).collect()),bindings:output.bindings.iter().map(|(input,value)|(*input,value.at_call(bindings))).collect()}),_=>origin.clone()}).collect()),
         Self::Absent=>Self::Absent,
     }}
     pub(super) fn with_aliases(&self,aliases:&bounds::Clause)->Self{match self{
@@ -277,7 +277,7 @@ impl Residency {
     }}
     pub(super) fn output_bound(&self,bindings:&BTreeMap<ValueIdentity,ValueIdentity>)->Self{match self{
         Self::Selected(when,a,b)=>Self::conditional(when.output_bound(bindings),a.output_bound(bindings),b.output_bound(bindings)),
-        Self::Origins(origins)=>Self::Origins(origins.iter().map(|origin|match origin{Origin::Input(input)=>Origin::Input(input.output_bound(bindings)),Origin::Output(output)=>Origin::Output(Output{function:output.function.clone(),kind:output.kind.clone(),fields:output.fields.clone(),arguments:output.arguments.iter().map(|(input,value)|(input.clone(),value.output_bound(&scoped_names(bindings,input.depth())))).collect(),bindings:output.bindings.iter().map(|(input,value)|(*input,value.output_bound(bindings))).collect()}),_=>origin.clone()}).collect()),
+        Self::Origins(origins)=>Self::Origins(origins.iter().map(|origin|match origin{Origin::Input(input)=>Origin::Input(input.output_bound(bindings)),Origin::Output(output)=>Origin::Output(Output{function:output.function.clone(),kind:output.kind.clone(),fields:output.fields.clone(),arguments:Arc::new(output.arguments.iter().map(|(input,value)|(input.clone(),value.output_bound(&scoped_names(bindings,input.depth())))).collect()),bindings:output.bindings.iter().map(|(input,value)|(*input,value.output_bound(bindings))).collect()}),_=>origin.clone()}).collect()),
         Self::Absent=>Self::Absent,
     }}
     pub(super) fn element_indices(&self, indices: &BTreeMap<ValueIdentity, bounds::Proof>) -> Self {
@@ -313,7 +313,7 @@ impl Residency {
                 Origin::Output(output)=>{
                     Origin::Output(Output {
                         function: output.function.clone(), kind: output.kind.clone(), fields: output.fields.clone(),
-                        arguments: output.arguments.iter().map(|(input,value)|(input.clone(),value.rebind_elements(&scoped_indices(indices,input.depth())))).collect(),
+                        arguments: Arc::new(output.arguments.iter().map(|(input,value)|(input.clone(),value.rebind_elements(&scoped_indices(indices,input.depth())))).collect()),
                         bindings: output.bindings.iter().map(|(id,proof)|(*id,proof.substitute_values(indices))).collect(),
                     })
                 },
@@ -333,7 +333,7 @@ impl Residency {
                 })),
                 Origin::Output(output)=>{
                     for proof in output.bindings.values(){names.extend(proof.scalar_identities());}
-                    for(input,value)in &output.arguments{names.extend(value.index_names().into_iter().filter_map(|id|match id{ValueIdentity::ElementIndex(index)if index>=input.depth()=>Some(ValueIdentity::ElementIndex(index-input.depth())),_=>None}));}
+                    for(input,value)in output.arguments.iter(){names.extend(value.index_names().into_iter().filter_map(|id|match id{ValueIdentity::ElementIndex(index)if index>=input.depth()=>Some(ValueIdentity::ElementIndex(index-input.depth())),_=>None}));}
                 },
                 _=>{},
             }},
@@ -456,9 +456,9 @@ unsafe extern "C" fn bind_output_origin(visit: ResidencyBinding, output: Borrowe
         function: output.function.clone(),
         kind: output.kind.clone(),
         fields: output.fields.clone(),
-        arguments: output.arguments.iter().filter_map(|(input, value)| {
+        arguments: Arc::new(output.arguments.iter().filter_map(|(input, value)| {
             value.bind(arguments).map(|value| (input.clone(), value))
-        }).collect(),
+        }).collect()),
         bindings: output.bindings.clone(),
     };
     let value = Residency::Origins(BTreeSet::from([Origin::Output(projected)]));
@@ -472,6 +472,7 @@ unsafe extern "C" fn bind_concrete_origin(result: Context, origin: Borrowed) {
 }
 
 pub(super) type Arguments=BTreeMap<Input,Residency>;
+pub(super) type SharedArguments = Arc<Arguments>;
 fn argument_value(arguments:&Arguments,input:&Input,selection:&BTreeMap<ValueIdentity,bounds::Proof>)->Option<Residency>{
     let mut prefix=input.family();
     let selected=prefix.model().element_indices(selection);
@@ -491,7 +492,7 @@ fn argument_value(arguments:&Arguments,input:&Input,selection:&BTreeMap<ValueIde
 #[derive(Clone)]
 pub(super) struct Call{
     pub function:String,
-    pub arguments:Arguments,
+    pub arguments:SharedArguments,
     pub bindings:BTreeMap<ValueIdentity,bounds::Proof>,
     pub path:bounds::Clause,
     pub source:Option<Source>,
@@ -511,7 +512,7 @@ impl Contract {
             conditions.insert(result);
         }
         for call in &mut self.calls {
-            for value in call.arguments.values_mut(){value.normalize_contract(normal);}
+            for value in Arc::make_mut(&mut call.arguments).values_mut(){value.normalize_contract(normal);}
             for value in call.bindings.values_mut(){normal.proof(value);}
             call.path=normal.clause(&call.path);
         }
@@ -526,7 +527,7 @@ impl Residency {
                 let previous=std::mem::take(origins);
                 for mut origin in previous {
                     if let Origin::Output(output)=&mut origin {
-                        for value in output.arguments.values_mut(){value.normalize_contract(normal);}
+                        for value in Arc::make_mut(&mut output.arguments).values_mut(){value.normalize_contract(normal);}
                         for value in output.bindings.values_mut(){normal.proof(value);}
                     }
                     origins.insert(origin);
@@ -615,7 +616,7 @@ pub(super) fn infer(inputs:&Inputs,parameters:&BTreeMap<ValueIdentity,bounds::Pr
     let required=canonical(&required,parameters,source,span)?;
     let calls=inputs.calls.iter().map(|call|Call{
         function:call.function.clone(),
-        arguments:call.arguments.iter().map(|(input,value)|(input.clone(),value.at_call(&scoped_indices(parameters,input.depth())))).collect(),
+        arguments:Arc::new(call.arguments.iter().map(|(input,value)|(input.clone(),value.at_call(&scoped_indices(parameters,input.depth())))).collect()),
         bindings:call.bindings.iter().map(|(id,proof)|(*id,proof.at_call(parameters))).collect(),
         path:bounds::Condition::guard(call.path.clone()).projected_case(true, parameters),
         source:None,span:Span::default(),
@@ -760,7 +761,7 @@ fn query_key(call:&Call,wanted:Option<&Input>,outputs:&Outputs)->Vec<u8>{
     let mut w=crate::module::codec::Writer(Vec::new());call.function.encode(&mut w);
     query_bindings(&call.bindings, &mut w);
     call.arguments.len().encode(&mut w);
-    for(input,value)in &call.arguments{input.encode(&mut w);query_value(value,wanted,outputs,&mut w);}
+    for(input,value)in call.arguments.iter(){input.encode(&mut w);query_value(value,wanted,outputs,&mut w);}
     w.0
 }
 fn query_consume(
@@ -1056,7 +1057,7 @@ unsafe extern "C" fn store_query_child(context: Context, child: Borrowed, path: 
     let bindings = declared.bindings.iter().map(|(id, proof)| (*id, proof.at_call(&parent.bindings))).collect();
     let path = unsafe { path.cast::<bounds::Clause>().read() };
     let child = Call {
-        function: declared.function.clone(), arguments, bindings, path, source: None, span: Span::default(),
+        function: declared.function.clone(), arguments: Arc::new(arguments), bindings, path, source: None, span: Span::default(),
     };
     let key = Rc::new(query_key(&child, query.wanted, query.outputs));
     if !query.active.insert(Rc::clone(&key)) {
@@ -1462,7 +1463,7 @@ pub(super) fn check_loops(name:&str,inputs:&Inputs,contract:&Contract,parameters
             let input=input.at_call(parameters);
             let call=root.get_or_insert_with(||Call {
                 function: name.into(),
-                arguments: (0..parameter_count).map(|parameter|(Input::new(parameter),Residency::parameter(parameter))).collect(),
+                arguments: Arc::new((0..parameter_count).map(|parameter|(Input::new(parameter),Residency::parameter(parameter))).collect()),
                 bindings: parameters.values().filter_map(|proof|proof.known_identity(0)).map(|id|(id,bounds::Proof::default().with_identity(id))).collect(),
                 path: bounds::Clause::default(), source: None, span: Span::default(),
             });
@@ -1584,7 +1585,9 @@ unsafe extern "C" fn bound_dataset_available(arguments: Borrowed, model: Context
     }
 }
 
-pub(super) fn returned(value: &mut Returned, arguments: &Arguments) {
+pub(super) fn returned(value: &mut Returned, arguments: Option<&Arguments>) {
+    let empty = Arguments::new();
+    let arguments = arguments.unwrap_or(&empty);
     let host = OutputAvailabilityHost { present: bound_dataset_available, ..OUTPUT_AVAILABILITY_HOST };
     unsafe { resolve_output_availability(ptr::from_ref(arguments).cast(), ptr::from_mut(value).cast(), host); }
 }
@@ -1601,7 +1604,7 @@ pub(super) struct Output {
     function: String,
     kind: OutputKind,
     fields: Vec<Part>,
-    arguments: Arguments,
+    arguments: SharedArguments,
     bindings: BTreeMap<ValueIdentity,bounds::Proof>,
 }
 impl PartialEq for Output{fn eq(&self,other:&Self)->bool{self.cmp(other)==std::cmp::Ordering::Equal}}
@@ -1816,7 +1819,7 @@ fn output_source_key(output: &Output) -> Vec<u8> {
     output.function.encode(&mut w);
     output.kind.encode(&mut w);
     output.fields.encode(&mut w);
-    output.arguments.encode(&mut w);
+    output.arguments.as_ref().encode(&mut w);
     query_bindings(&output.bindings, &mut w);
     w.0
 }
@@ -2011,7 +2014,13 @@ fn evaluate(value: &Residency, outputs: &Outputs, path: &bounds::Clause) -> Resi
     result
 }
 
-pub(super) fn output(value: &mut Returned, function: &str,kind:OutputKind, arguments: &Arguments,bindings:&BTreeMap<ValueIdentity,bounds::Proof>) {
+pub(super) fn output(
+    value: &mut Returned,
+    function: &str,
+    kind: OutputKind,
+    arguments: &mut Option<SharedArguments>,
+    bindings: &BTreeMap<ValueIdentity, bounds::Proof>,
+) {
     visit(value, &mut Input::new(0), &mut |data, path| {
         let mut bindings=bindings.iter().map(|(id,proof)|(*id,proof.numeric_facts())).collect::<BTreeMap<_,_>>();
         for index in 0..path.depth(){let id=ValueIdentity::ElementIndex(index);bindings.insert(id,bounds::Proof::default().with_identity(id));}
@@ -2019,7 +2028,7 @@ pub(super) fn output(value: &mut Returned, function: &str,kind:OutputKind, argum
                 function: function.into(),
                 kind:kind.clone(),
                 fields: path.fields.clone(),
-                arguments: arguments.clone(),
+                arguments: Arc::clone(arguments.get_or_insert_with(Arc::default)),
                 bindings,
             })]));
     });
@@ -3047,7 +3056,7 @@ const _: () = {
                 function: <String as Native>::empty(),
                 kind: <OutputKind as Native>::empty(),
                 fields: <Vec<Part> as Native>::empty(),
-                arguments: <Arguments as Native>::empty(),
+                arguments: <SharedArguments as Native>::empty(),
                 bindings: <BTreeMap<ValueIdentity, bounds::Proof> as Native>::empty(),
             }
         }
@@ -3066,7 +3075,7 @@ const _: () = {
                         function: contracts::write_value::<String>,
                         kind: contracts::write_value::<OutputKind>,
                         fields: contracts::write_value::<Vec<Part>>,
-                        arguments: contracts::write_value::<Arguments>,
+                        arguments: contracts::write_value::<SharedArguments>,
                         bindings: contracts::write_value::<BTreeMap<ValueIdentity, bounds::Proof>>,
                     },
                 )
@@ -3087,7 +3096,7 @@ const _: () = {
                         function: contracts::read_value::<String>,
                         kind: contracts::read_value::<OutputKind>,
                         fields: contracts::read_value::<Vec<Part>>,
-                        arguments: contracts::read_value::<Arguments>,
+                        arguments: contracts::read_value::<SharedArguments>,
                         bindings: contracts::read_value::<BTreeMap<ValueIdentity, bounds::Proof>>,
                     },
                 )
@@ -3245,7 +3254,7 @@ const _: () = {
         fn empty() -> Self {
             Self {
                 function: String::new(),
-                arguments: BTreeMap::new(),
+                arguments: <SharedArguments as Native>::empty(),
                 bindings: BTreeMap::new(),
                 path: bounds::Clause::default(),
                 source: None,
@@ -3265,7 +3274,7 @@ const _: () = {
                     },
                     Writer {
                         function: contracts::write_value::<String>,
-                        arguments: contracts::write_value::<Arguments>,
+                        arguments: contracts::write_value::<SharedArguments>,
                         bindings: contracts::write_value::<BTreeMap<ValueIdentity, bounds::Proof>>,
                         path: contracts::write_value::<bounds::Condition>,
                     },
@@ -3274,7 +3283,7 @@ const _: () = {
         }
         unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
             let mut function = <String as Native>::empty();
-            let mut arguments = <Arguments as Native>::empty();
+            let mut arguments = <SharedArguments as Native>::empty();
             let mut bindings = <BTreeMap<ValueIdentity, bounds::Proof> as Native>::empty();
             let mut path = <bounds::Condition as Native>::empty();
             let status = unsafe {
@@ -3288,7 +3297,7 @@ const _: () = {
                     },
                     Reader {
                         function: contracts::read_value::<String>,
-                        arguments: contracts::read_value::<Arguments>,
+                        arguments: contracts::read_value::<SharedArguments>,
                         bindings: contracts::read_value::<BTreeMap<ValueIdentity, bounds::Proof>>,
                         path: contracts::read_value::<bounds::Condition>,
                     },
