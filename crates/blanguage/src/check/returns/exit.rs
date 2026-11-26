@@ -179,7 +179,9 @@ impl Builder<'_>{
     }
     InitNeed::Project=>{
      let Binding::ApplicationData(data)=&self.env[parameter.as_ref().unwrap().name()]else{unsafe{std::hint::unreachable_unchecked()}};
-     initialized=std::borrow::Cow::Owned(initialized.iter().map(|position|Self::dataset_output_position(position,data)).collect());
+     if let Some(output) = address::DatasetOutput::new(data) {
+      initialized = std::borrow::Cow::Owned(initialized.iter().cloned().map(|position| output.project(position)).collect());
+     }
     }
     InitNeed::Effects=>return Ok(address::initialization_effects(&initialized,&self.path)),
     InitNeed::Next=>{}

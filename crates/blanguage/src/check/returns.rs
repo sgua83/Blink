@@ -204,37 +204,14 @@ impl Builder<'_> {
             _ => None,
         }
     }
-    fn dataset_output_position(position:&Position,data:&application::Data)->Position {
-        fn projected(data:&application::Data,index:Option<bounds::Operand>,word:u32)->Position {
-            let layout=address::Layout::of(&data.ty);
-            let origin=address::Origin{
-                root:address::Root::Dataset{borrow:view::Borrow::source(view::Source::Parameter(data.root.identity(),Vec::new())),index},
-                base:layout.clone(),layout:layout.clone(),words:layout.parts.iter().map(|(_,word)|*word).collect(),
-                positions:Arc::from([]),writable:true,initialized:vec![false;layout.parts.len()].into(),
-            };
-            Position::Borrowed(Arc::new(view::Borrow::source(view::Source::Position(Arc::new(origin)))),layout,word)
-        }
-        let Some(Position::Parameter(scope,_))=&data.initialization else{return position.clone();};
-        match position {
-            Position::Parameter(owner,word)if owner==scope=>projected(data,None,*word as u32),
-            Position::ApplicationElement(owner,index,word)if owner==scope=>{
-                let index=match index {ownership::ApplicationIndex::Constant(value)=>bounds::Operand::Constant(Scalar::U32,Bits::from(*value)),ownership::ApplicationIndex::Value(id,_)=>bounds::Operand::Value(*id)};
-                projected(data,Some(index),*word)
-            }
-            Position::Both(a,b)=>Position::both(Self::dataset_output_position(a,data),Self::dataset_output_position(b,data)),
-            Position::Conditional(when,a,b)=>Position::selected(when.as_ref().clone(),Self::dataset_output_position(a,data),Self::dataset_output_position(b,data)),
-            Position::Indexed(choices,index)=>Position::Indexed(choices.iter().map(|position|Self::dataset_output_position(position,data)).collect(),*index),
-            _=>position.clone(),
-        }
-    }
     pub(super) fn defer_dataset_output(&mut self,data:&application::Data,positions:Vec<Position>,span:Span)->Result<bool> {
         if data.access!=Access::Write||self.scope.execution()!=crate::execution::Requirement::Invocation {
             return self.defer_position_initialization(positions,"B229",span);
         }
-        // The callee retains its own writes until the caller supplies the actual loan.
-        let read=address::InitializationRead{
-            positions:positions.iter().map(|position|Self::dataset_output_position(position,data)).collect(),
-            initialized:self.initialized.iter().map(|position|Self::dataset_output_position(position,data)).collect(),
+        let read = address::InitializationRead {
+            positions,
+            initialized: self.initialized.clone(),
+            dataset_output: address::DatasetOutput::new(data),
         };
         self.check_view_requirement(view::Requirement::Initialized{borrow:read.borrow(),read,code:"B229",span})?;
         Ok(true)

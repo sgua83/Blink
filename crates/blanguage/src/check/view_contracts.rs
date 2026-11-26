@@ -1564,8 +1564,15 @@ fn resolved_read(read:&address::InitializationRead,path:&bounds::Clause,function
         let visiting=std::cell::RefCell::new(BTreeSet::new());
         resolved_position(position,path,&|borrow|evaluate(borrow,function,state,known,true),
             &|input,index,word|resolved_application_position(input,index,word,&initialized,path,function,state,known,&mut visiting.borrow_mut()))
-    }).collect();
-    address::InitializationRead{positions,initialized}
+    }).collect::<Vec<_>>();
+    let (positions, initialized) = match &read.dataset_output {
+        Some(output) => (
+            positions.into_iter().map(|position| output.project(position)).collect(),
+            initialized.into_iter().map(|position| output.project(position)).collect(),
+        ),
+        None => (positions, initialized),
+    };
+    address::InitializationRead { positions, initialized, dataset_output: None }
 }
 
 fn refreshed_at_call<'a>(borrow:Borrow,path:&bounds::Clause,initialized:&impl Fn()->&'a BTreeSet<Position>)->Borrow {
@@ -1628,7 +1635,7 @@ fn output_initialization_read(borrows:&Borrow,initialized:&[address::Initializat
         positions.extend(address::borrowed_positions(&Borrow::source(source.clone()),&origin.layout,&origin.layout.parts.iter().map(|(_,word)|*word).collect::<Vec<_>>()));
     }
     let initialized=initialized.iter().filter(|fact|fact.when.truth_in(path)==Some(true)).flat_map(|fact|fact.positions(path)).collect();
-    address::InitializationRead{positions,initialized}
+    address::InitializationRead { positions, initialized, dataset_output: None }
 }
 fn normalized_condition(when:bounds::Condition)->bounds::Condition {
     bounds::Condition::paths(when.assume(&bounds::Clause::default(),true).canonical(),when.assume(&bounds::Clause::default(),false).canonical())

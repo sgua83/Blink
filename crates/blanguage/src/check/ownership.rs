@@ -224,6 +224,7 @@ impl Builder<'_> {
         let read=address::InitializationRead{
             positions:positions.iter().map(|position|self.resolve_owned_initialization(position,None)).collect(),
             initialized:self.initialized.iter().map(|position|self.resolve_owned_initialization(position,None)).collect(),
+            dataset_output: None,
         };
         let borrow = read.borrow();
         if borrow.inputs.is_empty() && !address::has_pending_initialization(&read.initialized) {
