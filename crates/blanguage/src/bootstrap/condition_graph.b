@@ -1003,7 +1003,9 @@ extern "C" void additional_equalities(address context,AdditionalEqualityHost hos
  requires nonzero(host.computed) requires nonzero(host.unchanged) requires nonzero(host.borrow) {
  u32 changes=0;
  while(true){
-  FactView fact=host.next(context);if(fact.present==0){break;}
+  FactView fact=host.next(context);
+  // The fact tree orders Equal and Index before every other kind.
+  if(fact.present==0||(fact.kind!=FactKind::Equal&&fact.kind!=FactKind::Index)){break;}
   if(fact.kind==FactKind::Equal){
    address left=host.lookup(context,fact.first);address right=host.lookup(context,fact.second);
    if(left==address()||right==address()){changes=1;break;}
