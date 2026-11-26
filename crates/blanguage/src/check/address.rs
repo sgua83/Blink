@@ -37,6 +37,46 @@ pub(super) struct Origin {
 // A queried byte interval in one original scalar position; no stored memory state.
 #[derive(Clone)]
 pub(super) struct MemoryRegion { pub position:Position, pub word:u32, pub offset:u32, pub size:u32 }
+#[repr(C)]
+struct RegionBytes { word: u32, offset: u32, size: u32 }
+
+#[repr(C)]
+struct RegionSpan {
+    regions: *mut std::ffi::c_void,
+    first: usize,
+    end: usize,
+}
+
+#[repr(C)]
+struct RegionHost {
+    part: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> RegionBytes,
+    region: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> RegionBytes,
+    emit: unsafe extern "C" fn(*mut std::ffi::c_void, usize, RegionBytes),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::project_memory_regions"]
+    fn project_memory_regions(origin: *const std::ffi::c_void, parts: usize, parent_size: u32,
+        parent: RegionSpan, host: RegionHost) -> u32;
+}
+
+unsafe extern "C" fn projected_part(origin: *const std::ffi::c_void, at: usize) -> RegionBytes {
+    let origin = unsafe { &*origin.cast::<Origin>() };
+    let (scalar, word) = origin.layout.parts[at];
+    RegionBytes { word, offset: origin.words[at], size: scalar.size() }
+}
+
+unsafe extern "C" fn parent_region(regions: *const std::ffi::c_void, at: usize) -> RegionBytes {
+    let region = &unsafe { &*regions.cast::<Vec<MemoryRegion>>() }[at];
+    RegionBytes { word: region.word, offset: region.offset, size: region.size }
+}
+
+unsafe extern "C" fn append_projected_region(regions: *mut std::ffi::c_void, at: usize, bytes: RegionBytes) {
+    let regions = unsafe { &mut *regions.cast::<Vec<MemoryRegion>>() };
+    let position = regions[at].position.clone();
+    regions.push(MemoryRegion { position, word: bytes.word, offset: bytes.offset, size: bytes.size });
+}
+
 // One original loop input and its actual projections name the same logical storage.
 // Its byte layout does not depend on closing the source/lifetime relation.
 fn same_loop_resource(a:&view::Borrow,b:&view::Borrow)->bool {
@@ -227,7 +267,13 @@ impl Origin {
             Root::External(Identity::Storage(borrow))|Root::Derived(borrow)=>borrow,
             Root::Resource{borrow,..}|Root::Dataset{borrow,..}=>{
                 if let Some(regions) = output {
-                    regions.extend(self.layout.parts.iter().zip(self.words.iter()).map(|((scalar,word),at)|MemoryRegion{position:Position::Borrowed(Arc::new(borrow.clone()),self.base.clone(),*at),word:*word,offset:0,size:scalar.size()}));
+                    let source = std::cell::LazyCell::new(|| Arc::new(borrow.clone()));
+                    regions.extend(self.layout.parts.iter().zip(self.words.iter()).map(|((scalar, word), at)| {
+                        MemoryRegion {
+                            position: Position::Borrowed(Arc::clone(&source), self.base.clone(), *at),
+                            word: *word, offset: 0, size: scalar.size(),
+                        }
+                    }));
                 }
                 return Some(());
             },
@@ -243,16 +289,26 @@ impl Origin {
         for(source,when)in borrow.sources.entries(){
             let when=bounds::Clause::both(path, &when);if !when.possible(){continue;}
             let view::Source::Position(parent)=source else{return None;};
-            let mut parent_regions = output.as_ref().map(|_| Vec::new());
-            parent.collect_memory_regions(&when, parent_regions.as_mut())?;
-            for((scalar,word),at)in self.layout.parts.iter().zip(self.words.iter()) {
-                let end=u64::from(*at)+u64::from(scalar.size());if end>u64::from(parent.layout.size){return None;}
-                if let (Some(regions), Some(parent_regions)) = (output.as_mut(), parent_regions.as_ref()) {
-                    for region in parent_regions {
-                        let begin=(*at).max(region.word);let end=(end as u32).min(region.word+region.size);
-                        if begin<end{regions.push(MemoryRegion{position:region.position.clone(),word:*word+begin-*at,offset:region.offset+begin-region.word,size:end-begin});}
-                    }
-                }
+            let first = output.as_ref().map_or(0, |regions| regions.len());
+            parent.collect_memory_regions(&when, output.as_deref_mut())?;
+            let (regions, end) = output.as_deref_mut().map_or((std::ptr::null_mut(), first), |regions| {
+                let end = regions.len();
+                (std::ptr::from_mut(regions).cast(), end)
+            });
+            let span = RegionSpan { regions, first, end };
+            let host = RegionHost {
+                part: projected_part,
+                region: parent_region,
+                emit: append_projected_region,
+            };
+            let parts = self.layout.parts.len().min(self.words.len());
+            // An omitted result passes an empty parent span. During materialization
+            // the original span stays at the same indices until projection returns.
+            if unsafe { project_memory_regions(std::ptr::from_ref(self).cast(), parts, parent.layout.size, span, host) } == 0 {
+                return None;
+            }
+            if let Some(regions) = output.as_mut() {
+                drop(regions.drain(first..end));
             }
         }
         Some(())

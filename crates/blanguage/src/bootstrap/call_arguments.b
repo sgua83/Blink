@@ -386,6 +386,33 @@ extern "C" TakeAddressStep take_address_step(Phase cursor,TakeAddressFacts facts
  if(c.phase==11){c.phase=12;return TakeAddressStep(c,TakeAddressNeed::Emit,access);}
  return TakeAddressStep(c,TakeAddressNeed::Complete,access);
 }
+extern "C" u32 project_memory_regions(address origin, usize parts, u32 parent_size, RegionSpan parent,
+    RegionHost host) on cpu requires nonzero(host.part) requires nonzero(host.region) requires nonzero(host.emit)
+{
+    usize slot=0u64;
+    while (slot<parts) {
+        RegionBytes part=host.part(origin,slot);
+        u64 limit=u64(part.offset)+u64(part.size);
+        if (limit>u64(parent_size)) { return 0; }
+        usize at=parent.first;
+        while (at<parent.end) {
+            RegionBytes region=host.region(parent.regions,at);
+            u32 first=part.offset>region.word ? part.offset : region.word;
+            u32 region_end=region.word+region.size;
+            u32 end=u32(limit)<region_end ? u32(limit) : region_end;
+            if (first<end) {
+                host.emit(parent.regions,at,RegionBytes(
+                    part.word+(first-part.offset),
+                    region.offset+(first-region.word),
+                    end-first));
+            }
+            at+=1u64;
+        }
+        slot+=1u64;
+    }
+    return 1;
+}
+
 extern "C" u32 address_tail(address context,u64 count,u32 size,u32 first,AddressTailHost host) on cpu
  requires nonzero(host.offset) requires nonzero(host.append) {
  u64 i=0u64;while(i<count){u32 at=host.offset(context,i);if(at>=first){host.append(context,i,at-first);}i+=1u64;}return size-first;

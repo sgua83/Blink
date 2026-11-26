@@ -93,6 +93,16 @@ enum TakeAddressNeed:u32 {BadTarget=0;BadCount=1;Place=2;Empty=3;Layout=4;BadLay
 struct TakeAddressStep {Phase cursor;TakeAddressNeed need;CallAccess access;};
 extern "C" TakeAddressStep take_address_step(Phase cursor,TakeAddressFacts facts) on cpu;
 struct AddressTailHost {cfn<u32,address,u64> offset;cfn<void,address,u64,u32> append;};
+struct RegionBytes { u32 word; u32 offset; u32 size; };
+struct RegionSpan { address regions; usize first; usize end; };
+struct RegionHost {
+    cfn<RegionBytes,address,usize> ensures memory(read) part;
+    cfn<RegionBytes,address,usize> ensures memory(read) region;
+    cfn<void,address,usize,RegionBytes> emit;
+};
+extern "C" u32 project_memory_regions(address origin, usize parts, u32 parent_size, RegionSpan parent,
+    RegionHost host) on cpu requires nonzero(host.part) requires nonzero(host.region) requires nonzero(host.emit);
+
 extern "C" u32 address_tail(address context,u64 count,u32 size,u32 first,AddressTailHost host) on cpu
  requires nonzero(host.offset) requires nonzero(host.append);
 // explicit_type: 0 is not one type, 1 is a type, 2 is a root dataset.
