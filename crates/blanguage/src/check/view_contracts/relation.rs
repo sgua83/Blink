@@ -137,10 +137,6 @@ struct WalkHost {
 unsafe extern "C" {
     #[link_name = "bootstrap.relation_order::walk_relation"]
     fn walk_relation(graph: Borrowed, work: Slot, root: usize, feedback: u32, host: WalkHost) -> u32;
-    #[link_name = "bootstrap.relation_order::historical_relation_frames"]
-    fn historical_relation_frames(
-        graph: Borrowed, work: Slot, roots: Slot, next: unsafe extern "C" fn(Slot) -> usize, host: WalkEdges,
-    );
 }
 
 #[derive(Clone, Copy)]
@@ -657,10 +653,6 @@ impl<'g, F: FnMut(RelationNode<'g>) -> bool> RelationWalk<'g, F> {
         Self { graph, accepts, pending: Vec::new(), nodes: Default::default(), frames: Default::default() }
     }
 
-    fn edges(publish: unsafe extern "C" fn(Slot, WalkVisit)) -> WalkEdges {
-        WalkEdges { source: RelationSource::GRAPH, mark_frame: Self::mark_frame, publish }
-    }
-
     unsafe extern "C" fn mark_frame(work: Slot, visit: WalkVisit) -> u32 {
         let work = unsafe { &mut *work.cast::<Self>() };
         u32::from(work.frames[visit.read as usize].insert(visit.node))
@@ -683,25 +675,15 @@ impl<'g, F: FnMut(RelationNode<'g>) -> bool> RelationWalk<'g, F> {
         if (work.accepts)(work.graph.node(visit.node)) { 2 } else { 1 }
     }
 
-    unsafe extern "C" fn collect(work: Slot, visit: WalkVisit) {
-        unsafe { &mut *work.cast::<Self>() }.nodes[0].insert(visit.node);
-    }
-
     fn walk(&mut self, root: usize, feedback: bool) -> bool {
         let graph = self.graph;
-        let host = WalkHost { edges: Self::edges(Self::push), pop: Self::pop, visit: Self::visit };
+        let host = WalkHost {
+            edges: WalkEdges { source: RelationSource::GRAPH, mark_frame: Self::mark_frame, publish: Self::push },
+            pop: Self::pop,
+            visit: Self::visit,
+        };
         unsafe {
             walk_relation(ptr::from_ref(&graph).cast(), ptr::from_mut(self).cast(), root, u32::from(feedback), host) != 0
-        }
-    }
-
-    fn historical_frames<I: Iterator<Item = usize>>(&mut self, mut roots: I) {
-        let graph = self.graph;
-        unsafe {
-            historical_relation_frames(
-                ptr::from_ref(&graph).cast(), ptr::from_mut(self).cast(), ptr::from_mut(&mut roots).cast(),
-                next_relation_root::<I>, Self::edges(Self::collect),
-            );
         }
     }
 }
@@ -1620,17 +1602,14 @@ impl Graph {
         !self.references(source) && Borrow::source_has_local(source)
     }
     fn residual(&self, query: &Query<'_>, plan: &EvaluationPlan) -> ResidualRelation {
-        let mut history = RelationWalk::new(self, |_| false);
-        history.historical_frames(query.values.keys().chain(query.variables.keys()).copied());
-        let [frames, _] = history.frames;
-        let frames: Vec<_> = frames.into_iter().collect();
+        let mut frame_marks = vec![0u8; self.frames.len()];
         let graph = RelationView { base: self, tail: &[], residual: None };
         let mut projection = ResidualProjection { query, result: ResidualRelation::default() };
         unsafe {
             project_relation_return(
                 ptr::from_ref(&graph).cast(), ptr::from_mut(&mut projection).cast(),
-                self.nodes.len(), WalkSlice::of(&frames), plan.schedule_flags.as_ptr(), RelationSource::GRAPH,
-                ResidualProjection::OUTPUT,
+                self.nodes.len(), frame_marks.as_mut_ptr(), frame_marks.len(), plan.schedule_flags.as_ptr(),
+                RelationSource::GRAPH, ResidualProjection::OUTPUT,
             );
         }
         projection.result
@@ -1836,8 +1815,8 @@ struct ResidualOutput {
 unsafe extern "C" {
     #[link_name = "bootstrap.relation_order::project_return"]
     fn project_relation_return(
-        graph: Borrowed, output: Slot, nodes: usize, frames: WalkSlice, schedule_flags: *const u8,
-        source: RelationSource, host: ResidualOutput,
+        graph: Borrowed, output: Slot, nodes: usize, frame_marks: *mut u8, frame_count: usize,
+        schedule_flags: *const u8, source: RelationSource, host: ResidualOutput,
     );
 }
 

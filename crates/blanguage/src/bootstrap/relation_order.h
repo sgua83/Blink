@@ -66,11 +66,6 @@ extern "C" usize prepare_plan_inputs(address graph, address work, address roots,
     requires nonzero(host.edges.publish) requires nonzero(host.next) requires nonzero(host.variable)
     requires nonzero(host.begin) requires nonzero(host.finish);
 
-extern "C" void historical_relation_frames(address graph,address work,address roots,cfn<usize,address> next,WalkEdges host) on cpu
-    requires nonzero(next) requires nonzero(host.source.edges) requires nonzero(host.source.edge)
-    requires nonzero(host.source.frame) requires nonzero(host.source.write) requires nonzero(host.source.field)
-    requires nonzero(host.mark_frame) requires nonzero(host.publish);
-
 struct OrderCount {
     usize completed;
     usize stable;
@@ -144,9 +139,10 @@ struct ResidualOutput {
     cfn<void,address,usize> field;
 };
 
-extern "C" void project_return(address graph, address context, usize nodes, WalkSlice frames,
-    address schedule_flags, RelationSource source, ResidualOutput output) on cpu
-    requires nonzero(source.frame) requires nonzero(source.write) requires nonzero(source.field)
+extern "C" void project_return(address graph, address context, usize nodes, address frame_marks,
+    usize frame_count, address schedule_flags, RelationSource source, ResidualOutput output) on cpu
+    requires nonzero(source.edges) requires nonzero(source.edge) requires nonzero(source.frame)
+    requires nonzero(source.write) requires nonzero(source.field)
     requires nonzero(output.node_facts) requires nonzero(output.node) requires nonzero(output.keep)
     requires nonzero(output.write) requires nonzero(output.field);
 
