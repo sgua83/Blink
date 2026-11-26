@@ -65,9 +65,6 @@ address graph_storage(u64 count,u64 registers,address places) on cpu {
     unsafe_position<GraphData>(graph)=GraphData(count,registers,0u64,address(),0u64,0u64,address(),places);
     return graph;
 }
-extern "C" u64 graph_count(address graph) on cpu {
-    return unsafe_position<GraphData>(graph).count;
-}
 void release_graph_memory(address memory) on cpu {
     if(address_bits(memory)!=0u64){HeapFree(GetProcessHeap(),0,memory);}
 }
@@ -313,7 +310,7 @@ u64 packet_order(address graph,u64 count,address places,address order,Span uses)
     return pending;
 }
 
-extern "C" ColorLayout color(address graph,u64 count,address places,u32 mode,Span packet_uses) on cpu {
+ColorLayout color_locations(address graph,u64 count,address places,u32 mode,Span packet_uses) on cpu {
     address order=address();
     if(count!=0u64){
         order=HeapAlloc(GetProcessHeap(),HEAP_GENERATE_EXCEPTIONS,count*size_of<array<u64,3>>());
@@ -415,6 +412,31 @@ extern "C" ColorLayout color(address graph,u64 count,address places,u32 mode,Spa
     if(spills!=0){end=layout_spills(places,count,order,u64(spills),base);}
     release_graph_memory(order);
     return ColorLayout(end,saved_gpr,saved_xmm);
+}
+
+extern "C" ColorLayout color(address graph,u64 count,address places,u32 mode) on cpu {
+    return color_locations(graph, count, places, mode, Span(address(), 0u64, 0u64));
+}
+
+struct PreparedPacket { Span code; Span places; ColorLayout layout; };
+
+extern "C" bool prepare_packet(address graph, address context, Span code, PacketPlanHeader header, address output, PacketPlanHost host) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.stride) requires nonzero(host.written) requires nonzero(host.scalar)
+    requires nonzero(host.widths) {
+    Span empty = Span(address(), 0u64, 0u64);
+    PacketPlanProduct plan = PacketPlanProduct(empty, empty);
+    if (!packet_plan(context, code, header, address_of(plan), host)) { return false; }
+
+    u64 count = unsafe_position<GraphData>(graph).count;
+    address places = HeapAlloc(GetProcessHeap(), HEAP_GENERATE_EXCEPTIONS, count * size_of<ColorPlace>());
+    ColorLayout layout = color_locations(graph, count, places, 2, plan.uses);
+    release_graph_memory(plan.uses.data);
+    unsafe_position<PreparedPacket>(output) = PreparedPacket(plan.code, Span(places, count, size_of<ColorPlace>()), layout);
+    return true;
+}
+
+extern "C" void packet_colors_drop(Span places) on cpu {
+    HeapFree(GetProcessHeap(), 0, places.data);
 }
 
 extern "C" u64 place_private(address places, u64 data_end, usize registers, address context,

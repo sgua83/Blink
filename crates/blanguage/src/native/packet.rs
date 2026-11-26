@@ -1,6 +1,6 @@
 //! 四个独立元素的 SSE2 降低；计划只包含已证明的访问与可表达指令，尾部共用标量 IR。
 use super::*;
-use allocation::{PacketAllocation, PacketPlace};
+use allocation::{ColorLayout, Graph, PacketAllocation, PacketPlace};
 use super::operands::ScalarValueHost;
 use crate::builtin_types::ScalarEncoding;
 use crate::ir::dataflow::{HOST, Span};
@@ -20,9 +20,9 @@ impl Drop for Plan<'_> {
 impl<'a> Plan<'a> {
     pub fn new(
         program: &Program, stage: &Stage, code: &'a [Inst], registers: &'a [Scalar],
-        tile_scope: bool,
-    ) -> Option<(Self, Vec<u8>)> {
-        control::run(program, stage, code, registers, tile_scope)
+        tile_scope: bool, graph: &Graph,
+    ) -> Option<(Self, PacketAllocation)> {
+        control::run(program, stage, code, registers, tile_scope, graph)
     }
 }
 

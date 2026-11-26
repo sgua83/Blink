@@ -624,13 +624,12 @@ struct PacketPlanHost {
     cfn<u32,address,usize> written;
     cfn<ScalarEncoding,address,usize> scalar;
     cfn<u32,address,cfn<u32,usize>> widths;
-    cfn<address,address,usize> uses_storage;
 };
-// A successful plan borrows the original instructions through emission.
-// The caller releases the span through packet_plan_drop after the last emission.
-extern "C" bool packet_plan(address context, Span code, PacketPlanHeader header, address output_uses, address output_plan, PacketPlanHost host) on cpu
+struct PacketPlanProduct { Span code; Span uses; };
+// Coloring consumes the uses. The code borrows the original instructions through emission.
+bool packet_plan(address context, Span code, PacketPlanHeader header, address output, PacketPlanHost host) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.stride) requires nonzero(host.written) requires nonzero(host.scalar)
-    requires nonzero(host.widths) requires nonzero(host.uses_storage);
+    requires nonzero(host.widths);
 extern "C" void packet_plan_drop(Span plan) on cpu;
 extern "C" u32 packet_plan_uniform_operand(address bytes,u64 reg) on cpu;
 extern "C" u32 packet_plan_mark_operand(address bytes,u64 reg) on cpu;

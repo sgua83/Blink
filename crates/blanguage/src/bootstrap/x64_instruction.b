@@ -5281,9 +5281,9 @@ extern "C" void packet_plan_drop(Span plan) on cpu {
     if (address_bits(plan.data) != 0u64) { HeapFree(GetProcessHeap(), 0, plan.data); }
 }
 
-extern "C" bool packet_plan(address context, Span code, PacketPlanHeader header, address output_uses, address output_plan, PacketPlanHost host) on cpu
+bool packet_plan(address context, Span code, PacketPlanHeader header, address output, PacketPlanHost host) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.stride) requires nonzero(host.written) requires nonzero(host.scalar)
-    requires nonzero(host.widths) requires nonzero(host.uses_storage) {
+    requires nonzero(host.widths) {
     if (header.tile != 0 || header.writes == 0u64) { return false; }
     if (host.widths(context, c_function(packet_plan_width)) == 0) { return false; }
     PacketPlanState definitions = packet_plan_state(header.registers, HEAP_ZERO_MEMORY);
@@ -5295,17 +5295,18 @@ extern "C" bool packet_plan(address context, Span code, PacketPlanHeader header,
         packet_plan_set_byte(definitions.bytes, index, packet_plan_byte(definitions.bytes, index) == u8(2) ? u8(1) : u8(0));
         index += 1u64;
     }
-    address uses = host.uses_storage(output_uses, header.registers);
-    packet_plan_uses(code, uses, host.ir);
+    PacketPlanState uses = packet_plan_state(header.registers, HEAP_ZERO_MEMORY);
+    packet_plan_uses(code, uses.bytes, host.ir);
     PacketPlanRecords records = PacketPlanRecords(unsafe_address(0u64), 0u64, 0u64);
-    bool valid = packet_plan_build(context, code, header, definitions.bytes, uses, records, host);
+    bool valid = packet_plan_build(context, code, header, definitions.bytes, uses.bytes, records, host);
     packet_plan_release(definitions);
     Span plan = Span(records.data, records.count, size_of<PacketBodyStep>());
     if (!valid) {
+        packet_plan_release(uses);
         packet_plan_drop(plan);
         return false;
     }
-    unsafe_position<Span>(output_plan) = plan;
+    unsafe_position<PacketPlanProduct>(output) = PacketPlanProduct(plan, Span(uses.bytes, uses.count, 1u64));
     return true;
 }
 

@@ -3,16 +3,20 @@ import bootstrap.ir_dataflow;
 import bootstrap.stage_fusion;
 import bootstrap.scalar_fold;
 import bootstrap.call_layout;
+import bootstrap.x64_instruction;
 
 struct ColorPlace { u64 value; u32 kind; u8 width; u8 floating; };
 struct ColorLayout { u64 end; u32 gpr; u32 xmm; };
 
 // One graph owns its pairs while building and its ordered rows after sealing.
-extern "C" u64 graph_count(address graph) on cpu;
 extern "C" void graph_seal(address graph) on cpu;
 extern "C" void graph_release(address graph) on cpu;
-// Places are the actual output allocation. Packet mode also borrows index uses.
-extern "C" ColorLayout color(address graph,u64 count,address places,u32 mode,Span packet_uses) on cpu;
+// Scalar coloring writes into the original location table.
+extern "C" ColorLayout color(address graph,u64 count,address places,u32 mode) on cpu;
+extern "C" bool prepare_packet(address graph, address context, Span code, PacketPlanHeader header, address output, PacketPlanHost host) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.stride) requires nonzero(host.written) requires nonzero(host.scalar)
+    requires nonzero(host.widths);
+extern "C" void packet_colors_drop(Span places) on cpu;
 
 // The cursor borrows original declaration offsets through the final stack write.
 struct PrivateDeclaration { Span offsets; usize begin; u32 size; u32 alignment; };

@@ -12,7 +12,7 @@ pub(super) enum Location {
 }
 #[repr(C)]
 #[derive(Default)]
-struct ColorLayout {
+pub(super) struct ColorLayout {
     end: u64,
     gpr: u32,
     xmm: u32,
@@ -30,7 +30,7 @@ pub(super) enum PacketPlace {
     Stack(u32),
 }
 pub(super) struct PacketAllocation {
-    locations: Vec<ColorPlace>,
+    locations: Span,
     registers: usize,
     layout: ColorLayout,
 }
@@ -118,7 +118,7 @@ pub(super) struct Frame {
 pub(super) struct Graph {
     locations: Vec<ColorPlace>,
     private: BTreeSet<(usize, usize)>,
-    state: *mut c_void,
+    pub(super) state: *mut c_void,
     registers: usize,
     pub(super) needs_r15: bool,
 }
@@ -241,15 +241,14 @@ unsafe extern "C" fn next_private_declaration(context: *mut c_void) -> PrivateDe
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.coloring::graph_count"]
-    fn graph_count(graph: *const c_void) -> usize;
+    #[link_name = "bootstrap.coloring::packet_colors_drop"]
+    fn packet_colors_drop(places: Span);
     #[link_name = "bootstrap.coloring::graph_seal"]
     fn graph_seal(graph: *mut c_void);
     #[link_name = "bootstrap.coloring::graph_release"]
     fn graph_release(graph: *mut c_void);
     #[link_name = "bootstrap.coloring::color"]
-    fn color(graph: *const c_void, count: usize, places: *mut ColorPlace, mode: u32,
-        packet_uses: Span) -> ColorLayout;
+    fn color(graph: *const c_void, count: usize, places: *mut ColorPlace, mode: u32) -> ColorLayout;
     #[link_name = "bootstrap.coloring::place_private"]
     fn place_private(
         places: *mut ColorPlace, data_end: u64, registers: usize, context: *mut c_void,
@@ -265,7 +264,7 @@ impl Allocation {
         let mut locations = std::mem::take(&mut graph.locations);
         let mut layout = unsafe {
             graph_seal(graph.state);
-            color(graph.state, locations.len(), locations.as_mut_ptr(), u32::from(tile_scope), Span::EMPTY)
+            color(graph.state, locations.len(), locations.as_mut_ptr(), u32::from(tile_scope))
         };
         let mut private = PrivateDeclarations { spans: graph.private.iter(), locals };
         layout.end = unsafe {
@@ -286,22 +285,21 @@ impl Allocation {
     }
 }
 impl PacketAllocation {
-    pub fn new(registers: usize, graph: &Graph, uses: Vec<u8>) -> Self {
-        let count = unsafe { graph_count(graph.state) };
-        let mut locations = Vec::with_capacity(count);
-        // Packet coloring initializes the positions and consumes the planner's uses.
-        let layout = unsafe {
-            let layout = color(graph.state, count, locations.as_mut_ptr(), 2, Span::slice(&uses));
-            locations.set_len(count);
-            layout
-        };
+    // The result transfers the B color table and all its initialized rows.
+    pub(super) unsafe fn from_b(registers: usize, locations: Span, layout: ColorLayout) -> Self {
         Self { locations, registers, layout }
     }
     pub fn location(&self, slot: PrivateSlot) -> PacketPlace {
-        self.locations[match slot {
+        let locations = unsafe { self.locations.as_slice::<ColorPlace>() };
+        locations[match slot {
             PrivateSlot::Register(r) => r,
             PrivateSlot::Local(s) => self.registers + s,
         }].packet()
+    }
+}
+impl Drop for PacketAllocation {
+    fn drop(&mut self) {
+        unsafe { packet_colors_drop(self.locations) };
     }
 }
 impl Frame {
