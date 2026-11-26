@@ -1,8 +1,9 @@
 //! Borrowed IR and primitive access to the one native allocation graph.
 use super::*;
-use crate::ir::dataflow::{REGISTER_HOST, RegisterFacts, Span};
+use crate::builtin_types::ScalarEncoding;
+use crate::ir::dataflow::Span;
 use crate::ir::{PRIVATE_LIVE_HOST, PrivateLiveHost};
-use super::super::{external, operands};
+use super::super::external;
 
 type Slots = BTreeSet<PrivateSlot>;
 #[repr(u32)]
@@ -20,10 +21,8 @@ struct Core {
 struct Host {
     core: Core,
     live: PrivateLiveHost,
-    scalar: unsafe extern "C" fn(Span, usize) -> RegisterFacts,
-    cast_bits: unsafe extern "C" fn(Span, Reg, Reg) -> u32,
+    scalar: unsafe extern "C" fn(Span, Reg) -> ScalarEncoding,
     call_outgoing: unsafe extern "C" fn(*const Call) -> u64,
-    math_outgoing: unsafe extern "C" fn(u32) -> u64,
     register_operand: unsafe extern "C" fn(*mut c_void, Reg) -> u32,
 }
 #[repr(C)]
@@ -65,9 +64,9 @@ pub(super) fn build(places: &mut [ColorPlace], count: usize, code: &[Inst],
 pub(super) fn together(graph: &mut Graph, live: &Slots) { unsafe { graph_together(graph.state, live, CORE) } }
 pub(super) fn inputs(graph: &mut Graph, inputs: &[Reg]) { unsafe { graph_inputs(graph.state, inputs.as_ptr(), inputs.len()) } }
 
-unsafe extern "C" fn cast_bits(registers: Span, from: Reg, into: Reg) -> u32 {
+unsafe extern "C" fn scalar(registers: Span, register: Reg) -> ScalarEncoding {
     let registers = unsafe { registers.as_slice::<Scalar>() };
-    u32::from(operands::bit_copy(registers[from], registers[into]))
+    registers[register].into()
 }
 unsafe extern "C" fn call_outgoing(call: *const Call) -> u64 {
     external::outgoing_bytes(unsafe { &*call })
@@ -95,7 +94,5 @@ unsafe extern "C" fn register_operand(context: *mut c_void, register: Reg) -> u3
 
 const CORE: Core = Core { visit_set };
 const HOST: Host = Host {
-    core: CORE, live: PRIVATE_LIVE_HOST, scalar: REGISTER_HOST.scalar, cast_bits, call_outgoing,
-    math_outgoing: operands::scalar_math_outgoing,
-    register_operand,
+    core: CORE, live: PRIVATE_LIVE_HOST, scalar, call_outgoing, register_operand,
 };

@@ -2,6 +2,7 @@ module bootstrap.coloring;
 import bootstrap.names;
 import bootstrap.ir_dataflow;
 import bootstrap.stage_fusion;
+import bootstrap.x64_instruction;
 
 const u32 UNSEEN = 0;
 const u32 IMMEDIATE = 1;
@@ -532,8 +533,7 @@ u32 graph_instruction(address graph,View node,Span registers,address live,
     u64 weight,GraphHost host) on cpu
     requires nonzero(host.core.visit_set)
     requires nonzero(host.live.ir.inspect) requires nonzero(host.scalar)
-    requires nonzero(host.cast_bits) requires nonzero(host.call_outgoing)
-    requires nonzero(host.math_outgoing) requires nonzero(host.register_operand) requires nonzero(host.live.change) {
+    requires nonzero(host.call_outgoing) requires nonzero(host.register_operand) requires nonzero(host.live.change) {
     u32 uses_r15=0;
     u64 outgoing=0u64;
     if(node.tag==OP_INVOKE){
@@ -545,14 +545,16 @@ u32 graph_instruction(address graph,View node,Span registers,address live,
         node.tag==OP_VIEW_LOAD || node.tag==OP_LOAD_INDEXED || node.tag==OP_STORE_INDEXED || node.tag==OP_ATOMIC){
         uses_r15=1;
     } else if(node.tag==OP_PRINT){outgoing=32u64;}
-    else if(node.tag==OP_MATH){outgoing=host.math_outgoing(u32(node.b));}
+    else if(node.tag==OP_MATH){outgoing=scalar_math_outgoing(ScalarMathOperation(u32(node.b)));}
 
     u32 transfer=0;
     u64 destination=node.a;
     u64 source=node.b;
     if(node.tag==OP_LOAD_LOCAL){transfer=1;source+=unsafe_position<GraphData>(graph).registers;}
     else if(node.tag==OP_STORE_LOCAL){transfer=1;destination+=unsafe_position<GraphData>(graph).registers;}
-    else if(node.tag==OP_CAST && host.cast_bits(registers,node.b,node.a)!=0){transfer=1;}
+    else if(node.tag==OP_CAST && bit_copy(host.scalar(registers,node.b),host.scalar(registers,node.a))){
+        transfer=1;
+    }
     if(transfer!=0 && (unsafe_position<ColorPlace>(place_at(unsafe_position<GraphData>(graph).places,destination)).width==0 ||
         unsafe_position<ColorPlace>(place_at(unsafe_position<GraphData>(graph).places,source)).width==0)){transfer=0;}
     u32 preferred=transfer;
@@ -565,7 +567,8 @@ u32 graph_instruction(address graph,View node,Span registers,address live,
             preferred=1;
             if(node.left.kind==N_COMPARISON){
                 u32 comparison=host.live.ir.inspect(node.left).tag;
-                bool floating=host.scalar(registers,node.b).floating!=0;
+                address places=unsafe_position<GraphData>(graph).places;
+                bool floating=unsafe_position<ColorPlace>(place_at(places,node.b)).floating!=0;
                 bool reverse=floating ? (comparison==COMPARE_GREATER || comparison==COMPARE_GREATER_EQUAL) :
                     (comparison==COMPARE_LESS || comparison==COMPARE_GREATER_EQUAL);
                 if(reverse){preferred_source=node.c;}
@@ -694,7 +697,7 @@ void walk_replace(WalkReplace replace,GraphHost host) on cpu
 u32 walk_block(address graph,address work,WalkBlock block,Span registers,address empty,GraphHost host) on cpu
     requires nonzero(host.core.visit_set)
     requires nonzero(host.live.ir.inspect) requires nonzero(host.scalar)
-    requires nonzero(host.cast_bits) requires nonzero(host.call_outgoing) requires nonzero(host.math_outgoing)
+    requires nonzero(host.call_outgoing)
     requires nonzero(host.live.clone_set) requires nonzero(host.live.drop_set) requires nonzero(host.live.change)
     requires nonzero(host.live.insert_register) requires nonzero(host.register_operand) {
     u32 uses_r15=0;
@@ -732,7 +735,7 @@ u32 walk_block(address graph,address work,WalkBlock block,Span registers,address
 u32 walk_step(address graph,address work,GraphWork step,Span registers,address empty,GraphHost host) on cpu
     requires nonzero(host.core.visit_set)
     requires nonzero(host.live.ir.inspect) requires nonzero(host.scalar)
-    requires nonzero(host.cast_bits) requires nonzero(host.call_outgoing) requires nonzero(host.math_outgoing)
+    requires nonzero(host.call_outgoing)
     requires nonzero(host.live.clone_set) requires nonzero(host.live.drop_set) requires nonzero(host.live.change)
     requires nonzero(host.live.insert_register) requires nonzero(host.register_operand) {
     match(step){
@@ -746,7 +749,7 @@ u32 walk_step(address graph,address work,GraphWork step,Span registers,address e
 u32 walk_graph(address graph,GraphRequest input,GraphHost host) on cpu
     requires nonzero(host.core.visit_set)
     requires nonzero(host.live.ir.inspect) requires nonzero(host.scalar)
-    requires nonzero(host.cast_bits) requires nonzero(host.call_outgoing) requires nonzero(host.math_outgoing)
+    requires nonzero(host.call_outgoing)
     requires nonzero(host.live.clone_set) requires nonzero(host.live.drop_set) requires nonzero(host.live.change)
     requires nonzero(host.live.insert_register) requires nonzero(host.register_operand) {
     address work=color_offset(graph,size_of<GraphData>());
@@ -763,7 +766,7 @@ u32 walk_graph(address graph,GraphRequest input,GraphHost host) on cpu
 extern "C" GraphBuilt graph_create(address request,GraphHost host) on cpu
     requires nonzero(host.core.visit_set)
     requires nonzero(host.live.ir.inspect) requires nonzero(host.scalar)
-    requires nonzero(host.cast_bits) requires nonzero(host.call_outgoing) requires nonzero(host.math_outgoing)
+    requires nonzero(host.call_outgoing)
     requires nonzero(host.live.clone_set) requires nonzero(host.live.drop_set) requires nonzero(host.live.change)
     requires nonzero(host.live.insert_register) requires nonzero(host.register_operand) {
     GraphRequest input=unsafe_position<GraphRequest>(request);

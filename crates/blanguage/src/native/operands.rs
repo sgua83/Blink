@@ -4,10 +4,6 @@ use allocation::Location;
 use crate::builtin_types::ScalarEncoding;
 use crate::ir::dataflow::{HOST, Host, View};
 
-pub(super) fn bit_copy(from: Scalar, into: Scalar) -> bool {
-    unsafe { scalar_bit_copy(from.into(), into.into()) != 0 }
-}
-
 #[derive(Clone, Copy)]
 pub(super) struct Memory {
     base: u8,
@@ -225,8 +221,6 @@ unsafe extern "C" fn body_tile_stream(context: *const std::ffi::c_void, tile: us
 unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::scaled_memory"]
     fn encode_scaled_memory(base: u8, index: u8, stride: u32, offset: u32, output: *mut u8) -> AddressEncoding;
-    #[link_name = "bootstrap.x64_instruction::bit_copy"]
-    fn scalar_bit_copy(from: ScalarEncoding, into: ScalarEncoding) -> u32;
     #[link_name = "bootstrap.x64_instruction::scalar_math_outgoing"]
     pub(super) fn scalar_math_outgoing(operation: u32) -> u64;
     #[link_name = "bootstrap.x64_instruction::encode"]

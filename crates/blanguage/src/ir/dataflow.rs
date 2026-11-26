@@ -564,12 +564,12 @@ pub(crate) fn parallel_scope_required(code:&[Inst])->bool {
 
 #[derive(Clone, Copy)]
 #[repr(C)]
-pub(crate) struct RegisterFacts { kind: u32, integer: u32, floating: u32, bytes: u32 }
+struct RegisterFacts { kind: u32, integer: u32, floating: u32, bytes: u32 }
 
 #[repr(C)]
 pub(crate) struct RegisterHost {
     ir: Host,
-    pub(crate) scalar: unsafe extern "C" fn(Span, usize) -> RegisterFacts,
+    scalar: unsafe extern "C" fn(Span, usize) -> RegisterFacts,
 }
 
 unsafe extern "C" {
