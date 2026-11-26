@@ -304,6 +304,132 @@ const u32 MANIFEST_TRAILING = 14;
 // The first format error ends the cursor and prevents another record from reaching the receiver.
 struct ManifestScan { MetaCursor cursor; u32 status; address expected; bool same_source; u32 version; };
 
+void manifest_json<const N:u32>(ManifestWriter out, array<u8,N> text) on cpu
+    requires nonzero(out.append) {
+    out.append(out.output,ReadBytes(address_of(text[0]),u64(N)));
+}
+
+u8 json_hex_digit(u8 digit) on cpu {
+    return digit < u8(10) ? u8(48) + digit : u8(87) + digit;
+}
+
+void manifest_json_hex(ManifestWriter out, ReadBytes bytes) on cpu
+    requires nonzero(out.append) {
+    manifest_json(out,"\"");
+    u64 index=0u64;
+    while(index<bytes.length){
+        u8 byte=unsafe_position<u8>(at(bytes.bytes,index));
+        manifest_json(out,array<u8,2>(json_hex_digit(byte>>4),json_hex_digit(byte&u8(15))));
+        index+=1u64;
+    }
+    manifest_json(out,"\"");
+}
+
+void manifest_json_text(ManifestWriter out, ReadBytes text) on cpu
+    requires nonzero(out.append) {
+    manifest_json(out,"\"");
+    u64 start=0u64;
+    u64 index=0u64;
+    while(index<text.length){
+        u8 byte=unsafe_position<u8>(at(text.bytes,index));
+        if(byte<u8(32)||byte==u8(34)||byte==u8(92)){
+            if(start<index){out.append(out.output,ReadBytes(at(text.bytes,start),index-start));}
+            if(byte==u8(34)){manifest_json(out,"\\\"");}
+            else if(byte==u8(92)){manifest_json(out,"\\\\");}
+            else if(byte==u8(10)){manifest_json(out,"\\n");}
+            else if(byte==u8(13)){manifest_json(out,"\\r");}
+            else if(byte==u8(9)){manifest_json(out,"\\t");}
+            else{
+                manifest_json(out,array<u8,6>(u8(92),u8(117),u8(48),u8(48),
+                    json_hex_digit(byte>>4),json_hex_digit(byte&u8(15))));
+            }
+            start=index+1u64;
+        }
+        index+=1u64;
+    }
+    if(start<index){out.append(out.output,ReadBytes(at(text.bytes,start),index-start));}
+    manifest_json(out,"\"");
+}
+
+void manifest_json_number(ManifestWriter out, u32 value) on cpu
+    requires nonzero(out.append) {
+    u32 remaining=value;
+    u32 place=1000000000;
+    while(place>1 && remaining<place){place/=10;}
+    while(place!=0){
+        u32 digit=remaining/place;
+        remaining-=digit*place;
+        place/=10;
+        manifest_json(out,array<u8,1>(u8(48+digit)));
+    }
+}
+
+void manifest_json_path(ManifestReceiver out, ReadBytes path) on cpu
+    requires nonzero(out.json.append) requires nonzero(out.valid_text) {
+    manifest_json(out.json,"{\"text\":");
+    if(out.valid_text(out.context,path,0)!=0){manifest_json_text(out.json,path);}
+    else{manifest_json(out.json,"null");}
+    manifest_json(out.json,",\"encoded_bytes\":");
+    manifest_json_hex(out.json,path);
+    manifest_json(out.json,"}");
+}
+
+void manifest_json_identity(ManifestReceiver out, ManifestIdentity identity) on cpu
+    requires nonzero(out.json.append) requires nonzero(out.valid_text) {
+    manifest_json(out.json,"{\"kind\":\"build_inputs\",\"artifact_sha256\":");
+    manifest_json_hex(out.json,out.artifact_digest);
+    manifest_json(out.json,",\"path_encoding\":\"rust_os_str_encoded_bytes\",\"input\":");
+    manifest_json_path(out,identity.path);
+    manifest_json(out.json,",\"root\":");
+    manifest_json_path(out,identity.root);
+    manifest_json(out.json,",\"working_directory\":");
+    manifest_json_path(out,identity.working_directory);
+    manifest_json(out.json,",\"module\":");
+    manifest_json_text(out.json,identity.module_name);
+    manifest_json(out.json,",\"compiler\":");
+    manifest_json_text(out.json,identity.compiler);
+    manifest_json(out.json,",\"max_parameter_bytes\":");
+    manifest_json_number(out.json,identity.max_parameter_bytes);
+    manifest_json(out.json,",\"selection\":{");
+}
+
+void manifest_json_selection(ManifestWriter out,u32 tag,ReadBytes entry,ReadBytes other) on cpu
+    requires nonzero(out.append) {
+    if(tag==0){manifest_json(out,"\"kind\":\"application\",\"entry\":");}
+    else if(tag==2){manifest_json(out,"\"kind\":\"algorithm_library\",\"entry\":");}
+    else{manifest_json(out,"\"kind\":\"entry_image\",\"entry\":");}
+    manifest_json_text(out,entry);
+    if(tag!=0){
+        if(tag==2){manifest_json(out,",\"prefix\":");}
+        else{manifest_json(out,",\"target\":");}
+        manifest_json_text(out,other);
+    }
+}
+
+void manifest_json_declaration(ManifestWriter out,u32 tag,ReadBytes name,ReadBytes module_name) on cpu
+    requires nonzero(out.append) {
+    manifest_json(out,"{\"kind\":");
+    if(tag==0){manifest_json(out,"\"constant\"");}
+    else if(tag==1){manifest_json(out,"\"record\"");}
+    else if(tag==2){manifest_json(out,"\"type_set\"");}
+    else if(tag==3){manifest_json(out,"\"external\"");}
+    else if(tag==4){manifest_json(out,"\"value_name\"");}
+    else if(tag==5){manifest_json(out,"\"record_name\"");}
+    else if(tag==6){manifest_json(out,"\"type_set_name\"");}
+    else if(tag==7){manifest_json(out,"\"implementation\"");}
+    else{manifest_json(out,"\"compiled_contract\"");}
+    manifest_json(out,",\"name\":");
+    manifest_json_text(out,name);
+    if(tag>=4 && tag<=6){
+        manifest_json(out,",\"module\":");
+        manifest_json_text(out,module_name);
+        manifest_json(out,",\"imports\":[");
+    }else if(tag==8){
+        manifest_json(out,",\"provider\":");
+        manifest_json_text(out,module_name);
+    }
+}
+
 bool comparing_manifest(ManifestScan scan) on cpu {
     return scan.same_source && address_bits(scan.expected) != 0u64;
 }
@@ -342,7 +468,7 @@ ReadBytes manifest_bytes(inout ManifestScan scan, bool text) on cpu {
 ReadBytes manifest_text(inout ManifestScan scan, ManifestReceiver receiver) on cpu
     requires nonzero(receiver.valid_text) {
     ReadBytes field = manifest_bytes(scan,true);
-    if (scan.status == 0 && receiver.valid_text(receiver.context,field) == 0) {
+    if (scan.status == 0 && receiver.valid_text(receiver.context,field,1) == 0) {
         scan.status = MANIFEST_UTF8;
     }
     return field;
@@ -365,7 +491,7 @@ address manifest_native_digest(inout ManifestScan scan) on cpu {
 
 void manifest_names(inout ManifestScan scan, ManifestReceiver receiver, bool instances) on cpu
     requires nonzero(receiver.valid_text) requires nonzero(receiver.name)
-    requires nonzero(receiver.current_name) {
+    requires nonzero(receiver.current_name) requires nonzero(receiver.json.append) {
     u64 count = manifest_number(scan,8u64);
     if (instances && comparing_manifest(scan)) {
         scan.same_source = count == unsafe_position<ManifestExpected>(scan.expected).selection.instance_count;
@@ -377,6 +503,9 @@ void manifest_names(inout ManifestScan scan, ManifestReceiver receiver, bool ins
             if (instances && comparing_manifest(scan)) {
                 address names = unsafe_position<ManifestExpected>(scan.expected).selection.instances;
                 scan.same_source = equal_manifest_bytes(name,receiver.current_name(names,index));
+            } else if (receiver.json.output != address()) {
+                if(index!=0u64){manifest_json(receiver.json,",");}
+                manifest_json_text(receiver.json,name);
             } else {
                 receiver.name(receiver.context,name);
             }
@@ -387,7 +516,8 @@ void manifest_names(inout ManifestScan scan, ManifestReceiver receiver, bool ins
 
 void manifest_selection(inout ManifestScan scan, ManifestReceiver receiver) on cpu
     requires nonzero(receiver.valid_text) requires nonzero(receiver.name)
-    requires nonzero(receiver.selection) requires nonzero(receiver.current_name) {
+    requires nonzero(receiver.selection) requires nonzero(receiver.current_name)
+    requires nonzero(receiver.json.append) {
     u32 tag = u32(manifest_number(scan,4u64));
     if (tag > 3) { scan.status = MANIFEST_SELECTION; return; }
     if (comparing_manifest(scan)) {
@@ -396,6 +526,7 @@ void manifest_selection(inout ManifestScan scan, ManifestReceiver receiver) on c
     ReadBytes entry = empty();
     ReadBytes target = empty();
     if (tag == 1) {
+        if(receiver.json.output!=address()){manifest_json(receiver.json,"\"kind\":\"module\",\"instances\":[");}
         manifest_names(scan,receiver,true);
     } else {
         entry = manifest_text(scan,receiver);
@@ -408,30 +539,43 @@ void manifest_selection(inout ManifestScan scan, ManifestReceiver receiver) on c
                 scan.same_source = equal_manifest_bytes(entry,choice.first)
                     && (tag == 0 || equal_manifest_bytes(target,choice.second));
             }
+        } else if (receiver.json.output != address()) {
+            if(tag==1){manifest_json(receiver.json,"]");}
+            else{manifest_json_selection(receiver.json,tag,entry,target);}
         } else if (address_bits(scan.expected) == 0u64) {
             receiver.selection(receiver.context,ManifestVariant(entry,target,tag));
         }
     }
 }
 
-void manifest_declaration(inout ManifestScan scan, ManifestReceiver receiver) on cpu
+void manifest_declaration(inout ManifestScan scan, ManifestReceiver receiver,u64 index) on cpu
     requires nonzero(receiver.valid_text) requires nonzero(receiver.name)
-    requires nonzero(receiver.declaration) requires nonzero(receiver.current_name) {
+    requires nonzero(receiver.declaration) requires nonzero(receiver.current_name)
+    requires nonzero(receiver.json.append) {
     u32 tag = u32(manifest_number(scan,4u64));
     if (tag > 8 || (tag == 8 && scan.version < 13)) { scan.status = MANIFEST_DECLARATION; return; }
     ReadBytes name = manifest_text(scan,receiver);
     ReadBytes module_name = empty();
-    if (tag >= 4 && tag <= 6) {
-        module_name = manifest_text(scan,receiver);
-        manifest_names(scan,receiver,false);
-    } else if (tag == 8) {
-        module_name = manifest_text(scan,receiver);
+    bool has_imports=tag>=4 && tag<=6;
+    if(has_imports || tag==8){module_name=manifest_text(scan,receiver);}
+    if(scan.status==0 && receiver.json.output!=address()){
+        if(index!=0u64){manifest_json(receiver.json,",");}
+        manifest_json_declaration(receiver.json,tag,name,module_name);
     }
-    if (scan.status == 0 && scan.same_source) { receiver.declaration(receiver.context,ManifestVariant(name,module_name,tag)); }
+    if(has_imports){manifest_names(scan,receiver,false);}
+    if(scan.status==0 && scan.same_source){
+        if(receiver.json.output!=address()){
+            if(has_imports){manifest_json(receiver.json,"]");}
+            manifest_json(receiver.json,"}");
+        }else{
+            receiver.declaration(receiver.context,ManifestVariant(name,module_name,tag));
+        }
+    }
 }
 
 void manifest_source(inout ManifestScan scan, ManifestReceiver receiver, u64 index) on cpu
-    requires nonzero(receiver.valid_text) requires nonzero(receiver.source) requires nonzero(receiver.current_source) {
+    requires nonzero(receiver.valid_text) requires nonzero(receiver.source) requires nonzero(receiver.current_source)
+    requires nonzero(receiver.json.append) {
     ReadBytes module_name = manifest_text(scan,receiver);
     ReadBytes path = manifest_bytes(scan,false);
     ReadBytes scope = manifest_text(scan,receiver);
@@ -442,6 +586,17 @@ void manifest_source(inout ManifestScan scan, ManifestReceiver receiver, u64 ind
             scan.same_source = equal_manifest_bytes(module_name,current.module_name)
                 && equal_manifest_bytes(path,current.path) && equal_manifest_bytes(scope,current.scope)
                 && equal_manifest_bytes(ReadBytes(fingerprint,32u64),ReadBytes(current.fingerprint,32u64));
+        } else if(receiver.json.output!=address()){
+            if(index!=0u64){manifest_json(receiver.json,",");}
+            manifest_json(receiver.json,"{\"module\":");
+            manifest_json_text(receiver.json,module_name);
+            manifest_json(receiver.json,",\"path\":");
+            manifest_json_path(receiver,path);
+            manifest_json(receiver.json,",\"scope\":");
+            manifest_json_text(receiver.json,scope);
+            manifest_json(receiver.json,",\"fingerprint\":");
+            manifest_json_hex(receiver.json,ReadBytes(fingerprint,32u64));
+            manifest_json(receiver.json,"}");
         } else if (address_bits(scan.expected) == 0u64) {
             receiver.source(receiver.context,ManifestReadSource(module_name,path,scope,fingerprint));
         }
@@ -449,13 +604,21 @@ void manifest_source(inout ManifestScan scan, ManifestReceiver receiver, u64 ind
 }
 
 void manifest_requirement(inout ManifestScan scan, ManifestReceiver receiver, u64 index) on cpu
-    requires nonzero(receiver.valid_text) requires nonzero(receiver.requirement) requires nonzero(receiver.current_requirement) {
+    requires nonzero(receiver.valid_text) requires nonzero(receiver.requirement) requires nonzero(receiver.current_requirement)
+    requires nonzero(receiver.json.append) {
     ReadBytes name = manifest_text(scan,receiver);
     ReadBytes kind = manifest_text(scan,receiver);
     if (scan.status == 0) {
         if (comparing_manifest(scan)) {
             ManifestReadRequirement current = receiver.current_requirement(unsafe_position<ManifestExpected>(scan.expected).context,index);
             scan.same_source = equal_manifest_bytes(name,current.name) && equal_manifest_bytes(kind,current.kind);
+        } else if(receiver.json.output!=address()){
+            if(index!=0u64){manifest_json(receiver.json,",");}
+            manifest_json(receiver.json,"{\"name\":");
+            manifest_json_text(receiver.json,name);
+            manifest_json(receiver.json,",\"requirement\":");
+            manifest_json_text(receiver.json,kind);
+            manifest_json(receiver.json,"}");
         } else if (address_bits(scan.expected) == 0u64) {
             receiver.requirement(receiver.context,ManifestReadRequirement(name,kind));
         }
@@ -478,12 +641,15 @@ ManifestReadResult manifest_records(inout ManifestScan scan, ManifestReceiver re
     requires nonzero(receiver.selection) requires nonzero(receiver.source)
     requires nonzero(receiver.requirement) requires nonzero(receiver.declaration)
     requires nonzero(receiver.current_name) requires nonzero(receiver.current_source)
-    requires nonzero(receiver.current_requirement) {
+    requires nonzero(receiver.current_requirement) requires nonzero(receiver.json.append) {
     ManifestIdentity identity = manifest_identity(scan,receiver);
     if (comparing_manifest(scan)) {
         scan.same_source = equal_manifest_identity(identity,unsafe_position<ManifestExpected>(scan.expected).identity);
+    } else if (scan.status==0 && receiver.json.output!=address()) {
+        manifest_json_identity(receiver,identity);
     }
     manifest_selection(scan,receiver);
+    if(scan.status==0 && receiver.json.output!=address()){manifest_json(receiver.json,"},\"sources\":[");}
     u64 sources = manifest_number(scan,8u64);
     if (comparing_manifest(scan)) {
         scan.same_source = sources == unsafe_position<ManifestExpected>(scan.expected).source_count;
@@ -492,6 +658,9 @@ ManifestReadResult manifest_records(inout ManifestScan scan, ManifestReceiver re
     while (index < sources && scan.status == 0) {
         manifest_source(scan,receiver,index);
         index += 1u64;
+    }
+    if(scan.status==0 && receiver.json.output!=address()){
+        manifest_json(receiver.json,"],\"public_execution_requirements\":[");
     }
     u64 requirements = manifest_number(scan,8u64);
     if (comparing_manifest(scan)) {
@@ -504,14 +673,24 @@ ManifestReadResult manifest_records(inout ManifestScan scan, ManifestReceiver re
     }
     address imports_digest = manifest_digest(scan);
     address native_digest = manifest_native_digest(scan);
+    if(scan.status==0 && receiver.json.output!=address()){
+        manifest_json(receiver.json,"],\"imports_fingerprint\":");
+        manifest_json_hex(receiver.json,ReadBytes(imports_digest,32u64));
+        manifest_json(receiver.json,",\"native_fingerprint\":");
+        if(native_digest==address()){manifest_json(receiver.json,"null");}
+        else{manifest_json_hex(receiver.json,ReadBytes(native_digest,32u64));}
+        manifest_json(receiver.json,",\"declarations\":[");
+    }
     u64 declarations = manifest_number(scan,8u64);
-    while (declarations != 0u64 && scan.status == 0) {
-        manifest_declaration(scan,receiver);
-        declarations -= 1u64;
+    index=0u64;
+    while (index<declarations && scan.status == 0) {
+        manifest_declaration(scan,receiver,index);
+        index+=1u64;
     }
     if (scan.status == 0 && scan.cursor.position != scan.cursor.input.length) {
         scan.status = MANIFEST_TRAILING;
     }
+    if(scan.status==0 && receiver.json.output!=address()){manifest_json(receiver.json,"]}");}
     return ManifestReadResult(identity,imports_digest,native_digest,u32(scan.same_source),scan.status);
 }
 
@@ -520,7 +699,7 @@ extern "C" ManifestReadResult read_manifest(ReadBytes input, u64 magic, Manifest
     requires nonzero(receiver.selection) requires nonzero(receiver.source)
     requires nonzero(receiver.requirement) requires nonzero(receiver.declaration)
     requires nonzero(receiver.current_name) requires nonzero(receiver.current_source)
-    requires nonzero(receiver.current_requirement) {
+    requires nonzero(receiver.current_requirement) requires nonzero(receiver.json.append) {
     MetaCursor cursor = MetaCursor(input,0u64);
     MetaWord signature = number(cursor,8u64,8);
     if (signature.error != 0 || signature.value != magic) {

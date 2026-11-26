@@ -638,9 +638,15 @@ struct ManifestExpected {
 }
 
 #[repr(C)]
+struct ManifestWriter {
+    output: *mut c_void,
+    append: unsafe extern "C" fn(*mut c_void, ByteField),
+}
+
+#[repr(C)]
 struct ManifestReceiver {
     context: *mut c_void,
-    valid_text: unsafe extern "C" fn(*mut c_void, ByteField) -> u32,
+    valid_text: unsafe extern "C" fn(*mut c_void, ByteField, u32) -> u32,
     name: unsafe extern "C" fn(*mut c_void, ByteField),
     selection: unsafe extern "C" fn(*mut c_void, ManifestVariant),
     source: unsafe extern "C" fn(*mut c_void, ManifestSource),
@@ -649,6 +655,8 @@ struct ManifestReceiver {
     current_name: NameField,
     current_source: unsafe extern "C" fn(*const c_void, usize) -> ManifestSource,
     current_requirement: unsafe extern "C" fn(*const c_void, usize) -> ManifestRequirement,
+    json: ManifestWriter,
+    artifact_digest: ByteField,
 }
 
 unsafe extern "C" {
@@ -677,15 +685,22 @@ unsafe fn own_manifest_text(field: ByteField) -> String {
     unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(field.bytes, field.length)) }.into()
 }
 
-unsafe extern "C" fn validate_manifest_text(context: *mut c_void, field: ByteField) -> u32 {
+unsafe extern "C" fn validate_manifest_text(context: *mut c_void, field: ByteField, required: u32) -> u32 {
     let bytes = unsafe { std::slice::from_raw_parts(field.bytes, field.length) };
     match std::str::from_utf8(bytes) {
         Ok(_) => 1,
         Err(error) => {
-            unsafe { &mut *context.cast::<ManifestProjection>() }.invalid_text = Some(error);
+            if required != 0 {
+                unsafe { &mut *context.cast::<ManifestProjection>() }.invalid_text = Some(error);
+            }
             0
         }
     }
+}
+
+unsafe extern "C" fn append_manifest_json(output: *mut c_void, field: ByteField) {
+    let output = unsafe { &mut *output.cast::<Vec<u8>>() };
+    output.extend_from_slice(unsafe { std::slice::from_raw_parts(field.bytes, field.length) });
 }
 
 unsafe extern "C" fn collect_manifest_name(context: *mut c_void, field: ByteField) {
@@ -749,7 +764,11 @@ unsafe extern "C" fn collect_manifest_declaration(context: *mut c_void, variant:
 
 fn read_manifest_fields(
     bytes: &[u8], projection: &mut ManifestProjection, expected: Option<&ManifestExpected>,
+    json: Option<(&mut Vec<u8>, &[u8; 32])>,
 ) -> Result<Option<ManifestReadResult>> {
+    let (json, digest) = json.map_or((ptr::null_mut(), &[][..]), |(out, digest)| {
+        (ptr::from_mut(out).cast(), &digest[..])
+    });
     let receiver = ManifestReceiver {
         context: ptr::from_mut(projection).cast(),
         valid_text: validate_manifest_text,
@@ -761,6 +780,8 @@ fn read_manifest_fields(
         current_name: name_field,
         current_source: manifest_source,
         current_requirement: manifest_requirement,
+        json: ManifestWriter { output: json, append: append_manifest_json },
+        artifact_digest: digest.into(),
     };
     // All incoming fields borrow the original bytes and live through this B call.
     let magic = if expected.is_none() && bytes.starts_with(PREVIOUS_MAGIC) { PREVIOUS_MAGIC } else { MAGIC };
@@ -782,7 +803,7 @@ fn read_manifest_fields(
 
 pub(super) fn decode(bytes: &[u8]) -> Result<Option<Inputs>> {
     let mut projection = ManifestProjection::default();
-    let Some(manifest) = read_manifest_fields(bytes, &mut projection, None)? else { return Ok(None); };
+    let Some(manifest) = read_manifest_fields(bytes, &mut projection, None, None)? else { return Ok(None); };
     let identity = manifest.identity;
     Ok(Some(Inputs {
         source: SourceInputs {
@@ -802,6 +823,15 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Option<Inputs>> {
     }))
 }
 
+pub(super) fn decode_json(bytes: &[u8], digest: &[u8; 32]) -> Result<Option<String>> {
+    let mut output = Vec::new();
+    if read_manifest_fields(bytes, &mut ManifestProjection::default(), None, Some((&mut output, digest)))?.is_none() {
+        return Ok(None);
+    }
+    // B emits ASCII syntax and only borrows text after UTF-8 validation.
+    Ok(Some(unsafe { String::from_utf8_unchecked(output) }))
+}
+
 pub(super) struct ReuseInputs<'a> {
     pub(super) imports: &'a [u8; 32],
     native: Option<&'a [u8; 32]>,
@@ -818,7 +848,7 @@ pub(super) fn match_source<'a>(bytes: &'a [u8], source: &SourceInputs) -> Result
         requirement_count: source.requirements.len(),
     };
     let mut projection = ManifestProjection::default();
-    let Some(manifest) = read_manifest_fields(bytes, &mut projection, Some(&expected))?
+    let Some(manifest) = read_manifest_fields(bytes, &mut projection, Some(&expected), None)?
         .filter(|manifest| manifest.same_source != 0)
     else { return Ok(None); };
     Ok(Some(ReuseInputs {

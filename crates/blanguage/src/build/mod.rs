@@ -337,16 +337,28 @@ pub fn input_facts_with_sha256(path: &Path) -> Result<(InputFacts, String)> {
     Ok((facts, hash::hex(&hash::digest(&bytes))))
 }
 
-fn decode_input_facts(bytes: &[u8]) -> Result<InputFacts> {
-    let identity = match read_envelope(bytes)? {
-        Some((identity, _)) => identity,
+/// Writes the original input report from the same byte snapshot used for its digest.
+#[doc(hidden)]
+pub fn input_facts_json(path: &Path) -> Result<String> {
+    let bytes = FileBytes::read_path(path)?;
+    identity::decode_json(input_manifest(&bytes)?, &hash::digest(&bytes))?
+        .ok_or_else(|| MISSING_INPUT_FACTS.into())
+}
+
+const MISSING_INPUT_FACTS: &str = "产物未保存当前结构化构建输入；不能从旧摘要还原";
+
+fn input_manifest(bytes: &[u8]) -> Result<&[u8]> {
+    match read_envelope(bytes)? {
+        Some((identity, _)) => Ok(identity),
         None => crate::object::ObjectReader::new(bytes)
             .and_then(|reader| reader.build_inputs())
             .map_err(|error| std::io::Error::other(error.to_string()))?
-            .ok_or("该对象未保存构建输入")?,
-    };
-    identity::decode(identity)?
-        .ok_or_else(|| "产物未保存当前结构化构建输入；不能从旧摘要还原".into())
+            .ok_or_else(|| "该对象未保存构建输入".into()),
+    }
+}
+
+fn decode_input_facts(bytes: &[u8]) -> Result<InputFacts> {
+    identity::decode(input_manifest(bytes)?)?.ok_or_else(|| MISSING_INPUT_FACTS.into())
 }
 /// Extracts the original resource-ABI image from a build artifact.
 /// Does not interpret build inputs, recompile, load code, or change the source artifact.

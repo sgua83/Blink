@@ -77,10 +77,12 @@ struct ManifestReadResult {
     ManifestIdentity identity; address imports_digest; address native_digest; u32 same_source; u32 status;
 };
 
+struct ManifestWriter { address output; cfn<void,address,ReadBytes> append; };
+
 // The receiver builds the original records synchronously. All fields borrow input.
 struct ManifestReceiver {
     address context;
-    cfn<u32,address,ReadBytes> valid_text;
+    cfn<u32,address,ReadBytes,u32> valid_text;
     cfn<void,address,ReadBytes> name;
     cfn<void,address,ManifestVariant> selection;
     cfn<void,address,ManifestReadSource> source;
@@ -89,10 +91,12 @@ struct ManifestReceiver {
     cfn<ReadBytes,address,u64> current_name;
     cfn<ManifestReadSource,address,u64> current_source;
     cfn<ManifestReadRequirement,address,u64> current_requirement;
+    ManifestWriter json;
+    ReadBytes artifact_digest;
 };
 extern "C" ManifestReadResult read_manifest(ReadBytes input, u64 magic, ManifestReceiver receiver, address expected) on cpu
     requires nonzero(receiver.valid_text) requires nonzero(receiver.name)
     requires nonzero(receiver.selection) requires nonzero(receiver.source)
     requires nonzero(receiver.requirement) requires nonzero(receiver.declaration)
     requires nonzero(receiver.current_name) requires nonzero(receiver.current_source)
-    requires nonzero(receiver.current_requirement);
+    requires nonzero(receiver.current_requirement) requires nonzero(receiver.json.append);
