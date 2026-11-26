@@ -290,58 +290,142 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+type ObjectCommandResult = Result<(), Box<dyn std::error::Error>>;
+
+#[repr(C)]
+struct ObjectCommandHost {
+    import_interface: unsafe extern "C" fn(*mut c_void, usize) -> u32,
+    diagnostic: unsafe extern "C" fn(*mut c_void, CompileError, usize),
+    compile: unsafe extern "C" fn(*mut c_void, *const CompileCommandLine),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.cli::run_object_command"]
+    fn run_object_command(line: *const CompileCommandLine, imports: *const usize,
+        count: usize, context: *mut c_void, host: ObjectCommandHost);
+
+    #[link_name = "bootstrap.cli::finish_object_command"]
+    fn finish_object_command(line: *const CompileCommandLine, arguments: usize, context: *mut c_void,
+        report: unsafe extern "C" fn(*mut c_void, usize, u64, u64) -> u32,
+        complete: unsafe extern "C" fn(*mut c_void));
+}
+
+struct ObjectCommand<'a> {
+    compiler: &'a blanguage::Compiler,
+    args: &'a [OsString],
+    operands: &'a Operands,
+    imports: Vec<blanguage::module::CompiledInterface>,
+    result: ObjectCommandResult,
+}
+
 fn build_object(
     compiler: &blanguage::Compiler,
     args: &[OsString],
     operands: Operands,
     line: &CompileCommandLine,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let path = PathBuf::from(&args[line.source_index]);
-    let parent = path.parent().unwrap();
-    let root = args.get(line.root_index).map(PathBuf::from).unwrap_or_else(|| {
-        if parent.as_os_str().is_empty() { PathBuf::from(".") } else { parent.to_path_buf() }
-    });
-    let mut imports = Vec::new();
-    // Imports encountered before a syntax error still perform their original I/O first.
-    for &index in &operands.imports {
-        imports.extend(blanguage::module::CompiledInterface::read(Path::new(&args[index]))?);
+) -> ObjectCommandResult {
+    let mut command = ObjectCommand { compiler, args, operands: &operands, imports: Vec::new(), result: Ok(()) };
+    let host = ObjectCommandHost { import_interface, diagnostic: object_diagnostic, compile: compile_requested_object };
+    unsafe {
+        run_object_command(line, operands.imports.as_ptr(), operands.imports.len(),
+            std::ptr::from_mut(&mut command).cast(), host);
     }
-    line.error.result(args, line.error_index)?;
-    let output = PathBuf::from(&args[line.output_index]);
-    use blanguage::build::ObjectKind;
-    let instances;
-    let kind = match line.mode {
-        EntryMode::Module => {
-            instances = operands.instances(args);
-            ObjectKind::Module(&instances)
+    command.result
+}
+
+unsafe extern "C" fn import_interface(context: *mut c_void, index: usize) -> u32 {
+    let command = unsafe { &mut *context.cast::<ObjectCommand<'_>>() };
+    match blanguage::module::CompiledInterface::read(Path::new(&command.args[index])) {
+        Ok(interfaces) => {
+            command.imports.extend(interfaces);
+            1
         }
-        EntryMode::Program => {
-            let entry = unsafe { parsed_text(&args[line.entry_index]) };
-            let prefix = output.file_stem().and_then(|value| value.to_str()).ok_or("目标文件名不是UTF-8")?;
-            ObjectKind::Library { entry, prefix }
+        Err(error) => {
+            command.result = Err(error.into());
+            0
         }
-        EntryMode::Application => {
-            let entry = args.get(line.entry_index)
-                .map(|entry| unsafe { parsed_text(entry) })
-                .unwrap_or("main");
-            ObjectKind::Application(entry)
+    }
+}
+
+unsafe extern "C" fn object_diagnostic(context: *mut c_void, error: CompileError, index: usize) {
+    let command = unsafe { &mut *context.cast::<ObjectCommand<'_>>() };
+    command.result = error.result(command.args, index);
+}
+
+unsafe extern "C" fn compile_requested_object(context: *mut c_void, line: *const CompileCommandLine) {
+    let command = unsafe { &mut *context.cast::<ObjectCommand<'_>>() };
+    command.result = command.compile(unsafe { &*line });
+}
+
+impl ObjectCommand<'_> {
+    fn compile(&mut self, line: &CompileCommandLine) -> ObjectCommandResult {
+        let path = Path::new(&self.args[line.source_index]);
+        let root = self.args.get(line.root_index).map(Path::new)
+            .or_else(|| path.parent().filter(|parent| !parent.as_os_str().is_empty()))
+            .unwrap_or_else(|| Path::new("."));
+        let output = Path::new(&self.args[line.output_index]);
+        use blanguage::build::ObjectKind;
+        let instances;
+        let kind = match line.mode {
+            EntryMode::Module => {
+                instances = self.operands.instances(self.args);
+                ObjectKind::Module(&instances)
+            }
+            EntryMode::Program => {
+                let entry = unsafe { parsed_text(&self.args[line.entry_index]) };
+                let prefix = output.file_stem().and_then(|value| value.to_str()).ok_or("目标文件名不是UTF-8")?;
+                ObjectKind::Library { entry, prefix }
+            }
+            EntryMode::Application => {
+                let entry = self.args.get(line.entry_index)
+                    .map(|entry| unsafe { parsed_text(entry) })
+                    .unwrap_or("main");
+                ObjectKind::Application(entry)
+            }
+        };
+        let imports = std::mem::take(&mut self.imports);
+        let compiled = self.compiler.build_object_with_interfaces(path, root, imports, kind, output)
+            .map_err(|error| -> Box<dyn std::error::Error> { error })?;
+        let mut completion = ObjectCompletion { args: self.args, output, compiled, result: Ok(()) };
+        unsafe {
+            finish_object_command(line, self.args.len(), std::ptr::from_mut(&mut completion).cast(),
+                write_object_report, announce_object);
         }
-    };
-    let compiled = compiler.build_object_with_interfaces(&path, &root, imports, kind, &output)
-        .map_err(|error| -> Box<dyn std::error::Error> { error })?;
-    if let Some(path) = args.get(line.report_index).map(PathBuf::from) {
+        completion.result
+    }
+}
+
+struct ObjectCompletion<'a> {
+    args: &'a [OsString],
+    output: &'a Path,
+    compiled: blanguage::build::ObjectCompilation,
+    result: ObjectCommandResult,
+}
+
+impl ObjectCompletion<'_> {
+    fn report(&self, path: &Path, budget: Option<u64>) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         #[cfg(windows)]
         let _object_input = {
             use std::os::windows::fs::OpenOptionsExt;
-            std::fs::OpenOptions::new().read(true).share_mode(1).open(&compiled.artifact)?
+            std::fs::OpenOptions::new().read(true).share_mode(1).open(&self.compiled.artifact)?
         };
-        let budget = (line.has_budget != 0).then_some(line.budget);
-        std::fs::write(path, compiled.object.stack_report(budget))?;
+        std::fs::write(path, self.compiled.object.stack_report(budget))
     }
-    println!("object {} -> {}{}", compiled.object.name(), output.display(),
-        if compiled.reused { " (reused)" } else { "" });
-    Ok(())
+}
+
+unsafe extern "C" fn write_object_report(context: *mut c_void, index: usize, budget: u64, has_budget: u64) -> u32 {
+    let output = unsafe { &mut *context.cast::<ObjectCompletion<'_>>() };
+    output.result = output.report(Path::new(&output.args[index]), (has_budget != 0).then_some(budget))
+        .map_err(Into::into);
+    u32::from(output.result.is_ok())
+}
+
+unsafe extern "C" fn announce_object(context: *mut c_void) {
+    use std::io::Write;
+    let output = unsafe { &mut *context.cast::<ObjectCompletion<'_>>() };
+    output.result = writeln!(std::io::stdout().lock(), "object {} -> {}{}", output.compiled.object.name(),
+        output.output.display(), if output.compiled.reused { " (reused)" } else { "" }).map_err(Into::into);
 }

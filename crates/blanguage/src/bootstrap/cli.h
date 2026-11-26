@@ -152,6 +152,21 @@ extern "C" bool export_cpu_image(ExportHost host, ExportSpan stem, address image
 extern "C" CompileCommandLine parse_compile_arguments(address arguments, u64 count, OperandSink operands) on cpu
     requires nonzero(operands.import_path) requires nonzero(operands.instance_name) requires nonzero(operands.processor);
 
+struct ObjectCommandHost {
+    cfn<u32,address,u64> import_interface;
+    cfn<void,address,CompileError,u64> diagnostic;
+    cfn<void,address,address> compile;
+};
+
+// The parsed import indices and command line are borrowed for this call.
+extern "C" void run_object_command(address command, address imports, u64 count,
+    address context, ObjectCommandHost host) on cpu
+    requires nonzero(host.import_interface) requires nonzero(host.diagnostic) requires nonzero(host.compile);
+
+extern "C" void finish_object_command(address command, u64 arguments, address context,
+    cfn<u32,address,u64,u64,u64> report, cfn<void,address> complete) on cpu
+    requires nonzero(report) requires nonzero(complete);
+
 enum CodeInput:u32 { Entry=0; Image=1; Object=2; };
 
 struct CodeCommandLine {

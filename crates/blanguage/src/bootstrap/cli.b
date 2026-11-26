@@ -13,6 +13,33 @@ u8 argument_byte(CliArgument argument, u64 index) on cpu {
     return unsafe_position<u8>(unsafe_address(address_bits(argument.bytes) + index));
 }
 
+extern "C" void run_object_command(address command, address imports, u64 count,
+    address context, ObjectCommandHost host) on cpu
+    requires nonzero(host.import_interface) requires nonzero(host.diagnostic) requires nonzero(host.compile) {
+    // Imports preceding a syntax error keep their original I/O order.
+    u64 cursor = 0u64;
+    while (cursor < count) {
+        address item = unsafe_address(address_bits(imports) + cursor * size_of<u64>());
+        if (host.import_interface(context, unsafe_position<u64>(item)) == 0) { return; }
+        cursor += 1u64;
+    }
+    CompileCommandLine line = unsafe_position<CompileCommandLine>(command);
+    if (line.error != CompileError::None) {
+        host.diagnostic(context, line.error, line.error_index);
+        return;
+    }
+    host.compile(context, command);
+}
+
+extern "C" void finish_object_command(address command, u64 arguments, address context,
+    cfn<u32,address,u64,u64,u64> report, cfn<void,address> complete) on cpu
+    requires nonzero(report) requires nonzero(complete) {
+    CompileCommandLine line = unsafe_position<CompileCommandLine>(command);
+    if (line.report_index != arguments
+        && report(context, line.report_index, line.budget, line.has_budget) == 0) { return; }
+    complete(context);
+}
+
 void export_byte(inout ExportSpan output, u8 value) on cpu {
     unsafe_position<u8>(unsafe_address(address_bits(output.data) + output.length)) = value;
     output.length += 1u64;
