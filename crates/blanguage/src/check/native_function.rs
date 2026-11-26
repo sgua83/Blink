@@ -623,7 +623,8 @@ impl Builder<'_> {
             };
             let arg=match arg {Argument::Value(value) if p.access==Access::Read=>Argument::Reference(self.materialize_array(value,None)),other=>other};
             let position=match &arg {
-                Argument::Reference(OwnedBinding{place,..})|Argument::OwnedReference{place,..}=>Some(place.clone()),
+                Argument::Reference(OwnedBinding { place, .. }) | Argument::OwnedReference { place, .. } | Argument::Atomic(place) =>
+                    Some(place.clone()),
                 Argument::OwnedValue(value) if launch.is_some() && p.access==Access::Read=>value.place(),
                 _=>None,
             };
@@ -631,7 +632,11 @@ impl Builder<'_> {
                 if !matches!(&arg,Argument::Reference(_)) {
                     unsafe { self.world.call(self.require_place_access(&place,p.access,span)).await }?;
                 }
-                let borrow=unsafe { self.world.call(self.position_borrows(&place,span)).await }?;
+                let borrow = if p.access == Access::Atomic {
+                    unsafe { self.world.call(self.atomic_position_borrows(&place, span)).await }?
+                } else {
+                    unsafe { self.world.call(self.position_borrows(&place, span)).await }?
+                };
                 storage_inputs.insert(ValueIdentity::ParameterStorage(index),{let mut component_proof=bounds::Proof::default();component_proof.set_view_borrow(0,borrow);component_proof});
             }
             match arg {

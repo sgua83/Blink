@@ -58,6 +58,17 @@ impl Builder<'_> {
         if self.atomic_storage(&place){Ok(Some(place))}
         else{self.fail(span,"B214","原子借用需要显式 atomic dataset／tile 字段或已有原子参数")}
     }
+    pub(super) async fn atomic_position_borrows(&self, place: &Place, span: Span) -> Result<view::Borrow> {
+        let borrow = unsafe { self.world.call(self.position_borrows(place, span)).await }?;
+        Ok(borrow.map_sources(|source| match source {
+            view::Source::Position(mut origin) => {
+                Arc::make_mut(&mut origin).writable = true;
+                view::Borrow::source(view::Source::Position(origin))
+            }
+            source => view::Borrow::source(source),
+        }))
+    }
+
     async fn atomic_location(&mut self,target:&Expr,access:Access)->Result<Option<(Place,Option<(IndexedSource,Option<Reg>,u32)>,Scalar)>> {
         let mut cursor=LocationCursor::default();let mut facts=LocationFacts::default();
         let mut place:Option<Place>=None;let mut scalar=None;let mut offset=None;let mut word=None;let mut location=None;
@@ -71,7 +82,18 @@ impl Builder<'_> {
                     scalar=Some(place.as_ref().unwrap().ty().components[0].0);
                     unsafe{self.world.call(self.require_place_access(place.as_ref().unwrap(),access,target.span())).await}?;
                 },
-                LocationNeed::Effect=>{self.dataset_effect(place.as_ref().unwrap(),access,true,target.span())?;},
+                LocationNeed::Effect => {
+                    let place = place.as_ref().unwrap();
+                    let span = target.span();
+                    if matches!(place.storage(), Place::Reference { .. }) {
+                        let borrow = unsafe { self.world.call(self.atomic_position_borrows(place, span)).await }?;
+                        self.check_view_requirement(view::Requirement::Dataset {
+                            borrow, index: None, access, atomic: true, values: None, span,
+                        })?;
+                    } else {
+                        self.dataset_effect(place, access, true, span)?;
+                    }
+                },
                 LocationNeed::Position=>{
                     let p=place.as_ref().unwrap();
                     match p {

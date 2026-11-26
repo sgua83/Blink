@@ -2641,7 +2641,7 @@ void update(inout dataset<Job> jobs, atomic dataset<Count> counts) on compute {
 
 cooperative 函数也可同时借用 tile<T>／atomic tile<T> 与 atomic T 字段。普通函数中的原子访问不隐式添加屏障，不允许隐藏 cooperate、tile_publish 或 tile_barrier；同步步骤仍由协作根块明确表达。调用目标继续遵守 cpu／compute／gpu 能力；函数抽取不会把 Workgroup 地址升级成 Device 地址，也不会把普通局部变量变为共享存储。
 
-元素／cooperative函数的独立检查持有符号位置，封闭计算函数时按调用者的真实Place静态内联；普通CPU应用原生函数则按既有位置参数签名绑定真实CPU地址，并保留atomic权限。后端统一消费IndexedSource的Data／Tile／View原子位置，CPU View只表示已有CPU存储，不向源语言暴露可逃逸指针或新增原子资源ABI；不增加宿主锁或逐元素回调。实际读写进入原来的阶段依赖、跨元素访问、值转发与活跃性；返回旧值未使用时，写效果照常保留。经函数借用修改 Count，同样撤销后续旧 prefix／ensures，当前执行仍使用已捕获的范围。
+元素／cooperative函数的独立检查持有符号位置，封闭计算函数时按调用者的真实Place静态内联；普通CPU应用原生函数则按既有位置参数签名绑定真实CPU地址，并保留atomic权限。后端统一消费IndexedSource的Data／Tile／View原子位置，CPU View只表示已有CPU存储，不向源语言暴露可逃逸指针或新增原子资源ABI；不增加宿主锁或逐元素回调。实际读写进入原来的阶段依赖、跨元素访问、值转发与活跃性；返回旧值未使用时，写效果照常保留。 普通CPU函数经原子标量参数实际写入位置后，调用方撤回该位置的旧数值事实，已证明不相交的位置保持原事实。经函数借用修改 Count，同样撤销后续旧 prefix／ensures，当前执行仍使用已捕获的范围。
 
 仅普通值参数的归约／扫描回调继续要求无共享写副作用，atomic 参数不能进入其接口。含 view 的原子参数报 B223；普通读写／非法实际来源沿用 B214，字段类型 B124，原子目标类型 B215，内存序 B216，签名 B028，目标能力 B161，递归 B160。未知位置索引不会因函数接口而获得证明。
 
