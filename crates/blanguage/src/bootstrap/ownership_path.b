@@ -206,13 +206,26 @@ extern "C" void bind_argument(address context,u64 prefix,ArgumentBindingHost hos
 }
 
 extern "C" void traverse_residency_query(address context,ResidencyQueryHost host) on cpu
-    requires nonzero(host.consume)
-    requires nonzero(host.advance) {
-    ResidencyQueryStep step=ResidencyQueryStep::Entered;
-    while(step!=ResidencyQueryStep::Complete){
-        if(step==ResidencyQueryStep::Entered && host.consume(context)==0){return;}
-        step=host.advance(context);
+    requires nonzero(host.consume) requires nonzero(host.next_child)
+    requires nonzero(host.leave) requires nonzero(host.project) {
+    if(host.consume(context)==0){return;}
+    while(true){
+        let child=host.next_child(context);
+        if(address_bits(child)==0u64){
+            if(host.leave(context)==0){return;}
+        }else if(host.project(context,child)!=0 && host.consume(context)==0){
+            return;
+        }
     }
+}
+
+extern "C" u32 enter_residency_query_child(address context,address child,address path,ResidencyQueryChildHost host) on cpu
+    requires nonzero(host.possible) requires nonzero(host.enter) requires nonzero(host.release) {
+    if(host.possible(path)==0){
+        host.release(path);
+        return 0;
+    }
+    return host.enter(context,child,path);
 }
 
 extern "C" u32 resolve_residency_source(address context,SourceVisit visit,ResidencySourceHost host) on cpu

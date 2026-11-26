@@ -87,14 +87,22 @@ extern "C" void bind_argument(address context,u64 prefix,ArgumentBindingHost hos
     requires nonzero(host.declared_at)
     requires nonzero(host.bind_child);
 
-enum ResidencyQueryStep:u32 { Complete=0; Next=1; Entered=2; };
 struct ResidencyQueryHost {
     cfn<u32,address> consume;
-    cfn<ResidencyQueryStep,address> advance;
+    cfn<address,address> next_child;
+    cfn<u32,address> leave;
+    cfn<u32,address,address> project;
+};
+struct ResidencyQueryChildHost {
+    cfn<u32,address> possible;
+    cfn<u32,address,address,address> enter;
+    cfn<void,address> release;
 };
 extern "C" void traverse_residency_query(address context,ResidencyQueryHost host) on cpu
-    requires nonzero(host.consume)
-    requires nonzero(host.advance);
+    requires nonzero(host.consume) requires nonzero(host.next_child)
+    requires nonzero(host.leave) requires nonzero(host.project);
+extern "C" u32 enter_residency_query_child(address context,address child,address path,ResidencyQueryChildHost host) on cpu
+    requires nonzero(host.possible) requires nonzero(host.enter) requires nonzero(host.release);
 
 struct SourceVisit { address value; address path; address result; };
 struct ResidencySourceHost {

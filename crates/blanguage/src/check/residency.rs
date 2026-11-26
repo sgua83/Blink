@@ -738,46 +738,28 @@ impl<'a> ResidencyQuery<'a> {
         Ok(())
     }
 
-    fn advance(&mut self) -> ResidencyQueryStep {
-        let Some(child) = self.current.children.next() else {
-            self.active.remove(&self.current.key);
-            let Some(parent) = self.parents.pop() else { return ResidencyQueryStep::Complete; };
-            self.current = parent;
-            return ResidencyQueryStep::Next;
-        };
-        let call = &self.current.call;
-        let guard = bounds::Condition::guard(child.path.clone());
-        let path = bounds::Clause::both(&call.path, &guard.projected_case(true, &call.bindings));
-        if !path.possible() {
-            return ResidencyQueryStep::Next;
-        }
-        let arguments = bind_arguments(&child.arguments, &call.arguments, &call.bindings, self.outputs);
-        let bindings = child.bindings.iter().map(|(id, proof)| (*id, proof.at_call(&call.bindings))).collect();
-        let child = Call {
-            function: child.function.clone(), arguments, bindings, path, source: None, span: Span::default(),
-        };
-        let key = Rc::new(query_key(&child, self.wanted, self.outputs));
-        if !self.active.insert(Rc::clone(&key)) {
-            return ResidencyQueryStep::Next;
-        }
-        let frame = QueryFrame::new(Cow::Owned(child), key, self.known);
-        self.parents.push(std::mem::replace(&mut self.current, frame));
-        ResidencyQueryStep::Entered
-    }
 }
-
-#[repr(u32)]
-enum ResidencyQueryStep { Complete, Next, Entered }
 
 #[repr(C)]
 struct ResidencyQueryHost {
     consume: unsafe extern "C" fn(Context) -> u32,
-    advance: unsafe extern "C" fn(Context) -> ResidencyQueryStep,
+    next_child: unsafe extern "C" fn(Context) -> Borrowed,
+    leave: unsafe extern "C" fn(Context) -> u32,
+    project: unsafe extern "C" fn(Context, Borrowed) -> u32,
+}
+
+#[repr(C)]
+struct ResidencyQueryChildHost {
+    possible: unsafe extern "C" fn(Borrowed) -> u32,
+    enter: unsafe extern "C" fn(Context, Borrowed, Context) -> u32,
+    release: unsafe extern "C" fn(Context),
 }
 
 unsafe extern "C" {
     #[link_name = "bootstrap.ownership_path::traverse_residency_query"]
     fn traverse_residency_query(context: Context, host: ResidencyQueryHost);
+    #[link_name = "bootstrap.ownership_path::enter_residency_query_child"]
+    fn enter_residency_query_child(context: Context, child: Borrowed, path: Context, host: ResidencyQueryChildHost) -> u32;
 }
 
 unsafe extern "C" fn consume_query_frame(context: Context) -> u32 {
@@ -786,8 +768,56 @@ unsafe extern "C" fn consume_query_frame(context: Context) -> u32 {
     u32::from(query.error.is_none())
 }
 
-unsafe extern "C" fn advance_query_frame(context: Context) -> ResidencyQueryStep {
-    unsafe { &mut *context.cast::<ResidencyQuery<'_>>() }.advance()
+unsafe extern "C" fn next_query_child(context: Context) -> Borrowed {
+    let query = unsafe { &mut *context.cast::<ResidencyQuery<'_>>() };
+    query.current.children.next().map_or(ptr::null(), |child| ptr::from_ref(child).cast())
+}
+
+unsafe extern "C" fn leave_query_frame(context: Context) -> u32 {
+    let query = unsafe { &mut *context.cast::<ResidencyQuery<'_>>() };
+    query.active.remove(&query.current.key);
+    let Some(parent) = query.parents.pop() else { return 0; };
+    query.current = parent;
+    1
+}
+
+unsafe extern "C" fn project_query_child(context: Context, child: Borrowed) -> u32 {
+    let path = {
+        let query = unsafe { &*context.cast::<ResidencyQuery<'_>>() };
+        let child = unsafe { &*child.cast::<Call>() };
+        let call = &query.current.call;
+        let condition = bounds::Condition::guard(child.path.clone());
+        bounds::Clause::both(&call.path, &condition.projected_case(true, &call.bindings))
+    };
+    let mut path = std::mem::ManuallyDrop::new(path);
+    let host = ResidencyQueryChildHost {
+        possible: compare_possible, enter: store_query_child, release: drop_query_child_path,
+    };
+    // B either transfers this path to the attempted child or releases it.
+    unsafe { enter_residency_query_child(context, child, ptr::from_mut(&mut *path).cast(), host) }
+}
+
+unsafe extern "C" fn drop_query_child_path(path: Context) {
+    unsafe { path.cast::<bounds::Clause>().drop_in_place() };
+}
+
+unsafe extern "C" fn store_query_child(context: Context, child: Borrowed, path: Context) -> u32 {
+    let query = unsafe { &mut *context.cast::<ResidencyQuery<'_>>() };
+    let declared = unsafe { &*child.cast::<Call>() };
+    let parent = &query.current.call;
+    let arguments = bind_arguments(&declared.arguments, &parent.arguments, &parent.bindings, query.outputs);
+    let bindings = declared.bindings.iter().map(|(id, proof)| (*id, proof.at_call(&parent.bindings))).collect();
+    let path = unsafe { path.cast::<bounds::Clause>().read() };
+    let child = Call {
+        function: declared.function.clone(), arguments, bindings, path, source: None, span: Span::default(),
+    };
+    let key = Rc::new(query_key(&child, query.wanted, query.outputs));
+    if !query.active.insert(Rc::clone(&key)) {
+        return 0;
+    }
+    let frame = QueryFrame::new(Cow::Owned(child), key, query.known);
+    query.parents.push(std::mem::replace(&mut query.current, frame));
+    1
 }
 
 fn query(call: &Call, known: &BTreeMap<String, Contract>, outputs: &Outputs, wanted: Option<&Input>,
@@ -802,7 +832,10 @@ fn query(call: &Call, known: &BTreeMap<String, Contract>, outputs: &Outputs, wan
         known, outputs, wanted, source, span, current, parents: Vec::new(),
         active: BTreeSet::from([key]), required, deferred, error: None,
     };
-    let host = ResidencyQueryHost { consume: consume_query_frame, advance: advance_query_frame };
+    let host = ResidencyQueryHost {
+        consume: consume_query_frame, next_child: next_query_child,
+        leave: leave_query_frame, project: project_query_child,
+    };
     // All frames and the original contract borrows stay with this synchronous traversal.
     unsafe { traverse_residency_query(ptr::from_mut(&mut query).cast(), host); }
     match query.error {
