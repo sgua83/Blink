@@ -198,8 +198,34 @@ extern "C" u64 range_set_cast_chain(address input,u64 count,cfn<BitRange,address
 struct RangeSetCastSummary { BitRange hull; u32 contains; };
 extern "C" RangeSetCastSummary range_set_cast_summary(address input,u64 count,cfn<BitRange,address,u32,u64> get,
     RangeSetCastInfo first,RangeSetCastStep second,RangeSetCastStep last) on cpu requires nonzero(get);
-extern "C" u64 range_set_counts(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,RangeSetOutput host,u32 width,u64 bias) on cpu
-    requires nonzero(get) requires nonzero(host.get) requires nonzero(host.set) requires nonzero(host.push);
+extern "C" u64 range_set_counts(RangeInput input, address output, RangeSetOutput host, u32 width, u64 bias) on cpu
+    requires nonzero(input.get) requires nonzero(host.get) requires nonzero(host.set) requires nonzero(host.push);
+
+struct ComputedIntegerType { u32 width; u32 signed; u32 floating; u64 mask; u64 bias; };
+struct IntegerCallOperand { u32 kind; address identity; u64 bits; };
+struct IntegerCallBinding { u32 present; address identity; address intervals; u64 count; };
+struct IntegerCallStorage { address left; address right; address counts; address output; };
+struct IntegerCallHost {
+    cfn<IntegerCallBinding,address,u32,address> input;
+    cfn<BitRange,address,u64> interval;
+    RangeSetOutput ranges;
+};
+struct IntegerCallResult {
+    u32 present;
+    u32 has_ranges;
+    u64 count;
+    IntegerCallOperand left;
+    IntegerCallOperand right;
+};
+
+extern "C" IntegerCallResult project_integer_call(address context, u32 operation, ComputedIntegerType scalar,
+    IntegerCallOperand left, IntegerCallOperand right, u32 with_ranges,
+    IntegerCallStorage storage, IntegerCallHost host) on cpu
+    requires nonzero(host.input) requires nonzero(host.interval)
+    requires nonzero(host.ranges.get) requires nonzero(host.ranges.set) requires nonzero(host.ranges.push);
+
+BitRange computed_range_hull(u32 operation, ComputedIntegerType scalar, BitRange left,
+    BitRange right, BitRange limit) on cpu;
 extern "C" u64 range_set_map(RangeInput input, address operation,
     cfn<u64,address,BitRange,address> invoke, address output, RangeSetOutput host) on cpu
     requires nonzero(input.get) requires nonzero(invoke) requires nonzero(host.get) requires nonzero(host.set);

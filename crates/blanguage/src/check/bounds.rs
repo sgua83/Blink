@@ -263,92 +263,24 @@ impl IntegerExpression {
             Self::Selection(index) => Self::selection(index.0.map(identity)?),
         })
     }
-    fn bound_operand(
-        id: ValueIdentity, scalar: Scalar,
-        bindings: &impl CallBindings,
-    ) -> Option<(Option<Operand>, ScalarRanges)> {
-        let input = bindings.input(id)?;
-        let range = range_sets::restrict(input.intervals(), 0, scalar.bit_mask());
-        let operand = match range.0.as_slice() {
-            [(low, high)] if low == high => Some(Operand::Constant(scalar, *low ^ scalar.order_bias())),
-            _ => input.identity().map(Operand::Value),
-        };
-        Some((operand, range))
-    }
-
     pub(super) fn at_call(self, bindings: &impl CallBindings) -> Option<Self> {
         let Self::Binary(op, scalar, a, b) = self else {
             return self.selector()?.at_call(bindings).map(Self::selection);
         };
-        let operand = |value| match value {
-            Operand::Value(id) => Self::bound_operand(id, scalar, bindings)?.0,
-            constant => Some(constant),
-        };
-        Some(Self::Binary(op, scalar, operand(a)?, operand(b)?))
-    }
-
-
-    pub(super) fn constant(self) -> Option<(Scalar, Bits)> {
-        let Self::Binary(op, scalar, Operand::Constant(_, a), Operand::Constant(_, b)) = self else {
-            return match self.selector()? {
-                Selector::Direct(Operand::Constant(scalar, bits)) => Some((scalar, bits)),
-                _ => None,
-            };
-        };
-        let operation = match op {
-            IntegerOperation::Add => BinaryOp::IAdd,
-            IntegerOperation::Subtract => BinaryOp::ISub,
-            IntegerOperation::Multiply => BinaryOp::IMul,
-            IntegerOperation::And => BinaryOp::And,
-            IntegerOperation::Or => BinaryOp::Or,
-            IntegerOperation::Xor => BinaryOp::Xor,
-            IntegerOperation::ShiftLeft => BinaryOp::ShiftLeft,
-            IntegerOperation::ShiftRight if scalar.is_signed() => BinaryOp::ShiftRightArithmetic,
-            IntegerOperation::ShiftRight => BinaryOp::ShiftRightLogical,
-            IntegerOperation::Divide | IntegerOperation::Remainder => return std::num::NonZeroU64::new(b)
-                .map(|divisor| (scalar, constant::divide(scalar, a, divisor, op == IntegerOperation::Remainder))),
-        };
-        constant::binary(operation, scalar, a, b).map(|bits| (scalar, bits))
+        range_sets::computed_at_call(op, scalar, a, b, bindings, false)?.0
     }
     fn project_at_call(
         self, bindings: &impl CallBindings,
     ) -> Option<(Option<Self>, Option<ScalarRanges>)> {
         let Self::Binary(op, scalar, a, b) = self else {
             let expression = self.at_call(bindings)?;
-            let range = expression.constant().map(|(_, bits)| ScalarRanges::interval(bits, bits));
+            let range = match expression.selector() {
+                Some(Selector::Direct(Operand::Constant(_, bits))) => Some(ScalarRanges::interval(bits, bits)),
+                _ => None,
+            };
             return Some((Some(expression), range));
         };
-        let operand = |operand| match operand {
-            Operand::Value(id) => Self::bound_operand(id, scalar, bindings),
-            constant @ Operand::Constant(_, bits) => {
-                let value = bits ^ scalar.order_bias();
-                Some((Some(constant), ScalarRanges::interval(value, value)))
-            }
-        };
-        let (a, left) = operand(a)?;
-        let (b, right) = operand(b)?;
-        let expression = a.zip(b).map(|(a, b)| Self::Binary(op, scalar, a, b));
-        let range = if let ([(al, ah)], [(bl, bh)]) = (left.0.as_slice(), right.0.as_slice())
-            && al == ah && bl == bh
-        {
-            let exact = Self::Binary(op, scalar,
-                Operand::Constant(scalar, *al ^ scalar.order_bias()),
-                Operand::Constant(scalar, *bl ^ scalar.order_bias()));
-            exact.constant().map(|(_, bits)| {
-                let value = bits ^ scalar.order_bias();
-                ScalarRanges::interval(value, value)
-            })
-        } else {
-            let operation = match op {
-                IntegerOperation::Add => "+", IntegerOperation::Subtract => "-",
-                IntegerOperation::Multiply => "*", IntegerOperation::Divide => "/",
-                IntegerOperation::Remainder => "%", IntegerOperation::And => "&",
-                IntegerOperation::Or => "|", IntegerOperation::Xor => "^",
-                IntegerOperation::ShiftLeft => "<<", IntegerOperation::ShiftRight => ">>",
-            };
-            Some(arithmetic_ranges(operation, scalar, &left, &right))
-        };
-        Some((expression, range))
+        range_sets::computed_at_call(op, scalar, a, b, bindings, true)
     }
 }
 

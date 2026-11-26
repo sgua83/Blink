@@ -1104,10 +1104,10 @@ extern "C" RangeSetCastSummary range_set_cast_summary(address input,u64 count,cf
     return observation.summary;
 }
 
-extern "C" u64 range_set_counts(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,RangeSetOutput host,u32 width,u64 bias) on cpu
-    requires nonzero(get) requires nonzero(host.get) requires nonzero(host.set) requires nonzero(host.push) {
+extern "C" u64 range_set_counts(RangeInput input, address output, RangeSetOutput host, u32 width, u64 bias) on cpu
+    requires nonzero(input.get) requires nonzero(host.get) requires nonzero(host.set) requires nonzero(host.push) {
     u64 result=0u64;
-    u64 range_index_6=0u64;while(range_index_6<count){result+=range_set_parts(output,host.push,integer_range_counts(width,bias,get(input,0,range_index_6)));range_index_6+=1u64;}
+    u64 i=0u64;while(i<input.count){result+=range_set_parts(output,host.push,integer_range_counts(width,bias,input.get(input.values,i)));i+=1u64;}
     return range_set_normalize(output,result,host);
 }
 
@@ -1249,6 +1249,184 @@ extern "C" IntegerBinaryResult range_set_integer_binary(RangeInput left, RangeIn
         i += 1u64;
     }
     return IntegerBinaryResult(range_set_normalize(output, count, host), origin);
+}
+
+IntegerRangeOperation computed_operation(u32 operation) on cpu {
+    if (operation == 0) { return IntegerRangeOperation::Add; }
+    if (operation == 1) { return IntegerRangeOperation::Subtract; }
+    if (operation == 2) { return IntegerRangeOperation::Multiply; }
+    if (operation == 3) { return IntegerRangeOperation::Divide; }
+    if (operation == 4) { return IntegerRangeOperation::Remainder; }
+    if (operation == 5) { return IntegerRangeOperation::BitAnd; }
+    if (operation == 6) { return IntegerRangeOperation::BitOr; }
+    if (operation == 7) { return IntegerRangeOperation::BitXor; }
+    if (operation == 8) { return IntegerRangeOperation::ShiftLeft; }
+    return IntegerRangeOperation::ShiftRight;
+}
+
+IntegerBinaryProof computed_proof(u32 opcode, ComputedIntegerType scalar) on cpu {
+    return IntegerBinaryProof(computed_operation(opcode), scalar.width, scalar.signed, 0,
+        scalar.bias, scalar.mask, 0u64, scalar.bias, scalar.width, 0, 0);
+}
+
+bool counted_shift(IntegerRangeOperation operation) on cpu {
+    return operation == IntegerRangeOperation::ShiftLeft || operation == IntegerRangeOperation::ShiftRight;
+}
+
+BitRange include_clipped_hull(BitRange hull, BitRange range, BitRange limit) on cpu {
+    BitRange clipped = BitRange(max(range.lower, limit.lower), min(range.upper, limit.upper));
+    if (clipped.lower > clipped.upper) { return hull; }
+    if (hull.lower > hull.upper) { return clipped; }
+    return BitRange(min(hull.lower, clipped.lower), max(hull.upper, clipped.upper));
+}
+
+BitRange computed_range_hull(u32 operation, ComputedIntegerType scalar, BitRange left,
+    BitRange right, BitRange limit) on cpu {
+    BitRange hull = BitRange(1u64, 0u64);
+    if (left.lower > left.upper || right.lower > right.upper) { return hull; }
+    IntegerBinaryProof plan = computed_proof(operation, scalar);
+    IntegerRangePieces operands = counted_shift(plan.operation)
+        ? integer_range_counts(plan.width, plan.bias, right)
+        : IntegerRangePieces(right, hull, 1);
+    for (part in 0..operands.count) {
+        BitRange rhs = part == 0 ? operands.first : operands.second;
+        IntegerRangePieces result = binary_range_pair(plan, left, rhs);
+        if (result.count != 0) { hull = include_clipped_hull(hull, result.first, limit); }
+        if (result.count == 2) { hull = include_clipped_hull(hull, result.second, limit); }
+    }
+    return hull;
+}
+
+// An operand key and its borrowed numeric input are separate results. A
+// non-singleton argument without a public identity can still supply intervals.
+struct BoundIntegerCallOperand {
+    u32 present;
+    IntegerCallOperand key;
+    address intervals;
+    u64 count;
+};
+
+u64 prefix_in_mask(IntegerCallBinding input, u64 mask,
+    cfn<BitRange,address,u64> interval) on cpu requires nonzero(interval) {
+    u64 first = 0u64;
+    u64 last = input.count;
+    while (first < last) {
+        u64 mid = first + (last - first) / 2u64;
+        if (interval(input.intervals, mid).lower <= mask) { first = mid + 1u64; }
+        else { last = mid; }
+    }
+    return first;
+}
+
+BoundIntegerCallOperand bind_integer_argument(address context, u32 side, IntegerCallOperand operand,
+    ComputedIntegerType scalar, IntegerCallHost host) on cpu
+    requires nonzero(host.input) requires nonzero(host.interval) {
+    if (operand.kind == 2) { return BoundIntegerCallOperand(1, operand, address(), 1u64); }
+    IntegerCallBinding input = host.input(context, side, operand.identity);
+    if (input.present == 0) {
+        return BoundIntegerCallOperand(0, IntegerCallOperand(0, address(), 0u64), address(), 0u64);
+    }
+    u64 count = prefix_in_mask(input, scalar.mask, host.interval);
+    if (count == 1u64) {
+        BitRange range = host.interval(input.intervals, 0u64);
+        if (range.lower == min(range.upper, scalar.mask)) {
+            IntegerCallOperand key = IntegerCallOperand(2, address(), range.lower ^ scalar.bias);
+            return BoundIntegerCallOperand(1, key, address(), count);
+        }
+    }
+    u32 kind = input.identity == address() ? 0 : 1;
+    return BoundIntegerCallOperand(1, IntegerCallOperand(kind, input.identity, 0u64), input.intervals, count);
+}
+
+extern "C" BitRange integer_call_singleton(address value, u64 index) on cpu {
+    return unsafe_position<BitRange>(value);
+}
+
+RangeInput integer_call_ranges(BoundIntegerCallOperand input, ComputedIntegerType scalar,
+    address singleton, address scratch, IntegerCallHost host) on cpu
+    requires nonzero(host.interval) requires nonzero(host.ranges.get) requires nonzero(host.ranges.push) {
+    if (input.key.kind == 2) {
+        u64 at = input.key.bits ^ scalar.bias;
+        unsafe_position<BitRange>(singleton) = BitRange(at, at);
+        return RangeInput(singleton, 1u64, c_function(integer_call_singleton));
+    }
+    if (input.count == 0u64 || host.interval(input.intervals, input.count - 1u64).upper <= scalar.mask) {
+        return RangeInput(input.intervals, input.count, host.interval);
+    }
+    // Only the last retained interval can cross the type boundary.
+    u64 i = 0u64;
+    while (i < input.count) {
+        BitRange part = host.interval(input.intervals, i);
+        host.ranges.push(scratch, BitRange(part.lower, min(part.upper, scalar.mask)));
+        i += 1u64;
+    }
+    return RangeInput(scratch, input.count, host.ranges.get);
+}
+
+struct ComputedIntegerConstant { u32 present; u64 bits; };
+ComputedIntegerConstant computed_constant(u32 operation, ComputedIntegerType scalar, u64 left, u64 right) on cpu {
+    if (operation == 3 || operation == 4) {
+        u32 remainder = operation == 4 ? 1 : 0;
+        if (right == 0u64) { return ComputedIntegerConstant(0, 0u64); }
+        if (scalar.signed == 0) {
+            return ComputedIntegerConstant(1, truncate(divide_unsigned(left, right, remainder), scalar.width));
+        }
+        i64 divisor = signed_value(right, scalar.width);
+        if (divisor == i64(0)) { return ComputedIntegerConstant(0, 0u64); }
+        i64 result = divide_signed(signed_value(left, scalar.width), divisor, remainder);
+        return ComputedIntegerConstant(1, truncate(u64(result), scalar.width));
+    }
+    if (scalar.floating != 0) { return ComputedIntegerConstant(0, 0u64); }
+    BinaryOperation opcode = BinaryOperation::Add;
+    if (operation == 1) { opcode = BinaryOperation::Subtract; }
+    else if (operation == 2) { opcode = BinaryOperation::Multiply; }
+    else if (operation == 5) { opcode = BinaryOperation::And; }
+    else if (operation == 6) { opcode = BinaryOperation::Or; }
+    else if (operation == 7) { opcode = BinaryOperation::Xor; }
+    else if (operation == 8) { opcode = BinaryOperation::ShiftLeft; }
+    else if (operation == 9) { opcode = scalar.signed == 0 ? BinaryOperation::ShiftRight : BinaryOperation::ShiftRightSigned; }
+    return ComputedIntegerConstant(1, binary(opcode, scalar.width, scalar.signed, left, right));
+}
+
+extern "C" IntegerCallResult project_integer_call(address context, u32 operation, ComputedIntegerType scalar,
+    IntegerCallOperand left, IntegerCallOperand right, u32 with_ranges,
+    IntegerCallStorage storage, IntegerCallHost host) on cpu
+    requires nonzero(host.input) requires nonzero(host.interval)
+    requires nonzero(host.ranges.get) requires nonzero(host.ranges.set) requires nonzero(host.ranges.push) {
+    IntegerCallOperand missing = IntegerCallOperand(0, address(), 0u64);
+    IntegerCallResult result = IntegerCallResult(0, 0, 0u64, missing, missing);
+    BoundIntegerCallOperand a = bind_integer_argument(context, 0, left, scalar, host);
+    if (a.present == 0 || (with_ranges == 0 && a.key.kind == 0)) { return result; }
+    BoundIntegerCallOperand b = bind_integer_argument(context, 1, right, scalar, host);
+    if (b.present == 0) { return result; }
+    result.present = 1;
+    result.left = a.key;
+    result.right = b.key;
+    if (with_ranges == 0) { return result; }
+    if (a.key.kind == 2 && b.key.kind == 2) {
+        ComputedIntegerConstant exact = computed_constant(operation, scalar, a.key.bits, b.key.bits);
+        if (exact.present != 0) {
+            u64 at = exact.bits ^ scalar.bias;
+            host.ranges.push(storage.output, BitRange(at, at));
+            result.count = 1u64;
+            result.has_ranges = 1;
+        }
+        return result;
+    }
+
+    BitRange first = BitRange(0u64, 0u64);
+    BitRange second = BitRange(0u64, 0u64);
+    RangeInput lhs = integer_call_ranges(a, scalar, address_of(first), storage.left, host);
+    RangeInput rhs = integer_call_ranges(b, scalar, address_of(second), storage.right, host);
+    RangeInput counts = rhs;
+    IntegerBinaryProof proof = computed_proof(operation, scalar);
+    if (counted_shift(proof.operation)) {
+        u64 count = range_set_counts(rhs, storage.counts, host.ranges, scalar.width, scalar.bias);
+        counts = RangeInput(storage.counts, count, host.ranges.get);
+    }
+    result.count = range_set_integer_binary(lhs, rhs, counts, storage.output, host.ranges, proof).count;
+    result.has_ranges = 1;
+    return result;
 }
 
 extern "C" u64 range_set_map(RangeInput input, address operation,

@@ -74,7 +74,7 @@ unsafe extern "C" {
         push: Push) -> BitPattern;
 }
 
-unsafe extern "C" fn interval(source: *const c_void, index: usize) -> BitRange {
+pub(crate) unsafe extern "C" fn interval(source: *const c_void, index: usize) -> BitRange {
     let ranges = unsafe { &*source.cast::<&[Pair]>() };
     ranges[index].into()
 }

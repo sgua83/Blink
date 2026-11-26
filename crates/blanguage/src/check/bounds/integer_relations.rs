@@ -892,36 +892,6 @@ unsafe extern "C" fn below_computed(s: Slot, id: Borrowed) -> fact_fields::Expre
     let c = unsafe { frame::<SourceBelow<'_, '_>>(s) };
     unsafe { selected_expression(c.query, c.scalar, id, c.expression) }
 }
-unsafe extern "C" fn source_arithmetic(
-    s: Slot,
-    operation: u32,
-    a: Range,
-    b: Range,
-    minimum: u64,
-    maximum: u64,
-) -> Range {
-    let c = unsafe { frame::<SourceBelow<'_, '_>>(s) };
-    let op = ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"][operation as usize];
-    let value = arithmetic_ranges(
-        op,
-        c.scalar,
-        &ScalarRanges::interval(a.lower.low, a.upper.low),
-        &ScalarRanges::interval(b.lower.low, b.upper.low),
-    )
-    .restrict(minimum, maximum);
-    let (lower, upper) = value.hull();
-    Range {
-        present: u32::from(!value.0.is_empty()),
-        lower: Wide {
-            low: lower,
-            high: 0,
-        },
-        upper: Wide {
-            low: upper,
-            high: 0,
-        },
-    }
-}
 unsafe extern "C" fn source_store(s: Slot, id: Borrowed, lower: u64, upper: u64) {
     let id = unsafe { *id.cast::<ValueIdentity>() };
     let c = unsafe { frame::<SourceBelow<'_, '_>>(s) };
@@ -937,7 +907,6 @@ struct SourceBelowHost {
     bounds: unsafe extern "C" fn(Slot, Borrowed) -> Range,
     computed: unsafe extern "C" fn(Slot, Borrowed) -> fact_fields::ExpressionView,
     same_scalar: unsafe extern "C" fn(Borrowed, Borrowed) -> u32,
-    arithmetic: unsafe extern "C" fn(Slot, u32, Range, Range, u64, u64) -> Range,
     store: unsafe extern "C" fn(Slot, Borrowed, u64, u64),
 }
 unsafe extern "C" {
@@ -986,7 +955,6 @@ pub(super) fn below_in(
                 bounds: below_bounds,
                 computed: below_computed,
                 same_scalar: fact_fields::same_scalar,
-                arithmetic: source_arithmetic,
                 store: source_store,
             },
         )

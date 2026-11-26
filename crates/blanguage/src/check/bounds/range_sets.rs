@@ -1,5 +1,5 @@
 //! B owns complete scalar-set rules; native containers retain their ownership.
-use super::{Bits,Scalar,ScalarRanges};
+use super::{Bits, CallBindings, IntegerExpression, IntegerOperation, Operand, Scalar, ScalarRanges, ValueIdentity};
 use std::{ffi::c_void,ptr};
 use crate::ir::scalar_ranges::{self, BitPattern as Pattern, BitRange as Range, Pair, RangeInput, push};
 type Slot=*mut c_void;
@@ -92,6 +92,102 @@ pub(super) enum Origin {
 struct BinaryResult {
     count: usize,
     origin: Origin,
+}
+
+#[repr(C)]
+struct ComputedType {
+    width: u32,
+    signed: u32,
+    floating: u32,
+    mask: u64,
+    bias: u64,
+}
+
+#[repr(C)]
+struct CallOperand {
+    kind: u32,
+    identity: Borrowed,
+    bits: u64,
+}
+
+impl CallOperand {
+    fn borrowed(value: &Operand) -> Self {
+        match value {
+            Operand::Value(id) => Self { kind: 1, identity: ptr::from_ref(id).cast(), bits: 0 },
+            Operand::Constant(_, bits) => Self { kind: 2, identity: ptr::null(), bits: *bits },
+        }
+    }
+
+    unsafe fn projected(self, original: Operand, scalar: Scalar) -> Option<Operand> {
+        match self.kind {
+            0 => None,
+            1 => Some(Operand::Value(unsafe { *self.identity.cast::<ValueIdentity>() })),
+            2 => Some(match original {
+                Operand::Constant(..) => original,
+                Operand::Value(_) => Operand::Constant(scalar, self.bits),
+            }),
+            _ => unreachable!("invalid integer call operand"),
+        }
+    }
+}
+
+#[repr(C)]
+struct CallBinding {
+    present: u32,
+    identity: Borrowed,
+    intervals: Borrowed,
+    count: usize,
+}
+
+struct CallInputs<'a, P> {
+    bindings: &'a P,
+    sides: [CallSide<'a>; 2],
+}
+
+#[derive(Default)]
+struct CallSide<'a> {
+    identity: Option<ValueIdentity>,
+    intervals: &'a [Pair],
+}
+
+unsafe extern "C" fn call_input<P: CallBindings>(context: Slot, side: u32, source: Borrowed) -> CallBinding {
+    let call = context.cast::<CallInputs<'_, P>>();
+    let bindings = unsafe { (*call).bindings };
+    let source = unsafe { *source.cast::<ValueIdentity>() };
+    let Some(input) = bindings.input(source) else {
+        return CallBinding { present: 0, identity: ptr::null(), intervals: ptr::null(), count: 0 };
+    };
+    // The other operand's identity and slice header can already be borrowed by B.
+    let slot = unsafe { &mut *ptr::addr_of_mut!((*call).sides).cast::<CallSide<'_>>().add(side as usize) };
+    slot.identity = input.identity();
+    slot.intervals = input.intervals();
+    let identity = slot.identity.as_ref().map_or(ptr::null(), |id| ptr::from_ref(id).cast());
+    let intervals = &slot.intervals;
+    CallBinding { present: 1, identity, intervals: ptr::from_ref(intervals).cast(), count: intervals.len() }
+}
+
+#[repr(C)]
+struct CallStorage {
+    left: Slot,
+    right: Slot,
+    counts: Slot,
+    output: Slot,
+}
+
+#[repr(C)]
+struct CallHost {
+    input: unsafe extern "C" fn(Slot, u32, Borrowed) -> CallBinding,
+    interval: unsafe extern "C" fn(Borrowed, usize) -> Range,
+    ranges: Output,
+}
+
+#[repr(C)]
+struct CallResult {
+    present: u32,
+    has_ranges: u32,
+    count: usize,
+    left: CallOperand,
+    right: CallOperand,
 }
 #[repr(C)]
 pub(super) struct Projection {
@@ -220,12 +316,15 @@ unsafe extern "C" {
     fn converted_summary(input: Borrowed, count: usize, read: Read,
         first: Cast, second: CastStep, last: CastStep) -> CastSummary;
     #[link_name="bootstrap.scalar_fold::range_set_counts"]
-    fn counts(input:Borrowed,count:usize,read:Read,output:Slot,host:Output,width:u32,bias:u64)->usize;
+    fn counts(input: RangeInput, output: Slot, host: Output, width: u32, bias: u64) -> usize;
     #[link_name="bootstrap.scalar_fold::range_set_map"]
     fn mapped(input: RangeInput, operation: Slot, invoke: Invoke, output: Slot, host: Output) -> usize;
     #[link_name="bootstrap.scalar_fold::range_set_integer_binary"]
     fn integer_binary(left: RangeInput, right: RangeInput, right_counts: RangeInput,
         output: Slot, host: Output, proof: BinaryProof) -> BinaryResult;
+    #[link_name="bootstrap.scalar_fold::project_integer_call"]
+    fn project_call(context: Slot, operation: u32, scalar: ComputedType,
+        left: CallOperand, right: CallOperand, with_ranges: u32, storage: CallStorage, host: CallHost) -> CallResult;
 }
 pub(super) fn full()->ScalarRanges {output(|o|unsafe{all(o,push)})}
 pub(super) fn interval(lower:u64,upper:u64)->ScalarRanges {output(|o|unsafe{single(o,push,lower,upper)})}
@@ -300,7 +399,46 @@ pub(super) fn cast_summary(values: &[Pair], [from, low, extended, to]: [Scalar; 
     });
     (summary.hull.into(), summary.contains)
 }
-pub(super) fn shift_counts(values:&[Pair],scalar:Scalar)->ScalarRanges {inputs(values,&[],|s,n,_|normalized_output(|o,h|unsafe{counts(s,n,read,o,h,scalar.bit_width(),scalar.order_bias())}))}
+pub(super) fn shift_counts(values: &[Pair], scalar: Scalar) -> ScalarRanges {
+    normalized_output(|output, host| unsafe {
+        counts(RangeInput::borrowed(&values), output, host, scalar.bit_width(), scalar.order_bias())
+    })
+}
+
+pub(super) fn computed_at_call<P: CallBindings>(
+    op: IntegerOperation, scalar: Scalar, left: Operand, right: Operand, bindings: &P, with_ranges: bool,
+) -> Option<(Option<IntegerExpression>, Option<ScalarRanges>)> {
+    let mut input = CallInputs { bindings, sides: std::array::from_fn(|_| CallSide::default()) };
+    let mut left_scratch = Vec::<Pair>::new();
+    let mut right_scratch = Vec::<Pair>::new();
+    let mut shift_scratch = Vec::<Pair>::new();
+    let mut output = Vec::<Pair>::new();
+    let storage = CallStorage {
+        left: ptr::from_mut(&mut left_scratch).cast(),
+        right: ptr::from_mut(&mut right_scratch).cast(),
+        counts: ptr::from_mut(&mut shift_scratch).cast(),
+        output: ptr::from_mut(&mut output).cast(),
+    };
+    let encoding = ComputedType {
+        width: scalar.bit_width(), signed: u32::from(scalar.is_signed()), floating: u32::from(scalar.is_float()),
+        mask: scalar.bit_mask(), bias: scalar.order_bias(),
+    };
+    let result = unsafe {
+        project_call(ptr::from_mut(&mut input).cast(), op as u32, encoding,
+            CallOperand::borrowed(&left), CallOperand::borrowed(&right), u32::from(with_ranges),
+            storage, CallHost { input: call_input::<P>, interval: scalar_ranges::interval, ranges: host() })
+    };
+    if result.present == 0 {
+        return None;
+    }
+    let (a, b) = unsafe { (result.left.projected(left, scalar), result.right.projected(right, scalar)) };
+    let expression = a.zip(b).map(|(a, b)| IntegerExpression::Binary(op, scalar, a, b));
+    let ranges = (result.has_ranges != 0).then(|| {
+        output.truncate(result.count);
+        ScalarRanges(output)
+    });
+    Some((expression, ranges))
+}
 
 pub(super) fn binary(
     op: &str, scalar: Scalar, left: &ScalarRanges, right: &ScalarRanges, evidence: Option<BinaryEvidence>,

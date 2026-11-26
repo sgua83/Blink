@@ -693,13 +693,12 @@ struct RelationSourceBelowHost {
  cfn<RelationRange,address,address> ensures memory(read) bounds;
  cfn<RelationExpression,address,address> computed;
  cfn<u32,address,address> ensures memory(read) same_scalar;
- cfn<RelationRange,address,u32,RelationRange,RelationRange,u64,u64> arithmetic;
  cfn<void,address,address,u64,u64> store;
 };
 extern "C" u32 relation_source_plan(address context,RelationSourcePlanHost host) on cpu
  requires nonzero(host.pop) requires nonzero(host.push) requires nonzero(host.bounds) requires nonzero(host.enter) requires nonzero(host.computed) requires nonzero(host.root) requires nonzero(host.select) requires nonzero(host.emit) requires nonzero(host.clear) requires nonzero(host.compare);
 extern "C" u32 relation_source_below(address context,address left,address right,address source,u64 lower,u64 upper,address scalar,InternalScalar info,RelationSourceBelowHost host) on cpu
- requires nonzero(host.seed) requires nonzero(host.next) requires nonzero(host.bounds) requires nonzero(host.computed) requires nonzero(host.same_scalar) requires nonzero(host.arithmetic) requires nonzero(host.store);
+ requires nonzero(host.seed) requires nonzero(host.next) requires nonzero(host.bounds) requires nonzero(host.computed) requires nonzero(host.same_scalar) requires nonzero(host.store);
 
 struct IndexFields {u32 present;u32 kind;address original;address payload;address first;address second;u64 distance;};
 enum IndexOutput:u32 {Original=0;Data=1;Tile=2;View=3;ApplicationData=4;Upper=5;Shifted=6;Sum=7;Offset=8;Room=9;};

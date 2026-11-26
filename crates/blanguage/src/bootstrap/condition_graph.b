@@ -1637,8 +1637,9 @@ RelationRange source_operand_range(address context,InternalOperand operand,addre
  return RelationRange(1,IntegerWide((value.lower.low&info.mask)^info.bias,0u64),IntegerWide((value.upper.low&info.mask)^info.bias,0u64));
 }
 extern "C" u32 relation_source_below(address context,address left,address right,address source,u64 lower,u64 upper,address scalar,InternalScalar info,RelationSourceBelowHost host) on cpu
- requires nonzero(host.seed) requires nonzero(host.next) requires nonzero(host.bounds) requires nonzero(host.computed) requires nonzero(host.same_scalar) requires nonzero(host.arithmetic) requires nonzero(host.store) {
+ requires nonzero(host.seed) requires nonzero(host.next) requires nonzero(host.bounds) requires nonzero(host.computed) requires nonzero(host.same_scalar) requires nonzero(host.store) {
  host.seed(context,source,lower,upper);
+ ComputedIntegerType encoding=ComputedIntegerType(info.width,info.kind==1 ? 1 : 0,0,info.mask,info.bias);
  while(true){
   address id=host.next(context);if(id==address()){break;}
   RelationRange bounds=host.bounds(context,id);
@@ -1650,9 +1651,10 @@ extern "C" u32 relation_source_below(address context,address left,address right,
   RelationRange b=source_operand_range(context,expression.right,scalar,info,host.bounds,host.same_scalar);
   if(b.present==0){return 0;}
   if((expression.operation==3||expression.operation==4)&&b.lower.low<=info.bias&&info.bias<=b.upper.low){return 0;}
-  RelationRange value=host.arithmetic(context,expression.operation,a,b,(bounds.lower.low&info.mask)^info.bias,(bounds.upper.low&info.mask)^info.bias);
-  if(value.present==0){return 2;}
-  host.store(context,id,value.lower.low,value.upper.low);
+  BitRange value=computed_range_hull(expression.operation,encoding,BitRange(a.lower.low,a.upper.low),
+   BitRange(b.lower.low,b.upper.low),BitRange((bounds.lower.low&info.mask)^info.bias,(bounds.upper.low&info.mask)^info.bias));
+  if(value.lower>value.upper){return 2;}
+  host.store(context,id,value.lower,value.upper);
  }
  RelationRange a=host.bounds(context,left);RelationRange b=host.bounds(context,right);
  return range_less(a.upper,a.lower)||range_less(b.upper,b.lower)||range_less(a.upper,b.lower) ? 2 : 1;
