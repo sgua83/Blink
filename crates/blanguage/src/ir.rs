@@ -484,36 +484,7 @@ impl Ty {
     /// Compare the referenced storage with actual storage, whose derived
     /// array, record and variant slots may already have been materialized.
     pub fn same_layout(&self, other: &Self) -> bool {
-        let same_optional = |a: &Option<Box<Self>>, b: &Option<Box<Self>>| match (a, b) {
-            (Some(a), Some(b)) => a.same_layout(b),
-            (None, None) => true,
-            _ => false,
-        };
-        self.name == other.name
-            && self.values == other.values
-            && self.size == other.size
-            && self.align == other.align
-            && self.enumeration == other.enumeration
-            && self.result == other.result
-            && self.dataset == other.dataset
-            && self.cleanup == other.cleanup
-            && self.function == other.function
-            && self.arguments.len() == other.arguments.len()
-            && self.arguments.iter().zip(&other.arguments).all(|(a, b)| a.same_layout(b))
-            && self.fields.len() == other.fields.len()
-            && self.fields.iter().zip(&other.fields).all(|((a, at, x), (b, bt, y))| a == b && at == bt && x.same_layout(y))
-            && self.variants.len() == other.variants.len()
-            && self.variants.iter().zip(&other.variants).all(|(a, b)| a.name == b.name && a.discriminant == b.discriminant && a.ty.same_layout(&b.ty))
-            && same_optional(&self.array, &other.array)
-            && same_optional(&self.view, &other.view)
-            && (self.components == other.components
-                || if self.has_variants() {
-                    (self.components.len() == 1 || other.components.len() == 1)
-                        && self.components.first() == other.components.first()
-                } else {
-                    (self.array.is_some() || !self.fields.is_empty())
-                        && (self.components.is_empty() || other.components.is_empty())
-                })
+        layout::same_layout(self, other)
     }
     pub fn has_variants(&self) -> bool { !self.variants.is_empty() }
     pub(crate) fn variant_tag(&self, bits: u32) -> u32 {

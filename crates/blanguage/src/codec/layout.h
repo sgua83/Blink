@@ -112,3 +112,22 @@ struct SlotHost {
 extern "C" void fill_value_slots(address value, u32 complete, SlotHost host) on cpu
     requires nonzero(host.shape) requires nonzero(host.child) requires nonzero(host.prepare)
     requires nonzero(host.copy) requires nonzero(host.payload_word);
+
+struct LayoutMatchNode { LayoutNode layout; usize fields; usize variants; };
+struct LayoutMatchSource {
+    cfn<LayoutMatchNode,address> shape;
+    cfn<address,address,usize> argument;
+    cfn<u32,address,usize> value;
+    cfn<LayoutField,address,usize> field;
+    cfn<LayoutVariant,address,usize> variant;
+    cfn<address,address> array_element;
+    cfn<address,address> view_element;
+    cfn<u32,address,address> contracts_match;
+    cfn<u32,address,address,u32> slots_match;
+};
+
+extern "C" u32 same_layout(address left, address right, LayoutMatchSource source) on cpu
+    requires nonzero(source.shape) requires nonzero(source.argument) requires nonzero(source.value)
+    requires nonzero(source.field) requires nonzero(source.variant)
+    requires nonzero(source.array_element) requires nonzero(source.view_element)
+    requires nonzero(source.contracts_match) requires nonzero(source.slots_match);

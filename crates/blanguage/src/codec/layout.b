@@ -339,3 +339,80 @@ extern "C" void fill_value_slots(address value, u32 complete, SlotHost host) on 
         }
     }
 }
+
+bool same_layout_name(LayoutText left, LayoutText right) on cpu {
+    if (left.length != right.length) { return false; }
+    u64 index = 0u64;
+    while (index < left.length) {
+        u8 a = unsafe_position<u8>(unsafe_address(address_bits(left.bytes) + index));
+        u8 b = unsafe_position<u8>(unsafe_address(address_bits(right.bytes) + index));
+        if (a != b) { return false; }
+        index += 1u64;
+    }
+    return true;
+}
+
+extern "C" u32 same_layout(address left, address right, LayoutMatchSource source) on cpu
+    requires nonzero(source.shape) requires nonzero(source.argument) requires nonzero(source.value)
+    requires nonzero(source.field) requires nonzero(source.variant)
+    requires nonzero(source.array_element) requires nonzero(source.view_element)
+    requires nonzero(source.contracts_match) requires nonzero(source.slots_match) {
+    LayoutMatchNode a = source.shape(left);
+    LayoutMatchNode b = source.shape(right);
+    if (a.layout.flags != b.layout.flags || a.layout.size != b.layout.size
+        || a.layout.align != b.layout.align || a.layout.values != b.layout.values
+        || a.layout.arguments != b.layout.arguments || a.fields != b.fields
+        || a.variants != b.variants || !same_layout_name(a.layout.name, b.layout.name)
+        || source.contracts_match(left, right) == 0) {
+        return 0;
+    }
+
+    usize index = 0u64;
+    while (index < a.layout.values) {
+        if (source.value(left, index) != source.value(right, index)) { return 0; }
+        index += 1u64;
+    }
+    index = 0u64;
+    while (index < a.layout.arguments) {
+        if (same_layout(source.argument(left, index), source.argument(right, index), source) == 0) {
+            return 0;
+        }
+        index += 1u64;
+    }
+    index = 0u64;
+    while (index < a.fields) {
+        LayoutField x = source.field(left, index);
+        LayoutField y = source.field(right, index);
+        if (x.offset != y.offset || !same_layout_name(x.name, y.name)
+            || same_layout(x.value, y.value, source) == 0) {
+            return 0;
+        }
+        index += 1u64;
+    }
+    index = 0u64;
+    while (index < a.variants) {
+        LayoutVariant x = source.variant(left, index);
+        LayoutVariant y = source.variant(right, index);
+        if (x.discriminant != y.discriminant || !same_layout_name(x.name, y.name)
+            || same_layout(x.value, y.value, source) == 0) {
+            return 0;
+        }
+        index += 1u64;
+    }
+    if ((a.layout.flags & LAYOUT_ARRAY) != 0
+        && same_layout(source.array_element(left), source.array_element(right), source) == 0) {
+        return 0;
+    }
+    if ((a.layout.flags & LAYOUT_VIEW) != 0
+        && same_layout(source.view_element(left), source.view_element(right), source) == 0) {
+        return 0;
+    }
+
+    usize x = a.layout.components;
+    usize y = b.layout.components;
+    if (x == y && source.slots_match(left, right, 0) != 0) { return 1; }
+    if (a.variants != 0u64) {
+        return u32((x == 1u64 || y == 1u64) && source.slots_match(left, right, 1) != 0);
+    }
+    return u32(((a.layout.flags & LAYOUT_ARRAY) != 0 || a.fields != 0u64) && (x == 0u64 || y == 0u64));
+}

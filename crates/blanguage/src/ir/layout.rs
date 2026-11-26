@@ -264,7 +264,10 @@ unsafe extern "C" fn pop_part(out: *mut c_void) -> Part {
 }
 
 unsafe extern "C" fn node(value: *const c_void) -> LayoutNode {
-    let ty = unsafe { &*value.cast::<Ty>() };
+    layout_node(unsafe { &*value.cast::<Ty>() })
+}
+
+fn layout_node(ty: &Ty) -> LayoutNode {
     let flags = u32::from(ty.dataset.is_some())
         | (u32::from(ty.view.is_some()) << 1)
         | (u32::from(ty.array.is_some()) << 2)
@@ -443,4 +446,70 @@ unsafe extern "C" fn copy_slots(value: *mut c_void, child: *const c_void, base: 
 
 unsafe extern "C" fn append_payload_word(value: *mut c_void, offset: u32) {
     unsafe { &mut (*value.cast::<Ty>()).components }.push((super::Scalar::U32, offset));
+}
+
+#[repr(C)]
+struct LayoutMatchNode {
+    layout: LayoutNode,
+    fields: usize,
+    variants: usize,
+}
+
+#[repr(C)]
+struct LayoutMatchSource {
+    shape: unsafe extern "C" fn(*const c_void) -> LayoutMatchNode,
+    argument: unsafe extern "C" fn(*const c_void, usize) -> *const c_void,
+    value: unsafe extern "C" fn(*const c_void, usize) -> u32,
+    field: unsafe extern "C" fn(*const c_void, usize) -> LayoutField,
+    variant: unsafe extern "C" fn(*const c_void, usize) -> LayoutVariant,
+    array_element: unsafe extern "C" fn(*const c_void) -> *const c_void,
+    view_element: unsafe extern "C" fn(*const c_void) -> *const c_void,
+    contracts_match: unsafe extern "C" fn(*const c_void, *const c_void) -> u32,
+    slots_match: unsafe extern "C" fn(*const c_void, *const c_void, u32) -> u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "codec.layout::same_layout"]
+    fn b_same_layout(left: *const c_void, right: *const c_void, source: LayoutMatchSource) -> u32;
+}
+
+pub(super) fn same_layout(left: &Ty, right: &Ty) -> bool {
+    let source = LayoutMatchSource {
+        shape: match_node,
+        argument: argument_type,
+        value,
+        field,
+        variant,
+        array_element: array,
+        view_element: view,
+        contracts_match,
+        slots_match,
+    };
+    unsafe { b_same_layout(ptr::from_ref(left).cast(), ptr::from_ref(right).cast(), source) != 0 }
+}
+
+unsafe extern "C" fn match_node(value: *const c_void) -> LayoutMatchNode {
+    let ty = unsafe { &*value.cast::<Ty>() };
+    LayoutMatchNode {
+        layout: layout_node(ty),
+        fields: ty.fields.len(),
+        variants: ty.variants.len(),
+    }
+}
+
+unsafe extern "C" fn argument_type(value: *const c_void, index: usize) -> *const c_void {
+    let ty = unsafe { &*value.cast::<Ty>() };
+    ptr::from_ref(&ty.arguments[index]).cast()
+}
+
+unsafe extern "C" fn contracts_match(left: *const c_void, right: *const c_void) -> u32 {
+    let a = unsafe { &*left.cast::<Ty>() };
+    let b = unsafe { &*right.cast::<Ty>() };
+    u32::from(a.dataset == b.dataset && a.cleanup == b.cleanup && a.function == b.function)
+}
+
+unsafe extern "C" fn slots_match(left: *const c_void, right: *const c_void, tag_only: u32) -> u32 {
+    let a = unsafe { &(*left.cast::<Ty>()).components };
+    let b = unsafe { &(*right.cast::<Ty>()).components };
+    u32::from(if tag_only != 0 { a.first() == b.first() } else { a == b })
 }
