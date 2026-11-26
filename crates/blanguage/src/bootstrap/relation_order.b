@@ -617,6 +617,22 @@ extern "C" void project_return(address graph, address context, usize nodes, Walk
     }
 }
 
+extern "C" u32 expand_initial_definition(address context, usize count, InitialDefinitionHost host) on cpu
+    requires nonzero(host.initial) requires nonzero(host.begin) requires nonzero(host.edge)
+{
+    usize index = 0u64;
+    while (index < count && host.initial(context,index) == 0) {
+        index += 1u64;
+    }
+    if (index == count) { return 0; }
+    host.begin(context,index);
+    while (index < count) {
+        host.edge(context,index);
+        index += 1u64;
+    }
+    return 1;
+}
+
 const u32 REPLAY_FINISH_FRAME = 1;
 const u32 REPLAY_STOP = 2;
 

@@ -138,6 +138,15 @@ extern "C" void project_return(address graph, address context, usize nodes, Walk
     requires nonzero(output.node_facts) requires nonzero(output.node) requires nonzero(output.keep)
     requires nonzero(output.write) requires nonzero(output.field);
 
+struct InitialDefinitionHost {
+    cfn<u32,address,usize> initial;
+    cfn<void,address,usize> begin;
+    cfn<void,address,usize> edge;
+};
+
+extern "C" u32 expand_initial_definition(address context, usize count, InitialDefinitionHost host) on cpu
+    requires nonzero(host.initial) requires nonzero(host.begin) requires nonzero(host.edge);
+
 extern "C" u32 replay_writes(address graph, address context, usize frame,
     cfn<WalkFrame,address,usize> frame_at, cfn<u32,address,address,usize> write) on cpu
     requires nonzero(frame_at) requires nonzero(write);

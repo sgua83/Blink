@@ -1728,6 +1728,54 @@ unsafe extern "C" {
     ) -> u32;
 }
 
+#[repr(C)]
+struct InitialDefinitionHost {
+    initial: unsafe extern "C" fn(Borrowed, usize) -> u32,
+    begin: unsafe extern "C" fn(Slot, usize),
+    edge: unsafe extern "C" fn(Slot, usize),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.relation_order::expand_initial_definition"]
+    fn expand_initial_definition(context: Slot, count: usize, host: InitialDefinitionHost) -> u32;
+}
+
+struct InitialDefinition<'q, 'g> {
+    query: &'q Query<'g>,
+    original: &'g Node,
+    result: Node,
+}
+
+impl InitialDefinition<'_, '_> {
+    const HOST: InitialDefinitionHost = InitialDefinitionHost {
+        initial: Self::initial, begin: Self::begin, edge: Self::edge,
+    };
+
+    unsafe extern "C" fn initial(context: Borrowed, index: usize) -> u32 {
+        let definition = unsafe { &*context.cast::<Self>() };
+        u32::from(matches!(definition.original.edges[index].op, Op::Initial { .. }))
+    }
+
+    unsafe extern "C" fn begin(context: Slot, first: usize) {
+        let definition = unsafe { &mut *context.cast::<Self>() };
+        let original = definition.original;
+        definition.result.seeds = original.seeds.clone();
+        definition.result.edges.reserve(original.edges.len());
+        definition.result.edges.extend_from_slice(&original.edges[..first]);
+    }
+
+    unsafe extern "C" fn edge(context: Slot, index: usize) {
+        let definition = unsafe { &mut *context.cast::<Self>() };
+        let edge = &definition.original.edges[index];
+        match &edge.op {
+            Op::Initial { origin, frame } => {
+                definition.query.replay_initial(edge, origin, *frame, Some(&mut definition.result));
+            }
+            _ => definition.result.edges.push(edge.clone()),
+        }
+    }
+}
+
 struct Query<'g> {
     graph: &'g Graph,
     relation: Arc<Graph>,
@@ -1795,102 +1843,108 @@ impl<'g> Query<'g> {
     }
 
     fn local_definition(&self, id: usize) -> Cow<'g, Node> {
-        let node = &self.graph.nodes[id];
-        if !node.edges.iter().any(|edge| matches!(edge.op, Op::Initial { .. })) {
-            return Cow::Borrowed(node);
-        }
-        let mut result = Node { seeds: node.seeds.clone(), edges: Vec::with_capacity(node.edges.len()) };
-        for edge in &node.edges {
-            let Op::Initial{origin,frame}=&edge.op else{result.edges.push(edge.clone());continue;};
-            let path = edge.when.path();
-            let execution = edge.when.condition();
-            let position = content_position(origin, 0);
-            let mut earlier = bounds::Condition::constant(true);
-            self.replay_writes(*frame, |write| {
-                let targets = self.node(write.target);
-                let targets = targets.sources.entries().filter_map(|(target, selected)| {
-                    let yes = write.when.assume(&bounds::Clause::both(path, &selected), true);
-                    yes.possible().then_some((target, yes))
-                });
-                let Some(fields) = &write.fields else {
-                    // A possible external write contributes a source while retaining the earlier value.
-                    for (target, yes) in targets {
-                        let affected = match target {
-                            Origin::Position(target) if target.symbolic_input() && !target.has_local() => false,
-                            Origin::Position(target) => address::MemoryEffect::of(
-                                &Borrow::source(Origin::Position(target.clone())), super::super::Access::Write, None,
-                            ).written_bytes(position.as_ref().unwrap(), Scalar::U64, None) != 0,
-                            Origin::External => true,
-                            _ => false,
-                        };
-                        if affected {
-                            result.seeds.sources.union_when(Origin::External, &earlier.assume(&yes, true));
-                        }
-                    }
-                    return WriteReplay::Continue;
-                };
+        let original = &self.graph.nodes[id];
+        let mut definition = InitialDefinition { query: self, original, result: Node::default() };
+        let expanded = unsafe {
+            expand_initial_definition(
+                ptr::from_mut(&mut definition).cast(), original.edges.len(), InitialDefinition::HOST,
+            )
+        };
+        if expanded != 0 { Cow::Owned(definition.result) } else { Cow::Borrowed(original) }
+    }
 
-                let mut hit = bounds::Clause::impossible();
-                let mut miss = bounds::Clause::impossible();
+    fn replay_initial(
+        &self, edge: &Edge, origin: &address::Origin, frame: Option<usize>, mut output: Option<&mut Node>,
+    ) -> bool {
+        let path = edge.when.path();
+        let execution = std::cell::LazyCell::new(|| edge.when.condition());
+        let position = content_position(origin, 0);
+        let publishes = output.is_some();
+        let mut earlier = bounds::Condition::constant(true);
+        let complete = self.replay_writes(frame, |write| {
+            let targets = self.node(write.target);
+            let targets = targets.sources.entries().filter_map(|(target, selected)| {
+                let yes = write.when.assume(&bounds::Clause::both(path, &selected), true);
+                yes.possible().then_some((target, yes))
+            });
+            let Some(fields) = &write.fields else {
+                // A possible external write contributes a source while retaining the earlier value.
                 for (target, yes) in targets {
-                    let mut complete = false;
-                    if let Origin::Position(target) = target {
-                        // A formal input cannot reach this invocation's private slots.
-                        if target.symbolic_input() && !target.has_local() {
-                            miss = bounds::Clause::either(&miss, &yes);
-                            continue;
-                        }
-                        for (word, value) in fields {
-                            if let Some(full) = content_write_overlap(
-                                Some((origin, 0)), position.as_ref(), target, *word, || Some(&yes),
-                            ) {
-                                result.edges.push(Edge {
-                                    from: *value,
-                                    op: Op::Identity,
-                                    when: {
-                                        let visible = earlier.clone()
-                                            .logical(bounds::Condition::guard(yes.clone()), false);
-                                        // The selected write already includes the read path.
-                                        RelationPath::Cases(bounds::Condition::paths(
-                                            visible.assume(&bounds::Clause::default(), true),
-                                            bounds::Clause::either(
-                                                &visible.assume(&bounds::Clause::default(), false),
-                                                &execution.assume(&bounds::Clause::default(), false),
-                                            ),
-                                        ))
-                                    },
-                                });
-                                hit = bounds::Clause::either(&hit, &yes);
-                                complete |= full;
-                            }
-                        }
-                    } else if matches!(target, Origin::External) {
+                    let affected = match target {
+                        Origin::Position(target) if target.symbolic_input() && !target.has_local() => false,
+                        Origin::Position(target) => address::MemoryEffect::of(
+                            &Borrow::source(Origin::Position(target.clone())), super::super::Access::Write, None,
+                        ).written_bytes(position.as_ref().unwrap(), Scalar::U64, None) != 0,
+                        Origin::External => true,
+                        _ => false,
+                    };
+                    if affected {
+                        let Some(result) = output.as_deref_mut() else { return WriteReplay::Stop; };
                         result.seeds.sources.union_when(Origin::External, &earlier.assume(&yes, true));
                     }
-                    if !complete {
-                        miss = bounds::Clause::either(&miss, &yes);
-                    }
                 }
+                return WriteReplay::Continue;
+            };
+
+            let mut hit = bounds::Clause::impossible();
+            let mut miss = bounds::Clause::impossible();
+            for (target, yes) in targets {
+                let mut covered = false;
+                if let Origin::Position(target) = target {
+                    // A formal input cannot reach this invocation's private slots.
+                    if target.symbolic_input() && !target.has_local() {
+                        if publishes { miss = bounds::Clause::either(&miss, &yes); }
+                        continue;
+                    }
+                    for (word, value) in fields {
+                        if let Some(full) = content_write_overlap(
+                            Some((origin, 0)), position.as_ref(), target, *word, || Some(&yes),
+                        ) {
+                            let Some(result) = output.as_deref_mut() else { return WriteReplay::Stop; };
+                            let visible = earlier.clone().logical(bounds::Condition::guard(yes.clone()), false);
+                            // The selected write already includes the read path.
+                            let when = RelationPath::Cases(bounds::Condition::paths(
+                                visible.assume(&bounds::Clause::default(), true),
+                                bounds::Clause::either(
+                                    &visible.assume(&bounds::Clause::default(), false),
+                                    &execution.assume(&bounds::Clause::default(), false),
+                                ),
+                            ));
+                            result.edges.push(Edge { from: *value, op: Op::Identity, when });
+                            hit = bounds::Clause::either(&hit, &yes);
+                            covered |= full;
+                        }
+                    }
+                } else if matches!(target, Origin::External) {
+                    let Some(result) = output.as_deref_mut() else { return WriteReplay::Stop; };
+                    result.seeds.sources.union_when(Origin::External, &earlier.assume(&yes, true));
+                }
+                if publishes && !covered {
+                    miss = bounds::Clause::either(&miss, &yes);
+                }
+            }
+            if publishes {
                 let no = bounds::Clause::either(&write.when.assume(path, false), &miss);
                 let previous = std::mem::take(&mut earlier);
                 earlier = previous.logical(bounds::Condition::paths(hit, no).negate(), false);
-                WriteReplay::Continue
-            });
-            result.edges.push(Edge { from: edge.from, op: Op::Identity, when: RelationPath::Cases(earlier.logical(execution.into_owned(), false)) });
+            }
+            WriteReplay::Continue
+        });
+        if let Some(result) = output {
+            let when = RelationPath::Cases(earlier.logical((*execution).clone().into_owned(), false));
+            result.edges.push(Edge { from: edge.from, op: Op::Identity, when });
         }
-        Cow::Owned(result)
+        complete
     }
+
     unsafe extern "C" fn binding_next(context: Borrowed, id: usize) -> usize {
         let query = unsafe { &*context.cast::<Self>() };
         let Some(edge) = query.graph.forwarding_edge(id) else {
             return usize::MAX;
         };
-        match edge.op {
+        match &edge.op {
             Op::Identity => edge.from,
-            Op::Initial { .. } => match query.local_definition(id).unseeded_edge() {
-                Some(expanded) if expanded.op == Op::Identity => expanded.from,
-                _ => usize::MAX,
-            },
+            Op::Initial { origin, frame } if query.replay_initial(edge, origin, *frame, None) => edge.from,
             _ => usize::MAX,
         }
     }
