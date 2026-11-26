@@ -5108,9 +5108,9 @@ PacketPlanFlow packet_plan_uniform_block(address context, Span code, PacketPlanH
     u64 index = 0u64;
     while (index < code.count && address_bits(flow.next.bytes) != 0u64) {
         PacketPlanState current = flow.next;
-        flow.next = packet_plan_empty();
         View value = host.ir.inspect(Node(packet_plan_instruction(code, index), N_INSTRUCTION));
-        PacketPlanFlow step = packet_plan_no_flow();
+        index += 1u64;
+        PacketPlanFlow step;
         if (value.tag == OP_BRANCH) {
             PacketPlanFlow yes = packet_plan_uniform_block(context, value.first, header, packet_plan_clone(current), definitions, record, host);
             PacketPlanFlow no = packet_plan_uniform_block(context, value.second, header, current, definitions, record, host);
@@ -5122,11 +5122,17 @@ PacketPlanFlow packet_plan_uniform_block(address context, Span code, PacketPlanH
             step.next = packet_plan_merge(step.next, step.exits);
             step.exits = packet_plan_empty();
         } else if (value.tag == OP_BREAK_VALUE) {
-            step.breaks = current;
+            flow.breaks = packet_plan_merge(flow.breaks, current);
+            flow.next = packet_plan_empty();
+            break;
         } else if (value.tag == OP_CONTINUE_VALUE) {
-            step.continues = current;
+            flow.continues = packet_plan_merge(flow.continues, current);
+            flow.next = packet_plan_empty();
+            break;
         } else if (value.tag == OP_EXIT_VALUE) {
-            step.exits = current;
+            flow.exits = packet_plan_merge(flow.exits, current);
+            flow.next = packet_plan_empty();
+            break;
         } else {
             u32 uniform = 0;
             if (value.tag == OP_LOAD) {
@@ -5149,10 +5155,12 @@ PacketPlanFlow packet_plan_uniform_block(address context, Span code, PacketPlanH
             if (value.tag == OP_STORE_LOCAL) {
                 packet_plan_set_byte(current.bytes, header.registers + value.a, packet_plan_byte(current.bytes, value.b));
             }
-            step.next = current;
+            continue;
         }
-        flow = packet_plan_join(flow, step);
-        index += 1u64;
+        flow.next = step.next;
+        flow.breaks = packet_plan_merge(flow.breaks, step.breaks);
+        flow.continues = packet_plan_merge(flow.continues, step.continues);
+        flow.exits = packet_plan_merge(flow.exits, step.exits);
     }
     return flow;
 }
