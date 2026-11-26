@@ -2,8 +2,6 @@
 use super::{Argument, CompileError};
 use std::{ffi::OsString, fmt::Write, path::Path};
 
-pub(super) const USAGE: &str = "用法：bc x64 <instruction-bytes> [--ip file-base-ip] [--offset bytes] [--length bytes]";
-
 #[repr(C)]
 struct X64CommandLine {
     error: CompileError,
@@ -20,7 +18,7 @@ unsafe extern "C" {
 }
 
 pub(super) fn print(args: &[OsString], arguments: &[Argument]) -> Result<(), Box<dyn std::error::Error>> {
-    let path = blanguage::canonicalize_source_path(Path::new(args.get(1).ok_or(USAGE)?))?;
+    let path = blanguage::canonicalize_source_path(Path::new(args.get(1).ok_or_else(|| CompileError::X64_USAGE.message(args, 0))?))?;
     let line = unsafe { parse_x64_arguments(arguments.as_ptr(), arguments.len()) };
     line.error.result(args, line.error_index)?;
     let raw = std::fs::read(&path)?;

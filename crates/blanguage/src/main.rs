@@ -76,17 +76,8 @@ enum CompileCommand {
 }
 
 #[derive(Clone, Copy)]
-#[repr(u32)]
-enum CompileError {
-    None, MissingResourceOperand, ResourceText, DuplicateJobs, DuplicateCpus,
-    DuplicateParameterLimit, EmptyNumber, InvalidNumber, Overflow, ZeroJobs,
-    CpuSyntax, ResourceConflict, InputsUsage, CommandText, MissingSource,
-    UnknownCommand, MissingOptionOperand, OptionText, UnknownOption, BudgetText,
-    EntryText, InstanceText, BudgetWithoutReport, MissingOutput, CodeUsage, ObjectCodeUsage,
-    IrUsage, IrModeRepeated, IrFunctionRepeated, IrStageRepeated, IrOption, IrFunctionMode,
-    IrStageMode, IrInstanceMode,
-    LayoutUsage = 35, LayoutOption, X64Usage, X64Option, X64Repeated, ImageUsage, SpirvUsage,
-}
+#[repr(transparent)]
+struct CompileError(u32);
 
 #[derive(Clone, Copy, PartialEq)]
 #[repr(u32)]
@@ -125,54 +116,63 @@ unsafe extern "C" {
     ) -> CompileCommandLine;
 }
 
+#[repr(C)]
+struct CompileDiagnosticHost {
+    context: *mut c_void,
+    text: unsafe extern "C" fn(*mut c_void, *const u8, usize),
+    argument: unsafe extern "C" fn(*mut c_void, usize),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.cli::render_compile_error"]
+    fn render_compile_error(error: CompileError, index: usize, host: CompileDiagnosticHost);
+    #[link_name = "bootstrap.cli::write_compile_help"]
+    fn write_compile_help(context: *mut c_void, emit: unsafe extern "C" fn(*mut c_void, *const u8, usize));
+}
+
+struct CompileDiagnostic<'a> {
+    args: &'a [OsString],
+    message: String,
+}
+
+unsafe extern "C" fn append_compile_text(context: *mut c_void, data: *const u8, length: usize) {
+    let output = unsafe { &mut *context.cast::<CompileDiagnostic<'_>>() };
+    // The B command module borrows a UTF-8 literal for this call.
+    let text = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, length)) };
+    output.message.push_str(text);
+}
+
+unsafe extern "C" fn append_compile_argument(context: *mut c_void, index: usize) {
+    let output = unsafe { &mut *context.cast::<CompileDiagnostic<'_>>() };
+    output.message.push_str(&output.args[index].to_string_lossy());
+}
+
+unsafe extern "C" fn print_compile_help(_: *mut c_void, data: *const u8, length: usize) {
+    // The B command module borrows a UTF-8 literal for this call.
+    let text = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, length)) };
+    print!("{text}");
+}
+
 impl CompileError {
+    const IR_USAGE: Self = Self(26);
+    const LAYOUT_USAGE: Self = Self(35);
+    const X64_USAGE: Self = Self(37);
+
+    fn message(self, args: &[OsString], index: usize) -> Box<dyn std::error::Error> {
+        let mut output = CompileDiagnostic { args, message: String::new() };
+        unsafe {
+            render_compile_error(self, index, CompileDiagnosticHost {
+                context: std::ptr::from_mut(&mut output).cast(),
+                text: append_compile_text,
+                argument: append_compile_argument,
+            });
+        }
+        output.message.into()
+    }
+
     fn result(self, args: &[OsString], index: usize) -> Result<(), Box<dyn std::error::Error>> {
-        let message = match self {
-            Self::None => return Ok(()),
-            Self::MissingResourceOperand => return Err(format!("{}缺少参数", args[index].to_string_lossy()).into()),
-            Self::ResourceText => "编译资源参数不是UTF-8文本",
-            Self::DuplicateJobs => "--jobs不能重复指定",
-            Self::DuplicateCpus => "--cpus不能重复指定",
-            Self::DuplicateParameterLimit => "--max-parameter-bytes不能重复指定",
-            Self::EmptyNumber => "cannot parse integer from empty string",
-            Self::InvalidNumber => "invalid digit found in string",
-            Self::Overflow => "number too large to fit in target type",
-            Self::ZeroJobs => "number would be zero for non-zero type",
-            Self::CpuSyntax => "CPU写为组:编号",
-            Self::ResourceConflict => "--jobs与--cpus选择一种编译资源声明",
-            Self::InputsUsage => "用法：bc inputs <compiled.obj|entry.blbi>",
-            Self::CommandText => "命令不是UTF-8文本",
-            Self::MissingSource => "缺少 .b 文件",
-            Self::UnknownCommand => return Err(format!(
-                "未知命令 {}；编译使用 bc -c，链接使用 blink", args[index].to_string_lossy()
-            ).into()),
-            Self::MissingOptionOperand => "编译选项缺少参数",
-            Self::OptionText => "编译选项不是UTF-8文本",
-            Self::UnknownOption => return Err(format!("未知编译选项 {}", args[index].to_string_lossy()).into()),
-            Self::BudgetText => "栈预算不是UTF-8文本",
-            Self::EntryText => "入口不是UTF-8文本",
-            Self::InstanceText => "实例不是UTF-8文本",
-            Self::BudgetWithoutReport => "--stack-budget需要--stack-report输出",
-            Self::MissingOutput => "缺少 -o 目标文件路径",
-            Self::CodeUsage => "usage: bc code <entry.blbi> [--observations <ranges.blcr>] [--source-range start:end] | bc code --image <deployment.blri> [--observations <ranges.blcr>] [--source-range start:end]",
-            Self::ObjectCodeUsage => "usage: bc code --object <compiled.obj> [--observations <ranges.blcf>] [--section number | --function exact-symbol] [--source-range start:end]",
-            Self::IrUsage => ir_facts::USAGE,
-            Self::IrModeRepeated => "IR编译模式只能指定一次",
-            Self::IrFunctionRepeated => "--function不能重复指定",
-            Self::IrStageRepeated => "--stage不能重复指定",
-            Self::IrOption => return Err(format!("未知IR选项 {}；{}", args[index].to_string_lossy(), ir_facts::USAGE).into()),
-            Self::IrFunctionMode => "--function用于普通应用／模块，--stage用于--program",
-            Self::IrStageMode => "--stage需要--program",
-            Self::IrInstanceMode => "--instance用于模块；入口实例直接写在--entry／--program值中",
-            Self::LayoutUsage => layout_facts::USAGE,
-            Self::LayoutOption => return Err(format!("未知布局选项 {}；{}", args[index].to_string_lossy(), layout_facts::USAGE).into()),
-            Self::X64Usage => x64_facts::USAGE,
-            Self::X64Option => return Err(format!("未知x64查询选项 {}；{}", args[index].to_string_lossy(), x64_facts::USAGE).into()),
-            Self::X64Repeated => return Err(format!("{}不能重复指定", args[index].to_string_lossy()).into()),
-            Self::ImageUsage => "用法：bc image <entry.blbi> -o <deployment.blri>",
-            Self::SpirvUsage => "usage: bc spirv <module.spv>",
-        };
-        Err(message.into())
+        if self.0 == 0 { return Ok(()); }
+        Err(self.message(args, index))
     }
 }
 
@@ -223,9 +223,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
         CompileCommand::Help => {
-            println!(
-            "Blink compiler\nbc --version\nbc inputs <compiled.obj|entry.blbi>\nbc image <entry.blbi> -o <deployment.blri>\nbc code <entry.blbi> [--observations <ranges.blcr>]\nbc code --image <deployment.blri> [--observations <ranges.blcr>]\nbc code --object <compiled.obj> [--observations <ranges.blcf>] [--section number | --function exact-symbol]\nbc x64 <instruction-bytes> [--ip file-base-ip] [--offset bytes] [--length bytes]\nbc spirv <module.spv>\nbc ir <module.b> [-I root] [--module | --program name | --entry name] [--function qualified-name | --stage index] [--import object|archive] [--instance name]\nbc layout <module.h|module.b> <type> [-I module-root] [--field path]\nGlobal compile options before command: [--jobs N | --cpus group:number,...] [--max-parameter-bytes N]\nbc -c <module.b> -o <output.obj> [-I module-root] [--entry main | --program name | --module] [--import module.obj|library.lib] [--instance function<args>] [--stack-report report.txt [--stack-budget bytes]]\nbc check <module.b> [module-root] [program<args>]\nbc build <module.b> <output-directory> [module-root] [program<args>]\nLink separately: blink <input.obj> -o <output.exe|output.dll>"
-        );
+            unsafe { write_compile_help(std::ptr::null_mut(), print_compile_help); }
             println!("{}", worker_protocol::BOOTSTRAP_JOBSERVER_HELP);
             return Ok(());
         }

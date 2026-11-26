@@ -390,7 +390,7 @@ LinkCommandLine parse_link_arguments(address arguments, u64 count, address conte
     return result;
 }
 
-void link_message<const N:u32>(address context, cfn<void,address,address,u64> emit, read array<u8,N> text) on cpu
+void command_message<const N:u32>(address context, cfn<void,address,address,u64> emit, read array<u8,N> text) on cpu
     requires nonzero(emit) {
     emit(context, address_of(text[0]), u64(N));
 }
@@ -398,31 +398,31 @@ void link_message<const N:u32>(address context, cfn<void,address,address,u64> em
 void link_error(LinkArgumentError error, LinkCommandHost host) on cpu
     requires nonzero(host.diagnostic) {
     if (error == LinkArgumentError::ProductConflict) {
-        link_message(host.context, host.diagnostic, "blink只能选择一种产物命令");
+        command_message(host.context, host.diagnostic, "blink只能选择一种产物命令");
     }
     else if (error == LinkArgumentError::MissingBudget) {
-        link_message(host.context, host.diagnostic, "--stack-budget缺少字节数");
+        command_message(host.context, host.diagnostic, "--stack-budget缺少字节数");
     }
     else if (error == LinkArgumentError::BudgetText) {
-        link_message(host.context, host.diagnostic, "--stack-budget需要十进制字节数");
+        command_message(host.context, host.diagnostic, "--stack-budget需要十进制字节数");
     }
     else if (error == LinkArgumentError::EmptyBudget) {
-        link_message(host.context, host.diagnostic, "cannot parse integer from empty string");
+        command_message(host.context, host.diagnostic, "cannot parse integer from empty string");
     }
     else if (error == LinkArgumentError::InvalidBudget) {
-        link_message(host.context, host.diagnostic, "invalid digit found in string");
+        command_message(host.context, host.diagnostic, "invalid digit found in string");
     }
     else if (error == LinkArgumentError::BudgetOverflow) {
-        link_message(host.context, host.diagnostic, "number too large to fit in target type");
+        command_message(host.context, host.diagnostic, "number too large to fit in target type");
     }
     else if (error == LinkArgumentError::MissingOutputOperand) {
-        link_message(host.context, host.diagnostic, "-o 缺少输出路径");
+        command_message(host.context, host.diagnostic, "-o 缺少输出路径");
     }
     else if (error == LinkArgumentError::BudgetWithoutReport) {
-        link_message(host.context, host.diagnostic, "--stack-budget只用于--stack-report命令");
+        command_message(host.context, host.diagnostic, "--stack-budget只用于--stack-report命令");
     }
     else if (error == LinkArgumentError::MissingOutput) {
-        link_message(host.context, host.diagnostic, "用法：blink <input.obj|library.lib>... -o <output.exe|output.dll>；B接口库使用 --archive，原生宿主库使用 --host-archive");
+        command_message(host.context, host.diagnostic, "用法：blink <input.obj|library.lib>... -o <output.exe|output.dll>；B接口库使用 --archive，原生宿主库使用 --host-archive");
     }
 }
 
@@ -439,7 +439,7 @@ extern "C" void run_link_command(address arguments, u64 count, LinkCommandHost h
     if (line.error != LinkArgumentError::None) {
         link_error(line.error, host);
     } else if (line.command == LinkCommand::Help) {
-        link_message(host.context, host.help, "Blink linker\nblink --version\nblink <input.obj|library.lib>... -o <output.exe|output.dll>\nblink --archive <module.obj|library.lib>... -o <library.lib>\nblink --host-archive <module.obj|library.lib>... -o <host.lib>\nblink --stack-report <application.obj|library.lib>... -o <report.txt> [--stack-budget bytes]\n");
+        command_message(host.context, host.help, "Blink linker\nblink --version\nblink <input.obj|library.lib>... -o <output.exe|output.dll>\nblink --archive <module.obj|library.lib>... -o <library.lib>\nblink --host-archive <module.obj|library.lib>... -o <host.lib>\nblink --stack-report <application.obj|library.lib>... -o <report.txt> [--stack-budget bytes]\n");
     } else if (line.command == LinkCommand::Version) {
         host.version(host.context);
     } else if (line.command == LinkCommand::StackReport) {
@@ -457,6 +457,110 @@ extern "C" void run_link_command(address arguments, u64 count, LinkCommandHost h
     } else if (host.link(host.context, line.output_index) != 0) {
         link_complete(host, line.output_index, "linked");
     }
+}
+
+extern "C" void render_compile_error(CompileError error, u64 index, CompileDiagnosticHost host) on cpu
+    requires nonzero(host.text) requires nonzero(host.argument) {
+    if (error == CompileError::MissingResourceOperand) {
+        host.argument(host.context, index);
+        command_message(host.context, host.text, "缺少参数");
+    } else if (error == CompileError::ResourceText) {
+        command_message(host.context, host.text, "编译资源参数不是UTF-8文本");
+    } else if (error == CompileError::DuplicateJobs) {
+        command_message(host.context, host.text, "--jobs不能重复指定");
+    } else if (error == CompileError::DuplicateCpus) {
+        command_message(host.context, host.text, "--cpus不能重复指定");
+    } else if (error == CompileError::DuplicateParameterLimit) {
+        command_message(host.context, host.text, "--max-parameter-bytes不能重复指定");
+    } else if (error == CompileError::EmptyNumber) {
+        command_message(host.context, host.text, "cannot parse integer from empty string");
+    } else if (error == CompileError::InvalidNumber) {
+        command_message(host.context, host.text, "invalid digit found in string");
+    } else if (error == CompileError::Overflow) {
+        command_message(host.context, host.text, "number too large to fit in target type");
+    } else if (error == CompileError::ZeroJobs) {
+        command_message(host.context, host.text, "number would be zero for non-zero type");
+    } else if (error == CompileError::CpuSyntax) {
+        command_message(host.context, host.text, "CPU写为组:编号");
+    } else if (error == CompileError::ResourceConflict) {
+        command_message(host.context, host.text, "--jobs与--cpus选择一种编译资源声明");
+    } else if (error == CompileError::InputsUsage) {
+        command_message(host.context, host.text, "用法：bc inputs <compiled.obj|entry.blbi>");
+    } else if (error == CompileError::CommandText) {
+        command_message(host.context, host.text, "命令不是UTF-8文本");
+    } else if (error == CompileError::MissingSource) {
+        command_message(host.context, host.text, "缺少 .b 文件");
+    } else if (error == CompileError::UnknownCommand) {
+        command_message(host.context, host.text, "未知命令 ");
+        host.argument(host.context, index);
+        command_message(host.context, host.text, "；编译使用 bc -c，链接使用 blink");
+    } else if (error == CompileError::MissingOptionOperand) {
+        command_message(host.context, host.text, "编译选项缺少参数");
+    } else if (error == CompileError::OptionText) {
+        command_message(host.context, host.text, "编译选项不是UTF-8文本");
+    } else if (error == CompileError::UnknownOption) {
+        command_message(host.context, host.text, "未知编译选项 ");
+        host.argument(host.context, index);
+    } else if (error == CompileError::BudgetText) {
+        command_message(host.context, host.text, "栈预算不是UTF-8文本");
+    } else if (error == CompileError::EntryText) {
+        command_message(host.context, host.text, "入口不是UTF-8文本");
+    } else if (error == CompileError::InstanceText) {
+        command_message(host.context, host.text, "实例不是UTF-8文本");
+    } else if (error == CompileError::BudgetWithoutReport) {
+        command_message(host.context, host.text, "--stack-budget需要--stack-report输出");
+    } else if (error == CompileError::MissingOutput) {
+        command_message(host.context, host.text, "缺少 -o 目标文件路径");
+    } else if (error == CompileError::CodeUsage) {
+        command_message(host.context, host.text, "usage: bc code <entry.blbi> [--observations <ranges.blcr>] [--source-range start:end] | bc code --image <deployment.blri> [--observations <ranges.blcr>] [--source-range start:end]");
+    } else if (error == CompileError::ObjectCodeUsage) {
+        command_message(host.context, host.text, "usage: bc code --object <compiled.obj> [--observations <ranges.blcf>] [--section number | --function exact-symbol] [--source-range start:end]");
+    } else if (error == CompileError::IrUsage || error == CompileError::IrOption) {
+        if (error == CompileError::IrOption) {
+            command_message(host.context, host.text, "未知IR选项 ");
+            host.argument(host.context, index);
+            command_message(host.context, host.text, "；");
+        }
+        command_message(host.context, host.text, "用法：bc ir <module.b> [-I root] [--module | --program name | --entry name] [--function qualified-name | --stage index] [--import object|archive] [--instance name]");
+    } else if (error == CompileError::IrModeRepeated) {
+        command_message(host.context, host.text, "IR编译模式只能指定一次");
+    } else if (error == CompileError::IrFunctionRepeated) {
+        command_message(host.context, host.text, "--function不能重复指定");
+    } else if (error == CompileError::IrStageRepeated) {
+        command_message(host.context, host.text, "--stage不能重复指定");
+    } else if (error == CompileError::IrFunctionMode) {
+        command_message(host.context, host.text, "--function用于普通应用／模块，--stage用于--program");
+    } else if (error == CompileError::IrStageMode) {
+        command_message(host.context, host.text, "--stage需要--program");
+    } else if (error == CompileError::IrInstanceMode) {
+        command_message(host.context, host.text, "--instance用于模块；入口实例直接写在--entry／--program值中");
+    } else if (error == CompileError::LayoutUsage || error == CompileError::LayoutOption) {
+        if (error == CompileError::LayoutOption) {
+            command_message(host.context, host.text, "未知布局选项 ");
+            host.argument(host.context, index);
+            command_message(host.context, host.text, "；");
+        }
+        command_message(host.context, host.text, "用法：bc layout <module.h|module.b> <type> [-I module-root] [--field path]");
+    } else if (error == CompileError::X64Usage || error == CompileError::X64Option) {
+        if (error == CompileError::X64Option) {
+            command_message(host.context, host.text, "未知x64查询选项 ");
+            host.argument(host.context, index);
+            command_message(host.context, host.text, "；");
+        }
+        command_message(host.context, host.text, "用法：bc x64 <instruction-bytes> [--ip file-base-ip] [--offset bytes] [--length bytes]");
+    } else if (error == CompileError::X64Repeated) {
+        host.argument(host.context, index);
+        command_message(host.context, host.text, "不能重复指定");
+    } else if (error == CompileError::ImageUsage) {
+        command_message(host.context, host.text, "用法：bc image <entry.blbi> -o <deployment.blri>");
+    } else if (error == CompileError::SpirvUsage) {
+        command_message(host.context, host.text, "usage: bc spirv <module.spv>");
+    }
+}
+
+extern "C" void write_compile_help(address context, cfn<void,address,address,u64> emit) on cpu
+    requires nonzero(emit) {
+    command_message(context, emit, "Blink compiler\nbc --version\nbc inputs <compiled.obj|entry.blbi>\nbc image <entry.blbi> -o <deployment.blri>\nbc code <entry.blbi> [--observations <ranges.blcr>]\nbc code --image <deployment.blri> [--observations <ranges.blcr>]\nbc code --object <compiled.obj> [--observations <ranges.blcf>] [--section number | --function exact-symbol]\nbc x64 <instruction-bytes> [--ip file-base-ip] [--offset bytes] [--length bytes]\nbc spirv <module.spv>\nbc ir <module.b> [-I root] [--module | --program name | --entry name] [--function qualified-name | --stage index] [--import object|archive] [--instance name]\nbc layout <module.h|module.b> <type> [-I module-root] [--field path]\nGlobal compile options before command: [--jobs N | --cpus group:number,...] [--max-parameter-bytes N]\nbc -c <module.b> -o <output.obj> [-I module-root] [--entry main | --program name | --module] [--import module.obj|library.lib] [--instance function<args>] [--stack-report report.txt [--stack-budget bytes]]\nbc check <module.b> [module-root] [program<args>]\nbc build <module.b> <output-directory> [module-root] [program<args>]\nLink separately: blink <input.obj> -o <output.exe|output.dll>\n");
 }
 
 enum ResourceOption:u32 { None=0; Jobs=1; Cpus=2; ParameterLimit=3; };

@@ -43,6 +43,17 @@ enum CompileError:u32 {
     X64Repeated=39; ImageUsage=40; SpirvUsage=41;
 };
 
+struct CompileDiagnosticHost {
+    address context;
+    cfn<void,address,address,u64> text;
+    cfn<void,address,u64> argument;
+};
+
+extern "C" void render_compile_error(CompileError error, u64 index, CompileDiagnosticHost host) on cpu
+    requires nonzero(host.text) requires nonzero(host.argument);
+extern "C" void write_compile_help(address context, cfn<void,address,address,u64> emit) on cpu
+    requires nonzero(emit);
+
 enum EntryMode:u32 { Module=0; Application=1; Program=2; };
 
 struct OperandSink {

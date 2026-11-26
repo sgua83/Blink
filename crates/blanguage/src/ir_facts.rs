@@ -3,8 +3,6 @@ use super::{Argument, CompileError, EntryMode, OperandSink, Operands, parsed_tex
 use crate::json::string;
 use std::{ffi::OsString, fmt::Write, path::Path};
 
-pub(super) const USAGE: &str = "用法：bc ir <module.b> [-I root] [--module | --program name | --entry name] [--function qualified-name | --stage index] [--import object|archive] [--instance name]";
-
 #[repr(C)]
 struct IrCommandLine {
     mode: EntryMode,
@@ -25,7 +23,7 @@ unsafe extern "C" {
 pub(super) fn print(
     compiler: &blanguage::Compiler, args: &[OsString], arguments: &[Argument],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let path = blanguage::canonicalize_source_path(Path::new(args.get(1).ok_or(USAGE)?))?;
+    let path = blanguage::canonicalize_source_path(Path::new(args.get(1).ok_or_else(|| CompileError::IR_USAGE.message(args, 0))?))?;
     let mut operands = Operands::default();
     let line = unsafe { parse_ir_arguments(arguments.as_ptr(), arguments.len(), operands.sink()) };
     // Preserve path errors from imports encountered before the reported syntax error.
@@ -41,7 +39,7 @@ pub(super) fn print(
             explicit_root = blanguage::canonicalize_source_path(Path::new(root))?;
             &explicit_root
         }
-        None => path.parent().ok_or(USAGE)?,
+        None => path.parent().ok_or_else(|| CompileError::IR_USAGE.message(args, 0))?,
     };
     let entry = if line.entry_index == args.len() { "" } else { text(line.entry_index) };
     let function = (line.function_index != args.len()).then(|| text(line.function_index));

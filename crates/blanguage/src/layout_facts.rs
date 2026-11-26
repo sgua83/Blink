@@ -3,8 +3,6 @@ use super::{Argument, CompileError};
 use crate::json::string;
 use std::{ffi::OsString, fmt::Write, path::Path};
 
-pub(super) const USAGE: &str = "用法：bc layout <module.h|module.b> <type> [-I module-root] [--field path]";
-
 #[repr(C)]
 struct LayoutCommandLine {
     error: CompileError,
@@ -21,7 +19,7 @@ unsafe extern "C" {
 pub(super) fn print(
     compiler: &blanguage::Compiler, args: &[OsString], arguments: &[Argument],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let path = blanguage::canonicalize_source_path(Path::new(args.get(1).ok_or(USAGE)?))?;
+    let path = blanguage::canonicalize_source_path(Path::new(args.get(1).ok_or_else(|| CompileError::LAYOUT_USAGE.message(args, 0))?))?;
     let line = unsafe { parse_layout_arguments(arguments.as_ptr(), arguments.len()) };
     line.error.result(args, line.error_index)?;
     // The B parser has checked that the type operand and selected field are text.
@@ -34,7 +32,7 @@ pub(super) fn print(
             explicit_root = blanguage::canonicalize_source_path(Path::new(root))?;
             &explicit_root
         }
-        None => path.parent().ok_or(USAGE)?,
+        None => path.parent().ok_or_else(|| CompileError::LAYOUT_USAGE.message(args, 0))?,
     };
     let (root_type, offset, layout) = compiler.type_layout_json(&path, root, request, field)?;
     let mut out = String::from("{\"kind\":\"type_layout\",\"phase\":\"checked_type\",");
