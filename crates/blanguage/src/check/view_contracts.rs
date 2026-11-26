@@ -341,7 +341,7 @@ pub(super) fn resource_value_mut(value:&mut returns::Returned,index:usize)->Opti
     returns::Returned::Dataset(value)if index==0=>Some(value),
     returns::Returned::OwnedValue(value)=>{let path=view::resource_path(&value.value.ty, index)?;view::owned_data_at_mut(value,&path)},_=>None,
 }}
-fn visit_resource_outputs<'a, const BORROW: bool>(
+pub(super) fn visit_resource_outputs<'a, const BORROW: bool>(
     value: &'a returns::Returned,
     mut visit: impl FnMut(usize, &[Vec<usize>], Option<(&'a application::Data, &'a application::Data)>),
 ) {

@@ -1192,7 +1192,7 @@ impl Builder<'_> {
                 )
             });
         let input_width=actual.len();
-        let (mut bindings, mut model, writes) = if let Some((inputs, model, writes)) = prototype {
+        let (mut bindings, model, writes) = if let Some((inputs, model, writes)) = prototype {
             (
                 inputs
                     .into_iter()
@@ -1419,7 +1419,7 @@ impl Builder<'_> {
                 if actual.content_inputs()||actual.empty()||actual.pending()||actual.unresolved(){value.proof.set_view_borrow(component,resolved);}
             }
         }
-        if let Some(model)=&mut model {
+        if let Some(model) = &model {
             fn input_elements(location:&residency::Residency,definition:outputs::Contract<'_>,env:&BTreeMap<String,Binding>)->application::ElementFacts {
                 match location {
                     residency::Residency::Selected(when,a,b)=>input_elements(a,definition,env).selected(input_elements(b,definition,env),when),
@@ -1440,13 +1440,15 @@ impl Builder<'_> {
                     },
                 }
             }
-            for resource in view_contracts::resource_output_paths(model){
-                let source=view_contracts::resource_output_mut(model,&resource).unwrap();
-                if matches!(source.elements,application::ElementFacts::Input(_)) && let Some(target)=view_contracts::resource_output_mut(&mut returned,&resource){
-                    let location=source.residency.at_call(&bindings);
-                    target.elements=input_elements(&location,d,&env);
+            view_contracts::visit_resource_outputs::<false>(model, |root, path, source| {
+                if let Some((_, source)) = source
+                    && matches!(source.elements, application::ElementFacts::Input(_))
+                    && let Some(target) = view_contracts::resource_output_mut(&mut returned, &(root, path.to_vec()))
+                {
+                    let location = source.residency.at_call(&bindings);
+                    target.elements = input_elements(&location, d, &env);
                 }
-            }
+            });
         }
         let pending=match &returned {
             Returned::OwnedValue(value)=>Some(self.hold_binding(Binding::OwnedValue(value.clone()))),
