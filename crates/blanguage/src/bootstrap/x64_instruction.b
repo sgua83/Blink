@@ -198,6 +198,16 @@ void tail_region(address regions,u64 ordinal,u64 end,TailRegionKind kind) on cpu
     unsafe_position<TailRegion>(target)=TailRegion(end,kind);
 }
 
+u64 align_literal(u64 base, u64 from) on cpu {
+    u64 cursor = from;
+    u64 start = ((cursor + 3u64) / 4u64) * 4u64;
+    while (cursor < start) {
+        put_byte(base + cursor, u8(0));
+        cursor += 1u64;
+    }
+    return start;
+}
+
 extern "C" CodeTail write_tail(address image,u64 end,u64 probe,u64 literal_count,address regions,
     address context,cfn<TailLiteral,address,u64> next_literal) on cpu requires nonzero(next_literal) {
     u64 cursor=end;
@@ -209,12 +219,9 @@ extern "C" CodeTail write_tail(address image,u64 end,u64 probe,u64 literal_count
     }
     u64 base=address_bits(image);
     if(literal_count!=0u64){
-        u64 start=((cursor+3u64)/4u64)*4u64;
-        if(start!=cursor){
-            while(cursor<start){
-                unsafe_position<u8>(unsafe_address(base+cursor))=u8(0);
-                cursor+=1u64;
-            }
+        u64 start = align_literal(base, cursor);
+        if (start != cursor) {
+            cursor = start;
             tail_region(regions,count,cursor,TailRegionKind::Alignment);
             count+=1u64;
         }
@@ -229,12 +236,7 @@ extern "C" CodeTail write_tail(address image,u64 end,u64 probe,u64 literal_count
             write_word(base+cursor,u32(literal.bits>>32));
             cursor+=4u64;
         }
-        u64 index=0u64;
-        while(index<literal.reference_count){
-            u64 field=unsafe_position<u64>(unsafe_address(address_bits(literal.references)+index*8u64));
-            patch_relative(unsafe_address(base+field),field,start);
-            index+=1u64;
-        }
+        patch_branches(image, start, literal.references, literal.reference_count);
         tail_region(regions,count,cursor,TailRegionKind::Literal);
         count+=1u64;
         remaining-=1u64;
@@ -3068,8 +3070,71 @@ u64 copy_record_at(u64 at, u32 bytes) on cpu {
     return cursor;
 }
 
-extern "C" u64 compact_count(u32 flags, u32 stride_offset, u32 flag_word, address output) on cpu {
-    u64 start = address_bits(output);
+const u32 SAVE_R12 = 0x1000;
+const u32 SAVE_R12_R13 = 0x3000;
+
+LeafRange leaf_begin(LeafOutput output, u32 saved) on cpu {
+    u64 start = address_bits(output.image);
+    u64 cursor = start;
+    Operation empty = Operation(u8(0), u8(0), u16(0), 0);
+    array<Operation,8> operations = array<Operation,8>(empty, empty, empty, empty, empty, empty, empty, empty);
+    u64 count = 0u64;
+    for (register in 0..16) {
+        if ((saved & (u32(1) << register)) != 0) {
+            cursor += stack_register(u8(register), false, unsafe_address(cursor));
+            address row = unsafe_address(address_bits(address_of(operations)) + count * size_of<Operation>());
+            unsafe_position<Operation>(row) = Operation(u8(cursor - start), u8(register), u16(0), 0);
+            count += 1u64;
+        }
+    }
+    u64 prolog = cursor - start;
+    u64 unwind_bytes = unwind_write(address_of(operations), count, u8(prolog), output.unwind);
+    return LeafRange(prolog, unwind_bytes, u32(count * 8u64));
+}
+
+u64 leaf_return(u64 at, u32 saved) on cpu {
+    put_byte(at, u8(0x31));
+    put_byte(at + 1u64, u8(0xc0));
+    u64 cursor = at + 2u64;
+    u32 register = 16;
+    while (register != 0) {
+        register -= 1;
+        if ((saved & (u32(1) << register)) != 0) {
+            cursor += stack_register(u8(register), true, unsafe_address(cursor));
+        }
+    }
+    put_byte(cursor, u8(0xc3));
+    return cursor + 1u64;
+}
+
+CollectiveLeaf collective_leaf(LeafRange layout, u64 end, CollectiveLeafOutput output,
+    u64 identity, u64 reference_count) on cpu {
+    LeafRange range = layout;
+    u64 base = address_bits(output.range.image);
+    u64 function_end = end - base;
+    range.end = function_end;
+    u64 target = 0u64;
+    u64 region_count = 0u64;
+    if (reference_count != 0u64) {
+        target = align_literal(base, function_end);
+        if (target != function_end) {
+            tail_region(output.regions, region_count, target, TailRegionKind::Alignment);
+            region_count += 1u64;
+        }
+        write_word(base + target, u32(identity));
+        patch_branches(output.range.image, target, output.references, reference_count);
+        range.end = target + 4u64;
+        tail_region(output.regions, region_count, range.end, TailRegionKind::Literal);
+        region_count += 1u64;
+    }
+    return CollectiveLeaf(range, function_end, target, reference_count, region_count);
+}
+
+extern "C" LeafRange compact_count(u32 flags, u32 stride_offset, u32 flag_word, LeafOutput output) on cpu {
+    u32 saved = SAVE_R12;
+    LeafRange range = leaf_begin(output, saved);
+    u64 image = address_bits(output.image);
+    u64 start = image + range.end;
     u64 cursor = load_range_binding(start, u8(12), flags + stride_offset);
     cursor = compact_disp32(cursor, 0x918b4c, flags); // mov r10,[rcx + flags]
     cursor = register_instruction(cursor, u16(0x89), u8(0), false, u8(9), u8(0));
@@ -3093,14 +3158,16 @@ extern "C" u64 compact_count(u32 flags, u32 stride_offset, u32 flag_word, addres
     patch_relative(unsafe_address(end), end - start, cursor - start);
     // The fifth argument receives the algorithm output; EAX reports success.
     write_word(cursor, 0x24548b4c);
-    write_word(cursor + 4u64, 0x02894130);
-    write_word(cursor + 8u64, 0x5c41c031);
-    put_byte(cursor + 12u64, u8(0xc3));
-    return cursor + 13u64 - start;
+    write_word(cursor + 4u64, 0x02894100 | (range.stack_bytes + 0x28));
+    range.end = leaf_return(cursor + 8u64, saved) - image;
+    return range;
 }
 
-extern "C" u64 compact_scatter(CompactScatter input, address output) on cpu {
-    u64 start = address_bits(output);
+extern "C" LeafRange compact_scatter(CompactScatter input, LeafOutput output) on cpu {
+    u32 saved = (u32(1) << 3) | (u32(1) << 6) | (u32(1) << 7) | SAVE_R12_R13 | (u32(1) << 14) | (u32(1) << 15);
+    LeafRange range = leaf_begin(output, saved);
+    u64 image = address_bits(output.image);
+    u64 start = image + range.end;
     u64 cursor = load_range_binding(start, u8(13), input.source + input.stride_offset);
     cursor = load_range_binding(cursor, u8(14), input.target + input.stride_offset);
     cursor = load_range_binding(cursor, u8(15), input.flags + input.stride_offset);
@@ -3139,13 +3206,8 @@ extern "C" u64 compact_scatter(CompactScatter input, address output) on cpu {
     cursor = back + 4u64;
     patch_relative(unsafe_address(back), back - start, begin - start);
     patch_relative(unsafe_address(end), end - start, cursor - start);
-    // xor eax,eax; pop r15,r14,r13,r12,rdi,rsi,rbx; ret.
-    write_word(cursor, 0x5f41c031);
-    write_word(cursor + 4u64, 0x5d415e41);
-    write_word(cursor + 8u64, 0x5e5f5c41);
-    put_byte(cursor + 12u64, u8(0x5b));
-    put_byte(cursor + 13u64, u8(0xc3));
-    return cursor + 14u64 - start;
+    range.end = leaf_return(cursor, saved) - image;
+    return range;
 }
 
 u64 sort_range_end(u64 at) on cpu {
@@ -3162,8 +3224,11 @@ u64 sort_finish_range(u64 at, u64 start, u64 begin, u64 end) on cpu {
     return cursor;
 }
 
-extern "C" u64 sort_key(SortKeyEmission input, address output) on cpu {
-    u64 start = address_bits(output);
+extern "C" LeafRange sort_key(SortKeyEmission input, LeafOutput output) on cpu {
+    u32 saved = SAVE_R12;
+    LeafRange range = leaf_begin(output, saved);
+    u64 image = address_bits(output.image);
+    u64 start = image + range.end;
     u64 cursor = load_range_binding(start, u8(12), input.stride_offset);
     cursor = load_range_binding(cursor, u8(10), 0); // source record base
     cursor = load_range_binding(cursor, u8(11), 3 * input.buffer_bytes);
@@ -3218,9 +3283,8 @@ extern "C" u64 sort_key(SortKeyEmission input, address output) on cpu {
         cursor = register_instruction(cursor, u16(0x03), u8(0), true, u8(10), u8(12));
     }
     cursor = sort_finish_range(cursor, start, begin, end);
-    write_word(cursor, 0x5c41c031);
-    put_byte(cursor + 4u64, u8(0xc3));
-    return cursor + 5u64 - start;
+    range.end = leaf_return(cursor, saved) - image;
+    return range;
 }
 
 u64 sort_digit(u64 at) on cpu {
@@ -3237,8 +3301,11 @@ u64 sort_shift(u64 at, u32 buffer_bytes) on cpu {
     return encode_operand_instruction(cursor, u16(0x8b), u8(0), false, u8(1), params);
 }
 
-extern "C" u64 sort_histogram(u32 buffer_bytes, address output) on cpu {
-    u64 start = address_bits(output);
+extern "C" LeafRange sort_histogram(u32 buffer_bytes, LeafOutput output) on cpu {
+    u32 saved = 0;
+    LeafRange range = leaf_begin(output, saved);
+    u64 image = address_bits(output.image);
+    u64 start = image + range.end;
     u64 cursor = load_range_binding(start, u8(10), 2 * buffer_bytes);
     cursor = sort_shift(cursor, buffer_bytes);
     u64 begin = cursor;
@@ -3248,14 +3315,15 @@ extern "C" u64 sort_histogram(u32 buffer_bytes, address output) on cpu {
     MoveLocation count = MoveLocation(4u64, MOVE_MEMORY, u8(2), u8(0), u8(2));
     cursor = encode_operand_instruction(cursor, u16(0xff), u8(0), false, u8(0), count);
     cursor = sort_finish_range(cursor, start, begin, end);
-    put_byte(cursor, u8(0x31));
-    put_byte(cursor + 1u64, u8(0xc0));
-    put_byte(cursor + 2u64, u8(0xc3));
-    return cursor + 3u64 - start;
+    range.end = leaf_return(cursor, saved) - image;
+    return range;
 }
 
-extern "C" u64 sort_scatter(u32 buffer_bytes, address output) on cpu {
-    u64 start = address_bits(output);
+extern "C" LeafRange sort_scatter(u32 buffer_bytes, LeafOutput output) on cpu {
+    u32 saved = u32(1) << 3;
+    LeafRange range = leaf_begin(output, saved);
+    u64 image = address_bits(output.image);
+    u64 start = image + range.end;
     u64 cursor = load_range_binding(start, u8(10), 2 * buffer_bytes);
     cursor = load_range_binding(cursor, u8(11), 3 * buffer_bytes);
     cursor = sort_shift(cursor, buffer_bytes);
@@ -3272,12 +3340,15 @@ extern "C" u64 sort_scatter(u32 buffer_bytes, address output) on cpu {
     cursor = encode_operand_instruction(cursor, u16(0x8b), u8(0), true, u8(0), source);
     cursor = encode_operand_instruction(cursor, u16(0x89), u8(0), true, u8(0), target);
     cursor = sort_finish_range(cursor, start, begin, end);
-    write_word(cursor, 0xc35bc031);
-    return cursor + 4u64 - start;
+    range.end = leaf_return(cursor, saved) - image;
+    return range;
 }
 
-extern "C" u64 sort_gather(u32 buffer_bytes, u32 stride_offset, u32 record_bytes, address output) on cpu {
-    u64 start = address_bits(output);
+extern "C" LeafRange sort_gather(u32 buffer_bytes, u32 stride_offset, u32 record_bytes, LeafOutput output) on cpu {
+    u32 saved = (u32(1) << 3) | (u32(1) << 6) | (u32(1) << 7) | SAVE_R12_R13;
+    LeafRange range = leaf_begin(output, saved);
+    u64 image = address_bits(output.image);
+    u64 start = image + range.end;
     u64 cursor = load_range_binding(start, u8(12), stride_offset);
     cursor = load_range_binding(cursor, u8(13), buffer_bytes + stride_offset);
     cursor = load_range_binding(cursor, u8(10), 0);
@@ -3296,11 +3367,8 @@ extern "C" u64 sort_gather(u32 buffer_bytes, u32 stride_offset, u32 record_bytes
     cursor = encode_operand_instruction(cursor, u16(0x8d), u8(0), true, u8(7), target);
     cursor = copy_record_at(cursor, record_bytes);
     cursor = sort_finish_range(cursor, start, begin, end);
-    write_word(cursor, 0x5d41c031);
-    write_word(cursor + 4u64, 0x5e5f5c41);
-    put_byte(cursor + 8u64, u8(0x5b));
-    put_byte(cursor + 9u64, u8(0xc3));
-    return cursor + 10u64 - start;
+    range.end = leaf_return(cursor, saved) - image;
+    return range;
 }
 
 struct AppendBranch {
@@ -4221,8 +4289,11 @@ extern "C" void emit_tile_collective(address context, TileCollectiveLayout layou
     }
 }
 
-extern "C" ReductionCode reduce_range(ReductionRange input, address output) on cpu {
-    u64 start = address_bits(output);
+extern "C" CollectiveLeaf reduce_range(ReductionRange input, CollectiveLeafOutput output) on cpu {
+    u32 saved = SAVE_R12;
+    LeafRange range = leaf_begin(output.range, saved);
+    u64 image = address_bits(output.range.image);
+    u64 start = image + range.end;
     MoveLocation stride = MoveLocation(u64(input.source + input.stride_offset), MOVE_MEMORY, u8(1), NO_INDEX, u8(0));
     u64 cursor = encode_operand_instruction(start, u16(0x8b), u8(0), true, u8(12), stride);
     // Keep source address in R10, stride in R12, and range index in ECX.
@@ -4234,7 +4305,7 @@ extern "C" ReductionCode reduce_range(ReductionRange input, address output) on c
     cursor = register_instruction(cursor, u16(0x89), u8(0), false, u8(9), u8(1));
 
     let integer_registers = array<u8,4>(u8(0), u8(2), u8(9), u8(11));
-    array<u64,4> literals = array<u64,4>(0u64, 0u64, 0u64, 0u64);
+    u64 reference_count = 0u64;
     u32 size = input.scalar.width / 8;
     bool floating = input.scalar.kind == ScalarKind::Float;
     for (component in 0..4) {
@@ -4243,7 +4314,11 @@ extern "C" ReductionCode reduce_range(ReductionRange input, address output) on c
             MoveLocation dst = MoveLocation(0u64, MOVE_XMM, u8(component), NO_INDEX, u8(0));
             MoveLocation src = MoveLocation(input.identity, MOVE_IMMEDIATE, u8(0), NO_INDEX, u8(0));
             MoveEncoding value = copy_scalar_move(dst, src, size, false, unsafe_address(cursor));
-            if (value.literal_field != 0u64) { literals[component] = cursor - start + value.literal_field; }
+            if (value.literal_field != 0u64) {
+                address field = unsafe_address(address_bits(output.references) + reference_count * 8u64);
+                unsafe_position<u64>(field) = cursor - image + value.literal_field;
+                reference_count += 1u64;
+            }
             cursor += value.length;
         } else {
             cursor = move_immediate(cursor, integer_registers[component], input.identity, size == 8);
@@ -4268,7 +4343,7 @@ extern "C" ReductionCode reduce_range(ReductionRange input, address output) on c
     patch_relative(unsafe_address(end), end, cursor);
 
     // Return address, four shadow slots and saved R12 precede the result pointer.
-    MoveLocation result = MoveLocation(0x30u64, MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
+    MoveLocation result = MoveLocation(0x28u64 + u64(range.stack_bytes), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
     cursor = encode_operand_instruction(cursor, u16(0x8b), u8(0), true, u8(10), result);
     for (component in 0..4) {
         if (component == input.count) { break; }
@@ -4279,9 +4354,7 @@ extern "C" ReductionCode reduce_range(ReductionRange input, address output) on c
             cursor = store_bits(cursor, destination, integer_registers[component], size);
         }
     }
-    write_word(cursor, 0x5c41c031);
-    put_byte(cursor + 4u64, u8(0xc3));
-    return ReductionCode(cursor + 5u64 - start, literals);
+    return collective_leaf(range, leaf_return(cursor, saved), output, input.identity, reference_count);
 }
 
 u64 segmented_identity(u64 at, ReductionRange values) on cpu {
@@ -4327,8 +4400,11 @@ u64 segmented_accumulate(u64 at, ReductionRange values) on cpu {
     return cursor;
 }
 
-extern "C" u64 segmented_reduce_range(SegmentedRange input, u32 finish, address output) on cpu {
-    u64 start = address_bits(output);
+extern "C" LeafRange segmented_reduce_range(SegmentedRange input, u32 finish, LeafOutput output) on cpu {
+    u32 saved = SAVE_R12_R13;
+    LeafRange range = leaf_begin(output, saved);
+    u64 image = address_bits(output.image);
+    u64 start = image + range.end;
     ReductionRange values = input.values;
     bool wide = values.scalar.width == 64;
     u32 summary_flag = input.value_words * 4;
@@ -4415,7 +4491,7 @@ extern "C" u64 segmented_reduce_range(SegmentedRange input, u32 finish, address 
     patch_relative(unsafe_address(end), end, cursor);
     if (finish == 0) {
         // The fifth RangeEntry argument follows the return address, shadow space and saved registers.
-        MoveLocation result = MoveLocation(0x38u64, MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
+        MoveLocation result = MoveLocation(0x28u64 + u64(range.stack_bytes), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
         cursor = load_bits(cursor, u8(10), result, true);
         cursor = segmented_store(cursor, values, u8(10), 0);
         MoveLocation reset = MoveLocation(u64(summary_flag), MOVE_MEMORY, u8(10), NO_INDEX, u8(0));
@@ -4423,11 +4499,8 @@ extern "C" u64 segmented_reduce_range(SegmentedRange input, u32 finish, address 
         MoveLocation segments = MoveLocation(u64(summary_count), MOVE_MEMORY, u8(10), NO_INDEX, u8(0));
         cursor = store_bits(cursor, segments, u8(1), 4);
     }
-    write_word(cursor, 0x5d41c031);
-    put_byte(cursor + 4u64, u8(0x41));
-    put_byte(cursor + 5u64, u8(0x5c));
-    put_byte(cursor + 6u64, u8(0xc3));
-    return cursor + 7u64 - start;
+    range.end = leaf_return(cursor, saved) - image;
+    return range;
 }
 
 u64 scan_float_correction(u64 at, ReductionOperator operation, ScalarEncoding scalar, u8 lane, MoveLocation destination) on cpu {
@@ -4444,8 +4517,11 @@ u64 scan_float_correction(u64 at, ReductionOperator operation, ScalarEncoding sc
     return store_float(cursor, destination, u8(4), scalar.width == 64);
 }
 
-extern "C" ReductionCode scan_range(ScanRange input, u32 add, address output) on cpu {
-    u64 start = address_bits(output);
+extern "C" CollectiveLeaf scan_range(ScanRange input, u32 add, CollectiveLeafOutput output) on cpu {
+    u32 saved = add != 0 ? SAVE_R12 : SAVE_R12_R13;
+    LeafRange range = leaf_begin(output.range, saved);
+    u64 image = address_bits(output.range.image);
+    u64 start = image + range.end;
     ReductionRange values = input.values;
     bool correction = add != 0;
     u32 size = values.scalar.width / 8;
@@ -4478,7 +4554,7 @@ extern "C" ReductionCode scan_range(ScanRange input, u32 add, address output) on
     cursor = register_instruction(cursor, u16(0x29), u8(0), false, u8(9), u8(8));
     array<u8,4> registers = array<u8,4>(u8(0), u8(1), u8(2), u8(9));
     if (correction) { registers = array<u8,4>(u8(0), u8(1), u8(9), u8(11)); }
-    array<u64,4> literals = array<u64,4>(0u64, 0u64, 0u64, 0u64);
+    u64 reference_count = 0u64;
     u8 prefix = size == 2 ? u8(0x66) : u8(0);
     u16 byte_form = size == 1 ? u16(1) : u16(0);
     for (component in 0..4) {
@@ -4499,7 +4575,11 @@ extern "C" ReductionCode scan_range(ScanRange input, u32 add, address output) on
             MoveLocation dst = MoveLocation(0u64, MOVE_XMM, lane, NO_INDEX, u8(0));
             MoveLocation src = MoveLocation(values.identity, MOVE_IMMEDIATE, u8(0), NO_INDEX, u8(0));
             MoveEncoding identity = copy_scalar_move(dst, src, size, false, unsafe_address(cursor));
-            if (identity.literal_field != 0u64) { literals[component] = cursor - start + identity.literal_field; }
+            if (identity.literal_field != 0u64) {
+                address field = unsafe_address(address_bits(output.references) + reference_count * 8u64);
+                unsafe_position<u64>(field) = cursor - image + identity.literal_field;
+                reference_count += 1u64;
+            }
             cursor += identity.length;
         }
     }
@@ -4546,7 +4626,7 @@ extern "C" ReductionCode scan_range(ScanRange input, u32 add, address output) on
     patch_relative(unsafe_address(back), back, begin);
     patch_relative(unsafe_address(end), end, cursor);
     if (!correction) {
-        MoveLocation result = MoveLocation(0x38u64, MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
+        MoveLocation result = MoveLocation(0x28u64 + u64(range.stack_bytes), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
         cursor = load_bits(cursor, u8(10), result, true);
         for (component in 0..4) {
             if (component == values.count) { break; }
@@ -4558,20 +4638,14 @@ extern "C" ReductionCode scan_range(ScanRange input, u32 add, address output) on
             }
         }
     }
-    cursor = register_instruction(cursor, u16(0x31), u8(0), false, u8(0), u8(0));
-    if (!correction) {
-        put_byte(cursor, u8(0x41));
-        put_byte(cursor + 1u64, u8(0x5d));
-        cursor += 2u64;
-    }
-    put_byte(cursor, u8(0x41));
-    put_byte(cursor + 1u64, u8(0x5c));
-    put_byte(cursor + 2u64, u8(0xc3));
-    return ReductionCode(cursor + 3u64 - start, literals);
+    return collective_leaf(range, leaf_return(cursor, saved), output, values.identity, reference_count);
 }
 
-extern "C" u64 segmented_scan_range(SegmentedScanRange input, u32 add, address output) on cpu {
-    u64 start = address_bits(output);
+extern "C" LeafRange segmented_scan_range(SegmentedScanRange input, u32 add, LeafOutput output) on cpu {
+    u32 saved = SAVE_R12_R13;
+    LeafRange range = leaf_begin(output, saved);
+    u64 image = address_bits(output.image);
+    u64 start = image + range.end;
     ScanRange scan = input.scan;
     ReductionRange values = scan.values;
     bool correction = add != 0;
@@ -4652,17 +4726,14 @@ extern "C" u64 segmented_scan_range(SegmentedScanRange input, u32 add, address o
     if (correction) {
         patch_relative(unsafe_address(head_end), head_end, cursor);
     } else {
-        MoveLocation result = MoveLocation(0x38u64, MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
+        MoveLocation result = MoveLocation(0x28u64 + u64(range.stack_bytes), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
         cursor = load_bits(cursor, u8(10), result, true);
         cursor = segmented_store(cursor, values, u8(10), 0);
         MoveLocation reset = MoveLocation(u64(input.value_words * 4), MOVE_MEMORY, u8(10), NO_INDEX, u8(0));
         cursor = store_bits(cursor, reset, u8(9), 4);
     }
-    write_word(cursor, 0x5d41c031);
-    put_byte(cursor + 4u64, u8(0x41));
-    put_byte(cursor + 5u64, u8(0x5c));
-    put_byte(cursor + 6u64, u8(0xc3));
-    return cursor + 7u64 - start;
+    range.end = leaf_return(cursor, saved) - image;
+    return range;
 }
 
 MoveLocation output_stack(u64 offset) on cpu {

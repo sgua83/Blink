@@ -404,15 +404,30 @@ extern "C" PacketViewAddress packet_view_address(u32 word, bool uniform_base,
     bool uniform_index, bool uniform_stride) on cpu;
 
 
+// The caller lends the body capacity plus 16 bytes for GPR saves and
+// 20 bytes for the original Windows x64 unwind stream.
+struct LeafOutput { address image; address unwind; };
+struct LeafRange { u64 end; u64 unwind_bytes; u32 stack_bytes; };
+
+// A collective may append one 4-byte unit identity. The caller also lends
+// seven image bytes, up to four rel32 fields and up to two tail regions.
+struct CollectiveLeafOutput { LeafOutput range; address references; address regions; };
+struct CollectiveLeaf {
+    LeafRange range;
+    u64 function_end;
+    u64 literal_target;
+    u64 reference_count;
+    u64 region_count;
+};
+
 struct CompactScatter {
     u32 source; u32 target; u32 flags; u32 prefix;
     u32 stride_offset; u32 flag_word; u32 record_bytes;
 };
 
-// The range prologue and unwind records already belong to the emitter.
-// Output has space for 96 count bytes or 224 scatter bytes.
-extern "C" u64 compact_count(u32 flags, u32 stride_offset, u32 flag_word, address output) on cpu;
-extern "C" u64 compact_scatter(CompactScatter input, address output) on cpu;
+// Body capacities are 96 count bytes and 224 scatter bytes.
+extern "C" LeafRange compact_count(u32 flags, u32 stride_offset, u32 flag_word, LeafOutput output) on cpu;
+extern "C" LeafRange compact_scatter(CompactScatter input, LeafOutput output) on cpu;
 
 struct SortKeyEmission {
     u32 buffer_bytes;
@@ -425,12 +440,11 @@ struct SortKeyEmission {
     u32 first;
 };
 
-// The emitter owns the prologue and unwind. The caller supplies 160, 96,
-// 128 or 192 output bytes for the four respective entry points.
-extern "C" u64 sort_key(SortKeyEmission input, address output) on cpu;
-extern "C" u64 sort_histogram(u32 buffer_bytes, address output) on cpu;
-extern "C" u64 sort_scatter(u32 buffer_bytes, address output) on cpu;
-extern "C" u64 sort_gather(u32 buffer_bytes, u32 stride_offset, u32 record_bytes, address output) on cpu;
+// Body capacities are 160, 96, 128 and 192 bytes, respectively.
+extern "C" LeafRange sort_key(SortKeyEmission input, LeafOutput output) on cpu;
+extern "C" LeafRange sort_histogram(u32 buffer_bytes, LeafOutput output) on cpu;
+extern "C" LeafRange sort_scatter(u32 buffer_bytes, LeafOutput output) on cpu;
+extern "C" LeafRange sort_gather(u32 buffer_bytes, u32 stride_offset, u32 record_bytes, LeafOutput output) on cpu;
 
 
 enum ReductionOperator:u32 { Sum=0; Min=1; Max=2; BitAnd=3; BitOr=4; BitXor=5; };
@@ -444,11 +458,6 @@ struct ReductionRange {
     ReductionOperator operation;
     u32 count;
     array<u32,4> offsets;
-};
-
-struct ReductionCode {
-    u64 length;
-    array<u64,4> literals;
 };
 
 
@@ -580,8 +589,8 @@ extern "C" void emit_tile_collective(address context, TileCollectiveLayout layou
     requires nonzero(host.reserve) requires nonzero(host.commit)
     requires nonzero(host.next) requires nonzero(host.observe);
 
-// R12 has already been saved. The caller owns 256 output bytes and the literal pool.
-extern "C" ReductionCode reduce_range(ReductionRange input, address output) on cpu;
+// Reduction body capacity is 256 bytes.
+extern "C" CollectiveLeaf reduce_range(ReductionRange input, CollectiveLeafOutput output) on cpu;
 
 struct SegmentedRange {
     ReductionRange values;
@@ -592,8 +601,8 @@ struct SegmentedRange {
     u32 value_words;
 };
 
-// R12 and R13 have been saved. The caller owns 512 output bytes.
-extern "C" u64 segmented_reduce_range(SegmentedRange input, u32 finish, address output) on cpu;
+// Each segmented reduction pass has a 512-byte body capacity.
+extern "C" LeafRange segmented_reduce_range(SegmentedRange input, u32 finish, LeafOutput output) on cpu;
 
 struct ScanRange {
     ReductionRange values;
@@ -602,8 +611,8 @@ struct ScanRange {
     u32 parameters;
 };
 
-// R12 is saved for both passes, and R13 is saved for the summary pass.
-extern "C" ReductionCode scan_range(ScanRange input, u32 add, address output) on cpu;
+// Each scan pass has a 512-byte body capacity.
+extern "C" CollectiveLeaf scan_range(ScanRange input, u32 add, CollectiveLeafOutput output) on cpu;
 
 struct SegmentedScanRange {
     ScanRange scan;
@@ -611,8 +620,8 @@ struct SegmentedScanRange {
     u32 value_words;
 };
 
-// R12 and R13 are saved by the caller for either pass.
-extern "C" u64 segmented_scan_range(SegmentedScanRange input, u32 add, address output) on cpu;
+// Each segmented scan pass has a 512-byte body capacity.
+extern "C" LeafRange segmented_scan_range(SegmentedScanRange input, u32 add, LeafOutput output) on cpu;
 
 struct PrintEncoding {
     u32 length;

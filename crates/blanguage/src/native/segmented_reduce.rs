@@ -14,7 +14,7 @@ struct SegmentedRange {
 
 unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::segmented_reduce_range"]
-    fn segmented_reduce_range(input: SegmentedRange, finish: u32, output: *mut u8) -> u64;
+    fn segmented_reduce_range(input: SegmentedRange, finish: u32, output: LeafOutput) -> LeafRange;
 }
 
 pub fn emit_segmented_reduce_finish(
@@ -34,30 +34,5 @@ pub(super) fn emit(program: &Program, reduction: &SegmentedReduction, finish: bo
         head_word: reduction.head_word,
         value_words: values.ty.size.div_ceil(4),
     };
-    let mut e = Emitter {
-        used_tile_words: &super::EMPTY_TILE_WORDS,
-        workgroup: Stage::DEFAULT_WORKGROUP_WIDTH,
-        unwind: Vec::new(),
-        prolog: 0,
-        probe: None,
-        code: Vec::new(),
-        relocations: Vec::new(),
-        calls: Vec::new(),
-        operation_ranges: Vec::new(),
-        function_abi: None,
-        literals: std::collections::BTreeMap::new(),
-        registers: &[],
-        tiles: &[],
-        range_origin: OperationOrigin::default(),
-        buffers: &program.buffers,
-        textures: &program.textures,
-        breaks: Vec::new(),
-        exits: Vec::new(),
-        continues: Vec::new(),
-        allocation: Allocation::default(),
-        frame: Frame::default(),
-    };
-    e.push_registers(&[12, 13]);
-    e.emit_bytes(512, |output| unsafe { segmented_reduce_range(input, u32::from(finish), output) });
-    e.finish(16, false)
+    emit_leaf(512, |output| unsafe { segmented_reduce_range(input, u32::from(finish), output) })
 }

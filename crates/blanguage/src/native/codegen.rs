@@ -139,6 +139,88 @@ unsafe extern "C" {
 
 }
 
+#[repr(C)]
+struct LeafOutput {
+    image: *mut u8,
+    unwind: *mut u8,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct LeafRange {
+    end: usize,
+    unwind_bytes: usize,
+    stack_bytes: u32,
+}
+
+#[repr(C)]
+struct CollectiveLeafOutput {
+    range: LeafOutput,
+    references: *mut usize,
+    regions: *mut super::Region,
+}
+
+#[repr(C)]
+struct CollectiveLeaf {
+    range: LeafRange,
+    function_end: usize,
+    literal_target: usize,
+    reference_count: usize,
+    region_count: usize,
+}
+
+fn leaf_buffers<T>(body_capacity: usize, emit: impl FnOnce(LeafOutput) -> (LeafRange, T)) -> (NativeCode, T) {
+    let mut bytes = Vec::with_capacity(body_capacity + 16);
+    let mut unwind = Vec::with_capacity(20);
+    let (range, facts) = emit(LeafOutput { image: bytes.as_mut_ptr(), unwind: unwind.as_mut_ptr() });
+    // The B encoder supplies the initialized lengths of the two original buffers.
+    unsafe {
+        bytes.set_len(range.end);
+        unwind.set_len(range.unwind_bytes);
+    }
+    let code = NativeCode {
+        bytes,
+        relocations: Vec::new(),
+        stack_bytes: range.stack_bytes,
+        calls: Vec::new(),
+        function_end: range.end,
+        unwind,
+        tail_regions: Some(Vec::new()),
+        tail_references: Some(Vec::new()),
+        sources: super::CodeSources::Emitted { operation_ranges: None, function_abi: None },
+    };
+    (code, facts)
+}
+
+fn emit_leaf(body_capacity: usize, emit: impl FnOnce(LeafOutput) -> LeafRange) -> NativeCode {
+    leaf_buffers(body_capacity, |output| (emit(output), ())).0
+}
+
+fn emit_collective_leaf(body_capacity: usize, emit: impl FnOnce(CollectiveLeafOutput) -> CollectiveLeaf) -> NativeCode {
+    let mut references = [std::mem::MaybeUninit::<usize>::uninit(); 4];
+    let mut regions = [std::mem::MaybeUninit::<super::Region>::uninit(); 2];
+    let (mut code, facts) = leaf_buffers(body_capacity + 7, |range| {
+        let facts = emit(CollectiveLeafOutput {
+            range,
+            references: references.as_mut_ptr().cast(),
+            regions: regions.as_mut_ptr().cast(),
+        });
+        (facts.range, facts)
+    });
+    code.function_end = facts.function_end;
+    if facts.reference_count != 0 {
+        // Only the reported prefixes of these output rows have been written.
+        let fields = unsafe { std::slice::from_raw_parts(references.as_ptr().cast(), facts.reference_count) };
+        let tail = unsafe { std::slice::from_raw_parts(regions.as_ptr().cast(), facts.region_count) };
+        code.tail_regions = Some(tail.to_vec());
+        code.tail_references = Some(vec![super::TailReference {
+            target: facts.literal_target,
+            rel32_fields: fields.to_vec(),
+        }]);
+    }
+    code
+}
+
 enum Branch {
     Always,
     Flags(u8),

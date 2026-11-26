@@ -1,6 +1,6 @@
 //! 原生数值独占扫描：一次遍历累计各分量，范围前缀由同一执行框架传播。
 use super::*;
-use super::reduce::{ReductionCode, ReductionRange};
+use super::reduce::ReductionRange;
 pub fn emit_scan_add(program: &Program, scan: &Scan) -> NativeCode {
     emit_scan(program, scan, true)
 }
@@ -27,9 +27,9 @@ struct SegmentedScanRange {
 
 unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::segmented_scan_range"]
-    fn segmented_scan_range(input: SegmentedScanRange, add: u32, output: *mut u8) -> u64;
+    fn segmented_scan_range(input: SegmentedScanRange, add: u32, output: LeafOutput) -> LeafRange;
     #[link_name = "bootstrap.x64_instruction::scan_range"]
-    fn scan_range(input: ScanRange, add: u32, output: *mut u8) -> ReductionCode;
+    fn scan_range(input: ScanRange, add: u32, output: CollectiveLeafOutput) -> CollectiveLeaf;
 }
 
 impl ScanRange {
@@ -43,40 +43,9 @@ impl ScanRange {
     }
 }
 
-fn emitter(program: &Program) -> Emitter<'_> {
-    Emitter {
-        used_tile_words: &super::EMPTY_TILE_WORDS,
-        workgroup: Stage::DEFAULT_WORKGROUP_WIDTH,
-        unwind: Vec::new(),
-        prolog: 0,
-        probe: None,
-        code: Vec::new(),
-        relocations: Vec::new(),
-        calls: Vec::new(),
-        operation_ranges: Vec::new(),
-        function_abi: None,
-        literals: std::collections::BTreeMap::new(),
-        registers: &[],
-        tiles: &[],
-        range_origin: OperationOrigin::default(),
-        buffers: &program.buffers,
-        textures: &program.textures,
-        breaks: Vec::new(),
-        exits: Vec::new(),
-        continues: Vec::new(),
-        allocation: Allocation::default(),
-        frame: Frame::default(),
-    }
-}
-
 pub(super) fn emit(program: &Program, scan: &Scan, add: bool) -> NativeCode {
     let input = ScanRange::new(program, scan);
-    let identity = input.values.identity;
-    let mut e = emitter(program);
-    let saved: &[u8] = if add { &[12] } else { &[12, 13] };
-    e.push_registers(saved);
-    e.emit_collective(512, identity, |output| unsafe { scan_range(input, u32::from(add), output) });
-    e.finish(saved.len() as u32 * 8, false)
+    emit_collective_leaf(512, |output| unsafe { scan_range(input, u32::from(add), output) })
 }
 
 fn emit_segmented(program: &Program, scan: &Scan, head: u32, add: bool) -> NativeCode {
@@ -85,8 +54,5 @@ fn emit_segmented(program: &Program, scan: &Scan, head: u32, add: bool) -> Nativ
         head_word: head,
         value_words: scan.ty.size.div_ceil(4),
     };
-    let mut e = emitter(program);
-    e.push_registers(&[12, 13]);
-    e.emit_bytes(512, |output| unsafe { segmented_scan_range(input, u32::from(add), output) });
-    e.finish(16, false)
+    emit_leaf(512, |output| unsafe { segmented_scan_range(input, u32::from(add), output) })
 }
