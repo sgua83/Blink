@@ -5,7 +5,6 @@ use super::operands::ScalarValueHost;
 use crate::builtin_types::ScalarEncoding;
 use crate::ir::dataflow::{HOST, Span};
 use super::structure::{self, Control, ControlKind, ScalarCursor};
-use std::collections::BTreeSet;
 #[path="packet/control.rs"]
 mod control;
 #[derive(Clone, Copy, Default)]
@@ -102,13 +101,12 @@ enum StepKind<'a> {
 }
 pub(super) struct Plan<'a> {
     code: Vec<Step<'a>>,
-    pub address_only: BTreeSet<Reg>,
 }
 impl<'a> Plan<'a> {
     pub fn new(
         program: &Program, stage: &Stage, code: &'a [Inst], registers: &'a [Scalar],
         tile_scope: bool,
-    ) -> Option<Self> {
+    ) -> Option<(Self, Vec<u8>)> {
         control::run(program, stage, code, registers, tile_scope)
     }
 }

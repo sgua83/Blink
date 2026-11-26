@@ -644,8 +644,8 @@ fn emit_map(
     let phases = if tile_scope { TilePhase::from_code(&code) } else { Vec::new() };
     graph.tile_interference(&phases);
     let allocation = Allocation::new(&stage.locals, &mut graph, tile_scope);
-    let packet = packet::Plan::new(program, stage, &code, &registers, tile_scope).map(|plan| {
-        let allocation = PacketAllocation::new(registers.len(), &mut graph, &plan.address_only);
+    let packet = packet::Plan::new(program, stage, &code, &registers, tile_scope).map(|(plan, uses)| {
+        let allocation = PacketAllocation::new(registers.len(), &graph, uses);
         (plan, allocation)
     });
     drop(graph);

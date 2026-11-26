@@ -659,6 +659,7 @@ struct PacketPlanNode {
 };
 struct PacketPlanHeader {u64 registers;u64 slots;u64 writes;u32 tile;u32 selected;};
 struct PacketPlanState {address owner;address bytes;u64 count;};
+struct PacketPlanProduct { address plan; PacketPlanState uses; };
 struct PacketPlanFlow {PacketPlanState next;PacketPlanState breaks;PacketPlanState continues;PacketPlanState exits;};
 struct PacketPlanDefinition {PacketPlanState state;address definitions;u32 uniform;u32 record;};
 struct PacketPlanDecision {
@@ -672,11 +673,11 @@ struct PacketPlanHost {
     cfn<address> plan_new;
     cfn<void,address> plan_drop;
     cfn<void,address,PacketPlanNode,PacketPlanDecision,address,address> append;
-    cfn<void,address,u64> address_only;
 };
-// All handles are actual caller-owned buffers or Step vectors, borrowed synchronously.
-extern "C" address packet_plan(address context,PacketPlanBlock code,PacketPlanHeader header,PacketPlanHost host) on cpu 
-    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) requires nonzero(host.address_only);
+// A successful plan transfers both the final Step vector and the original uses
+// buffer. The latter is consumed by packet coloring before emission.
+extern "C" PacketPlanProduct packet_plan(address context,PacketPlanBlock code,PacketPlanHeader header,PacketPlanHost host) on cpu 
+    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append);
 extern "C" u32 packet_plan_uniform_operand(address bytes,u64 reg) on cpu;
 extern "C" u32 packet_plan_mark_operand(address bytes,u64 reg) on cpu;
 extern "C" u32 packet_plan_definition(address context,u64 reg) on cpu;

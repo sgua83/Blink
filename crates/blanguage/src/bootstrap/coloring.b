@@ -70,21 +70,76 @@ u64 layout_spills(address places, u64 count, address scratch, u64 spills, u64 ba
     return end;
 }
 
-extern "C" ColorLayout color(address graph, u64 count, address places, address order, u32 mode, u64 base,
+u64 packet_order(address graph, u64 count, address places, address order, Span uses,
+    cfn<ColorNode,address,u64> node, cfn<u64,address,u64,bool,u64> next) on cpu
+    requires nonzero(node) requires nonzero(next) {
+    u64 first_skipped = count;
+    u64 id = 0u64;
+    while (id < count) {
+        bool index_only = id < uses.count && unsafe_position<u8>(
+            unsafe_address(address_bits(uses.data) + id * u64(uses.stride))) == u8(1);
+        unsafe_position<ColorPlace>(place_at(places, id)) =
+            ColorPlace(0u64, UNSEEN, index_only ? u8(0) : u8(16), u8(0));
+        if (index_only) {
+            first_skipped = id < first_skipped ? id : first_skipped;
+        } else {
+            ColorNode facts = node(graph, id);
+            unsafe_position<array<u64,3>>(order_at(order, id)) = array<u64,3>(facts.weight, facts.degree, id);
+        }
+        id += 1u64;
+    }
+
+    // The original graph is symmetric. Discount each edge from a skipped
+    // register to an active neighbor in that neighbor's actual priority row.
+    id = first_skipped;
+    while (id < uses.count) {
+        if (unsafe_position<ColorPlace>(place_at(places, id)).width == u8(0)) {
+            u64 neighbor = next(graph, id, false, count);
+            while (neighbor != count) {
+                if (unsafe_position<ColorPlace>(place_at(places, neighbor)).width != u8(0)) {
+                    address row = order_at(order, neighbor);
+                    array<u64,3> priority = unsafe_position<array<u64,3>>(row);
+                    priority[1] -= 1u64;
+                    unsafe_position<array<u64,3>>(row) = priority;
+                }
+                neighbor = next(graph, id, false, neighbor);
+            }
+        }
+        id += 1u64;
+    }
+
+    u64 pending = first_skipped;
+    id = first_skipped;
+    while (id < count) {
+        if (unsafe_position<ColorPlace>(place_at(places, id)).width != u8(0)) {
+            unsafe_position<array<u64,3>>(order_at(order, pending)) =
+                unsafe_position<array<u64,3>>(order_at(order, id));
+            pending += 1u64;
+        }
+        id += 1u64;
+    }
+    return pending;
+}
+
+extern "C" ColorLayout color(address graph, u64 count, address places, address order, u32 mode, u64 base, Span packet_uses,
     cfn<ColorNode,address,u64> node,
     cfn<u64,address,u64,bool,u64> next) on cpu
     requires nonzero(node) requires nonzero(next) {
     u64 pending = 0u64;
     u64 id = 0u64;
-    while (id < count) {
-        ColorPlace place = unsafe_position<ColorPlace>(place_at(places, id));
-        // Addressable fields receive their stack positions after coloring.
-        if (place.kind != IMMEDIATE && place.width != 0) {
-            ColorNode facts = node(graph, id);
-            unsafe_position<array<u64,3>>(order_at(order, pending)) = array<u64,3>(facts.weight, facts.degree, id);
-            pending += 1u64;
+    if (mode == 2) {
+        pending = packet_order(graph, count, places, order, packet_uses, node, next);
+    } else {
+        while (id < count) {
+            ColorPlace place = unsafe_position<ColorPlace>(place_at(places, id));
+            // Addressable fields receive their stack positions after coloring.
+            if (place.kind != IMMEDIATE && place.width != 0) {
+                ColorNode facts = node(graph, id);
+                unsafe_position<array<u64,3>>(order_at(order, pending)) = array<u64,3>(facts.weight, facts.degree, id);
+                pending += 1u64;
+            }
+            id += 1u64;
         }
-        id += 1u64;
     }
     sort_rows<array<u64,3>>(order, pending, address(), c_function(priority_before));
     u32 spills = 0;

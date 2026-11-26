@@ -4925,16 +4925,16 @@ void packet_plan_set_byte(address bytes,u64 index,u8 value) on cpu {
     unsafe_position<u8>(unsafe_address(address_bits(bytes)+index))=value;
 }
 void packet_plan_release(PacketPlanState state,PacketPlanHost host) on cpu 
-    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) requires nonzero(host.address_only) {
+    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) {
     if(address_bits(state.owner)!=0u64){host.state_drop(state);}
 }
 void packet_plan_release_flow(PacketPlanFlow flow,PacketPlanHost host) on cpu 
-    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) requires nonzero(host.address_only) {
+    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) {
     packet_plan_release(flow.next,host);packet_plan_release(flow.breaks,host);
     packet_plan_release(flow.continues,host);packet_plan_release(flow.exits,host);
 }
 PacketPlanState packet_plan_clone(PacketPlanState state,PacketPlanHost host) on cpu 
-    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) requires nonzero(host.address_only) {
+    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) {
     return host.state_new(state.count,state.bytes);
 }
 void packet_plan_intersect(PacketPlanState left,PacketPlanState right) on cpu {
@@ -4948,13 +4948,13 @@ bool packet_plan_equal(PacketPlanState left,PacketPlanState right) on cpu {
     }return true;
 }
 PacketPlanState packet_plan_merge(PacketPlanState target,PacketPlanState other,PacketPlanHost host) on cpu 
-    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) requires nonzero(host.address_only) {
+    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) {
     if(address_bits(other.owner)==0u64){return target;}
     if(address_bits(target.owner)==0u64){return other;}
     packet_plan_intersect(target,other);host.state_drop(other);return target;
 }
 PacketPlanFlow packet_plan_join(PacketPlanFlow left,PacketPlanFlow right,PacketPlanHost host) on cpu 
-    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) requires nonzero(host.address_only) {
+    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) {
     return PacketPlanFlow(packet_plan_merge(left.next,right.next,host),packet_plan_merge(left.breaks,right.breaks,host),
         packet_plan_merge(left.continues,right.continues,host),packet_plan_merge(left.exits,right.exits,host));
 }
@@ -4976,7 +4976,7 @@ extern "C" u32 packet_plan_width(address context,u64 bytes) on cpu {return bytes
 
 PacketPlanFlow packet_plan_uniform_block(address context,PacketPlanBlock code,PacketPlanHeader header,
     PacketPlanState state,address definitions,bool record,PacketPlanHost host) on cpu 
-    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) requires nonzero(host.address_only) {
+    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) {
     PacketPlanFlow flow=packet_plan_no_flow();flow.next=state;u64 index=0u64;
     while(index<code.count&&address_bits(flow.next.owner)!=0u64){
         PacketPlanState current=flow.next;flow.next=packet_plan_empty();
@@ -5011,7 +5011,7 @@ PacketPlanFlow packet_plan_uniform_block(address context,PacketPlanBlock code,Pa
 }
 PacketPlanFlow packet_plan_loop(address context,PacketPlanBlock condition,PacketPlanBlock body,PacketPlanHeader header,
     PacketPlanState entry,address definitions,bool record,PacketPlanHost host) on cpu 
-    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) requires nonzero(host.address_only) {
+    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) {
     PacketPlanState fixed=packet_plan_clone(entry,host);
     while(true){
         PacketPlanFlow condition_flow=packet_plan_uniform_block(context,condition,header,packet_plan_clone(fixed,host),definitions,false,host);
@@ -5046,7 +5046,7 @@ PacketPlanFlow packet_plan_loop(address context,PacketPlanBlock condition,Packet
     packet_plan_release_flow(body_flow,host);return condition_flow;
 }
 void packet_plan_uses(address context,PacketPlanBlock code,address uses,PacketPlanHost host) on cpu 
-    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) requires nonzero(host.address_only) {
+    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) {
     u64 index=0u64;while(index<code.count){
         PacketPlanNode node=host.read(context,code,index);
         if(node.kind==PacketPlanKind::Index){packet_plan_set_byte(uses,node.dst,packet_plan_byte(uses,node.dst)|u8(1));
@@ -5059,7 +5059,7 @@ void packet_plan_uses(address context,PacketPlanBlock code,address uses,PacketPl
     }
 }
 address packet_plan_build(address context,PacketPlanBlock code,PacketPlanHeader header,address uniform,address uses,PacketPlanHost host) on cpu 
-    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) requires nonzero(host.address_only) {
+    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) {
     address plan=host.plan_new();u64 index=0u64;
     while(index<code.count){
         PacketPlanNode node=host.read(context,code,index);
@@ -5112,20 +5112,22 @@ address packet_plan_build(address context,PacketPlanBlock code,PacketPlanHeader 
         host.append(plan,node,decision,first,second);index+=1u64;
     }return plan;
 }
-extern "C" address packet_plan(address context,PacketPlanBlock code,PacketPlanHeader header,PacketPlanHost host) on cpu 
-    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) requires nonzero(host.address_only) {
-    if(header.tile!=0||header.writes==0u64){return unsafe_address(0u64);}
-    if(host.visit(context,code.instructions,PacketPlanVisit::Widths,unsafe_address(0u64),c_function(packet_plan_width))==0){return unsafe_address(0u64);}
+extern "C" PacketPlanProduct packet_plan(address context,PacketPlanBlock code,PacketPlanHeader header,PacketPlanHost host) on cpu 
+    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) {
+    if(header.tile!=0||header.writes==0u64){return PacketPlanProduct(unsafe_address(0u64),packet_plan_empty());}
+    if(host.visit(context,code.instructions,PacketPlanVisit::Widths,unsafe_address(0u64),c_function(packet_plan_width))==0){return PacketPlanProduct(unsafe_address(0u64),packet_plan_empty());}
     PacketPlanState definitions=host.state_new(header.registers,unsafe_address(0u64));
     PacketPlanState state=host.state_new(header.slots,unsafe_address(0u64));
     PacketPlanFlow flow=packet_plan_uniform_block(context,code,header,state,definitions.bytes,true,host);packet_plan_release_flow(flow,host);
     u64 index=0u64;while(index<header.registers){packet_plan_set_byte(definitions.bytes,index,packet_plan_byte(definitions.bytes,index)==u8(2)?u8(1):u8(0));index+=1u64;}
     PacketPlanState uses=host.state_new(header.registers,unsafe_address(0u64));packet_plan_uses(context,code,uses.bytes,host);
     address plan=packet_plan_build(context,code,header,definitions.bytes,uses.bytes,host);
-    if(address_bits(plan)!=0u64){
-        index=0u64;while(index<header.registers){if(packet_plan_byte(uses.bytes,index)==u8(1)){host.address_only(context,index);}index+=1u64;}
+    host.state_drop(definitions);
+    if(address_bits(plan)==0u64){
+        host.state_drop(uses);
+        return PacketPlanProduct(plan,packet_plan_empty());
     }
-    host.state_drop(definitions);host.state_drop(uses);return plan;
+    return PacketPlanProduct(plan,uses);
 }
 
 extern "C" RangeProduct emit_ranges(RangeEntry entry, usize words_or_keys, u32 complete, RangeSink sink)

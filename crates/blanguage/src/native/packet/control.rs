@@ -30,6 +30,8 @@ struct Header { registers: usize, slots: usize, writes: usize, tile: u32, select
 #[derive(Clone, Copy)]
 struct State { owner: *mut Vec<u8>, bytes: *mut u8, count: usize }
 #[repr(C)]
+struct Product { plan: *mut c_void, uses: State }
+#[repr(C)]
 struct Decision { operation: Operation, uniform_count: u32, dataset: PacketAddress, view: PacketViewAddress, math: Math }
 type Callback = unsafe extern "C" fn(*mut c_void, usize) -> u32;
 #[repr(C)]
@@ -41,32 +43,31 @@ struct Host {
     plan_new: unsafe extern "C" fn() -> *mut c_void,
     plan_drop: unsafe extern "C" fn(*mut c_void),
     append: unsafe extern "C" fn(*mut c_void, Node, Decision, *mut c_void, *mut c_void),
-    address_only: unsafe extern "C" fn(*mut Context<'_>, Reg),
 }
 struct Context<'a> {
     program: &'a Program,
     stage: &'a Stage,
     registers: &'a [Scalar],
-    address_only: &'a mut BTreeSet<Reg>,
 }
 // The erased vectors borrow the placed instructions and registers until Plan<'a> is consumed.
 type Steps = Vec<Step<'static>>;
 unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::packet_plan"]
-    fn packet_plan(context: *mut Context<'_>, code: Block, header: Header, host: Host) -> *mut c_void;
+    fn packet_plan(context: *mut Context<'_>, code: Block, header: Header, host: Host) -> Product;
 }
 pub(super) fn run<'a>(
     program: &Program, stage: &Stage, code: &'a [Inst], registers: &'a [Scalar], tile_scope: bool,
-) -> Option<Plan<'a>> {
-    let mut address_only = BTreeSet::new();
-    let mut context = Context { program, stage, registers, address_only: &mut address_only };
+) -> Option<(Plan<'a>, Vec<u8>)> {
+    let mut context = Context { program, stage, registers };
     let header = Header { registers: registers.len(),
         slots: registers.len() + stage.locals.last_key_value().map_or(0, |(end, _)| *end),
         writes: stage.writes.len(), tile: u32::from(tile_scope), selected: u32::from(stage.selection.is_some()) };
-    let code = unsafe { packet_plan(&mut context, Block::from(code), header, HOST) };
-    if code.is_null() { return None; }
-    let code = unsafe { *Box::from_raw(code.cast::<Vec<Step<'a>>>()) };
-    Some(Plan { code, address_only })
+    let product = unsafe { packet_plan(&mut context, Block::from(code), header, HOST) };
+    if product.plan.is_null() { return None; }
+    // Only a completed plan transfers its step vector and the original uses buffer.
+    let code = unsafe { *Box::from_raw(product.plan.cast::<Vec<Step<'a>>>()) };
+    let uses = unsafe { *Box::from_raw(product.uses.owner) };
+    Some((Plan { code }, uses))
 }
 unsafe extern "C" fn read(context: *const Context<'_>, code: Block, index: usize) -> Node {
     let context = unsafe { &*context }; let instruction = unsafe { code.instructions.add(index) };
@@ -147,5 +148,4 @@ unsafe extern "C" fn append(plan: *mut c_void, node: Node, decision: Decision, f
     };
     unsafe { &mut *plan.cast::<Steps>() }.push(Step { instruction: unsafe { &*node.instruction }, kind });
 }
-unsafe extern "C" fn address_only(context: *mut Context<'_>, reg: Reg) { unsafe { &mut *context }.address_only.insert(reg); }
-const HOST: Host = Host { read, visit, state_new, state_drop, plan_new, plan_drop, append, address_only };
+const HOST: Host = Host { read, visit, state_new, state_drop, plan_new, plan_drop, append };

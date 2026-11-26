@@ -256,7 +256,7 @@ unsafe extern "C" {
     #[link_name = "bootstrap.coloring::color"]
     fn color(
         graph: *const c_void, count: u64, places: *mut ColorPlace, order: *mut [u64; 3],
-        mode: u32, base: u64,
+        mode: u32, base: u64, packet_uses: Span,
         node: unsafe extern "C" fn(*const c_void, u64) -> ColorNode,
         next: unsafe extern "C" fn(*const c_void, u64, bool, u64) -> u64,
     ) -> ColorLayout;
@@ -283,13 +283,15 @@ unsafe extern "C" fn color_next(graph: *const c_void, id: u64, affinity: bool, a
         else { set.range((Excluded(after as usize), Unbounded)).next() };
     next.map_or(graph.edges.len() as u64, |id| *id as u64)
 }
-fn color_locations(graph: &Graph, places: &mut [ColorPlace], mode: u32, base: u64) -> ColorLayout {
-    let mut order = Vec::<[u64; 3]>::with_capacity(places.len());
+unsafe fn color_locations(
+    graph: &Graph, places: *mut ColorPlace, count: usize, mode: u32, base: u64, packet_uses: Span,
+) -> ColorLayout {
+    let mut order = Vec::<[u64; 3]>::with_capacity(count);
     // B borrows the graph and writes the final locations. The order rows are
     // scratch through coloring and byte layout and are never read by Rust.
     unsafe {
-        color((graph as *const Graph).cast(), places.len() as u64, places.as_mut_ptr(),
-            order.as_mut_ptr(), mode, base, color_node, color_next)
+        color(ptr::from_ref(graph).cast(), count as u64, places, order.as_mut_ptr(),
+            mode, base, packet_uses, color_node, color_next)
     }
 }
 
@@ -298,9 +300,10 @@ impl Allocation {
         locals: &std::collections::BTreeMap<usize, Ty>, graph: &mut Graph, tile_scope: bool,
     ) -> Self {
         let mut locations = std::mem::take(&mut graph.locations);
-        let mut layout = color_locations(
-            graph, &mut locations, u32::from(tile_scope), graph.outgoing_bytes,
-        );
+        let mut layout = unsafe {
+            color_locations(graph, locations.as_mut_ptr(), locations.len(),
+                u32::from(tile_scope), graph.outgoing_bytes, Span::EMPTY)
+        };
         let mut private = PrivateDeclarations { spans: graph.private.iter(), locals };
         layout.end = unsafe {
             place_private(locations.as_mut_ptr(), layout.end, graph.registers,
@@ -320,21 +323,16 @@ impl Allocation {
     }
 }
 impl PacketAllocation {
-    pub fn new(registers: usize, graph: &mut Graph, address_only: &BTreeSet<Reg>) -> Self {
-        // 原生范围游标已承担这些寻址，不生产没有值消费者的索引向量。
-        for r in address_only {
-            for n in std::mem::take(&mut graph.edges[*r]) {
-                graph.edges[n].remove(r);
-            }
-            graph.weights[*r] = 0;
-        }
-        let mut locations = vec![ColorPlace::new(16, false); graph.edges.len()];
-        let layout = color_locations(graph, &mut locations, 2, 0);
-        Self {
-            locations,
-            registers,
-            layout,
-        }
+    pub fn new(registers: usize, graph: &Graph, uses: Vec<u8>) -> Self {
+        let count = graph.edges.len();
+        let mut locations = Vec::with_capacity(count);
+        // Packet coloring initializes the positions and consumes the planner's uses.
+        let layout = unsafe {
+            let layout = color_locations(graph, locations.as_mut_ptr(), count, 2, 0, Span::slice(&uses));
+            locations.set_len(count);
+            layout
+        };
+        Self { locations, registers, layout }
     }
     pub fn location(&self, slot: PrivateSlot) -> PacketPlace {
         self.locations[match slot {
