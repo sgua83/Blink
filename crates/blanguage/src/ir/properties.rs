@@ -191,6 +191,14 @@ unsafe extern "C" {
     #[link_name = "bootstrap.type_layout::borrow_fields"]
     fn b_borrow_fields(value: *const c_void, base: u32, host: FieldHost, context: *mut c_void,
         emit: unsafe extern "C" fn(*mut c_void, u32, *const c_void));
+    #[cfg(feature = "compiler")]
+    #[link_name = "bootstrap.type_layout::snapshot_addresses"]
+    fn b_snapshot_addresses(value: *const c_void, host: FieldHost, context: *mut c_void,
+        emit: unsafe extern "C" fn(*mut c_void, u32, *const c_void));
+    #[cfg(feature = "compiler")]
+    #[link_name = "bootstrap.type_layout::select_snapshot_columns"]
+    fn b_select_snapshot_columns(columns: *mut SnapshotColumn, count: usize, ranges: usize,
+        write: u32, context: *const c_void, host: SnapshotColumnHost);
     #[link_name = "codec.type_layout::task_output_owners"]
     fn b_task_output_owners(value: *const c_void, base: u32, host: FieldHost, context: *mut c_void,
         emit: unsafe extern "C" fn(*mut c_void, u32, *const c_void));
@@ -324,6 +332,64 @@ pub(super) fn visit_borrows<'a, F: FnMut(u32, &'a Ty)>(value: &'a Ty, mut visit:
     unsafe {
         b_borrow_fields(address(value), 0, FieldHost { types: Host { inspect, child }, part },
             ptr::from_mut(&mut visit).cast(), dispatch::<F>);
+    }
+}
+
+#[cfg(feature = "compiler")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum SnapshotColumn { Skip, Scalar, Address }
+
+#[cfg(feature = "compiler")]
+impl SnapshotColumn {
+    pub(crate) fn captured(self) -> bool { self != Self::Skip }
+    pub(crate) fn address(self) -> bool { self == Self::Address }
+}
+
+#[cfg(feature = "compiler")]
+#[repr(C)]
+struct MetadataRange { start: u32, end: u32 }
+
+#[cfg(feature = "compiler")]
+#[repr(C)]
+struct SnapshotColumnHost {
+    word: unsafe extern "C" fn(*const c_void, usize) -> u32,
+    metadata: unsafe extern "C" fn(*const c_void, usize) -> MetadataRange,
+}
+
+#[cfg(feature = "compiler")]
+impl Ty {
+    pub(crate) fn snapshot_columns(
+        &self, count: usize, write: bool, ranges: &[std::ops::Range<u32>],
+    ) -> Vec<SnapshotColumn> {
+        struct Marks<'a> { ty: &'a Ty, columns: &'a mut [SnapshotColumn] }
+        struct Source<'a> { ty: &'a Ty, ranges: &'a [std::ops::Range<u32>] }
+
+        unsafe extern "C" fn mark(context: *mut c_void, word: u32, _: *const c_void) {
+            let source = unsafe { &mut *context.cast::<Marks<'_>>() };
+            let component = source.ty.components.iter().position(|(_, offset)| *offset == word).unwrap();
+            if let Some(mark) = source.columns.get_mut(component) {
+                *mark = SnapshotColumn::Address;
+            }
+        }
+        unsafe extern "C" fn word(context: *const c_void, component: usize) -> u32 {
+            unsafe { &*context.cast::<Source<'_>>() }.ty.components[component].1
+        }
+        unsafe extern "C" fn metadata(context: *const c_void, index: usize) -> MetadataRange {
+            let range = &unsafe { &*context.cast::<Source<'_>>() }.ranges[index];
+            MetadataRange { start: range.start, end: range.end }
+        }
+
+        let mut columns = vec![SnapshotColumn::Skip; count];
+        unsafe {
+            let mut marks = Marks { ty: self, columns: &mut columns };
+            b_snapshot_addresses(address(self), FieldHost { types: Host { inspect, child }, part },
+                ptr::from_mut(&mut marks).cast(), mark);
+            let source = Source { ty: self, ranges };
+            b_select_snapshot_columns(columns.as_mut_ptr(), count, ranges.len(), u32::from(write),
+                ptr::from_ref(&source).cast(), SnapshotColumnHost { word, metadata });
+        }
+        columns
     }
 }
 

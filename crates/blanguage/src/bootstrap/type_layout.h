@@ -43,6 +43,20 @@ extern "C" void borrow_fields(address value, u32 base, FieldHost host, address c
     requires nonzero(host.types.inspect) requires nonzero(host.types.child)
     requires nonzero(host.part) requires nonzero(emit);
 
+extern "C" void snapshot_addresses(address value, FieldHost host, address context,
+    cfn<void,address,u32,address> emit) on cpu
+    requires nonzero(host.types.inspect) requires nonzero(host.types.child)
+    requires nonzero(host.part) requires nonzero(emit);
+
+struct MetadataRange { u32 start; u32 end; };
+struct SnapshotColumnHost {
+    cfn<u32,address,usize> ensures memory(read) word;
+    cfn<MetadataRange,address,usize> ensures memory(read) metadata;
+};
+extern "C" void select_snapshot_columns(address columns, usize count, usize ranges, u32 write,
+    address context, SnapshotColumnHost host) on cpu
+    requires nonzero(host.word) requires nonzero(host.metadata);
+
 extern "C" u32 zero_valid(address value, TypeHost host,
     cfn<u32,address,usize> ensures memory(read) discriminant) on cpu
     requires nonzero(host.inspect) requires nonzero(host.child) requires nonzero(discriminant);

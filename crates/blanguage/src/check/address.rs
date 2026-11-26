@@ -353,6 +353,28 @@ impl Identity {
 
 #[derive(Clone,Copy,PartialEq,Eq,PartialOrd,Ord)]
 pub(super) enum MemoryTarget { Value(Reg), Call(usize) }
+enum CapturePositions<'a> {
+    Binding(&'a [Position]),
+    Element { borrow: &'a Arc<view::Borrow>, layout: &'a Layout },
+}
+
+impl CapturePositions<'_> {
+    fn len(&self, width: usize) -> usize {
+        match self {
+            Self::Binding(positions) => positions.len(),
+            Self::Element { .. } => width,
+        }
+    }
+
+    fn at(&self, ty: &Ty, component: usize) -> Position {
+        match self {
+            Self::Binding(positions) => positions[component].clone(),
+            Self::Element { borrow, layout } =>
+                Position::Borrowed(Arc::clone(borrow), (**layout).clone(), ty.components[component].1),
+        }
+    }
+}
+
 #[derive(Clone,Copy,PartialEq,Eq)]
 pub(super) enum Capture { Read, Write }
 // External仅表示没有静态来源；不能把它当作与本函数实际存储不相交。
@@ -1360,32 +1382,42 @@ impl Builder<'_> {
             let (positions, index) = self.value_memory_location(&place);
             Some((name.clone(), positions, index))
         }).collect::<Vec<_>>();
-        let mut snapshots=Vec::new();
-        let mut capture=|proof:&mut bounds::Proof,uniform:&mut bool,ty:&Ty,mut positions:Vec<(usize,Position)>,index:Option<bounds::Operand>,resources:Vec<Vec<usize>>|{
-            let metadata=resource_metadata(ty,resources);
-            positions.retain(|(component,_)|!metadata.iter().any(|range|range.contains(&ty.components[*component].1)));
-            let fields=ty.borrow_fields().into_iter().filter(|(_,field)|field.is_address()).map(|(at,_)|ty.components.iter().position(|(_,word)|*word==at).unwrap()).collect::<BTreeSet<_>>();
-            if capture_kind==Capture::Read{positions.retain(|(component,_)|fields.contains(component));}
-            let width=ty.components.len();let previous=proof.clone();
-            if capture_kind==Capture::Write{proof.forget_value(&positions.iter().map(|(component,_)|*component).collect::<Vec<_>>(),width);}
-            for(component,position)in positions {
-                let snapshot=snapshots.len();let identity=ValueIdentity::MemoryValue(memory,snapshot);
-                let initial=Arc::new(previous.project(&[component],width));
-                snapshots.push(view_contracts::ValueSnapshot{position:position.clone(),index,scalar:ty.components[component].0,proof:initial.clone()});
-                if capture_kind==Capture::Write{
-                    *proof=std::mem::take(proof).with_component_identity(component,identity);
-                    if fields.contains(&component){
-                        proof.set_view_borrow(component,view::Borrow{reads:view::Edges::from([view_contracts::ContentRead::Snapshot{memory,component:snapshot,position,index,initial}]),..view::Borrow::default()});
+        let writing = capture_kind == Capture::Write;
+        let mut snapshots = Vec::new();
+        let mut capture = |proof: &mut bounds::Proof, uniform: &mut bool, ty: &Ty,
+            positions: CapturePositions<'_>, index: Option<bounds::Operand>, resources: Vec<Vec<usize>>| {
+            let width = ty.components.len();
+            let columns = ty.snapshot_columns(positions.len(width), writing, &resource_metadata(ty, resources));
+            let previous = writing.then(|| proof.clone());
+            if writing {
+                let affected: Vec<_> = columns.iter().enumerate()
+                    .filter_map(|(component, column)| column.captured().then_some(component)).collect();
+                proof.forget_value(&affected, width);
+            }
+            for (component, column) in columns.into_iter().enumerate() {
+                if !column.captured() { continue; }
+                let snapshot = snapshots.len();
+                let initial = Arc::new(previous.as_ref().unwrap_or(proof).project(&[component], width));
+                let position = positions.at(ty, component);
+                let read = (writing && column.address()).then(|| view_contracts::ContentRead::Snapshot {
+                    memory, component: snapshot, position: position.clone(), index, initial: initial.clone(),
+                });
+                snapshots.push(view_contracts::ValueSnapshot { position, index, scalar: ty.components[component].0, proof: initial });
+                if writing {
+                    let identity = ValueIdentity::MemoryValue(memory, snapshot);
+                    *proof = std::mem::take(proof).with_component_identity(component, identity);
+                    if let Some(read) = read {
+                        proof.set_view_borrow(component, view::Borrow { reads: view::Edges::from([read]), ..view::Borrow::default() });
                     }
                 }
             }
-            if capture_kind==Capture::Write{*uniform=false;}
+            if writing { *uniform = false; }
         };
         for(name,positions,index)in owners {
             let binding=self.env.get_mut(&name).unwrap();
             let resources=match &*binding{Binding::OwnedValue(owner)=>view::resource_paths(&owner.value.ty).into_iter().filter(|fields|view::owned_data_at(owner,fields).is_some()).collect(),_=>Vec::new()};
             let Some((proof,uniform,owner))=binding.proof_storage()else{continue;};
-            capture(proof,uniform,owner.ty(),positions.into_iter().enumerate().collect(),index,resources);
+            capture(proof,uniform,owner.ty(),CapturePositions::Binding(&positions), index, resources);
             if capture_kind==Capture::Write && let Binding::OwnedValue(owner)=binding{owner.value.constant=None;}
         }
         for binding in self.env.values_mut(){application::each_binding_data(binding,&mut|_,_,data|{
@@ -1406,8 +1438,11 @@ impl Builder<'_> {
                 let layout=Layout::of(&selected.ty);let borrow=Arc::new(borrow);
                 let resources=view::resource_paths(&selected.ty).into_iter().filter(|fields|application::model_data(selected.elements.known(),fields).is_some()).collect();
                 if let Some(value)=selected.elements.known_mut().and_then(returns::Returned::view_value_mut){
-                    let positions=value.ty.components.iter().enumerate().map(|(component,(_,word))|(component,Position::Borrowed(borrow.clone(),layout.clone(),*word))).collect();
-                    value.proof=bounds::Proof::capture(value);capture(&mut value.proof,&mut value.uniform,&value.ty,positions,Some(bounds::Operand::Value(ValueIdentity::ElementIndex(0))),resources);if capture_kind==Capture::Write{value.constant=None;value.proof=bounds::Proof::capture(value);}
+                    let positions = CapturePositions::Element { borrow: &borrow, layout: &layout };
+                    value.proof = bounds::Proof::capture(value);
+                    capture(&mut value.proof, &mut value.uniform, &value.ty, positions,
+                        Some(bounds::Operand::Value(ValueIdentity::ElementIndex(0))), resources);
+                    if writing { value.constant = None; value.proof = bounds::Proof::capture(value); }
                 }
             }
         });}

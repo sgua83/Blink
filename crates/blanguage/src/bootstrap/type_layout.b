@@ -182,15 +182,29 @@ extern "C" void borrow_fields(address value, u32 base, FieldHost host, address c
     cfn<void,address,u32,address> emit) on cpu
     requires nonzero(host.types.inspect) requires nonzero(host.types.child)
     requires nonzero(host.part) requires nonzero(emit) {
+    visit_borrow_fields(value,base,host,context,emit,0);
+}
+
+extern "C" void snapshot_addresses(address value, FieldHost host, address context,
+    cfn<void,address,u32,address> emit) on cpu
+    requires nonzero(host.types.inspect) requires nonzero(host.types.child)
+    requires nonzero(host.part) requires nonzero(emit) {
+    visit_borrow_fields(value,0,host,context,emit,1);
+}
+
+void visit_borrow_fields(address value, u32 base, FieldHost host, address context,
+    cfn<void,address,u32,address> emit, u32 addresses_only) on cpu
+    requires nonzero(host.types.inspect) requires nonzero(host.types.child)
+    requires nonzero(host.part) requires nonzero(emit) {
     TypeNode node=host.types.inspect(value);
     if (node.task!=0 || node.view!=0 || node.address!=0) {
-        emit(context,base,value);
+        if (addresses_only==0 || node.address!=0) { emit(context,base,value); }
         return;
     }
     if (node.variants!=0u64) {
         usize i=0u64;
         while (i<node.variants) {
-            borrow_fields(host.types.child(value,Child::Variant,i),base+node.alignment,host,context,emit);
+            visit_borrow_fields(host.types.child(value,Child::Variant,i),base+node.alignment,host,context,emit,addresses_only);
             i+=1u64;
         }
         return;
@@ -204,8 +218,35 @@ extern "C" void borrow_fields(address value, u32 base, FieldHost host, address c
     usize i=0u64;
     while (i<count) {
         TypePart part=host.part(value,i);
-        borrow_fields(part.value,base+part.offset,host,context,emit);
+        visit_borrow_fields(part.value,base+part.offset,host,context,emit,addresses_only);
         i+=1u64;
+    }
+}
+
+extern "C" void select_snapshot_columns(address columns, usize count, usize ranges, u32 write,
+    address context, SnapshotColumnHost host) on cpu
+    requires nonzero(host.word) requires nonzero(host.metadata) {
+    usize at=0u64;
+    while (at<count) {
+        address slot=unsafe_address(address_bits(columns)+at);
+        u8 kind=unsafe_position<u8>(slot);
+        if (kind!=u8(0) || write!=0) {
+            u8 selected=kind!=u8(0) ? u8(2) : u8(1);
+            if (ranges!=0u64) {
+                u32 word=host.word(context,at);
+                usize i=0u64;
+                while (i<ranges) {
+                    MetadataRange metadata=host.metadata(context,i);
+                    if (metadata.start<=word && word<metadata.end) {
+                        selected=u8(0);
+                        break;
+                    }
+                    i+=1u64;
+                }
+            }
+            unsafe_position<u8>(slot)=selected;
+        }
+        at+=1u64;
     }
 }
 
