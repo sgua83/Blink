@@ -741,7 +741,20 @@ void reduction_copy_roots(Span values,usize offset,usize root,ReductionHost host
  usize index=0u64;
  while(index<values.count){host.push_root(host.context,root,word_at(values,index)+offset);index+=1u64;}
 }
-extern "C" void reduction_kernel(ReductionInput input,ReductionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.header) requires nonzero(host.clone) requires nonzero(host.remap) requires nonzero(host.push_root) requires nonzero(host.part) requires nonzero(host.alloc_uniform) requires nonzero(host.release_uniform) requires nonzero(host.open_part) requires nonzero(host.hoist) requires nonzero(host.move_instruction) requires nonzero(host.close_part) requires nonzero(host.value_flow) requires nonzero(host.invariant) requires nonzero(host.boundaries) requires nonzero(host.append) requires nonzero(host.finish) {
+extern "C" void reduction_prefix_definitions(Span code,Host ir,address definitions) on cpu
+ requires nonzero(ir.inspect) {
+ usize index=0u64;
+ while(index<code.count){
+  Results result=results(node_at(code,index,N_INSTRUCTION),ir);Word next=next_result(result);
+  while(next.present!=0){
+   unsafe_position<u8>(reduction_byte(definitions,next.value))=u8(1);
+   next=next_result(result);
+  }
+  index+=1u64;
+ }
+}
+
+extern "C" void reduction_kernel(ReductionInput input,ReductionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.header) requires nonzero(host.clone) requires nonzero(host.remap) requires nonzero(host.push_root) requires nonzero(host.part_len) requires nonzero(host.alloc_uniform) requires nonzero(host.release_uniform) requires nonzero(host.open_part) requires nonzero(host.hoist) requires nonzero(host.move_instruction) requires nonzero(host.close_part) requires nonzero(host.value_flow) requires nonzero(host.boundaries) requires nonzero(host.append) {
  View source=host.ir.inspect(input.source);
  if(input.identity!=0){
   host.clone(host.context,1u64,source.left,0u64);
@@ -778,17 +791,11 @@ extern "C" void reduction_kernel(ReductionInput input,ReductionHost host) on cpu
  while(partition<4u64){reduction_extract_part(partition,uniform,host);partition+=1u64;}
  host.release_uniform(uniform,register_count);
  host.value_flow(host.context);
- Span entry=host.part(host.context,0u64);index=0u64;
- while(index<entry.count){
-  Results result=results(node_at(entry,index,N_INSTRUCTION),host.ir);Word next=next_result(result);
-  while(next.present!=0){host.invariant(host.context,next.value);next=next_result(result);}
-  index+=1u64;
- }
- usize invariant_end=entry.count;usize initialize_end=invariant_end+host.part(host.context,1u64).count;
- usize project_end=initialize_end+host.part(host.context,2u64).count;
+ usize invariant_end=host.part_len(host.context,0u64);
+ usize initialize_end=invariant_end+host.part_len(host.context,1u64);
+ usize project_end=initialize_end+host.part_len(host.context,2u64);
  host.boundaries(host.context,invariant_end,initialize_end,project_end);
  partition=1u64;while(partition<4u64){host.append(host.context,partition);partition+=1u64;}
- host.finish(host.context);
 }
 
 

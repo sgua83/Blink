@@ -298,7 +298,8 @@ impl ReductionKernel {
             ("invariant_end", number(self.invariant_end)),
             ("initialize_end", number(self.initialize_end)),
             ("project_end", number(self.project_end)),
-            ("invariants", array(self.invariants.iter().map(number))),
+            ("invariants", array(self.prefix_definitions().iter().enumerate()
+                .filter(|(_, flag)| **flag != 0).map(|(reg, _)| number(reg)))),
             ("source", numbers(&self.source)), ("projected", numbers(&self.projected)),
             ("initial", numbers(&self.initial)), ("left", numbers(&self.left)),
             ("right", numbers(&self.right)), ("result", numbers(&self.result)),

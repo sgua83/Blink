@@ -198,10 +198,14 @@ pub(super) fn rebind_roots(values: &Values, outputs: &mut [Reg]) {
 }
 
 pub(super) fn run_reduction(
-    parts: &mut [Vec<Inst>; 4], kernel: &mut ReductionKernel, origins: &mut Origins,
+    parts: &mut [Vec<Inst>; 3], kernel: &mut ReductionKernel, origins: &mut Origins,
     reads: &mut Vec<OperationOrigin>, inputs: &mut Vec<ReductionInputReadForward>,
 ) {
-    let blocks = parts.each_mut().map(ptr::from_mut);
+    let [identity, project, combine] = parts;
+    let blocks = [
+        ptr::from_mut(&mut kernel.stage.code), ptr::from_mut(identity),
+        ptr::from_mut(project), ptr::from_mut(combine),
+    ];
     let roots = [
         rewrite::Span::slice(&mut kernel.source), rewrite::Span::slice(&mut kernel.projected),
         rewrite::Span::slice(&mut kernel.initial), rewrite::Span::slice(&mut kernel.left),

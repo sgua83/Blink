@@ -63,7 +63,6 @@ impl<R: ReductionShape> CustomScan<R> {
 pub struct ReductionKernel {
     pub stage: Stage,
     pub invariant_end: usize,
-    pub(crate) invariants: std::collections::BTreeSet<Reg>,
     pub initialize_end: usize,
     pub project_end: usize,
     pub source: Vec<Reg>,
@@ -73,6 +72,24 @@ pub struct ReductionKernel {
     pub right: Vec<Reg>,
     pub result: Vec<Reg>,
 }
+#[cfg(feature = "compiler")]
+unsafe extern "C" {
+    #[link_name = "bootstrap.ir_dataflow::reduction_prefix_definitions"]
+    fn reduction_prefix_definitions(code: super::dataflow::Span, ir: super::dataflow::Host, definitions: *mut u8);
+}
+
+#[cfg(feature = "compiler")]
+impl ReductionKernel {
+    pub(crate) fn prefix_definitions(&self) -> Vec<u8> {
+        let mut definitions = vec![0; self.stage.registers.len()];
+        let prefix = &self.stage.code[..self.invariant_end];
+        unsafe {
+            reduction_prefix_definitions(super::dataflow::Span::slice(prefix), super::dataflow::HOST, definitions.as_mut_ptr());
+        }
+        definitions
+    }
+}
+
 #[cfg(feature = "compiler")]
 impl CustomReduction {
     /// The original CPU and SPIR-V consumers share this B preparation.

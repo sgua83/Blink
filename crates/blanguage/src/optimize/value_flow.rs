@@ -85,7 +85,7 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut host::Reuses) {
 pub(super) fn run(code: &mut Vec<Inst>, registers: &[Scalar]) {
     run_code(code, registers, &mut []);
 }
-pub(super) fn run_reduction(parts: &mut [Vec<Inst>; 4], kernel: &mut ReductionKernel) {
+pub(super) fn run_reduction(parts: &mut [Vec<Inst>; 3], kernel: &mut ReductionKernel) {
     let mut origins = Origins::default();
     let mut reads = Vec::new();
     let mut inputs = Vec::new();

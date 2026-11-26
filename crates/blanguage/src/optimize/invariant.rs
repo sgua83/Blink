@@ -1,19 +1,11 @@
 //! B owns complete custom-kernel preparation. Rust retains only the original
 //! typed bodies and source construction.
 use super::*;
-use std::{ffi::c_void, mem::{self, size_of}, ptr};
+use std::{ffi::c_void, ptr};
 
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct Node { data: *const c_void, kind: u32 }
-#[derive(Clone, Copy)]
-#[repr(C)]
-struct Span { data: *const c_void, count: usize, stride: usize }
-impl Span {
-    fn of<T>(values: &[T]) -> Self {
-        Self { data: values.as_ptr().cast(), count: values.len(), stride: size_of::<T>() }
-    }
-}
 #[repr(C)]
 struct Input { source: Node, project: u32, identity: u32 }
 #[repr(C)]
@@ -25,7 +17,7 @@ struct Host {
     clone: unsafe extern "C" fn(*mut c_void, usize, Node, usize),
     remap: unsafe extern "C" fn(*mut c_void, usize, usize, usize),
     push_root: unsafe extern "C" fn(*mut c_void, usize, Reg),
-    part: unsafe extern "C" fn(*mut c_void, usize) -> Span,
+    part_len: unsafe extern "C" fn(*const c_void, usize) -> usize,
     alloc_uniform: extern "C" fn(usize) -> *mut u8,
     release_uniform: unsafe extern "C" fn(*mut u8, usize),
     open_part: unsafe extern "C" fn(*mut c_void, usize) -> BlockSpan,
@@ -33,24 +25,22 @@ struct Host {
     move_instruction: unsafe extern "C" fn(*mut Inst, *mut Inst),
     close_part: unsafe extern "C" fn(*mut c_void, usize, usize),
     value_flow: unsafe extern "C" fn(*mut c_void),
-    invariant: unsafe extern "C" fn(*mut c_void, Reg),
     boundaries: unsafe extern "C" fn(*mut c_void, usize, usize, usize),
     append: unsafe extern "C" fn(*mut c_void, usize),
-    finish: unsafe extern "C" fn(*mut c_void),
 }
 unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::reduction_kernel"] fn b_kernel(input: Input, host: Host);
 }
 struct State {
     kernel: ReductionKernel,
-    parts: [Vec<Inst>; 4],
+    parts: [Vec<Inst>; 3],
 }
 impl State {
     fn host(&mut self) -> Host {
         Host { ir: crate::ir::dataflow::HOST, context: ptr::from_mut(self).cast(),
-            header, clone, remap, push_root, part, alloc_uniform, release_uniform,
+            header, clone, remap, push_root, part_len, alloc_uniform, release_uniform,
             open_part, hoist, move_instruction, close_part, value_flow,
-            invariant, boundaries, append, finish }
+            boundaries, append }
     }
 }
 pub(crate) fn kernel(reduction: &CustomReduction, stage: &Stage, project: bool, identity: bool) -> ReductionKernel {
@@ -65,7 +55,7 @@ pub(crate) fn kernel(reduction: &CustomReduction, stage: &Stage, project: bool, 
         prefix_guarantees: stage.prefix_guarantees.clone(), element_guarantees: stage.element_guarantees.clone(),
         cross_access: stage.cross_access.clone(), tiles: Vec::new(),
     };
-    let kernel = ReductionKernel { stage, invariant_end: 0, invariants: BTreeSet::new(),
+    let kernel = ReductionKernel { stage, invariant_end: 0,
         initialize_end: 0, project_end: 0, source: Vec::new(), projected: Vec::new(),
         initial: Vec::new(), left: Vec::new(), right: Vec::new(), result: Vec::new() };
     let mut state = State { kernel, parts: Default::default() };
@@ -82,12 +72,12 @@ unsafe extern "C" fn header(context: *mut c_void) -> Header {
 unsafe extern "C" fn clone(context: *mut c_void, part: usize, source: Node, local: usize) {
     let state = unsafe { &mut *context.cast::<State>() };
     let value = unsafe { &*source.data.cast::<ValueCode>() };
-    state.parts[part] = value.code.clone();
+    state.parts[part - 1] = value.code.clone();
     state.kernel.stage.registers.extend(&value.registers);
     state.kernel.stage.locals.extend(value.locals.iter().map(|(end, ty)| (end + local, ty.clone())));
 }
 unsafe extern "C" fn remap(context: *mut c_void, part: usize, registers: usize, locals: usize) {
-    let code = unsafe { &mut (*context.cast::<State>()).parts[part] };
+    let code = unsafe { &mut (*context.cast::<State>()).parts[part - 1] };
     map(code, crate::ir::rewrite::Remap::Offset { registers, locals });
 }
 fn root_values(kernel: &mut ReductionKernel, root: usize) -> &mut Vec<Reg> {
@@ -99,8 +89,9 @@ fn root_values(kernel: &mut ReductionKernel, root: usize) -> &mut Vec<Reg> {
 unsafe extern "C" fn push_root(context: *mut c_void, root: usize, reg: Reg) {
     root_values(unsafe { &mut (*context.cast::<State>()).kernel }, root).push(reg);
 }
-unsafe extern "C" fn part(context: *mut c_void, part: usize) -> Span {
-    Span::of(unsafe { &(*context.cast::<State>()).parts[part] })
+unsafe extern "C" fn part_len(context: *const c_void, part: usize) -> usize {
+    let state = unsafe { &*context.cast::<State>() };
+    if part == 0 { state.kernel.stage.code.len() } else { state.parts[part - 1].len() }
 }
 extern "C" fn alloc_uniform(count: usize) -> *mut u8 {
     Box::into_raw(vec![0u8; count].into_boxed_slice()).cast()
@@ -111,7 +102,7 @@ unsafe extern "C" fn release_uniform(buffer: *mut u8, count: usize) {
 }
 
 unsafe extern "C" fn open_part(context: *mut c_void, part: usize) -> BlockSpan {
-    let code = unsafe { &mut (*context.cast::<State>()).parts[part] };
+    let code = unsafe { &mut (*context.cast::<State>()).parts[part - 1] };
     let span = unsafe { instruction_span(code) };
     // B takes the live slots and returns only the initialized retained prefix.
     unsafe { code.set_len(0); }
@@ -133,8 +124,8 @@ unsafe extern "C" fn hoist(context: *mut c_void, part: usize, instruction: *mut 
             retained, partition: PARTITIONS[part - 1], operation: OPERATIONS[operation as usize], uniform_operand_count,
         }),
     }));
-    // The prefix Vec is disjoint from the open source partition.
-    unsafe { (*context.cast::<State>()).parts[0].push(inst); }
+    // The final entry owns the hoisted instruction. The source part is disjoint.
+    unsafe { (*context.cast::<State>()).kernel.stage.code.push(inst); }
 }
 
 unsafe extern "C" fn move_instruction(target: *mut Inst, source: *mut Inst) {
@@ -142,22 +133,17 @@ unsafe extern "C" fn move_instruction(target: *mut Inst, source: *mut Inst) {
 }
 
 unsafe extern "C" fn close_part(context: *mut c_void, part: usize, kept: usize) {
-    unsafe { (*context.cast::<State>()).parts[part].set_len(kept); }
+    unsafe { (*context.cast::<State>()).parts[part - 1].set_len(kept); }
 }
 unsafe extern "C" fn value_flow(context: *mut c_void) {
     let state = unsafe { &mut *context.cast::<State>() };
     value_flow::run_reduction(&mut state.parts, &mut state.kernel);
 }
-unsafe extern "C" fn invariant(context: *mut c_void, reg: Reg) { unsafe { (*context.cast::<State>()).kernel.invariants.insert(reg); } }
 unsafe extern "C" fn boundaries(context: *mut c_void, invariant: usize, initialize: usize, project: usize) {
     let kernel = unsafe { &mut (*context.cast::<State>()).kernel };
     kernel.invariant_end = invariant; kernel.initialize_end = initialize; kernel.project_end = project;
 }
 unsafe extern "C" fn append(context: *mut c_void, part: usize) {
-    let parts = unsafe { &mut (*context.cast::<State>()).parts };
-    let body = mem::take(&mut parts[part]); parts[0].extend(body);
-}
-unsafe extern "C" fn finish(context: *mut c_void) {
     let state = unsafe { &mut *context.cast::<State>() };
-    state.kernel.stage.code = mem::take(&mut state.parts[0]);
+    state.kernel.stage.code.append(&mut state.parts[part - 1]);
 }

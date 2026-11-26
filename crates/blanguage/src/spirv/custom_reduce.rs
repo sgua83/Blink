@@ -38,6 +38,7 @@ struct CheckedCollective<'a, 'stage> {
     emitter: *mut Emitter<'stage>,
     reduction: &'a CustomReduction,
     kernel: &'a ReductionKernel,
+    definitions: Vec<u8>,
     error: Option<&'static str>,
 }
 
@@ -91,7 +92,7 @@ unsafe extern "C" fn emit_checked_combine(
     let right = unsafe { std::slice::from_raw_parts(right, count) };
     let output = unsafe { std::slice::from_raw_parts_mut(output, count) };
     emitter.current_label = label;
-    match emitter.custom_pair(context.reduction, context.kernel, left, right, output) {
+    match emitter.custom_pair(context.reduction, context.kernel, &context.definitions, left, right, output) {
         Ok(()) => emitter.current_label,
         Err(error) => {
             context.error = Some(error);
@@ -119,6 +120,7 @@ impl Emitter<'_> {
         &mut self,
         r: &CustomReduction,
         kernel: &ReductionKernel,
+        definitions: &[u8],
         left: &[u32],
         right: &[u32],
         output: &mut [u32],
@@ -126,7 +128,7 @@ impl Emitter<'_> {
         for reg in
             kernel.stage.registers.len() - r.combine.registers.len()..kernel.stage.registers.len()
         {
-            if !kernel.invariants.contains(&reg) {
+            if definitions[reg] == 0 {
                 self.regs[reg] = self.id();
             }
         }
@@ -175,7 +177,7 @@ impl Emitter<'_> {
         let page = self.page_inputs(0, self.index, None, 0);
         let memory = self.memory_host();
         let mut context = CheckedCollective {
-            emitter: memory.scalars.context.cast(), reduction, kernel, error: None,
+            emitter: memory.scalars.context.cast(), reduction, kernel, definitions: kernel.prefix_definitions(), error: None,
         };
         let host = CustomCollectiveHost {
             context: std::ptr::from_mut(&mut context).cast(),

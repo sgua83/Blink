@@ -179,7 +179,7 @@ struct ReductionHost {
  cfn<void,address,usize,Node,usize> clone;
  cfn<void,address,usize,usize,usize> remap;
  cfn<void,address,usize,usize> push_root;
- cfn<Span,address,usize> part;
+ cfn<usize,address,usize> part_len;
  cfn<address,usize> alloc_uniform;
  cfn<void,address,usize> release_uniform;
  cfn<Span,address,usize> open_part;
@@ -187,13 +187,13 @@ struct ReductionHost {
  cfn<void,address,address> move_instruction;
  cfn<void,address,usize,usize> close_part;
  cfn<void,address> value_flow;
- cfn<void,address,usize> invariant;
  cfn<void,address,usize,usize,usize> boundaries;
  cfn<void,address,usize> append;
- cfn<void,address> finish;
 };
 
-extern "C" void reduction_kernel(ReductionInput input,ReductionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.header) requires nonzero(host.clone) requires nonzero(host.remap) requires nonzero(host.push_root) requires nonzero(host.part) requires nonzero(host.alloc_uniform) requires nonzero(host.release_uniform) requires nonzero(host.open_part) requires nonzero(host.hoist) requires nonzero(host.move_instruction) requires nonzero(host.close_part) requires nonzero(host.value_flow) requires nonzero(host.invariant) requires nonzero(host.boundaries) requires nonzero(host.append) requires nonzero(host.finish);
+extern "C" void reduction_prefix_definitions(Span code,Host ir,address definitions) on cpu
+ requires nonzero(ir.inspect);
+extern "C" void reduction_kernel(ReductionInput input,ReductionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.header) requires nonzero(host.clone) requires nonzero(host.remap) requires nonzero(host.push_root) requires nonzero(host.part_len) requires nonzero(host.alloc_uniform) requires nonzero(host.release_uniform) requires nonzero(host.open_part) requires nonzero(host.hoist) requires nonzero(host.move_instruction) requires nonzero(host.close_part) requires nonzero(host.value_flow) requires nonzero(host.boundaries) requires nonzero(host.append);
 
 // Complete Select control borrows one original Stage. Scratch is overwritten
 // before every plan; output rows live only until that branch is emitted.
