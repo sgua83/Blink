@@ -44,8 +44,8 @@ pub(super) fn run(
     a.try_reserve_exact(count as usize * 2)?;
     let mut b = Vec::<u32>::new();
     b.try_reserve_exact(count as usize * 2)?;
-    let grain = (count as usize).div_ceil(host.workers * 4).max(1);
-    let chunks = (count as usize).div_ceil(grain);
+    let plan = work::plan(count, host.workers, 1);
+    let chunks = plan.ranges;
     let mut rows = words(chunks * 17)?;
     let mut buffers = [
         pointers[code.source],
@@ -59,12 +59,9 @@ pub(super) fn run(
         buffers: buffers.as_ptr(),
         range_parameter_slot: buffers.len(),
         uniforms: std::ptr::null(),
-        count: count as usize,
-        grain,
-        next: AtomicUsize::new(0),
+        plan,
         result: RangeResult::None,
         partials: std::ptr::null_mut(),
-        errors: std::ptr::null_mut(),
         range_parameters: std::ptr::null(),
         range_parameter_words: 17,
         stage,
@@ -76,7 +73,6 @@ pub(super) fn run(
         work.buffers = buffers.as_ptr();
         work.entry = *key;
         work.range_parameters = std::ptr::null();
-        work.next = AtomicUsize::new(0);
         host.execute(&mut work, errors, timings)?;
         for shift in (0..32).step_by(4) {
             rows.fill(0);
@@ -88,7 +84,6 @@ pub(super) fn run(
             work.buffers = buffers.as_ptr();
             work.entry = code.histogram;
             work.range_parameters = rows.as_mut_ptr();
-            work.next = AtomicUsize::new(0);
             host.execute(&mut work, errors, timings)?;
             let mut offset = 0u32;
             for bin in 0..16 {
@@ -100,7 +95,6 @@ pub(super) fn run(
             }
             work.range_parameters = rows.as_mut_ptr();
             work.entry = code.scatter;
-            work.next = AtomicUsize::new(0);
             host.execute(&mut work, errors, timings)?;
             std::mem::swap(&mut a, &mut b);
         }
@@ -109,7 +103,6 @@ pub(super) fn run(
     work.buffers = buffers.as_ptr();
     work.entry = code.gather;
     work.range_parameters = std::ptr::null();
-    work.next = AtomicUsize::new(0);
     host.execute(&mut work, errors, timings)
 }
 

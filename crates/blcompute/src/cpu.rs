@@ -4,6 +4,8 @@ mod image;
 use image::{Allocation, LoadedCode};
 mod observation;
 mod sort;
+mod work;
+pub(crate) use work::WorkHandle;
 use crate::{Dataset, DomainBindings, ReadDataset, Result, Value, arguments, error};
 use crate::bindings::{self, DomainRelations, StorageSlots};
 use crate::application::{FrameArguments, ResidentData};
@@ -15,19 +17,7 @@ use blanguage::{
 pub use dataset::CpuDataset;
 pub use observation::{CpuRangeCall, CpuRangeTiming, CpuRangeTimings, CpuThreadTime, CpuTimePoint};
 use std::{ffi::c_void, mem::MaybeUninit, sync::Arc};
-use std::sync::atomic::{AtomicUsize, Ordering};
 
-#[link(name = "kernel32")]
-unsafe extern "system" {
-    fn CreateThreadpoolWork(
-        callback: unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void),
-        context: *mut c_void,
-        environment: *const c_void,
-    ) -> *mut c_void;
-    fn SubmitThreadpoolWork(work: *mut c_void);
-    fn WaitForThreadpoolWorkCallbacks(work: *mut c_void, cancel: i32);
-    fn CloseThreadpoolWork(work: *mut c_void);
-}
 struct RangeWork<'a> {
     frame: Option<(&'a Arc<crate::application::Definitions>, usize, usize, &'a [CpuBuffer<'a>], Option<&'a Arc<Vec<crate::DomainRelation>>>)>,
     entry: *mut c_void,
@@ -35,12 +25,9 @@ struct RangeWork<'a> {
     // 范围摘要替换数据集后的私有槽；普通 map 的完整表在其后还可包含纹理。
     range_parameter_slot: usize,
     uniforms: *const u32,
-    count: usize,
-    grain: usize,
-    next: AtomicUsize,
+    plan: work::RangePlan,
     result: RangeResult,
     partials: *mut u32,
-    errors: *mut *mut c_void,
     range_parameters: *const u32,
     range_parameter_words: usize,
     stage: usize,
@@ -106,80 +93,6 @@ impl RangeWork<'_> {
             std::mem::swap(&mut buffers[*slot], original);
         }
         result
-    }
-}
-unsafe extern "system" fn execute_ranges(
-    _instance: *mut c_void,
-    context: *mut c_void,
-    _work: *mut c_void,
-) {
-    let work = unsafe { &*context.cast::<RangeWork>() };
-    let mut begin = work.next.fetch_add(work.grain, Ordering::Relaxed);
-    if begin >= work.count {
-        return;
-    }
-    let mut frame_uniforms = work.frame.map(|(_, _, words, _, _)| unsafe {
-        std::slice::from_raw_parts(work.uniforms, words).to_vec()
-    });
-    let uniforms = frame_uniforms.as_mut().map_or(work.uniforms.cast_mut(), Vec::as_mut_ptr);
-    let mut private_buffers = if work.range_parameters.is_null() {
-        Vec::new()
-    } else {
-        let mut pointers = Vec::with_capacity(work.range_parameter_slot + 1);
-        pointers.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(work.buffers, work.range_parameter_slot)
-        });
-        pointers.push(BufferAddress { address: std::ptr::null_mut(), stride: work.range_parameter_words * 4 });
-        pointers
-    };
-    while begin < work.count {
-        let end = (begin + work.grain).min(work.count);
-        let index = begin / work.grain;
-        unsafe {
-            let buffers = if work.range_parameters.is_null() {
-                work.buffers
-            } else {
-                private_buffers[work.range_parameter_slot].address = work
-                    .range_parameters
-                    .add(index * work.range_parameter_words)
-                    .cast_mut();
-                private_buffers.as_ptr()
-            };
-            let words = work.result.words();
-            let output = if words == 0 {
-                std::ptr::null_mut()
-            } else {
-                work.partials.add(index * words)
-            };
-            let timing = work.timing.map(|first| first.add(index));
-            let failure = work.invoke(
-                work.entry, buffers, uniforms, end as u32, begin as u32, output, timing,
-            );
-            work.errors.add(index).write(failure);
-        }
-        begin = work.next.fetch_add(work.grain, Ordering::Relaxed);
-    }
-}
-pub(crate) struct WorkHandle(*mut c_void);
-impl WorkHandle {
-    /// The context stays valid until the submitted callbacks and this handle end.
-    pub(crate) unsafe fn new(
-        entry: unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void), context: *mut c_void,
-    ) -> std::io::Result<Self> {
-        let work = unsafe { CreateThreadpoolWork(entry, context, std::ptr::null()) };
-        if work.is_null() { Err(std::io::Error::last_os_error()) } else { Ok(Self(work)) }
-    }
-
-    pub(crate) unsafe fn submit(&self) {
-        unsafe { SubmitThreadpoolWork(self.0) };
-    }
-}
-impl Drop for WorkHandle {
-    fn drop(&mut self) {
-        unsafe {
-            WaitForThreadpoolWorkCallbacks(self.0, 0);
-            CloseThreadpoolWork(self.0);
-        }
     }
 }
 /// 原CPU代码入口的当前Windows VM区段快照；不持有代码或授予地址访问权。
@@ -878,13 +791,9 @@ impl CpuCode {
                 StageCode::Element { main, continuation, result } => {
                     let result = *result;
                     uniforms[0] = count;
-                    let grain = (count as usize).div_ceil(self.workers * 4).max(1);
-                    let grain = if stage.has_tile_scope() {
-                        grain.div_ceil(stage.workgroup_width() as usize) * stage.workgroup_width() as usize
-                    } else {
-                        grain
-                    };
-                    let range_count = (count as usize).div_ceil(grain);
+                    let width = if stage.has_tile_scope() { stage.workgroup_width() } else { 1 };
+                    let plan = work::plan(count, self.workers, width);
+                    let range_count = plan.ranges;
                     let partial_words = range_count * result.words();
                     let mut storage = Vec::<u32>::new();
                     storage.try_reserve_exact(partial_words)?;
@@ -898,12 +807,9 @@ impl CpuCode {
                         buffers: pointers.as_ptr(),
                         range_parameter_slot: self.program.buffers().len(),
                         uniforms: uniforms.as_ptr(),
-                        count: count as usize,
-                        grain,
-                        next: AtomicUsize::new(0),
+                        plan,
                         result,
                         partials: partials.as_mut_ptr().cast(),
-                        errors: std::ptr::null_mut(),
                         range_parameters: std::ptr::null(),
                         range_parameter_words: result.words(),
                         stage: stage_index,
@@ -1048,7 +954,6 @@ impl CpuCode {
                             ranges.buffers = pointers.as_ptr();
                             ranges.uniforms = uniforms.as_ptr();
                             ranges.result = RangeResult::None;
-                            ranges.next = AtomicUsize::new(0);
                             ranges.range_parameters = partials.as_ptr().cast();
                             self.execute(&mut ranges, &mut errors, &mut timings)?;
                         }
@@ -1077,7 +982,7 @@ impl CpuCode {
         errors: &mut Vec<*mut c_void>,
         timings: &mut Option<&mut CpuRangeTimings>,
     ) -> Result<()> {
-        let range_count = ranges.count.div_ceil(ranges.grain);
+        let range_count = ranges.plan.ranges;
         if range_count == 0 {
             return Ok(());
         }
@@ -1085,16 +990,14 @@ impl CpuCode {
         let slots = &mut errors.spare_capacity_mut()[..range_count];
         unsafe {
             observation::capture(timings, ranges.stage, ranges.entry as usize, range_count, |timing| {
-                let submissions = self.workers.min(range_count);
-                let work = std::ptr::from_mut(ranges);
-                let handle = WorkHandle::new(execute_ranges, work.cast())?;
-                (*work).errors = slots.as_mut_ptr().cast();
-                (*work).timing = timing;
-                for _ in 0..submissions {
-                    handle.submit();
+                let completion = work::run(ranges, slots.as_mut_ptr().cast(), timing);
+                if completion.joined == 0 || completion.error != 0 {
+                    if completion.joined != 0 {
+                        // Every actual completion pointer has one consumer, even on a host failure.
+                        let _ = crate::application::take_errors(slots.iter().map(|slot| slot.assume_init()));
+                    }
+                    return Err(std::io::Error::from_raw_os_error(completion.error as i32).into());
                 }
-                drop(handle);
-                (*work).timing = None;
                 Ok(())
             })?;
             // The callbacks have joined and each range has written its slot. The backing
