@@ -177,18 +177,13 @@ extern "C" usize import_relation(address graph, address destination, usize root,
     requires nonzero(output.frame) requires nonzero(output.write) requires nonzero(output.field)
     requires nonzero(bind_inputs);
 
-struct RelationBindSlice {
-    WalkSlice source;
-    address destination;
+struct RelationValueOps {
+    cfn<usize,address,usize> node;
+    cfn<void,address,usize,usize> edge;
+    cfn<usize,address,usize> frame;
+    cfn<void,address,usize,usize> write;
 };
 
-struct RelationBindOutput {
-    cfn<RelationBindSlice,address,usize> node;
-    cfn<void,address,address,address,usize> edge;
-    cfn<RelationBindSlice,address,usize> frame;
-    cfn<void,address,address,address,usize> write;
-};
-
-extern "C" void bind_relation_values(address context, usize nodes, usize frames, RelationBindOutput output) on cpu
-    requires nonzero(output.node) requires nonzero(output.edge)
-    requires nonzero(output.frame) requires nonzero(output.write);
+extern "C" void bind_relation_values(address context, usize nodes, usize frames, RelationValueOps ops) on cpu
+    requires nonzero(ops.node) requires nonzero(ops.edge)
+    requires nonzero(ops.frame) requires nonzero(ops.write);

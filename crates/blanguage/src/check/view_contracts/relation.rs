@@ -475,22 +475,16 @@ impl RelationValues<'_> {
 }
 
 #[repr(C)]
-struct RelationBindSlice {
-    source: WalkSlice,
-    destination: Slot,
-}
-
-#[repr(C)]
-struct RelationBindOutput {
-    node: unsafe extern "C" fn(Slot, usize) -> RelationBindSlice,
-    edge: unsafe extern "C" fn(Slot, Slot, Borrowed, usize),
-    frame: unsafe extern "C" fn(Slot, usize) -> RelationBindSlice,
-    write: unsafe extern "C" fn(Slot, Slot, Borrowed, usize),
+struct RelationValueOps {
+    node: unsafe extern "C" fn(Slot, usize) -> usize,
+    edge: unsafe extern "C" fn(Slot, usize, usize),
+    frame: unsafe extern "C" fn(Slot, usize) -> usize,
+    write: unsafe extern "C" fn(Slot, usize, usize),
 }
 
 unsafe extern "C" {
     #[link_name = "bootstrap.relation_order::bind_relation_values"]
-    fn bind_relation_values(context: Slot, nodes: usize, frames: usize, output: RelationBindOutput);
+    fn bind_relation_values(context: Slot, nodes: usize, frames: usize, ops: RelationValueOps);
 }
 
 struct BindRelation<'a> {
@@ -500,51 +494,83 @@ struct BindRelation<'a> {
 }
 
 impl BindRelation<'_> {
-    const OUTPUT: RelationBindOutput = RelationBindOutput {
+    const OPS: RelationValueOps = RelationValueOps {
         node: Self::node, edge: Self::edge, frame: Self::frame, write: Self::write,
     };
 
-    unsafe extern "C" fn node(context: Slot, index: usize) -> RelationBindSlice {
+    unsafe extern "C" fn node(context: Slot, index: usize) -> usize {
         let binding = unsafe { &mut *context.cast::<Self>() };
         let original = &binding.source.nodes[index];
+        let count = original.edges.len();
         binding.result.nodes.push(Node {
             seeds: binding.values.seed(&original.seeds),
-            edges: Vec::with_capacity(original.edges.len()),
+            edges: Vec::with_capacity(count),
         });
-        RelationBindSlice {
-            source: WalkSlice::of(&original.edges),
-            destination: ptr::from_mut(&mut binding.result.nodes[index]).cast(),
-        }
+        count
     }
 
-    unsafe extern "C" fn edge(context: Slot, node: Slot, source: Borrowed, index: usize) {
-        let values = unsafe { ptr::addr_of!((*context.cast::<Self>()).values).read() };
-        let node = unsafe { &mut *node.cast::<Node>() };
-        let edge = unsafe { &*source.cast::<Edge>().add(index) };
-        let when = values.guard(&edge.when);
-        node.edges.push(Edge { from: edge.from, op: values.operation(&edge.op), when });
+    unsafe extern "C" fn edge(context: Slot, node: usize, index: usize) {
+        let binding = unsafe { &mut *context.cast::<Self>() };
+        let edge = &binding.source.nodes[node].edges[index];
+        let when = binding.values.guard(&edge.when);
+        let op = binding.values.operation(&edge.op);
+        binding.result.nodes[node].edges.push(Edge { from: edge.from, op, when });
     }
 
-    unsafe extern "C" fn frame(context: Slot, index: usize) -> RelationBindSlice {
+    unsafe extern "C" fn frame(context: Slot, index: usize) -> usize {
         let binding = unsafe { &mut *context.cast::<Self>() };
         let original = &binding.source.frames[index];
-        RelationBindSlice {
-            source: WalkSlice::of(&original.writes),
-            destination: append_relation_frame(
-                &mut binding.result.frames, original.parent.unwrap_or(usize::MAX), original.writes.len(),
-            ),
+        let count = original.writes.len();
+        binding.result.frames.push(Frame { parent: original.parent, writes: Vec::with_capacity(count) });
+        count
+    }
+
+    unsafe extern "C" fn write(context: Slot, frame: usize, index: usize) {
+        let binding = unsafe { &mut *context.cast::<Self>() };
+        let write = &binding.source.frames[frame].writes[index];
+        binding.result.frames[frame].writes.push(Write {
+            target: write.target,
+            fields: write.fields.clone(),
+            when: binding.values.condition(&write.when),
+        });
+    }
+}
+
+struct NormalizeRelation<'a> {
+    graph: &'a mut Graph,
+    normal: &'a mut bounds::Normalizer,
+}
+
+impl NormalizeRelation<'_> {
+    const OPS: RelationValueOps = RelationValueOps {
+        node: Self::node, edge: Self::edge, frame: Self::frame, write: Self::write,
+    };
+
+    unsafe extern "C" fn node(context: Slot, index: usize) -> usize {
+        let scope = unsafe { &mut *context.cast::<Self>() };
+        let node = &mut scope.graph.nodes[index];
+        node.seeds.normalize_contract(scope.normal);
+        node.edges.len()
+    }
+
+    unsafe extern "C" fn edge(context: Slot, node: usize, index: usize) {
+        let scope = unsafe { &mut *context.cast::<Self>() };
+        let edge = &mut scope.graph.nodes[node].edges[index];
+        edge.when.normalize(scope.normal);
+        if let Op::Position(position) = &mut edge.op {
+            scope.normal.origin(position);
         }
     }
 
-    unsafe extern "C" fn write(context: Slot, frame: Slot, source: Borrowed, index: usize) {
-        let values = unsafe { ptr::addr_of!((*context.cast::<Self>()).values).read() };
-        let frame = unsafe { &mut *frame.cast::<Frame>() };
-        let write = unsafe { &*source.cast::<Write>().add(index) };
-        frame.writes.push(Write {
-            target: write.target,
-            fields: write.fields.clone(),
-            when: values.condition(&write.when),
-        });
+    unsafe extern "C" fn frame(context: Slot, index: usize) -> usize {
+        let scope = unsafe { &*context.cast::<Self>() };
+        scope.graph.frames[index].writes.len()
+    }
+
+    unsafe extern "C" fn write(context: Slot, frame: usize, index: usize) {
+        let scope = unsafe { &mut *context.cast::<Self>() };
+        let write = &mut scope.graph.frames[frame].writes[index];
+        write.when = scope.normal.condition(&write.when);
     }
 }
 
@@ -1322,13 +1348,21 @@ impl Graph {
         };
         unsafe {
             bind_relation_values(
-                ptr::from_mut(&mut binding).cast(), self.nodes.len(), self.frames.len(), BindRelation::OUTPUT,
+                ptr::from_mut(&mut binding).cast(), self.nodes.len(), self.frames.len(), BindRelation::OPS,
             );
         }
         binding.result
     }
 
-    pub(in crate::check) fn normalize(&mut self,normal:&mut bounds::Normalizer){for n in &mut self.nodes{n.seeds.normalize_contract(normal);for e in &mut n.edges{e.when.normalize(normal);if let Op::Position(p)=&mut e.op{normal.origin(p);}}}for f in &mut self.frames{for w in &mut f.writes{w.when=normal.condition(&w.when);}}}
+    pub(in crate::check) fn normalize(&mut self, normal: &mut bounds::Normalizer) {
+        let nodes = self.nodes.len();
+        let frames = self.frames.len();
+        let mut scope = NormalizeRelation { graph: self, normal };
+        unsafe {
+            bind_relation_values(ptr::from_mut(&mut scope).cast(), nodes, frames, NormalizeRelation::OPS);
+        }
+    }
+
     pub(super) fn canonical(
         &self, function: &Function, exposed: &BTreeMap<Origin, Borrow>,
         guards: &bounds::PublicGuards<'_>,

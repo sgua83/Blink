@@ -693,31 +693,31 @@ extern "C" void label_lexical_frames(WalkSlice runs, address frames, usize count
     }
 }
 
-void bind_relation_items(address context, RelationBindSlice part, cfn<void,address,address,address,usize> emit) on cpu
-    requires nonzero(emit)
+void bind_relation_items(address context, usize parent, usize count, cfn<void,address,usize,usize> apply) on cpu
+    requires nonzero(apply)
 {
     usize index = 0u64;
-    while (index < part.source.count) {
-        emit(context,part.destination,part.source.data,index);
+    while (index < count) {
+        apply(context,parent,index);
         index += 1u64;
     }
 }
 
-extern "C" void bind_relation_values(address context, usize nodes, usize frames, RelationBindOutput output) on cpu
-    requires nonzero(output.node) requires nonzero(output.edge)
-    requires nonzero(output.frame) requires nonzero(output.write)
+extern "C" void bind_relation_values(address context, usize nodes, usize frames, RelationValueOps ops) on cpu
+    requires nonzero(ops.node) requires nonzero(ops.edge)
+    requires nonzero(ops.frame) requires nonzero(ops.write)
 {
     usize index = 0u64;
     while (index < nodes) {
-        RelationBindSlice node = output.node(context,index);
-        bind_relation_items(context,node,output.edge);
+        usize count = ops.node(context,index);
+        bind_relation_items(context,index,count,ops.edge);
         index += 1u64;
     }
 
     index = 0u64;
     while (index < frames) {
-        RelationBindSlice frame = output.frame(context,index);
-        bind_relation_items(context,frame,output.write);
+        usize count = ops.frame(context,index);
+        bind_relation_items(context,index,count,ops.write);
         index += 1u64;
     }
 }
