@@ -692,6 +692,34 @@ extern "C" u32 replay_writes(address graph, address context, usize frame,
     return 1;
 }
 
+const u32 WRITES_MEMORY = 1;
+const u32 HAS_WRITTEN_VALUE = 2;
+const u32 HAS_ADDRESS_FIELDS = 4;
+const u32 CARRIED_STOP = 2;
+
+extern "C" u32 visit_carried_writes(address function, address scopes, address consumer, CarriedWriteHost host) on cpu
+    requires nonzero(host.next_scope) requires nonzero(host.history)
+    requires nonzero(host.memory_facts) requires nonzero(host.consider)
+{
+    bool carried = false;
+    usize scope = host.next_scope(scopes);
+    while (scope != WALK_END) {
+        CarriedScope history = host.history(function,scope);
+        usize at = history.first;
+        while (at < history.end) {
+            u32 facts = host.memory_facts(function,at);
+            if ((facts & WRITES_MEMORY) != 0 && (facts & (HAS_WRITTEN_VALUE | HAS_ADDRESS_FIELDS)) != HAS_WRITTEN_VALUE) {
+                u32 found = host.consider(function,consumer,scope,at,history.backedge);
+                if (found == CARRIED_STOP) { return 1; }
+                carried = carried || found != 0;
+            }
+            at += 1u64;
+        }
+        scope = host.next_scope(scopes);
+    }
+    return carried ? 1 : 0;
+}
+
 PrefixBoundary prefix_boundary(WalkSlice runs, usize index) on cpu {
     return unsafe_position<PrefixBoundary>(cell(runs.data,index,16u64));
 }

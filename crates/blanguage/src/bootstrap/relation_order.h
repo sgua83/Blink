@@ -159,6 +159,23 @@ extern "C" u32 replay_writes(address graph, address context, usize frame,
     cfn<WalkFrame,address,usize> frame_at, cfn<u32,address,address,usize> write) on cpu
     requires nonzero(frame_at) requires nonzero(write);
 
+struct CarriedScope {
+    usize first;
+    usize end;
+    address backedge;
+};
+
+struct CarriedWriteHost {
+    cfn<usize,address> next_scope;
+    cfn<CarriedScope,address,usize> history;
+    cfn<u32,address,usize> memory_facts;
+    cfn<u32,address,address,usize,usize,address> consider;
+};
+
+extern "C" u32 visit_carried_writes(address function, address scopes, address consumer, CarriedWriteHost host) on cpu
+    requires nonzero(host.next_scope) requires nonzero(host.history)
+    requires nonzero(host.memory_facts) requires nonzero(host.consider);
+
 struct PrefixBoundary {
     usize memory;
     usize frame;

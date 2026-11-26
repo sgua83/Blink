@@ -774,17 +774,96 @@ unsafe extern "C" {
     fn label_lexical_frames(runs: WalkSlice, frames: *mut PrefixBoundary, count: usize);
 }
 
+#[repr(C)]
+struct CarriedScope {
+    first: usize,
+    end: usize,
+    backedge: Borrowed,
+}
+
+#[repr(C)]
+struct CarriedWriteHost {
+    next_scope: unsafe extern "C" fn(Slot) -> usize,
+    history: unsafe extern "C" fn(Borrowed, usize) -> CarriedScope,
+    memory_facts: unsafe extern "C" fn(Borrowed, usize) -> u32,
+    consider: unsafe extern "C" fn(Borrowed, Slot, usize, usize, Borrowed) -> u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.relation_order::visit_carried_writes"]
+    fn visit_carried_writes(
+        function: Borrowed, scopes: Slot, consumer: Slot, host: CarriedWriteHost,
+    ) -> u32;
+}
+
+impl Function {
+    pub(super) fn visit_carried_writes<F>(&self, memory: usize, mut consumer: F) -> bool
+    where
+        F: FnMut(usize, usize, bounds::Clause) -> bool,
+    {
+        let mut scopes = self.uses[memory].active_loops.iter().copied();
+        let host = CarriedWriteHost {
+            next_scope: next_relation_root::<std::iter::Copied<std::collections::btree_set::Iter<'_, usize>>>,
+            history: Self::carried_scope,
+            memory_facts: Self::carried_memory_facts,
+            consider: Self::consider_carried_write::<F>,
+        };
+        unsafe {
+            visit_carried_writes(
+                ptr::from_ref(self).cast(), ptr::from_mut(&mut scopes).cast(),
+                ptr::from_mut(&mut consumer).cast(), host,
+            ) != 0
+        }
+    }
+
+    unsafe extern "C" fn carried_scope(function: Borrowed, scope: usize) -> CarriedScope {
+        let function = unsafe { &*function.cast::<Self>() };
+        function.history.get(&scope)
+            .and_then(|history| history.backedge.as_ref().map(|backedge| CarriedScope {
+                first: history.uses.start, end: history.uses.end, backedge: ptr::from_ref(backedge).cast(),
+            }))
+            .unwrap_or(CarriedScope { first: 0, end: 0, backedge: ptr::null() })
+    }
+
+    unsafe extern "C" fn carried_memory_facts(function: Borrowed, at: usize) -> u32 {
+        let function = unsafe { &*function.cast::<Self>() };
+        let Requirement::Memory { access, written, address_fields, .. } = &function.uses[at].requirement else {
+            return 0;
+        };
+        u32::from(access.is_some_and(super::super::Access::writes))
+            | (u32::from(written.is_some()) << 1)
+            | (u32::from(!address_fields.is_empty()) << 2)
+    }
+
+    unsafe extern "C" fn consider_carried_write<F>(
+        function: Borrowed, consumer: Slot, scope: usize, at: usize, backedge: Borrowed,
+    ) -> u32
+    where
+        F: FnMut(usize, usize, bounds::Clause) -> bool,
+    {
+        let function = unsafe { &*function.cast::<Self>() };
+        let backedge = unsafe { &*backedge.cast::<bounds::Clause>() };
+        let prior = bounds::Clause::both(&function.uses[at].path, backedge);
+        if !prior.possible() {
+            return 0;
+        }
+        let consumer = unsafe { &mut *consumer.cast::<F>() };
+        1 + u32::from(consumer(scope, at, prior))
+    }
+}
+
 struct Builder<'a> { function:&'a Function,state:LoopScope<'a>,known:&'a States<'a>,keys:BTreeMap<Key,usize>,prefix:FramePrefix,graph:Graph,parameters:BTreeMap<ValueIdentity,usize> }
 impl Builder<'_> {
     fn empty(&mut self)->usize{let id=self.graph.nodes.len();self.graph.nodes.push(Node::default());id}
     fn edge(&mut self,to:usize,from:usize,op:Op,when:bounds::Clause){self.graph.nodes[to].edges.push(Edge{from,op,when:RelationPath::Guard(when)})}
     fn borrow(&mut self,value:&Borrow,epoch:&Epoch)->usize{let id=self.empty();self.fill(id,value,epoch);id}
-    fn read(&mut self, to: usize, from: usize, word: u32, epoch: Epoch, when: RelationPath) {
-        let frame = match &epoch {
-            Epoch::Input => None,
+    fn read(&mut self, to: usize, from: usize, word: u32, epoch: Epoch, when: RelationPath) -> bool {
+        let (frame, carried) = match &epoch {
+            Epoch::Input => (None, false),
             Epoch::Local { memory, .. } => self.read_frame(*memory),
         };
         self.graph.nodes[to].edges.push(Edge { from, op: Op::Read { word, epoch, frame }, when });
+        carried
     }
     fn fill(&mut self,id:usize,value:&Borrow,epoch:&Epoch){
         self.fill_with_seeds(id, value, epoch, |seeds, source, when| {
@@ -910,7 +989,7 @@ impl Builder<'_> {
         }
     }
 
-    fn read_frame(&mut self, memory: usize) -> Option<usize> {
+    fn read_frame(&mut self, memory: usize) -> (Option<usize>, bool) {
         let mut current = self.frame(memory);
         let mut frames = Vec::new();
         while let Some(frame) = current {
@@ -924,7 +1003,7 @@ impl Builder<'_> {
         let path = &function.uses[memory].path;
         let mut parent = None;
         let mut normal = bounds::Normalizer::new();
-        for (scope, at, prior) in function.carried_writes(memory) {
+        let carried = function.visit_carried_writes(memory, |scope, at, prior| {
             let names = function.history_names(at, memory, Some(scope));
             let prior = prior.output_bound(&names);
             let mut writes = self.writes(at, &names);
@@ -940,7 +1019,8 @@ impl Builder<'_> {
                 self.graph.frames.push(Frame { parent, writes });
                 parent = Some(id);
             }
-        }
+            false
+        });
         for PrefixBoundary { memory: at, frame: id } in frames.into_iter().rev() {
             let names = function.history_names(at, memory, None);
             let mut writes = if names.is_empty() {
@@ -965,32 +1045,31 @@ impl Builder<'_> {
                 memory, tables: normal.storage(),
             });
         }
-        parent
+        (parent, carried)
     }
     fn key(&mut self,key:Key)->usize{
         if let Some(&id)=self.keys.get(&key){return id;}
         let id=self.empty();self.keys.insert(key.clone(),id);
-        if let Key::Read(ContentRead::Value { memory, .. } | ContentRead::Call { memory, .. }) = &key
-            && self.function.repeated_read(*memory)
-        {
-            self.graph.variables.insert(id);
-        }
         match key{
             Key::Loop(input)=>{self.graph.inputs.insert(input,id);self.graph.variables.insert(id);self.fill(id,&self.function.loops[&input].borrow.clone(),&Epoch::Input)},
             Key::Read(ContentRead::Relation { memory, graph, root, snapshots }) => {
-                let prefix = self.read_frame(memory);
+                let (prefix, _) = self.read_frame(memory);
                 let from = self.import(&graph, root, prefix, &Epoch::Local { memory, snapshots });
                 self.edge(id, from, Op::Identity, bounds::Clause::default());
             },
             Key::Read(ContentRead::Value { memory, word, borrow, snapshots }) => {
                 let from = self.borrow(&borrow, &Epoch::Input);
                 let when = RelationPath::Cases(bounds::Condition::execution(&self.function.uses[memory].path));
-                self.read(id, from, word, Epoch::Local { memory, snapshots: Some(snapshots) }, when);
+                if self.read(id, from, word, Epoch::Local { memory, snapshots: Some(snapshots) }, when) {
+                    self.graph.variables.insert(id);
+                }
             },
             Key::Read(ContentRead::Call { memory, origin, word, snapshots }) => {
                 let from = self.position(&origin, &Epoch::Input);
                 let when = RelationPath::Cases(bounds::Condition::execution(&self.function.uses[memory].path));
-                self.read(id, from, word, Epoch::Local { memory, snapshots }, when);
+                if self.read(id, from, word, Epoch::Local { memory, snapshots }, when) {
+                    self.graph.variables.insert(id);
+                }
             },
             Key::Read(ContentRead::Snapshot{memory,position:Position::Local(slot),initial,..})=>{
                 let from=self.borrow(&initial.view_borrow(0),&Epoch::Input);
@@ -1379,7 +1458,7 @@ impl Graph {
         function: &Function, state: LoopScope<'_>, known: &States,
     ) -> (Arc<Self>, usize) {
         let mut builder = Self::builder(function, state, known);
-        let prefix = builder.read_frame(memory);
+        let (prefix, _) = builder.read_frame(memory);
         let root = builder.import(self, root, prefix, &Epoch::Local { memory, snapshots });
         (Arc::new(builder.graph), root)
     }

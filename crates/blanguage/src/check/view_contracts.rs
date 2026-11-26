@@ -992,28 +992,8 @@ impl StoredPaths<'_> {
 }
 
 impl Function {
-    fn carried_writes(&self, memory: usize) -> impl Iterator<Item = (usize, usize, bounds::Clause)> + '_ {
-        self.uses[memory].active_loops.iter().flat_map(move |&scope| {
-            self.history.get(&scope).into_iter().flat_map(move |history| {
-                history.backedge.iter().flat_map(move |backedge| {
-                    history.uses.clone().filter_map(move |at| {
-                        let usage = &self.uses[at];
-                        let Requirement::Memory { access, written, address_fields, .. } = &usage.requirement else {
-                            return None;
-                        };
-                        if !access.is_some_and(super::Access::writes) || written.is_some() && address_fields.is_empty() {
-                            return None;
-                        }
-                        let prior = bounds::Clause::both(&usage.path, backedge);
-                        prior.possible().then_some((scope, at, prior))
-                    })
-                })
-            })
-        })
-    }
-
     fn repeated_read(&self, memory: usize) -> bool {
-        self.carried_writes(memory).next().is_some()
+        self.visit_carried_writes(memory, |_, _, _| true)
     }
 
     fn history_names(&self, at: usize, memory: usize, prior: Option<usize>)
