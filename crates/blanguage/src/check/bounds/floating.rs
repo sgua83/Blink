@@ -110,27 +110,6 @@ impl FloatingBound {
 fn upper_range(upper: f64) -> ScalarRanges {
     interval(Scalar::F32,-(f32::MAX as f64),upper)
 }
-pub(super) fn cast_domains(value: &Value, component: usize) -> Domains {
-    let scalar = value.ty.components[component].0;
-    if !scalar.is_integer() || scalar.is_signed() { return Domains::new(); }
-    let (lower,upper) = value.component_ranges(component).hull();
-    if lower > upper { return Domains::new(); }
-    let cast = FloatingBound { source: value.component_identity(component), lower, upper,
-        terms: [0;3], scalar, form: FloatingForm::Cast };
-    let mut domains = Domains::from([IndexDomain::Floating(cast)]);
-    for domain in value.proof.domains(component).iter().copied() {
-        let (source,distance) = match domain {
-            IndexDomain::Computed(IntegerExpression::Binary(IntegerOperation::Remainder,from,_,Operand::Value(divisor))) if from == scalar => (divisor,1),
-            IndexDomain::Upper(limit,distance) => (limit,distance),
-            _ => continue,
-        };
-        let factor = 1.0 + conversion_error(upper);
-        let bound = FloatingBound { source, lower: Bits::from(distance), upper: scalar.bit_mask(), ..cast }
-            .upper([factor,multiply_up(-(distance as f64),factor),0.0]);
-        domains.insert(IndexDomain::Floating(bound));
-    }
-    domains
-}
 pub(super) fn arithmetic_domains(builder: &Builder<'_>, op: &str, a: &Value, b: &Value, component: usize) -> Domains {
     let (ai,bi) = (component % a.regs.len(),component % b.regs.len());
     let Some((al,ah)) = finite(a,ai) else { return Domains::new(); };

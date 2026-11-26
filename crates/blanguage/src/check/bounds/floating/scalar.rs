@@ -1,5 +1,6 @@
 //! Synchronous POD numerical calls; Proof, Value and ScalarRanges stay native.
 use super::*;
+use std::{collections::btree_set, ffi::c_void, ptr};
 use crate::ast::TextureFormat;
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -34,7 +35,16 @@ unsafe extern "C" {
     #[link_name="bootstrap.scalar_fold::float_interval"] fn source_interval(width:u32,lower:f64,upper:f64)->NumericalRange;
     #[link_name="bootstrap.scalar_fold::float_comparison_possible"] fn source_comparison(operation:u32,width:u32,left:RawRange,right:RawRange,truth:u32)->u32;
     #[link_name="bootstrap.scalar_fold::float_bitcast"] fn source_bitcast(width:u32,range:RawRange,source_float:u32)->Pieces;
-    #[link_name="bootstrap.scalar_fold::float_cast_range"] fn source_cast(source:Encoding,target:Encoding,range:RawRange)->NumericalRange;
+    #[link_name = "bootstrap.scalar_fold::float_cast_range"]
+    fn source_cast(
+        source: Encoding,
+        target: Encoding,
+        range: RawRange,
+        origin: *const ValueIdentity,
+        context: *mut c_void,
+        next: unsafe extern "C" fn(*mut c_void) -> FloatCastRelation,
+        emit: unsafe extern "C" fn(*mut c_void, FloatCastFact),
+    ) -> NumericalRange;
     #[link_name="bootstrap.scalar_fold::float_range_arithmetic"] fn source_arithmetic(operation:u32,width:u32,left:RawRange,right:RawRange)->NumericalRange;
     #[link_name="bootstrap.scalar_fold::float_math"] fn source_math(operation:u32,width:u32,left:RawRange,right:RawRange)->NumericalRange;
     #[link_name="bootstrap.scalar_fold::float_sum_range"] fn source_sum(width:u32,range:RawRange,maximum:Bits)->NumericalRange;
@@ -68,10 +78,88 @@ pub(in crate::check::bounds) fn bitcast(value:&Value,component:usize,target:Scal
         ScalarRanges::from_intervals([result.first,result.second].into_iter().take(result.count as usize).map(|value|(value.lower,value.upper)))
     })
 }
-pub(in crate::check::bounds) fn cast(value:&Value,component:usize,target:Scalar)->ScalarRanges {
-    let source=value.ty.components[component].0;
-    let ranges=if source.is_float(){super::ranges(value,component)}else{value.component_ranges(component)};
-    decoded(unsafe{source_cast(encoding(source),encoding(target),raw(ranges.hull()))})
+#[repr(u32)]
+enum FloatCastRelationKind { End, Upper, Remainder }
+
+#[repr(C)]
+struct FloatCastRelation {
+    kind: FloatCastRelationKind,
+    encoding: Encoding,
+    origin: *const ValueIdentity,
+    distance: u32,
+}
+
+#[repr(C)]
+struct FloatCastFact {
+    origin: *const ValueIdentity,
+    range: RawRange,
+    scale: f64,
+    offset: f64,
+    upper: u32,
+}
+
+struct FloatCast<'a> {
+    source: Scalar,
+    component: usize,
+    relations: btree_set::Iter<'a, IndexDomain>,
+    proof: &'a mut Proof,
+}
+
+unsafe extern "C" fn cast_relation(context: *mut c_void) -> FloatCastRelation {
+    let input = unsafe { &mut *context.cast::<FloatCast<'_>>() };
+    input.relations.find_map(|domain| match domain {
+        IndexDomain::Upper(origin, distance) => Some(FloatCastRelation {
+            kind: FloatCastRelationKind::Upper,
+            encoding: encoding(input.source),
+            origin,
+            distance: *distance,
+        }),
+        IndexDomain::Computed(IntegerExpression::Binary(
+            IntegerOperation::Remainder, scalar, _, Operand::Value(origin),
+        )) => Some(FloatCastRelation {
+            kind: FloatCastRelationKind::Remainder,
+            encoding: encoding(*scalar),
+            origin,
+            distance: 1,
+        }),
+        _ => None,
+    }).unwrap_or(FloatCastRelation {
+        kind: FloatCastRelationKind::End,
+        encoding: encoding(input.source),
+        origin: ptr::null(),
+        distance: 0,
+    })
+}
+
+unsafe extern "C" fn cast_fact(context: *mut c_void, fact: FloatCastFact) {
+    let input = unsafe { &mut *context.cast::<FloatCast<'_>>() };
+    let domain = FloatingBound {
+        source: unsafe { *fact.origin },
+        lower: fact.range.lower,
+        upper: fact.range.upper,
+        terms: [fact.scale.to_bits(), fact.offset.to_bits(), 0],
+        scalar: input.source,
+        form: if fact.upper == 0 { FloatingForm::Cast } else { FloatingForm::Upper },
+    };
+    input.proof.mark_domain(input.component, IndexDomain::Floating(domain));
+}
+
+pub(in crate::check::bounds) fn cast(
+    value: &Value, component: usize, target: Scalar, proof: &mut Proof,
+) -> ScalarRanges {
+    let source = value.ty.components[component].0;
+    let range = raw(proof.ranges[component].hull());
+    let origin = value.component_identity(component);
+    let mut input = FloatCast {
+        source,
+        component,
+        relations: value.proof.domains.get(component).map(Domains::iter).unwrap_or_default(),
+        proof,
+    };
+    decoded(unsafe {
+        source_cast(encoding(source), encoding(target), range, &origin,
+            ptr::from_mut(&mut input).cast(), cast_relation, cast_fact)
+    })
 }
 pub(in crate::check::bounds) fn arithmetic(op:&str,a:&Value,b:&Value,component:usize)->ScalarRanges {
     let operation=match op{"+"=>0,"-"=>1,"*"=>2,"/"=>3,_=>u32::MAX};

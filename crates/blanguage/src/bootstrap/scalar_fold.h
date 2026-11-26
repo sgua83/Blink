@@ -60,7 +60,12 @@ extern "C" f64 float_sum_bound(u32 width,f64 left,f64 right,u32 lower) on cpu;
 extern "C" FloatRange float_interval(u32 width,f64 low,f64 high) on cpu;
 extern "C" u32 float_comparison_possible(BinaryOperation operation,u32 width,BitRange left,BitRange right,u32 truth_code) on cpu;
 extern "C" FloatPieces float_bitcast(u32 width,BitRange range,u32 source_float) on cpu;
-extern "C" FloatRange float_cast_range(ScalarEncoding source,ScalarEncoding target,BitRange range) on cpu;
+enum FloatCastRelationKind : u32 { End = 0; Upper = 1; Remainder = 2; };
+struct FloatCastRelation { FloatCastRelationKind kind; ScalarEncoding encoding; address origin; u32 distance; };
+struct FloatCastFact { address origin; BitRange range; f64 scale; f64 offset; u32 upper; };
+extern "C" FloatRange float_cast_range(ScalarEncoding source, ScalarEncoding target, BitRange range,
+    address origin, address context, cfn<FloatCastRelation,address> next, cfn<void,address,FloatCastFact> emit) on cpu
+    requires nonzero(next) requires nonzero(emit);
 extern "C" FloatRange float_range_arithmetic(BinaryOperation operation,u32 width,BitRange left,BitRange right) on cpu;
 // math: 1 min, 2 max, 3 abs, 4 floor, 5 log, 6 log2, 7 ceil; other operations remain unknown.
 extern "C" FloatRange float_math(u32 operation,u32 width,BitRange left,BitRange right) on cpu;

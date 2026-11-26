@@ -546,11 +546,31 @@ f64 fp_integer_endpoint(ScalarEncoding source,u32 width,u64 ordered,u32 lower) o
     if(lower==0&&relation<0){return fp_next_scalar(width,result,1);}
     return result;
 }
-extern "C" FloatRange float_cast_range(ScalarEncoding source,ScalarEncoding target,BitRange range) on cpu {
-    bool integer=source.kind==ScalarKind::Unsigned||source.kind==ScalarKind::Signed;
-    if(integer&&target.kind==ScalarKind::Float){
-        if(range.lower>range.upper){return fp_empty();}
-        return float_interval(target.width,fp_integer_endpoint(source,target.width,range.lower,1),fp_integer_endpoint(source,target.width,range.upper,0));
+extern "C" FloatRange float_cast_range(ScalarEncoding source, ScalarEncoding target, BitRange range,
+    address origin, address context, cfn<FloatCastRelation,address> next, cfn<void,address,FloatCastFact> emit) on cpu
+    requires nonzero(next) requires nonzero(emit) {
+    bool integer = source.kind == ScalarKind::Unsigned || source.kind == ScalarKind::Signed;
+    if (integer && target.kind == ScalarKind::Float) {
+        if (range.lower > range.upper) { return fp_empty(); }
+        if (source.kind == ScalarKind::Unsigned && target.width == 32) {
+            emit(context, FloatCastFact(origin, range, 0.0f64, 0.0f64, 0));
+            FloatCastRelation relation = next(context);
+            if (relation.kind != FloatCastRelationKind::End) {
+                f64 factor = 1.0f64 + float_conversion_error(range.upper);
+                u64 maximum = truncate(0xffffffffffffffffu64, source.width);
+                while (relation.kind != FloatCastRelationKind::End) {
+                    if (relation.kind == FloatCastRelationKind::Upper
+                        || (relation.encoding.kind == source.kind && relation.encoding.width == source.width)) {
+                        BitRange valid = BitRange(u64(relation.distance), maximum);
+                        f64 offset = float_multiply_up(-f64(relation.distance), factor);
+                        emit(context, FloatCastFact(relation.origin, valid, factor, offset, 1));
+                    }
+                    relation = next(context);
+                }
+            }
+        }
+        return float_interval(target.width, fp_integer_endpoint(source, target.width, range.lower, 1),
+            fp_integer_endpoint(source, target.width, range.upper, 0));
     }
     if(source.kind==ScalarKind::Float){
         FloatInterval finite=float_finite(source.width,range);if(finite.present==0){return fp_unknown();}

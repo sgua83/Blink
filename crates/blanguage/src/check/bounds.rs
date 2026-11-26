@@ -1358,18 +1358,16 @@ impl Proof {
             if !(source.is_integer()&&target.is_integer()&&source.size()==8&&target.size()==8)&&let Some(address)=proof.addresses.get_mut(i){*address=None;}
             let integers = source.is_integer() && target.is_integer();
             let same_value = integers && !source.is_signed() && !target.is_signed() && target.size() > source.size();
+            let source_domains = proof.domains.get_mut(i).map(std::mem::take).unwrap_or_default();
             proof.ranges[i] = if integers {
                 proof.ranges[i].cast(source,target,proof.nonzero[i])
             } else if source == Scalar::Bool && target.is_integer() {
                 ScalarRanges::interval(target.order_bias(), target.order_bias() + 1)
-            } else { floating::cast(value, i, target) };
+            } else { floating::cast(value, i, target, &mut proof) };
             proof.nonzero[i] = integers && !proof.ranges[i].contains(target.order_bias());
-            let domains=proof.domains.get_mut(i).map(std::mem::take).unwrap_or_default().into_iter().filter_map(|domain|cast_domain(domain,[source,target]))
+            let domains=source_domains.into_iter().filter_map(|domain|cast_domain(domain,[source,target]))
                 .chain(proof.origins[i].iter().copied().filter(|_|integers&&!same_value).filter_map(|id|cast_domain(IndexDomain::CommonRange(id,source,source,source,source),[source,target]))).collect::<Domains>();
             for domain in domains{proof.mark_domain(i,domain);}
-            if target == Scalar::F32 {
-                for domain in floating::cast_domains(value, i) { proof.mark_domain(i, domain); }
-            }
             if !same_value{proof.origins[i].clear();}
             if !integers || target.size() < source.size() { proof.conditions[i] = None; }
         }
