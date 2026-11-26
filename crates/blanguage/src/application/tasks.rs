@@ -5,8 +5,6 @@ use crate::ir::{self,BinaryOp,Call,CallArgument,CallParameter,CallParameterKind,
 use std::{borrow::Cow,collections::BTreeMap,ffi::c_void,ptr};
 mod wire{
  use std::ffi::c_void;
- #[derive(Clone,Copy)]#[repr(C)]pub(super)struct Cursor{pub(super)phase:u32,pub(super)index:u64,pub(super)part:u64}
- #[repr(C)]pub(super)struct Step<T>{pub(super)cursor:Cursor,pub(super)need:T}
  #[derive(Clone,Copy)]#[repr(u32)]pub(super)enum Kind{Other=0,Start=1,Scope=2,Pair=3}
  #[derive(Clone,Copy)]#[repr(u32)]pub(super)enum Role{Ordinary=0,Frame=1,ReturnSource=2,Completion=3}
  #[repr(C)]pub(super)struct BindHost {
@@ -23,11 +21,21 @@ mod wire{
   pub(super) child: unsafe extern "C" fn(*mut c_void, *mut c_void) -> u32,
   pub(super) start: unsafe extern "C" fn(*mut c_void, *mut c_void, usize) -> u32,
  }
- #[derive(Clone,Copy)]#[repr(C)]pub(super)struct LookupFacts{pub(super)count:u64,pub(super)equal:u32}
- #[repr(u32)]pub(super)enum LookupNeed{Worker=0,Input=1,Start=2,Selector=3,Found=4,Missing=5,Next=6}
- #[derive(Clone,Copy,Default)]#[repr(C)]pub(super)struct NewFacts{pub(super)fields:u64,pub(super)parameters:u64,pub(super)frame:u32,pub(super)owned:u32,pub(super)reference:u32,pub(super)inout:u32,pub(super)has_result:u32}
- #[repr(u32)]pub(super)enum NewNeed{CompletionResult=0,CompletionUnit=1,Output=2,Index=3,Layout=4,Parameter=5,Field=6,RenameWrite=7,RenameInOut=8,PositionType=9,Name=10,Entry=11,Types=12,Positions=13,Binding=14,Complete=15,Next=16}
- #[repr(u32)]pub(super)enum RewriteNeed{Registers=0,Address=1,Index=2,Worker=3,Trim=4,Argument=5,Symbol=6,Complete=7}
+ #[repr(C)]pub(super)struct BoundStart {
+  pub(super) binding: usize,
+  pub(super) worker_argument: usize,
+  pub(super) retained_arguments: usize,
+ }
+ #[repr(C)]pub(super)struct StartHost {
+  pub(super) matches: unsafe extern "C" fn(*mut c_void, usize) -> u32,
+  pub(super) create: unsafe extern "C" fn(*mut c_void),
+ }
+ #[repr(u32)]pub(super)enum BindingParameter { Frame, Value, Reference, InOut }
+ #[repr(C)]pub(super)struct PositionHost {
+  pub(super) parameter: unsafe extern "C" fn(*mut c_void, usize) -> BindingParameter,
+  pub(super) owned: unsafe extern "C" fn(*mut c_void, usize) -> u32,
+  pub(super) publish: unsafe extern "C" fn(*mut c_void, usize, usize, usize, BindingParameter),
+ }
  #[repr(C)]pub(super)struct EntrySpec {
   pub(super) parameters: usize,
   pub(super) fields: usize,
@@ -69,20 +77,20 @@ mod wire{
   pub(super) selector: unsafe extern "C" fn(*mut c_void),
  }
  unsafe extern "C"{
-  #[link_name="bootstrap.task_lower::start"]pub(super)fn start()->Cursor;
   #[link_name="bootstrap.task_lower::bind"]
   pub(super) fn bind(context: *mut c_void, root: u32, functions: usize, host: BindHost) -> u32;
   #[link_name="bootstrap.task_lower::rewrite_block"]
   pub(super) fn rewrite_block(block: *mut c_void, count: usize, context: *mut c_void, host: RewriteHost) -> u32;
-  #[link_name="bootstrap.task_lower::lookup_step"]pub(super)fn lookup_step(state:Cursor,facts:LookupFacts)->Step<LookupNeed>;
-  #[link_name="bootstrap.task_lower::new_step"]pub(super)fn new_step(state:Cursor,facts:NewFacts)->Step<NewNeed>;
-  #[link_name="bootstrap.task_lower::rewrite_step"]pub(super)fn rewrite_step(state:Cursor)->Step<RewriteNeed>;
+  #[link_name="bootstrap.task_lower::bind_start"]
+  pub(super) fn bind_start(context: *mut c_void, count: usize, host: StartHost) -> BoundStart;
+  #[link_name="bootstrap.task_lower::bind_positions"]
+  pub(super) fn bind_positions(context: *mut c_void, fields: usize, parameters: usize, first: usize, host: PositionHost);
   #[link_name="bootstrap.task_lower::emit_entry"]
   pub(super) fn emit_entry(context: *mut c_void, spec: EntrySpec, host: EntryHost) -> EntryStatus;
  }
 }
 use wire as w;
-struct TaskBinding{worker:String,input:Ty,start:Ty,index:usize,entry:FunctionBody,selector:Option<String>}
+struct TaskBinding{worker:String,input:Ty,index:usize,entry:FunctionBody,selector:Option<String>}
 fn is_start(call: &Call) -> bool {
  matches!(&call.target, CallTarget::External(name) if name.symbol == "blink_task_start")
 }
@@ -268,28 +276,64 @@ unsafe extern "C" fn rewrite_task_start(context: *mut c_void, block: *mut c_void
  }
 }
 
-fn lower_start(call:&mut Call,registers:&mut Vec<Scalar>,addresses:&BTreeMap<usize,String>,functions:&[FunctionBody],imports:&BTreeMap<String,Vec<u8>>,types:&mut TaskTypes,tasks:&mut Vec<TaskBinding>,symbol:&str,output:&mut Vec<Inst>)->Result<(),&'static str>{
- let CallArgument::Reference{ty:input,..}=&call.arguments[1]else{return Err("task start needs an actual input packet")};
- let CallArgument::Value{values,..}=&call.arguments[2]else{return Err("task start needs a bound worker")};
- let worker=addresses.get(&values[0]).ok_or("missing actual task function address")?;
- let selector=call.arguments.get(4).and_then(|arg|match arg{CallArgument::Value{values,..}=>addresses.get(&values[0]).map(String::as_str),_=>None});
- let start=call.result.as_ref().ok_or("missing task start result type")?;
- let binding=binding_for(worker,input,start,selector,functions,imports,types,tasks)?;
- rewrite_start(call,registers,&tasks[binding],symbol,output);
+fn lower_start(
+ call: &mut Call, registers: &mut Vec<Scalar>, addresses: &BTreeMap<usize, String>,
+ functions: &[FunctionBody], imports: &BTreeMap<String, Vec<u8>>, types: &mut TaskTypes,
+ tasks: &mut Vec<TaskBinding>, symbol: &str, output: &mut Vec<Inst>,
+) -> Result<(), &'static str> {
+ let CallArgument::Reference { ty: input, .. } = &call.arguments[1] else {
+  return Err("task start needs an actual input packet");
+ };
+ let CallArgument::Value { values, .. } = &call.arguments[2] else {
+  return Err("task start needs a bound worker");
+ };
+ let worker = addresses.get(&values[0]).ok_or("missing actual task function address")?;
+ let selector = call.arguments.get(4).and_then(|arg| match arg {
+  CallArgument::Value { values, .. } => addresses.get(&values[0]).map(String::as_str),
+  _ => None,
+ });
+ let start = call.result.as_ref().ok_or("missing task start result type")?;
+ let request = TaskKey { worker, input, start, selector };
+ let count = tasks.len();
+ let mut binding = BindingRequest { request, functions, imports, types, tasks, error: None };
+ let host = w::StartHost { matches: binding_matches, create: create_binding };
+ let bound = unsafe { w::bind_start(ptr::from_mut(&mut binding).cast(), count, host) };
+ if let Some(error) = binding.error { return Err(error); }
+ rewrite_start(call, registers, &tasks[bound.binding], &bound, symbol, output);
  Ok(())
 }
-fn binding_for(worker:&str,input:&Ty,start:&Ty,selector:Option<&str>,functions:&[FunctionBody],imports:&BTreeMap<String,Vec<u8>>,types:&mut TaskTypes,tasks:&mut Vec<TaskBinding>)->Result<usize,&'static str>{
- let mut cursor=unsafe{w::start()};let mut facts=w::LookupFacts{count:tasks.len()as u64,equal:0};
- loop{let next=unsafe{w::lookup_step(cursor,facts)};cursor=next.cursor;match next.need{
-  w::LookupNeed::Worker=>facts.equal=u32::from(tasks[cursor.index as usize].worker==worker),
-  w::LookupNeed::Input=>facts.equal=u32::from(tasks[cursor.index as usize].input==*input),
-  w::LookupNeed::Start=>facts.equal=u32::from(tasks[cursor.index as usize].start==*start),
-  w::LookupNeed::Selector=>facts.equal=u32::from(tasks[cursor.index as usize].selector.as_deref()==selector),
-  w::LookupNeed::Found=>return Ok(cursor.index as usize),
-  w::LookupNeed::Missing=>return new_binding(worker,input,start,selector,functions,imports,types,tasks),
-  w::LookupNeed::Next=>{},
- }}
+
+#[derive(Clone, Copy)]
+struct TaskKey<'a> {
+ worker: &'a str,
+ input: &'a Ty,
+ start: &'a Ty,
+ selector: Option<&'a str>,
 }
+
+struct BindingRequest<'a> {
+ request: TaskKey<'a>,
+ functions: &'a [FunctionBody],
+ imports: &'a BTreeMap<String, Vec<u8>>,
+ types: &'a mut TaskTypes,
+ tasks: &'a mut Vec<TaskBinding>,
+ error: Option<&'static str>,
+}
+
+unsafe extern "C" fn binding_matches(context: *mut c_void, index: usize) -> u32 {
+ let state = unsafe { &*context.cast::<BindingRequest<'_>>() };
+ let task = &state.tasks[index];
+ let key = state.request;
+ let start = task.index - state.types.original_count + 2;
+ u32::from(task.worker == key.worker && task.input == *key.input
+  && state.types.added[start] == *key.start && task.selector.as_deref() == key.selector)
+}
+
+unsafe extern "C" fn create_binding(context: *mut c_void) {
+ let state = unsafe { &mut *context.cast::<BindingRequest<'_>>() };
+ state.error = new_binding(state.request, state.functions, state.imports, state.types, state.tasks).err();
+}
+
 type Signature<'a>=(Cow<'a,[CallParameter]>,Option<Cow<'a,Ty>>,bool);
 fn signature<'a>(worker:&str,functions:&'a[FunctionBody],imports:&BTreeMap<String,Vec<u8>>)->Result<Signature<'a>,&'static str>{
  if let Some(function)=functions.iter().find(|function|function.name==worker){
@@ -299,57 +343,88 @@ fn signature<'a>(worker:&str,functions:&'a[FunctionBody],imports:&BTreeMap<Strin
   Ok((Cow::Owned(parameters),result.map(Cow::Owned),fallible))
  }
 }
-fn new_binding(worker:&str,input:&Ty,start:&Ty,selector:Option<&str>,functions:&[FunctionBody],imports:&BTreeMap<String,Vec<u8>>,types:&mut TaskTypes,tasks:&mut Vec<TaskBinding>)->Result<usize,&'static str>{
- let(parameters,result,fallible)=signature(worker,functions,imports)?;
- let mut cursor=unsafe{w::start()};let mut facts=w::NewFacts{fields:input.fields.len()as u64,parameters:parameters.len()as u64,has_result:u32::from(result.is_some()),..w::NewFacts::default()};
- let mut completion=None;let mut output:Option<&Ty>=None;let mut type_index=0;let mut layout:Option<Ty>=None;let mut position_types=Vec::new();let mut name=None;let mut entry=None;let mut binding_index=0;
- loop{let next=unsafe{w::new_step(cursor,facts)};cursor=next.cursor;match next.need{
-  w::NewNeed::CompletionResult=>{completion=Some(unsafe{result.as_deref().unwrap_unchecked()}.task_wait_layout().ok_or("task result layout is too large")?);}
-  w::NewNeed::CompletionUnit=>{completion=Some(Ty::unit().task_wait_layout().ok_or("task result layout is too large")?);}
-  w::NewNeed::Output=>{output=Some(input.arguments.last().unwrap());}
-  w::NewNeed::Index=>{type_index=types.original_count+types.added.len();}
-  w::NewNeed::Layout=>{layout=Some(input.clone());}
-  w::NewNeed::Parameter=>{facts.frame=u32::from(matches!(&parameters[cursor.part as usize].kind,CallParameterKind::Value(ty)if ty.name=="__blink_frame"));}
-  w::NewNeed::Field=>{
-   let(_,access)=parameter(&parameters[cursor.part as usize]);
-   facts.owned=u32::from(unsafe{layout.as_ref().unwrap_unchecked()}.fields[cursor.index as usize].0.starts_with(Ty::TASK_OWNED_REFERENCE_PREFIX));
-   facts.reference=u32::from(access.is_some());facts.inout=u32::from(access==Some(Access::InOut));
-  }
-  w::NewNeed::RenameWrite|w::NewNeed::RenameInOut=>{
-   let field=&mut unsafe{layout.as_mut().unwrap_unchecked()}.fields[cursor.index as usize].0;
-   let ready=field[Ty::TASK_OWNED_REFERENCE_PREFIX.len()..].split_once(':').map(|(_,offset)|offset);
-   let mode=if matches!(next.need,w::NewNeed::RenameInOut){"inout"}else{"write"};
-   let mut next_name=format!("{}{mode}:{}",Ty::TASK_OWNED_REFERENCE_PREFIX,type_index+3+position_types.len());
-   if let Some(ready)=ready{next_name.push(':');next_name.push_str(ready);}
-   *field=next_name;
-  }
-  w::NewNeed::PositionType=>{position_types.push(parameter(&parameters[cursor.part as usize]).0.clone());}
-  w::NewNeed::Name=>{name=Some(format!("{worker}@task{}",tasks.len()));}
-  w::NewNeed::Entry=>{
-   let work_output=unsafe{output.unwrap_unchecked()};
-   entry=Some(task_entry(unsafe{name.take().unwrap_unchecked()},worker,&parameters,result.as_deref(),fallible,input,work_output,selector)?);
-  }
-  w::NewNeed::Types=>{types.added.extend([unsafe{layout.take().unwrap_unchecked()},unsafe{completion.take().unwrap_unchecked()},start.clone()]);}
-  w::NewNeed::Positions=>{types.added.extend(std::mem::take(&mut position_types));}
-  w::NewNeed::Binding=>{
-   binding_index=tasks.len();tasks.push(TaskBinding{worker:worker.into(),input:input.clone(),start:start.clone(),index:type_index,entry:unsafe{entry.take().unwrap_unchecked()},selector:selector.map(str::to_owned)});
-  }
-  w::NewNeed::Complete=>return Ok(binding_index),w::NewNeed::Next=>{},
- }}
+struct PositionBinding<'a> {
+ types: &'a mut Vec<Ty>,
+ layout: usize,
+ parameters: &'a [CallParameter],
 }
-fn argument(scalar:Scalar,reg:usize)->CallArgument{CallArgument::Value{ty:Ty::scalar(scalar),values:vec![reg],dataset_borrow:None,origin:None}}
-fn rewrite_start(call:&mut Call,registers:&mut Vec<Scalar>,binding:&TaskBinding,symbol:&str,output:&mut Vec<Inst>){
- let mut cursor=unsafe{w::start()};let mut entry=0;
- loop{let next=unsafe{w::rewrite_step(cursor)};cursor=next.cursor;match next.need{
-  w::RewriteNeed::Registers=>{entry=registers.len();registers.extend([Scalar::U64,Scalar::U32]);}
-  w::RewriteNeed::Address=>output.push(Inst::new(InstKind::FunctionAddress(entry,CallTarget::Defined(binding.entry.name.clone())))),
-  w::RewriteNeed::Index=>output.push(Inst::new(InstKind::Constant(entry+1,Scalar::U32,binding.index as u64))),
-  w::RewriteNeed::Worker=>{call.arguments[2]=argument(Scalar::U64,entry);}
-  w::RewriteNeed::Trim=>{call.arguments.truncate(4);}
-  w::RewriteNeed::Argument=>call.arguments.push(argument(Scalar::U32,entry+1)),
-  w::RewriteNeed::Symbol=>{let CallTarget::External(target)=&mut call.target else{unsafe{std::hint::unreachable_unchecked()}};target.symbol=symbol.into();}
-  w::RewriteNeed::Complete=>return,
- }}
+
+unsafe extern "C" fn position_parameter(context: *mut c_void, index: usize) -> w::BindingParameter {
+ let state = unsafe { &*context.cast::<PositionBinding<'_>>() };
+ match &state.parameters[index].kind {
+  CallParameterKind::Value(ty) if ty.name == "__blink_frame" => w::BindingParameter::Frame,
+  CallParameterKind::Value(_) => w::BindingParameter::Value,
+  CallParameterKind::Reference { access: Access::InOut, .. } => w::BindingParameter::InOut,
+  CallParameterKind::Reference { .. } => w::BindingParameter::Reference,
+ }
+}
+
+unsafe extern "C" fn position_owned(context: *mut c_void, field: usize) -> u32 {
+ let state = unsafe { &*context.cast::<PositionBinding<'_>>() };
+ u32::from(state.types[state.layout].fields[field].0.starts_with(Ty::TASK_OWNED_REFERENCE_PREFIX))
+}
+
+unsafe extern "C" fn publish_position(
+ context: *mut c_void, field: usize, parameter_index: usize, type_index: usize, kind: w::BindingParameter,
+) {
+ let state = unsafe { &mut *context.cast::<PositionBinding<'_>>() };
+ let field = &mut state.types[state.layout].fields[field].0;
+ let ready = field[Ty::TASK_OWNED_REFERENCE_PREFIX.len()..].split_once(':').map(|(_, offset)| offset);
+ let mode = if matches!(kind, w::BindingParameter::InOut) { "inout" } else { "write" };
+ let mut name = format!("{}{mode}:{type_index}", Ty::TASK_OWNED_REFERENCE_PREFIX);
+ if let Some(ready) = ready {
+  name.push(':');
+  name.push_str(ready);
+ }
+ *field = name;
+ state.types.push(parameter(&state.parameters[parameter_index]).0.clone());
+}
+
+fn new_binding(
+ key: TaskKey<'_>, functions: &[FunctionBody], imports: &BTreeMap<String, Vec<u8>>,
+ types: &mut TaskTypes, tasks: &mut Vec<TaskBinding>,
+) -> Result<(), &'static str> {
+ let (parameters, result, fallible) = signature(key.worker, functions, imports)?;
+ let completion = match result.as_deref() {
+  Some(result) => result.task_wait_layout(),
+  None => Ty::unit().task_wait_layout(),
+ }.ok_or("task result layout is too large")?;
+ let output = key.input.arguments.last().unwrap();
+ let name = format!("{}@task{}", key.worker, tasks.len());
+ let entry = task_entry(name, key.worker, &parameters, result.as_deref(), fallible, key.input, output, key.selector)?;
+
+ let layout = types.added.len();
+ let index = types.original_count + layout;
+ types.added.extend([key.input.clone(), completion, key.start.clone()]);
+ let first = types.original_count + types.added.len();
+ let mut positions = PositionBinding { types: &mut types.added, layout, parameters: &parameters };
+ let host = w::PositionHost { parameter: position_parameter, owned: position_owned, publish: publish_position };
+ unsafe {
+  w::bind_positions(ptr::from_mut(&mut positions).cast(), key.input.fields.len(), parameters.len(), first, host);
+ }
+ tasks.push(TaskBinding {
+  worker: key.worker.into(), input: key.input.clone(), index, entry, selector: key.selector.map(str::to_owned),
+ });
+ Ok(())
+}
+
+fn argument(scalar: Scalar, reg: usize) -> CallArgument {
+ CallArgument::Value { ty: Ty::scalar(scalar), values: vec![reg], dataset_borrow: None, origin: None }
+}
+
+fn rewrite_start(
+ call: &mut Call, registers: &mut Vec<Scalar>, binding: &TaskBinding, bound: &w::BoundStart,
+ symbol: &str, output: &mut Vec<Inst>,
+) {
+ let entry = registers.len();
+ registers.extend([Scalar::U64, Scalar::U32]);
+ output.push(Inst::new(InstKind::FunctionAddress(entry, CallTarget::Defined(binding.entry.name.clone()))));
+ output.push(Inst::new(InstKind::Constant(entry + 1, Scalar::U32, binding.index as u64)));
+ call.arguments[bound.worker_argument] = argument(Scalar::U64, entry);
+ call.arguments.truncate(bound.retained_arguments);
+ call.arguments.push(argument(Scalar::U32, entry + 1));
+ let CallTarget::External(target) = &mut call.target else { unsafe { std::hint::unreachable_unchecked() } };
+ target.symbol = symbol.into();
 }
 fn register(body:&mut ValueCode,scalar:Scalar)->usize{let reg=body.registers.len();body.registers.push(scalar);reg}
 fn buffer(address:[usize;2],zero:usize)->IndexedSource{IndexedSource::Pointer{address,index:zero,stride:1,aliases:Vec::new()}}
