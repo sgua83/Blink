@@ -154,3 +154,24 @@ extern "C" void collect_residency_dependencies(address names,address cursor,Depe
     requires nonzero(host.next) requires nonzero(host.insert)
     requires nonzero(host.model) requires nonzero(host.residency)
     requires nonzero(host.walk);
+
+enum ChoiceAction:u32 { Absent=0; Yes=1; No=2; Join=3; Select=4; };
+enum JoinAction:u32 { Keep=0; Copy=1; Clear=2; Extend=3; Select=4; };
+struct ChoicePlan { ChoiceAction action; u64 yes_depth; u64 no_depth; u32 split_yes; u32 split_no; };
+struct JoinPlan { JoinAction action; u32 split_left; address condition; address right_yes; address right_no; };
+struct ChoiceFacts { u32 impossible; u32 literal; u32 unconstrained; };
+struct ResidencyAlgebraHost {
+    cfn<ResidencyCheckNode,address> inspect;
+    cfn<u32,address,address> equal;
+    cfn<u32,address,address> condition_equal;
+    cfn<i32,address,address> order;
+    cfn<ChoiceFacts,address> facts;
+    cfn<u32,address> exclusive;
+    cfn<u32,address> empty;
+};
+extern "C" ChoicePlan choose_residency(address when,address yes,address no,ResidencyAlgebraHost host) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.equal)
+    requires nonzero(host.condition_equal) requires nonzero(host.order) requires nonzero(host.facts) requires nonzero(host.exclusive);
+extern "C" JoinPlan join_residency(address left,address right,ResidencyAlgebraHost host) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.equal)
+    requires nonzero(host.condition_equal) requires nonzero(host.order) requires nonzero(host.exclusive) requires nonzero(host.empty);

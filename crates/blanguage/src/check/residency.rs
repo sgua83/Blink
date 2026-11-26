@@ -146,39 +146,88 @@ impl Residency {
     pub fn parameter(parameter:usize)->Self{Self::input(Input::new(parameter))}
     pub(super) fn input(input:Input)->Self{Self::Origins(BTreeSet::from([Origin::Input(input)]))}
     fn absent(&self)->bool{matches!(self,Self::Absent)}
-    fn arm(&self,condition:&bounds::Condition,truth:bool)->Self{match self{Self::Selected(known,a,b)if condition.exclusive() && known.as_ref()==condition=>if truth{a.as_ref().clone()}else{b.as_ref().clone()},_=>self.clone()}}
-    pub(super) fn selected(when:owned_presence::Presence,a:Self,b:Self)->Self{Self::conditional(when.condition(),a,b)}
-    pub(super) fn conditional(when:bounds::Condition,mut a:Self,mut b:Self)->Self{
-        if when.impossible(){return Self::Absent;}
-        if let Some(truth)=when.boolean_constant(){return if truth{a}else{b};}
-        if when.unconstrained(){a.join(&b);return a;}
-        // 投影后条件可重叠；只吸收同一条件下已有的同来源分支，不扩张其有效域。
-        if let Self::Selected(inner,yes,no)=&b && **inner==when && a==**yes{return Self::conditional(when,a,no.as_ref().clone());}
-        if let Self::Selected(inner,yes,no)=&a && **inner==when && b==**no{return Self::conditional(when,yes.as_ref().clone(),b);}
-        if !when.exclusive(){return if a==b{a}else{Self::Selected(Box::new(when),Box::new(a),Box::new(b))};}
-        a=a.arm(&when,true);b=b.arm(&when,false);
-        if a==b{return a;}
-        // 同一组原条件采用统一顺序，调用来源的固定点不重复嵌套同一选择。
-        let first=[&a,&b].into_iter().filter_map(|value|if let Self::Selected(condition,..)=value{Some(condition.as_ref())}else{None}).filter(|condition|condition.exclusive() && *condition<&when).min().cloned();
-        if let Some(first)=first{
-            let yes=Self::conditional(when.clone(),a.arm(&first,true),b.arm(&first,true));
-            let no=Self::conditional(when,a.arm(&first,false),b.arm(&first,false));
-            return Self::conditional(first,yes,no);
-        }
-        Self::Selected(Box::new(when),Box::new(a),Box::new(b))
+    pub(super) fn selected(when: owned_presence::Presence, yes: Self, no: Self) -> Self {
+        Self::conditional(when.condition(), yes, no)
     }
-    pub fn join(&mut self,other:&Self){
-        if self==other||other.absent(){return;}
-        if self.absent(){*self=other.clone();return;}
-        if let (Self::Origins(a),Self::Origins(b))=(&mut *self,other){
-            if a.is_empty()||b.is_empty(){a.clear();}else{a.extend(b.iter().cloned());}return;
+    pub(super) fn conditional(when: bounds::Condition, yes: Self, no: Self) -> Self {
+        let plan = unsafe {
+            choose_residency(ptr::from_ref(&when).cast(), ptr::from_ref(&yes).cast(), ptr::from_ref(&no).cast(), residency_algebra_host())
+        };
+        match plan.action {
+            ChoiceAction::Absent => Self::Absent,
+            ChoiceAction::Yes => yes.descend(plan.yes_depth, true),
+            ChoiceAction::No => no.descend(plan.no_depth, false),
+            ChoiceAction::Join => {
+                let mut result = yes;
+                result.join(&no);
+                result
+            }
+            ChoiceAction::Select => {
+                let yes = yes.descend(plan.yes_depth, true);
+                let no = no.descend(plan.no_depth, false);
+                match (yes, no) {
+                    (Self::Selected(first, yy, yn), no) if plan.split_yes != 0 => {
+                        let (ny, nn) = no.fork(plan.split_no != 0);
+                        Self::reorder(when, *first, *yy, *yn, ny, nn)
+                    }
+                    (yes, Self::Selected(first, ny, nn)) if plan.split_no != 0 => {
+                        let (yy, yn) = yes.fork(false);
+                        Self::reorder(when, *first, yy, yn, *ny, *nn)
+                    }
+                    (yes, no) => Self::Selected(Box::new(when), Box::new(yes), Box::new(no)),
+                }
+            }
         }
-        let condition=[&*self,other].into_iter().filter_map(|value|if let Self::Selected(condition,..)=value{Some(condition.as_ref())}else{None}).min().unwrap().clone();
-        let left=matches!(&*self,Self::Selected(known,..)if **known==condition);
-        let (mut yes,mut no)=if left{let Self::Selected(_,a,b)=&*self else{unreachable!()};(a.as_ref().clone(),b.as_ref().clone())}else{(self.arm(&condition,true),self.arm(&condition,false))};
-        let (other_yes,other_no)=if !left{let Self::Selected(_,a,b)=other else{unreachable!()};(a.as_ref().clone(),b.as_ref().clone())}else{(other.arm(&condition,true),other.arm(&condition,false))};
-        yes.join(&other_yes);no.join(&other_no);
-        *self=Self::conditional(condition,yes,no);
+    }
+    fn descend(mut self, depth: usize, yes: bool) -> Self {
+        for _ in 0..depth {
+            self = match self {
+                Self::Selected(_, left, right) => if yes { *left } else { *right },
+                value => value,
+            };
+        }
+        self
+    }
+    fn fork(self, split: bool) -> (Self, Self) {
+        match self {
+            Self::Selected(_, yes, no) if split => (*yes, *no),
+            value => (value.clone(), value),
+        }
+    }
+    fn reorder(when: bounds::Condition, first: bounds::Condition, yy: Self, yn: Self, ny: Self, nn: Self) -> Self {
+        let yes = Self::conditional(when.clone(), yy, ny);
+        let no = Self::conditional(when, yn, nn);
+        Self::conditional(first, yes, no)
+    }
+    pub fn join(&mut self, other: &Self) {
+        let plan = unsafe {
+            join_residency(ptr::from_ref(self).cast(), ptr::from_ref(other).cast(), residency_algebra_host())
+        };
+        match plan.action {
+            JoinAction::Keep => {}
+            JoinAction::Copy => *self = other.clone(),
+            JoinAction::Clear => *self = Self::default(),
+            JoinAction::Extend => {
+                if let (Self::Origins(left), Self::Origins(right)) = (self, other) {
+                    left.extend(right.iter().cloned());
+                }
+            }
+            JoinAction::Select => {
+                // Borrowed right arms remain owned by other. The left pivot, when chosen,
+                // moves with its two arms into the replacement.
+                let (first, mut yes, mut no) = match std::mem::take(self) {
+                    Self::Selected(first, yes, no) if plan.split_left != 0 => (*first, *yes, *no),
+                    value => (
+                        unsafe { &*plan.condition.cast::<bounds::Condition>() }.clone(),
+                        value.clone(),
+                        value,
+                    ),
+                };
+                yes.join(unsafe { &*plan.right_yes.cast::<Self>() });
+                no.join(unsafe { &*plan.right_no.cast::<Self>() });
+                *self = Self::conditional(first, yes, no);
+            }
+        }
     }
     pub(super) fn under(&self,path:&bounds::Clause)->Self{match self{
         Self::Selected(when,a,b)=>match when.truth_in(path){Some(true)=>a.under(path),Some(false)=>b.under(path),None=>Self::conditional(when.as_ref().clone(),a.under(&when.assume(path,true)),b.under(&when.assume(path,false)))},
@@ -1018,6 +1067,91 @@ struct ResidencyBranch {
     condition: Borrowed,
     yes: Borrowed,
     no: Borrowed,
+}
+
+#[repr(u32)]
+enum ChoiceAction { Absent, Yes, No, Join, Select }
+#[repr(u32)]
+enum JoinAction { Keep, Copy, Clear, Extend, Select }
+
+#[repr(C)]
+struct ChoicePlan {
+    action: ChoiceAction,
+    yes_depth: usize,
+    no_depth: usize,
+    split_yes: u32,
+    split_no: u32,
+}
+
+#[repr(C)]
+struct JoinPlan {
+    action: JoinAction,
+    split_left: u32,
+    condition: Borrowed,
+    right_yes: Borrowed,
+    right_no: Borrowed,
+}
+
+#[repr(C)]
+struct ChoiceFacts { impossible: u32, literal: u32, unconstrained: u32 }
+
+#[repr(C)]
+struct ResidencyAlgebraHost {
+    inspect: unsafe extern "C" fn(Borrowed) -> ResidencyCheckNode,
+    equal: unsafe extern "C" fn(Borrowed, Borrowed) -> u32,
+    condition_equal: unsafe extern "C" fn(Borrowed, Borrowed) -> u32,
+    order: unsafe extern "C" fn(Borrowed, Borrowed) -> i32,
+    facts: unsafe extern "C" fn(Borrowed) -> ChoiceFacts,
+    exclusive: unsafe extern "C" fn(Borrowed) -> u32,
+    empty: unsafe extern "C" fn(Borrowed) -> u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ownership_path::choose_residency"]
+    fn choose_residency(when: Borrowed, yes: Borrowed, no: Borrowed, host: ResidencyAlgebraHost) -> ChoicePlan;
+    #[link_name = "bootstrap.ownership_path::join_residency"]
+    fn join_residency(left: Borrowed, right: Borrowed, host: ResidencyAlgebraHost) -> JoinPlan;
+}
+
+unsafe extern "C" fn algebra_equal(left: Borrowed, right: Borrowed) -> u32 {
+    u32::from(unsafe { *left.cast::<Residency>() == *right.cast::<Residency>() })
+}
+
+unsafe extern "C" fn algebra_condition_equal(left: Borrowed, right: Borrowed) -> u32 {
+    u32::from(unsafe { *left.cast::<bounds::Condition>() == *right.cast::<bounds::Condition>() })
+}
+
+unsafe extern "C" fn algebra_order(left: Borrowed, right: Borrowed) -> i32 {
+    unsafe { (&*left.cast::<bounds::Condition>()).cmp(&*right.cast::<bounds::Condition>()) as i32 }
+}
+
+unsafe extern "C" fn algebra_facts(value: Borrowed) -> ChoiceFacts {
+    let value = unsafe { &*value.cast::<bounds::Condition>() };
+    ChoiceFacts {
+        impossible: u32::from(value.impossible()),
+        literal: value.boolean_constant().map_or(2, u32::from),
+        unconstrained: u32::from(value.unconstrained()),
+    }
+}
+
+unsafe extern "C" fn algebra_exclusive(value: Borrowed) -> u32 {
+    u32::from(unsafe { &*value.cast::<bounds::Condition>() }.exclusive())
+}
+
+unsafe extern "C" fn algebra_empty(origins: Borrowed) -> u32 {
+    u32::from(unsafe { &*origins.cast::<BTreeSet<Origin>>() }.is_empty())
+}
+
+fn residency_algebra_host() -> ResidencyAlgebraHost {
+    ResidencyAlgebraHost {
+        inspect: inspect_residency_visit,
+        equal: algebra_equal,
+        condition_equal: algebra_condition_equal,
+        order: algebra_order,
+        facts: algebra_facts,
+        exclusive: algebra_exclusive,
+        empty: algebra_empty,
+    }
 }
 
 #[repr(C)]

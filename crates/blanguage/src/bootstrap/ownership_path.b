@@ -319,3 +319,109 @@ extern "C" void collect_residency_dependencies(address names,address cursor,Depe
         item=host.next(cursor);
     }
 }
+
+bool same_residency_condition(address a,address b,ResidencyAlgebraHost host) on cpu
+    requires nonzero(host.condition_equal) {
+    return address_bits(a)!=0u64 && host.condition_equal(a,b)!=0;
+}
+
+extern "C" ChoicePlan choose_residency(address when,address yes,address no,ResidencyAlgebraHost host) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.equal)
+    requires nonzero(host.condition_equal) requires nonzero(host.order) requires nonzero(host.facts) requires nonzero(host.exclusive) {
+    let plan=ChoicePlan(ChoiceAction::Select,0u64,0u64,0,0);
+    ChoiceFacts facts=host.facts(when);
+    if(facts.impossible!=0){plan.action=ChoiceAction::Absent;return plan;}
+    if(facts.literal==1){plan.action=ChoiceAction::Yes;return plan;}
+    if(facts.literal==0){plan.action=ChoiceAction::No;return plan;}
+    if(facts.unconstrained!=0){plan.action=ChoiceAction::Join;return plan;}
+
+    address left_value=yes;
+    address right_value=no;
+    ResidencyBranch left=host.inspect(left_value).branch;
+    ResidencyBranch right=host.inspect(right_value).branch;
+    // Projected conditions can overlap. Absorb a repeated condition only
+    // when the matching arm already supplies the same source.
+    while(true){
+        if(same_residency_condition(right.condition,when,host) && host.equal(left_value,right.yes)!=0){
+            right_value=right.no;
+            plan.no_depth+=1u64;
+            right=host.inspect(right_value).branch;
+        }else if(same_residency_condition(left.condition,when,host) && host.equal(right_value,left.no)!=0){
+            left_value=left.yes;
+            plan.yes_depth+=1u64;
+            left=host.inspect(left_value).branch;
+        }else{
+            break;
+        }
+    }
+    bool exclusive=host.exclusive(when)!=0;
+    if(exclusive){
+        if(same_residency_condition(left.condition,when,host)){
+            left_value=left.yes;
+            plan.yes_depth+=1u64;
+            left=host.inspect(left_value).branch;
+        }
+        if(same_residency_condition(right.condition,when,host)){
+            right_value=right.no;
+            plan.no_depth+=1u64;
+            right=host.inspect(right_value).branch;
+        }
+    }
+    if(host.equal(left_value,right_value)!=0){
+        plan.action=ChoiceAction::Yes;
+        return plan;
+    }
+    if(!exclusive){return plan;}
+
+    // Only exclusive branches can move ahead of the current condition.
+    address first=unsafe_address(0u64);
+    if(address_bits(left.condition)!=0u64 && host.order(left.condition,when)<0 && host.exclusive(left.condition)!=0){
+        first=left.condition;
+    }
+    if(address_bits(right.condition)!=0u64 && host.order(right.condition,when)<0
+        && (address_bits(first)==0u64 || host.order(right.condition,first)<0)
+        && host.exclusive(right.condition)!=0){
+        first=right.condition;
+    }
+    if(address_bits(first)!=0u64){
+        plan.split_yes=u32(same_residency_condition(left.condition,first,host));
+        plan.split_no=u32(same_residency_condition(right.condition,first,host));
+    }
+    return plan;
+}
+
+extern "C" JoinPlan join_residency(address left,address right,ResidencyAlgebraHost host) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.equal)
+    requires nonzero(host.condition_equal) requires nonzero(host.order) requires nonzero(host.exclusive) requires nonzero(host.empty) {
+    let null=unsafe_address(0u64);
+    let plan=JoinPlan(JoinAction::Keep,0,null,right,right);
+    if(host.equal(left,right)!=0){return plan;}
+    ResidencyCheckNode a=host.inspect(left);
+    ResidencyCheckNode b=host.inspect(right);
+    bool left_selected=address_bits(a.branch.condition)!=0u64;
+    bool right_selected=address_bits(b.branch.condition)!=0u64;
+    bool left_origins=address_bits(a.origins)!=0u64;
+    bool right_origins=address_bits(b.origins)!=0u64;
+    if(!right_selected && !right_origins){return plan;}
+    if(!left_selected && !left_origins){plan.action=JoinAction::Copy;return plan;}
+    if(left_origins && right_origins){
+        plan.action=host.empty(a.origins)!=0 || host.empty(b.origins)!=0 ? JoinAction::Clear : JoinAction::Extend;
+        return plan;
+    }
+
+    plan.action=JoinAction::Select;
+    if(left_selected && (!right_selected || host.order(a.branch.condition,b.branch.condition)<=0)){
+        plan.split_left=1;
+        plan.condition=a.branch.condition;
+        // An overlapping right selection remains a whole value in both arms.
+        if(same_residency_condition(b.branch.condition,plan.condition,host) && host.exclusive(plan.condition)!=0){
+            plan.right_yes=b.branch.yes;
+            plan.right_no=b.branch.no;
+        }
+    }else{
+        plan.condition=b.branch.condition;
+        plan.right_yes=b.branch.yes;
+        plan.right_no=b.branch.no;
+    }
+    return plan;
+}
