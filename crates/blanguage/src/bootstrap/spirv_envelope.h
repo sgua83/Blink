@@ -854,89 +854,8 @@ extern "C" CustomPrefixOpen open_custom_prefix(read CustomPrefix input, address 
 extern "C" StageWords close_custom_prefix(read CustomPrefix input, CustomPrefixOpen opened,
     address fields, address locations, address values, u32 next, address body) on cpu;
 
-struct SegmentField {
-    BuiltinScalar scalar;
-    u32 word;
-    u32 raw_type;
-    u32 value_type;
-    u32 shift;
-};
-extern "C" void segment_fields(CollectiveLayout layout, ScalarHost host, address output) on cpu
-    requires nonzero(layout.component) requires nonzero(host.constant) requires nonzero(host.type_id);
-
-struct SegmentMerge {
-    CollectiveOperation operation;
-    u32 uint_type;
-    u32 bool_type;
-    u32 zero;
-    u32 value_words;
-    u32 counted;
-};
-
-struct SegmentIdentityField { u64 bits; u32 offset; BuiltinScalar scalar; };
-extern "C" void segment_identity(ScalarHost host, SegmentMerge merge, address source,
-    cfn<SegmentIdentityField,address,u32> field, u32 fields, address output) on cpu
-    requires nonzero(host.constant) requires nonzero(field);
-
 struct ScanLevel { u32 mask; u32 stride; };
-struct SegmentAdd {
-    SegmentMerge merge;
-    PageAddress target;
-    u32 prefix_descriptor;
-    u32 width;
-    u32 step;
-    u32 active;
-    u32 run;
-    u32 end;
-};
-
-// The workspace holds five summary spans: two pointer lists, two input lists,
-// and the merged result. The existing run/end IDs delimit the active lanes.
-extern "C" TreeWords segment_add(SegmentAdd input, address fields, u32 count,
-    address workspace, address body, address decorations) on cpu;
-
-struct SegmentStorageField {
-    u32 word;
-    u32 offset;
-    u32 unit_type;
-    u32 unit_bytes;
-    u32 pointer_type;
-    u32 step;
-};
-extern "C" void segment_storage_fields(CollectiveLayout layout, u32 first, MemoryHost host, address output) on cpu
-    requires nonzero(layout.component) requires nonzero(host.scalars.constant)
-    requires nonzero(host.scalars.type_id) requires nonzero(host.pointer_type);
-
-enum SegmentPass : u32 { Main = 0; Tail = 1; Finish = 2; };
-
-struct SegmentGroup {
-    SegmentMerge merge;
-    PageAddress source;
-    SegmentPass pass;
-    u32 target;
-    u32 summary;
-    u32 head_offset;
-    u32 head_word;
-    u32 marker_word;
-    u32 count_target;
-    u32 count_word;
-    u32 active;
-    u32 count;
-    u32 lane;
-    u32 shared;
-    u32 pointer;
-    u32 width;
-    u32 last;
-    u32 scope;
-    u32 semantics;
-    u32 step;
-    u32 before;
-};
-
-// Six tree spans followed by the input summary and its workgroup pointers.
-extern "C" TreeWords segment_group(SegmentGroup input, address levels, address fields,
-    address source_fields, address target_fields, u32 field_count, address identity,
-    address workspace, address body, address decorations) on cpu;
+extern "C" void scan_levels(ScalarHost host, address output) on cpu requires nonzero(host.constant);
 
 struct PrivateAddress {
     u32 index_type;
@@ -1101,6 +1020,40 @@ struct ShaderPass {
     EntryPass kind; u32 numeric; usize parameter; u32 word; u32 arguments;
 };
 extern "C" ShaderPass shader_pass(EntryPass kind, usize parameter, u32 word) on cpu;
+
+struct SegmentIdentityField { u64 bits; u32 offset; BuiltinScalar scalar; };
+struct SegmentScratch {
+    address context;
+    cfn<address,address,usize> reserve;
+    cfn<SegmentIdentityField,address,u32> identity;
+};
+struct SegmentLayout {
+    CollectiveLayout fields;
+    CollectiveOperation operation;
+    u32 value_bytes;
+    u32 counted;
+    u32 source_byte;
+    u32 target_byte;
+    u32 head_byte;
+    u32 count_byte;
+};
+struct SegmentBindings {
+    address descriptors;
+    usize source;
+    usize prefix;
+    usize target;
+    usize summary;
+    usize counter;
+};
+struct SegmentDispatch {
+    u32 lane; u32 shared; u32 pointer; u32 active; u32 count;
+    u32 run; u32 end; u32 before;
+};
+extern "C" TreeWords emit_segmented(EntryPass pass, u32 single_group, SegmentLayout layout,
+    SegmentBindings bindings, SegmentDispatch dispatch, PageInputs raw_page, SegmentScratch scratch, MemoryHost host) on cpu
+    requires nonzero(layout.fields.component) requires nonzero(scratch.reserve) requires nonzero(scratch.identity)
+    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.pointer_type);
 
 enum EntryOutput:u32 {
     Main=0; Tail=1; ScanAdd=2; Scatter=3; SegmentedFinish=4; RootAdd=5;

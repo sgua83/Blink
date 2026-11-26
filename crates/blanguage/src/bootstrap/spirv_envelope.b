@@ -4481,6 +4481,33 @@ u64 merge_segment(inout StageCursor out, SegmentMerge input, address fields, u32
     return decorated;
 }
 
+struct SegmentField {
+    BuiltinScalar scalar;
+    u32 word; u32 raw_type; u32 value_type; u32 shift;
+};
+struct SegmentMerge {
+    CollectiveOperation operation;
+    u32 uint_type; u32 bool_type; u32 zero; u32 value_words; u32 counted;
+};
+struct SegmentAdd {
+    SegmentMerge merge;
+    PageAddress target;
+    u32 prefix_descriptor; u32 width; u32 step; u32 active; u32 run; u32 end;
+};
+struct SegmentStorageField {
+    u32 word; u32 offset; u32 unit_type; u32 unit_bytes; u32 pointer_type; u32 step;
+};
+enum SegmentPass : u32 { Main = 0; Tail = 1; Finish = 2; };
+struct SegmentGroup {
+    SegmentMerge merge;
+    PageAddress source;
+    SegmentPass pass;
+    u32 target; u32 summary; u32 head_offset; u32 head_word; u32 marker_word;
+    u32 count_target; u32 count_word; u32 active; u32 count; u32 lane;
+    u32 shared; u32 pointer; u32 width; u32 last; u32 scope; u32 semantics;
+    u32 step; u32 before;
+};
+
 void segment_plane_addresses(inout StageCursor out, SegmentGroup input, u32 lane, u32 words,
     address offsets, address pointers) on cpu {
     SharedAddress plane = SharedAddress(input.merge.uint_type, input.pointer, input.shared, lane, 0, words, out.next);
@@ -4732,7 +4759,7 @@ extern "C" StageWords close_custom_prefix(read CustomPrefix input, CustomPrefixO
     return StageWords(out.words, out.next, opened.end);
 }
 
-extern "C" void segment_fields(CollectiveLayout layout, ScalarHost host, address output) on cpu
+void segment_fields(CollectiveLayout layout, ScalarHost host, address output) on cpu
     requires nonzero(layout.component) requires nonzero(host.constant) requires nonzero(host.type_id) {
     usize index = 0u64;
     while (index < layout.count) {
@@ -4746,7 +4773,7 @@ extern "C" void segment_fields(CollectiveLayout layout, ScalarHost host, address
     }
 }
 
-extern "C" void segment_storage_fields(CollectiveLayout layout, u32 first, MemoryHost host, address output) on cpu
+void segment_storage_fields(CollectiveLayout layout, u32 first, MemoryHost host, address output) on cpu
     requires nonzero(layout.component) requires nonzero(host.scalars.constant)
     requires nonzero(host.scalars.type_id) requires nonzero(host.pointer_type) {
     ScalarHost stream = host.scalars;
@@ -4764,7 +4791,7 @@ extern "C" void segment_storage_fields(CollectiveLayout layout, u32 first, Memor
     }
 }
 
-extern "C" void segment_identity(ScalarHost host, SegmentMerge merge, address source,
+void segment_identity(ScalarHost host, SegmentMerge merge, address source,
     cfn<SegmentIdentityField,address,u32> field, u32 fields, address output) on cpu
     requires nonzero(host.constant) requires nonzero(field) {
     for (word in 0..(merge.value_words + 1 + merge.counted)) {
@@ -4780,7 +4807,7 @@ extern "C" void segment_identity(ScalarHost host, SegmentMerge merge, address so
     }
 }
 
-extern "C" TreeWords segment_add(SegmentAdd input, address fields, u32 count,
+TreeWords segment_add(SegmentAdd input, address fields, u32 count,
     address workspace, address body, address decorations) on cpu {
     StageCursor out = StageCursor(body, 0u64, input.target.next);
     StageBranch branch = StageBranch(input.run, input.end);
@@ -5252,7 +5279,7 @@ TreeWords segment_finish(inout StageCursor out, SegmentGroup input, u32 group, a
     return TreeWords(out.words, decorated, out.next, write.end);
 }
 
-extern "C" TreeWords segment_group(SegmentGroup input, address levels, address fields,
+TreeWords segment_group(SegmentGroup input, address levels, address fields,
     address source_fields, address target_fields, u32 field_count, address identity,
     address workspace, address body, address decorations) on cpu {
     StageCursor out = StageCursor(body, 0u64, input.source.next);
@@ -5344,6 +5371,138 @@ extern "C" TreeWords segment_group(SegmentGroup input, address levels, address f
     return TreeWords(out.words, decorated, out.next, label);
 }
 
+
+extern "C" void scan_levels(ScalarHost host, address output) on cpu requires nonzero(host.constant) {
+    for (index in 0..6) {
+        u32 width = 1 << index;
+        u32 mask = host.constant(host.context, BuiltinScalar::U32, u64(width * 2 - 1));
+        u32 stride = host.constant(host.context, BuiltinScalar::U32, u64(width));
+        address at = unsafe_address(address_bits(output) + u64(index) * size_of<ScanLevel>());
+        unsafe_position<ScanLevel>(at) = ScanLevel(mask, stride);
+    }
+}
+
+u32 segment_descriptor(SegmentBindings bindings, usize index) on cpu {
+    return unsafe_position<u32>(word_at(bindings.descriptors, index));
+}
+
+SegmentMerge segment_merge(SegmentLayout layout, u32 value_words, ScalarHost host) on cpu
+    requires nonzero(host.constant) requires nonzero(host.type_id) {
+    address context = host.context;
+    u32 zero = host.constant(context, BuiltinScalar::U32, 0u64);
+    return SegmentMerge(layout.operation, host.type_id(context, BuiltinScalar::U32),
+        host.type_id(context, BuiltinScalar::Bool), zero, value_words, layout.counted);
+}
+
+void clear_segment_workspace(address workspace, u64 words) on cpu {
+    u64 index = 0u64;
+    while (index < words) {
+        put(workspace, index, 0);
+        index += 1u64;
+    }
+}
+
+TreeWords emit_segment_add(SegmentLayout layout, SegmentBindings bindings, SegmentDispatch dispatch,
+    PageInputs raw_page, SegmentScratch scratch, MemoryHost host, u32 value_words, u64 field_words, u64 span) on cpu
+    requires nonzero(layout.fields.component) requires nonzero(scratch.reserve)
+    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.pointer_type) {
+    ScalarHost stream = host.scalars;
+    address context = stream.context;
+    u64 count = layout.fields.count;
+    address fields = scratch.reserve(scratch.context, field_words + 5u64 * span);
+    address workspace = word_at(fields, field_words);
+    segment_fields(layout.fields, stream, fields);
+    clear_segment_workspace(workspace, 5u64 * span);
+    u32 width = stream.constant(context, BuiltinScalar::U32, 64u64);
+    u32 step = stream.constant(context, BuiltinScalar::U64, 4u64);
+    SegmentMerge merge = segment_merge(layout, value_words, stream);
+    PageInputs page = raw_page;
+    page.descriptor = segment_descriptor(bindings, bindings.target);
+    page.has_word = 1;
+    PageAddress target = prepare_page(page, host.pointer_type(context, BuiltinScalar::U32), stream);
+    SegmentAdd input = SegmentAdd(merge, target, segment_descriptor(bindings, bindings.prefix), width, step,
+        dispatch.active, dispatch.run, dispatch.end);
+    ScalarStreams output = stream.reserve(context, 243u64 + 41u64 * span + 74u64 * count, 3u64 * count);
+    return segment_add(input, fields, u32(count), workspace, output.body, output.decorations);
+}
+
+extern "C" TreeWords emit_segmented(EntryPass pass, u32 single_group, SegmentLayout layout,
+    SegmentBindings bindings, SegmentDispatch dispatch, PageInputs raw_page, SegmentScratch scratch, MemoryHost host) on cpu
+    requires nonzero(layout.fields.component) requires nonzero(scratch.reserve) requires nonzero(scratch.identity)
+    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.pointer_type) {
+    u32 value_words = layout.value_bytes / 4 + u32(layout.value_bytes % 4 != 0);
+    u64 span = u64(value_words + 1 + layout.counted);
+    u64 count = layout.fields.count;
+    u64 field_words = count * size_of<SegmentField>() / 4u64;
+    if (pass == EntryPass::ScanAdd) {
+        return emit_segment_add(layout, bindings, dispatch, raw_page, scratch, host, value_words, field_words, span);
+    }
+
+    ScalarHost stream = host.scalars;
+    address context = stream.context;
+    bool tail = pass == EntryPass::ScanTail;
+    bool finish = pass == EntryPass::ScanRootAdd;
+    bool counted = layout.counted != 0;
+    bool writes = finish || (!tail && !counted);
+    u64 field_storage = count * size_of<SegmentStorageField>() / 4u64;
+    u64 source_words = tail ? 0u64 : field_storage;
+    u64 target_words = writes ? field_storage : 0u64;
+    address fields = scratch.reserve(scratch.context,
+        field_words + source_words + target_words + 9u64 * span + 6u64 * size_of<ScanLevel>() / 4u64);
+    address source_fields = word_at(fields, field_words);
+    address target_fields = word_at(source_fields, source_words);
+    address identity = word_at(target_fields, target_words);
+    address workspace = word_at(identity, span);
+    address levels = word_at(workspace, 8u64 * span);
+
+    segment_fields(layout.fields, stream, fields);
+    SegmentMerge merge = segment_merge(layout, value_words, stream);
+    segment_identity(stream, merge, scratch.context, scratch.identity, u32(count), identity);
+    scan_levels(stream, levels);
+    clear_segment_workspace(workspace, 8u64 * span);
+    for (index in 1..u32(span)) {
+        put(workspace, u64(index), stream.constant(context, BuiltinScalar::U32, u64(index * 64)));
+    }
+    u32 head_offset = 0;
+    if (!tail) {
+        head_offset = field_byte_id(stream, layout.head_byte);
+        segment_storage_fields(layout.fields, layout.source_byte, host, source_fields);
+    }
+    if (writes) {
+        segment_storage_fields(layout.fields, layout.target_byte, host, target_fields);
+    }
+    u32 count_target = 0;
+    u32 count_word = 0;
+    u32 head_word = 0;
+    if (finish) {
+        count_target = segment_descriptor(bindings, bindings.counter);
+        count_word = stream.constant(context, BuiltinScalar::U32, u64(layout.count_byte));
+        head_word = stream.constant(context, BuiltinScalar::U32, u64(layout.head_byte));
+    }
+    u32 summary = single_group != 0 ? 0 : segment_descriptor(bindings, bindings.summary);
+    u32 marker_word = writes && !counted && summary != 0
+        ? stream.constant(context, BuiltinScalar::U32, u64(value_words * 4)) : 0;
+    u32 width = stream.constant(context, BuiltinScalar::U32, 64u64);
+    u32 last = stream.constant(context, BuiltinScalar::U32, 63u64);
+    u32 scope = stream.constant(context, BuiltinScalar::U32, 2u64);
+    u32 semantics = stream.constant(context, BuiltinScalar::U32, 0x108u64);
+    u32 step = stream.constant(context, BuiltinScalar::U64, 4u64);
+    PageInputs page = raw_page;
+    page.descriptor = segment_descriptor(bindings, tail ? bindings.prefix : bindings.source);
+    PageAddress source = prepare_page(page, host.pointer_type(context, BuiltinScalar::U32), stream);
+    SegmentPass phase = tail ? SegmentPass::Tail : (finish ? SegmentPass::Finish : SegmentPass::Main);
+    SegmentGroup input = SegmentGroup(merge, source, phase, segment_descriptor(bindings, bindings.target),
+        summary, head_offset, head_word, marker_word, count_target, count_word, dispatch.active, dispatch.count,
+        dispatch.lane, dispatch.shared, dispatch.pointer, width, last, scope, semantics, step, dispatch.before);
+    u64 layers = counted && !tail && !finish ? 6u64 : 12u64;
+    u64 final_merges = finish ? 2u64 : 0u64;
+    ScalarStreams output = stream.reserve(context, layers * (57u64 + 48u64 * span + 74u64 * count)
+        + 1050u64 + 80u64 * span + 214u64 * count, 3u64 * count * (layers + final_merges));
+    return segment_group(input, levels, fields, source_fields, target_fields, u32(count), identity,
+        workspace, output.body, output.decorations);
+}
 
 const u32 ENTRY_MAP=0;
 const u32 ENTRY_REDUCE=1;

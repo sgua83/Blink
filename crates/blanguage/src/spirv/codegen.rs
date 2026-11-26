@@ -1928,11 +1928,20 @@ impl ShaderBodyEmission<'_, '_> {
                     e.scan_add(scan, flag);
                 }
             }
-            BodyStep::SegmentedScan => {
-                let scan = unsafe { &*operation.cast::<Scan>() };
-                e.segmented_scan(scan, self.segment_head, flag, local, shared, pointer, active, count);
+            BodyStep::SegmentedScan | BodyStep::SegmentedAdd
+            | BodyStep::SegmentedReduce | BodyStep::SegmentedReduceAdd => {
+                let dispatch = segmented::SegmentDispatch {
+                    lane: local, shared, pointer, active, count,
+                    run: execute, end, before: e.current_label,
+                };
+                if matches!(step, BodyStep::SegmentedScan | BodyStep::SegmentedAdd) {
+                    let scan = unsafe { &*operation.cast::<Scan>() };
+                    e.segmented_scan(scan, self.segment_head, self.pass, dispatch);
+                } else {
+                    let reduction = unsafe { &*operation.cast::<SegmentedReduction>() };
+                    e.segmented_reduce(reduction, self.pass, self.single_group, dispatch);
+                }
             }
-            BodyStep::SegmentedAdd => e.segmented_add(unsafe { &*operation.cast::<Scan>() }, active, self.labels),
             BodyStep::SegmentedRoot => e.segmented_root_add(unsafe { &*operation.cast::<Scan>() }),
             BodyStep::CustomSegmented => {
                 e.custom_segmented_reduce(
@@ -1954,13 +1963,6 @@ impl ShaderBodyEmission<'_, '_> {
             BodyStep::Reduce => e.reduce(
                 unsafe { &*operation.cast::<ReductionSpec>() }, flag, local, shared, pointer, active, count,
             ),
-            BodyStep::SegmentedReduce => e.segmented_reduce(
-                unsafe { &*operation.cast::<SegmentedReduction>() }, self.pass, self.single_group,
-                local, shared, pointer, active, count,
-            ),
-            BodyStep::SegmentedReduceAdd => {
-                e.segmented_reduce_add(unsafe { &*operation.cast::<SegmentedReduction>() }, active, self.labels);
-            }
             BodyStep::CompactScatter => e.compact_scatter(unsafe { &*operation.cast::<Compaction>() }, count, active),
             BodyStep::TileInput => e.tile_input(count, active, self.inputs),
             BodyStep::TilePhases => {

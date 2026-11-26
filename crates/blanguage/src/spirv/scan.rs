@@ -79,6 +79,8 @@ unsafe extern "C" {
         components: *mut TreeComponent);
     #[link_name = "bootstrap.spirv_envelope::physical_fields"]
     fn emit_physical_fields(layout: CollectiveLayout, first: u32, host: MemoryHost, output: *mut PhysicalField);
+    #[link_name = "bootstrap.spirv_envelope::scan_levels"]
+    fn emit_scan_levels(host: ScalarHost, output: *mut ScanLevel);
     #[link_name = "bootstrap.spirv_envelope::scan_group"]
     fn emit_scan_group(input: ScanGroup, levels: *const ScanLevel, components: *const TreeComponent,
         fields: *const CollectiveField, count: u32, workspace: *mut u32, body: *mut u32,
@@ -176,11 +178,12 @@ impl Emitter<'_> {
         }
     }
 
-    pub(super) fn scan_levels(&mut self) -> [ScanLevel; 6] {
-        [1, 2, 4, 8, 16, 32].map(|width| ScanLevel {
-            mask: self.constant(Scalar::U32, width * 2 - 1),
-            stride: self.constant(Scalar::U32, width),
-        })
+    fn scan_levels(&mut self) -> [ScanLevel; 6] {
+        let mut levels = std::mem::MaybeUninit::<[ScanLevel; 6]>::uninit();
+        unsafe {
+            emit_scan_levels(self.scalar_host(), levels.as_mut_ptr().cast());
+            levels.assume_init()
+        }
     }
 
 
