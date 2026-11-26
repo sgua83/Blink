@@ -94,3 +94,21 @@ extern "C" void write_interface(address out, address owner, LayoutSink sink, Lay
     requires nonzero(source.array) requires nonzero(source.view) requires nonzero(source.dataset_name)
     requires nonzero(source.cleanup) requires nonzero(declaration.owner)
     requires nonzero(declaration.buffer) requires nonzero(declaration.uniform);
+
+enum SlotChildKind : u32 { Argument=0; Field=1; Variant=2; Element=3; };
+struct SlotChild { address value; u32 offset; };
+struct SlotType {
+    usize arguments; usize fields; usize variants; usize components;
+    u32 array; u32 count; u32 size; u32 alignment;
+};
+struct SlotHost {
+    cfn<SlotType,address> shape;
+    cfn<SlotChild,address,SlotChildKind,usize> child;
+    cfn<void,address,usize,usize> prepare;
+    cfn<void,address,address,u32> copy;
+    cfn<void,address,u32> payload_word;
+};
+
+extern "C" void fill_value_slots(address value, u32 complete, SlotHost host) on cpu
+    requires nonzero(host.shape) requires nonzero(host.child) requires nonzero(host.prepare)
+    requires nonzero(host.copy) requires nonzero(host.payload_word);

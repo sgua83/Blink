@@ -356,3 +356,91 @@ unsafe extern "C" fn interface_uniform<P: ProgramInterface + ?Sized>(context: *c
     let uniform = &program.uniforms()[index];
     LayoutUniform { name: uniform.name.as_str().into(), offset: uniform.offset, value: ptr::from_ref(&uniform.ty).cast() }
 }
+
+#[repr(u32)]
+#[allow(dead_code, reason = "The shared B layout supplies the ABI tags.")]
+enum SlotChildKind { Argument, Field, Variant, Element }
+
+#[repr(C)]
+struct SlotChild { value: *mut c_void, offset: u32 }
+
+#[repr(C)]
+struct SlotType {
+    arguments: usize,
+    fields: usize,
+    variants: usize,
+    components: usize,
+    array: u32,
+    count: u32,
+    size: u32,
+    alignment: u32,
+}
+
+#[repr(C)]
+struct SlotHost {
+    shape: unsafe extern "C" fn(*const c_void) -> SlotType,
+    child: unsafe extern "C" fn(*mut c_void, SlotChildKind, usize) -> SlotChild,
+    prepare: unsafe extern "C" fn(*mut c_void, usize, usize),
+    copy: unsafe extern "C" fn(*mut c_void, *const c_void, u32),
+    payload_word: unsafe extern "C" fn(*mut c_void, u32),
+}
+
+unsafe extern "C" {
+    #[link_name = "codec.layout::fill_value_slots"]
+    fn b_fill_value_slots(value: *mut c_void, complete: u32, host: SlotHost);
+}
+
+pub(super) fn fill_value_slots(value: &mut Ty, complete: bool) {
+    let host = SlotHost {
+        shape: slot_type,
+        child: slot_child,
+        prepare: prepare_slots,
+        copy: copy_slots,
+        payload_word: append_payload_word,
+    };
+    unsafe { b_fill_value_slots(ptr::from_mut(value).cast(), u32::from(complete), host) };
+}
+
+unsafe extern "C" fn slot_type(value: *const c_void) -> SlotType {
+    let ty = unsafe { &*value.cast::<Ty>() };
+    let array = ty.array.is_some();
+    SlotType {
+        arguments: ty.arguments.len(),
+        fields: ty.fields.len(),
+        variants: ty.variants.len(),
+        components: ty.components.len(),
+        array: u32::from(array),
+        count: if array { ty.values[0] } else { 0 },
+        size: ty.size,
+        alignment: ty.align,
+    }
+}
+
+unsafe extern "C" fn slot_child(value: *mut c_void, kind: SlotChildKind, index: usize) -> SlotChild {
+    let ty = unsafe { &mut *value.cast::<Ty>() };
+    match kind {
+        SlotChildKind::Argument => SlotChild { value: ptr::from_mut(&mut ty.arguments[index]).cast(), offset: 0 },
+        SlotChildKind::Field => {
+            let (_, offset, field) = &mut ty.fields[index];
+            SlotChild { value: ptr::from_mut(field.as_mut()).cast(), offset: *offset }
+        }
+        SlotChildKind::Variant => SlotChild { value: ptr::from_mut(ty.variants[index].ty.as_mut()).cast(), offset: 0 },
+        SlotChildKind::Element => SlotChild { value: ptr::from_mut(ty.array.as_deref_mut().unwrap()).cast(), offset: 0 },
+    }
+}
+
+unsafe extern "C" fn prepare_slots(value: *mut c_void, keep: usize, additional: usize) {
+    let slots = unsafe { &mut (*value.cast::<Ty>()).components };
+    slots.truncate(keep);
+    slots.reserve(additional);
+}
+
+unsafe extern "C" fn copy_slots(value: *mut c_void, child: *const c_void, base: u32) {
+    let slots = unsafe { &mut (*value.cast::<Ty>()).components };
+    let child_slots = unsafe { &(*child.cast::<Ty>()).components };
+    slots.extend(child_slots.iter().map(|&(scalar, offset)| (scalar, base + offset)));
+}
+
+unsafe extern "C" fn append_payload_word(value: *mut c_void, offset: u32) {
+    unsafe { &mut (*value.cast::<Ty>()).components }.push((super::Scalar::U32, offset));
+}

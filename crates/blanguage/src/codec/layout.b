@@ -285,3 +285,57 @@ extern "C" void write_interface(address out, address owner, LayoutSink sink, Lay
     }
     put(sink, out, "]}");
 }
+
+extern "C" void fill_value_slots(address value, u32 complete, SlotHost host) on cpu
+    requires nonzero(host.shape) requires nonzero(host.child) requires nonzero(host.prepare)
+    requires nonzero(host.copy) requires nonzero(host.payload_word) {
+    SlotType ty = host.shape(value);
+    if (complete != 0) {
+        usize i = 0u64;
+        while (i < ty.arguments) {
+            fill_value_slots(host.child(value, SlotChildKind::Argument, i).value, complete, host);
+            i += 1u64;
+        }
+        i = 0u64;
+        while (i < ty.fields) {
+            fill_value_slots(host.child(value, SlotChildKind::Field, i).value, complete, host);
+            i += 1u64;
+        }
+        i = 0u64;
+        while (i < ty.variants) {
+            fill_value_slots(host.child(value, SlotChildKind::Variant, i).value, complete, host);
+            i += 1u64;
+        }
+    }
+
+    if (ty.array != 0) {
+        address item = host.child(value, SlotChildKind::Element, 0u64).value;
+        if (complete != 0) { fill_value_slots(item, complete, host); }
+        SlotType element = host.shape(item);
+        host.prepare(value, 0u64, usize(ty.count) * element.components);
+        if (element.components != 0u64) {
+            u32 mask = element.alignment - 1;
+            u32 stride = (element.size + mask) & ~mask;
+            u32 i = 0;
+            while (i < ty.count) {
+                host.copy(value, item, i * stride);
+                i += 1;
+            }
+        }
+    } else if (ty.variants != 0u64) {
+        host.prepare(value, 1u64, 0u64);
+        usize offset = usize(ty.alignment);
+        while (offset < usize(ty.size)) {
+            host.payload_word(value, u32(offset));
+            offset += 4u64;
+        }
+    } else if (ty.fields != 0u64) {
+        host.prepare(value, 0u64, 0u64);
+        usize i = 0u64;
+        while (i < ty.fields) {
+            SlotChild field = host.child(value, SlotChildKind::Field, i);
+            host.copy(value, field.value, field.offset);
+            i += 1u64;
+        }
+    }
+}

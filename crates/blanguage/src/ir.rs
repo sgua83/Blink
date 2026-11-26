@@ -473,41 +473,12 @@ impl Ty {
     /// has its own slots, and its referenced storage stays in layout form.
     #[doc(hidden)]
     pub fn complete_value_layout(&mut self) {
-        for argument in &mut self.arguments {
-            argument.complete_value_layout();
-        }
-        for (_, _, field) in &mut self.fields {
-            field.complete_value_layout();
-        }
-        for variant in &mut self.variants {
-            variant.ty.complete_value_layout();
-        }
-        if let Some(element) = &mut self.array {
-            element.complete_value_layout();
-        }
-        self.fill_components();
+        layout::fill_value_slots(self, true);
     }
 
+    #[cfg(feature = "compiler")]
     pub(crate) fn fill_components(&mut self) {
-        if let Some(element) = &self.array {
-            let stride = align_up(element.size, element.align);
-            self.components.clear();
-            if !element.components.is_empty() {
-                self.components.reserve(self.values[0] as usize * element.components.len());
-                for index in 0..self.values[0] {
-                    let base = index * stride;
-                    self.components.extend(element.components.iter().map(|&(scalar, offset)| (scalar, base + offset)));
-                }
-            }
-        } else if self.has_variants() {
-            self.components.truncate(1);
-            self.components.extend((self.align..self.size).step_by(4).map(|offset| (Scalar::U32, offset)));
-        } else if !self.fields.is_empty() {
-            self.components.clear();
-            for (_, base, field) in &self.fields {
-                self.components.extend(field.components.iter().map(|&(scalar, offset)| (scalar, base + offset)));
-            }
-        }
+        layout::fill_value_slots(self, false);
     }
 
     /// Compare the referenced storage with actual storage, whose derived
