@@ -455,7 +455,7 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | DatasetBorrowStrideCast | dataset_borrow_stride_cast | application_reference_value的实际步长拓宽，以及application_stride_parts将view实际步长拆成低／高U32的表示转换 |
 | ArrayParameterStore | array_parameter_store | 原值形参数组／含数组聚合物化到局部存储的StoreLocal |
 | IntegerDivisionPair | integer_division_pair | 原同一直线块整数商／余数实际配对合并 |
-| ExpressionReuse | expression_reuse | 原ExpressionKey命中后实际复用已有结果 |
+| ExpressionReuse | expression_reuse | 在当前可见范围内按规范化的表达式键命中并复用已有结果 |
 | LocalReadForward | local_read_forward | 原LoadLocal实际被已知局部值替代 |
 | IndexedStoreReadForward | indexed_store_read_forward | 原索引Load实际被先前Store写入的值替代，材料交给原保留Inst |
 | IndexedReadReuse | indexed_read_reuse | 后续索引Load实际复用先前Load结果，材料交给原保留Load |

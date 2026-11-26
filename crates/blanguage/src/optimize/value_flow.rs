@@ -106,18 +106,20 @@ pub(super) fn run(code: &mut Vec<Inst>, registers: &[Scalar]) {
 #[derive(Default)]
 pub(super) struct ReductionFlow {
     entry: host::Values,
+    expressions: host::Expressions,
     aliases: host::Values,
     reuses: Reuses,
     forwarded: Vec<ReductionInputReadForward>,
 }
 impl ReductionFlow {
     pub(super) fn entry(&mut self, code: &mut Vec<Inst>, registers: &[Scalar]) {
-        host::run(code, &mut self.entry, registers, &mut self.reuses);
+        host::run(code, &mut self.entry, &mut self.expressions, registers, &mut self.reuses, true);
     }
     pub(super) fn seed(&mut self) { self.aliases = host::aliases_only(&self.entry); }
     pub(super) fn body(&mut self, code: &mut Vec<Inst>, registers: &[Scalar], take: bool) {
         let mut values = if take { std::mem::take(&mut self.entry) } else { self.entry.clone() };
-        host::run(code, &mut values, registers, &mut self.reuses);
+        host::run(code, &mut values, &mut self.expressions, registers, &mut self.reuses, take);
+        if take { self.expressions = host::Expressions::default(); }
         host::extend_aliases(&mut self.aliases, values);
     }
     pub(super) fn retain(&mut self, code: &mut [Inst]) { retain_reuses(code, &mut self.reuses); }
@@ -148,7 +150,8 @@ fn input_reads(reg: Reg, reuses: &mut Reuses) -> Vec<OperationOrigin> {
 fn run_code(code: &mut Vec<Inst>, registers: &[Scalar], outputs: &mut [Reg]) -> Reuses {
     let mut values = host::Values::default();
     let mut reuses = Reuses::new();
-    host::run(code, &mut values, registers, &mut reuses);
+    let mut expressions = host::Expressions::default();
+    host::run(code, &mut values, &mut expressions, registers, &mut reuses, true);
     retain_reuses(code, &mut reuses);
     for r in outputs {
         *r = host::root(&values, *r);

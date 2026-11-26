@@ -452,7 +452,8 @@ VfRows vf_empty_rows() on cpu {
 }
 
 address vf_rows_at(address values,VfRegMap map) on cpu {
-    return map==VfRegMap::Aliases ? values : unsafe_address(address_bits(values)+size_of<VfRows>());
+    if(map==VfRegMap::Aliases){return address_of(unsafe_position<VfRegisters>(values).aliases);}
+    return address_of(unsafe_position<VfRegisters>(values).locals);
 }
 
 address vf_row(VfRows rows,u64 index) on cpu {
@@ -627,8 +628,14 @@ VfPath vf_snapshot(address values,cfn<address,address,u64,u64> resize) on cpu
 
 struct VfMemoryEntry { u64 binding; u64 index; u32 word; u32 has_origin; u64 value; };
 
+struct VfValues { VfRegisters registers; VfRows memory; };
+
+address vf_registers(address values) on cpu {
+    return address_of(unsafe_position<VfValues>(values).registers);
+}
+
 address vf_memory_rows(address values) on cpu {
-    return unsafe_address(address_bits(values)+size_of<VfRegisters>());
+    return address_of(unsafe_position<VfValues>(values).memory);
 }
 
 address vf_memory_row(VfRows rows,u64 index,u64 stride) on cpu {
@@ -743,7 +750,7 @@ void vf_memory_forget(address values,u64 binding,bool store,u64 index,u32 word,V
 
 void vf_forget_alias(View alias,address values,bool memory,VfHost host) on cpu
     requires nonzero(host.memory.move_rows) requires nonzero(host.memory.drop_origin) {
-    if(alias.tag==ALIAS_LOCAL){vf_remove_range(values,alias.a,alias.a+alias.b);}
+    if(alias.tag==ALIAS_LOCAL){vf_remove_range(vf_registers(values),alias.a,alias.a+alias.b);}
     else if(memory){vf_memory_forget(values,alias.a,false,0u64,0,host.memory);}
 }
 void vf_forget_indexed(View indexed,address values,bool memory,VfHost host) on cpu
@@ -776,7 +783,7 @@ void vf_forget_call(Node source,address values,VfHost host) on cpu
                 if(indexed.tag==INDEXED_POINTER){vf_forget_indexed(indexed,values,true,host);}
                 else{vf_clear_memory(vf_memory_rows(values),host.memory);}
             }else{
-                vf_remove_range(values,storage.a,storage.a+storage.b);
+                vf_remove_range(vf_registers(values),storage.a,storage.a+storage.b);
             }
         }
         index+=1u64;
@@ -802,7 +809,7 @@ void vf_merge(inout VfPath left,VfPath right,cfn<address,address,u64,u64> resize
 bool vf_resume(address values,inout VfFlow flow,VfFlow step,VfHost host) on cpu
     requires nonzero(host.resize_rows) requires nonzero(host.memory.drop_origin) {
     vf_merge(flow.exits,step.exits,host.resize_rows);
-    address local=vf_rows_at(values,VfRegMap::Locals);
+    address local=vf_rows_at(vf_registers(values),VfRegMap::Locals);
     bool continuing=step.next.reached!=0;
     vf_release(unsafe_position<VfRows>(local),host.resize_rows);
     unsafe_position<VfRows>(local)=step.next.rows;
@@ -810,50 +817,238 @@ bool vf_resume(address values,inout VfFlow flow,VfFlow step,VfHost host) on cpu
     return continuing;
 }
 
-address vf_child(address values,VfHost host) on cpu
-    requires nonzero(host.resize_rows) requires nonzero(host.state) {
-    address none=unsafe_address(0u64);
-    address child=host.state(VfStateOp::New,none,none);
-    vf_move_rows(child,values,VfRegMap::Aliases,host.resize_rows);
-    host.state(VfStateOp::CopyExpressions,child,values);
-    vf_move_rows(child,values,VfRegMap::Locals,host.resize_rows);
-    address memory=vf_memory_rows(values);
-    unsafe_position<VfRows>(vf_memory_rows(child))=unsafe_position<VfRows>(memory);
-    unsafe_position<VfRows>(memory)=vf_empty_rows();
+VfValues vf_empty_values() on cpu {
+    return VfValues(VfRegisters(vf_empty_rows(),vf_empty_rows()),vf_empty_rows());
+}
+
+VfValues vf_fork_values(address values,VfHost host) on cpu
+    requires nonzero(host.resize_rows) requires nonzero(host.memory.resize) requires nonzero(host.memory.copy_origin) {
+    VfValues child=vf_empty_values();
+    address output=address_of(child);
+    value_copy_registers(vf_registers(output),vf_registers(values),1,host.resize_rows);
+    value_copy_memory(vf_memory_rows(output),vf_memory_rows(values),host.memory);
     return child;
+}
+
+VfValues vf_take_values(address values) on cpu {
+    VfValues child=unsafe_position<VfValues>(values);
+    unsafe_position<VfValues>(values)=vf_empty_values();
+    return child;
+}
+
+void vf_release_values(address values,VfHost host) on cpu
+    requires nonzero(host.resize_rows) requires nonzero(host.memory.resize) requires nonzero(host.memory.drop_origin) {
+    value_release_registers(vf_registers(values),host.resize_rows);
+    value_release_memory(vf_memory_rows(values),host.memory);
+}
+
+struct VfExpressionEntry {
+    VfExpression key;
+    u64 arguments;
+    u64 hash;
+    u64 next;
+    u64 result;
+};
+struct VfExpressionMark { u64 entries; u64 arguments; };
+
+address vf_word(u64 base,u64 index) on cpu {
+    return unsafe_address(base+index*size_of<u64>());
+}
+
+address vf_expression_entry(VfRows entries,u64 index) on cpu {
+    return unsafe_address(entries.data+index*size_of<VfExpressionEntry>());
+}
+
+u64 vf_hash_word(u64 hash,u64 word) on cpu {
+    u64 mixed=(hash ^ word)*1099511628211u64;
+    return mixed ^ (mixed >> 32u64);
+}
+
+u64 vf_expression_hash(VfExpression key,u64 arguments) on cpu {
+    u64 hash=vf_hash_word(14695981039346656037u64,(u64(key.kind)<<32u64)|u64(key.operation));
+    hash=vf_hash_word(hash,key.first);
+    hash=vf_hash_word(hash,key.second);
+    hash=vf_hash_word(hash,key.third);
+    hash=vf_hash_word(hash,key.count);
+    u64 index=0u64;
+    while(index<key.count){
+        hash=vf_hash_word(hash,unsafe_position<u64>(vf_word(arguments,index)));
+        index+=1u64;
+    }
+    return hash;
+}
+
+bool vf_same_expression(VfExpression left,VfExpression right,u64 stored,u64 input) on cpu {
+    if(left.kind!=right.kind || left.operation!=right.operation || left.first!=right.first ||
+        left.second!=right.second || left.third!=right.third || left.count!=right.count){return false;}
+    u64 index=0u64;
+    while(index<left.count){
+        if(unsafe_position<u64>(vf_word(stored,index))!=unsafe_position<u64>(vf_word(input,index))){return false;}
+        index+=1u64;
+    }
+    return true;
+}
+
+address vf_expression_bucket(VfRows buckets,u64 hash) on cpu {
+    return vf_word(buckets.data,hash & (buckets.count-1u64));
+}
+
+void vf_grow_expressions(inout VfExpressions table,cfn<address,address,u64,u64> resize) on cpu
+    requires nonzero(resize) {
+    u64 count=table.buckets.count==0u64 ? 8u64 : table.buckets.count*2u64;
+    vf_reserve(table.buckets,count,resize);
+    table.buckets.count=count;
+    u64 index=0u64;
+    while(index<count){unsafe_position<u64>(vf_word(table.buckets.data,index))=0u64;index+=1u64;}
+    index=0u64;
+    // Insertion order keeps each bucket newest-first for lexical rollback.
+    while(index<table.entries.count){
+        address entry=vf_expression_entry(table.entries,index);
+        address bucket=vf_expression_bucket(table.buckets,unsafe_position<VfExpressionEntry>(entry).hash);
+        unsafe_position<VfExpressionEntry>(entry).next=unsafe_position<u64>(bucket);
+        unsafe_position<u64>(bucket)=index+1u64;
+        index+=1u64;
+    }
+}
+
+VfOptional vf_expression(address state,VfExpression key,u64 arguments,u64 result,
+    cfn<address,address,u64,u64> resize) on cpu requires nonzero(resize) {
+    VfExpressions table=unsafe_position<VfExpressions>(state);
+    u64 hash=vf_expression_hash(key,arguments);
+    if(table.buckets.count!=0u64){
+        u64 next=unsafe_position<u64>(vf_expression_bucket(table.buckets,hash));
+        while(next!=0u64){
+            VfExpressionEntry entry=unsafe_position<VfExpressionEntry>(vf_expression_entry(table.entries,next-1u64));
+            if(entry.hash==hash && vf_same_expression(entry.key,key,address_bits(vf_word(table.arguments.data,entry.arguments)),arguments)){
+                return VfOptional(entry.result,1);
+            }
+            next=entry.next;
+        }
+    }
+    if(table.entries.count==table.buckets.count){vf_grow_expressions(table,resize);}
+    u64 start=table.arguments.count;
+    vf_reserve(table.arguments,start+key.count,resize);
+    u64 index=0u64;
+    while(index<key.count){
+        unsafe_position<u64>(vf_word(table.arguments.data,start+index))=unsafe_position<u64>(vf_word(arguments,index));
+        index+=1u64;
+    }
+    table.arguments.count=start+key.count;
+    vf_reserve(table.entries,(table.entries.count+1u64)*(size_of<VfExpressionEntry>()/size_of<u64>()),resize);
+    address bucket=vf_expression_bucket(table.buckets,hash);
+    unsafe_position<VfExpressionEntry>(vf_expression_entry(table.entries,table.entries.count))=
+        VfExpressionEntry(key,start,hash,unsafe_position<u64>(bucket),result);
+    table.entries.count+=1u64;
+    unsafe_position<u64>(bucket)=table.entries.count;
+    unsafe_position<VfExpressions>(state)=table;
+    return VfOptional(0u64,0);
+}
+
+VfExpressionMark vf_mark_expressions(address state) on cpu {
+    VfExpressions table=unsafe_position<VfExpressions>(state);
+    return VfExpressionMark(table.entries.count,table.arguments.count);
+}
+
+void vf_rewind_expressions(address state,VfExpressionMark mark) on cpu {
+    VfExpressions table=unsafe_position<VfExpressions>(state);
+    while(table.entries.count>mark.entries){
+        table.entries.count-=1u64;
+        VfExpressionEntry entry=unsafe_position<VfExpressionEntry>(vf_expression_entry(table.entries,table.entries.count));
+        unsafe_position<u64>(vf_expression_bucket(table.buckets,entry.hash))=entry.next;
+    }
+    table.arguments.count=mark.arguments;
+    unsafe_position<VfExpressions>(state)=table;
+}
+
+extern "C" void value_release_expressions(address state,cfn<address,address,u64,u64> resize) on cpu
+    requires nonzero(resize) {
+    VfExpressions table=unsafe_position<VfExpressions>(state);
+    vf_release(table.entries,resize);
+    vf_release(table.arguments,resize);
+    vf_release(table.buckets,resize);
+}
+
+struct VfDivisionEntry { u64 source; u64 kind; u64 divisor; VfDivision value; };
+
+address vf_division_entry(VfRows table,u64 index) on cpu {
+    return unsafe_address(table.data+index*size_of<VfDivisionEntry>());
+}
+
+u64 vf_division_lower(VfRows table,u64 source,u64 kind,u64 divisor) on cpu {
+    u64 start=0u64;
+    u64 end=table.count;
+    while(start<end){
+        u64 middle=start+(end-start)/2u64;
+        VfDivisionEntry entry=unsafe_position<VfDivisionEntry>(vf_division_entry(table,middle));
+        bool before=entry.source<source || (entry.source==source &&
+            (entry.kind<kind || (entry.kind==kind && entry.divisor<divisor)));
+        if(before){start=middle+1u64;}
+        else{end=middle;}
+    }
+    return start;
+}
+
+VfDivision vf_take_division(inout VfRows table,u64 at,u64 source,u64 kind,u64 divisor) on cpu {
+    if(at<table.count){
+        VfDivisionEntry entry=unsafe_position<VfDivisionEntry>(vf_division_entry(table,at));
+        if(entry.source==source && entry.kind==kind && entry.divisor==divisor){
+            table.count-=1u64;
+            u64 index=at;
+            while(index<table.count){
+                unsafe_position<VfDivisionEntry>(vf_division_entry(table,index))=
+                    unsafe_position<VfDivisionEntry>(vf_division_entry(table,index+1u64));
+                index+=1u64;
+            }
+            return entry.value;
+        }
+    }
+    return VfDivision(0u64,0u64,0u64,0);
+}
+
+void vf_insert_division(inout VfRows table,u64 at,VfDivisionEntry entry,
+    cfn<address,address,u64,u64> resize) on cpu requires nonzero(resize) {
+    vf_reserve(table,(table.count+1u64)*(size_of<VfDivisionEntry>()/size_of<u64>()),resize);
+    u64 index=table.count;
+    while(index>at){
+        unsafe_position<VfDivisionEntry>(vf_division_entry(table,index))=
+            unsafe_position<VfDivisionEntry>(vf_division_entry(table,index-1u64));
+        index-=1u64;
+    }
+    unsafe_position<VfDivisionEntry>(vf_division_entry(table,at))=entry;
+    table.count+=1u64;
 }
 
 VfExpression value_expression(View node,Span registers,RegisterHost host) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
-    address none=unsafe_address(0u64);
     u32 kind=node.tag;
-    if(kind==OP_CONSTANT){return VfExpression(1,u32(node.c),node.b,0u64,0u64,none,0u64);}
-    if(kind==OP_INDEX_VALUE){return VfExpression(2,0,0u64,0u64,0u64,none,0u64);}
-    if(kind==OP_UNIFORM){return VfExpression(3,0,node.b,0u64,0u64,none,0u64);}
-    if(kind==OP_BUFFER_STRIDE){return VfExpression(4,0,node.b,0u64,0u64,none,0u64);}
-    if(kind==OP_UNARY){return VfExpression(5,u32(node.c),node.b,u64(host.scalar(registers,node.a).kind),0u64,none,0u64);}
-    if(kind==OP_BINARY){return VfExpression(6,host.ir.inspect(node.right).tag,node.b,node.c,0u64,none,0u64);}
-    if(kind==OP_CAST){return VfExpression(7,host.scalar(registers,node.a).kind,node.b,0u64,0u64,none,0u64);}
-    if(kind==OP_MATH){return VfExpression(8,u32(node.b),0u64,0u64,0u64,node.first.data,node.first.count);}
-    if(kind==OP_SELECT_VALUE){return VfExpression(9,0,node.b,node.c,node.d,none,0u64);}
-    return VfExpression(0,0,0u64,0u64,0u64,none,0u64);
+    if(kind==OP_CONSTANT){return VfExpression(1,u32(node.c),node.b,0u64,0u64,0u64);}
+    if(kind==OP_INDEX_VALUE){return VfExpression(2,0,0u64,0u64,0u64,0u64);}
+    if(kind==OP_UNIFORM){return VfExpression(3,0,node.b,0u64,0u64,0u64);}
+    if(kind==OP_BUFFER_STRIDE){return VfExpression(4,0,node.b,0u64,0u64,0u64);}
+    if(kind==OP_UNARY){return VfExpression(5,u32(node.c),node.b,u64(host.scalar(registers,node.a).kind),0u64,0u64);}
+    if(kind==OP_BINARY){return VfExpression(6,host.ir.inspect(node.right).tag,node.b,node.c,0u64,0u64);}
+    if(kind==OP_CAST){return VfExpression(7,host.scalar(registers,node.a).kind,node.b,0u64,0u64,0u64);}
+    if(kind==OP_MATH){return VfExpression(8,u32(node.b),0u64,0u64,0u64,node.first.count);}
+    if(kind==OP_SELECT_VALUE){return VfExpression(9,0,node.b,node.c,node.d,0u64);}
+    return VfExpression(0,0,0u64,0u64,0u64,0u64);
 }
-VfAction value_instruction(address instruction,address retained_at,address values,inout VfFlow flow,address context,Span registers,VfHost host) on cpu
+VfAction value_instruction(address instruction,address retained_at,address values,address expressions,
+    inout VfRows divisions,inout VfFlow flow,address context,Span registers,VfHost host) on cpu
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.scalar) requires nonzero(host.storage)
-    requires nonzero(host.remap) requires nonzero(host.block) requires nonzero(host.state)
-    requires nonzero(host.resize_rows) requires nonzero(host.expression)
-    requires nonzero(host.division) requires nonzero(host.rewrite_division) requires nonzero(host.pair)
+    requires nonzero(host.remap) requires nonzero(host.resize_rows) requires nonzero(host.scratch)
+    requires nonzero(host.rewrite_division) requires nonzero(host.pair)
     requires nonzero(host.note) requires nonzero(host.memory.resize) requires nonzero(host.memory.move_rows)
-    requires nonzero(host.memory.capture_origin) requires nonzero(host.memory.drop_origin)
+    requires nonzero(host.memory.capture_origin) requires nonzero(host.memory.drop_origin) requires nonzero(host.memory.copy_origin)
+    requires nonzero(host.instruction_span) requires nonzero(host.swap_instructions) requires nonzero(host.truncate)
     {
-    host.remap(instruction,values);
+    address register_state=vf_registers(values);
+    host.remap(instruction,register_state);
     View node=host.values.ir.inspect(Node(instruction,N_INSTRUCTION));
     u32 kind=node.tag;
     address none=unsafe_address(0u64);
-    VfDivision empty=VfDivision(none,0u64,0u64,0,0);
     if(kind==OP_BRANCH || kind==OP_LOOP_VALUE || kind==OP_SCOPE || kind==OP_EXIT_VALUE || kind==OP_RAISE ||
         kind==OP_TILE_PUBLISH || kind==OP_TILE_COLLECTIVE || kind==OP_TILE_BARRIER || kind==OP_BREAK_VALUE || kind==OP_CONTINUE_VALUE){
-        host.division(context,VfDivisionOp::Clear,0u64,0u64,0u64,empty);
+        divisions.count=0u64;
     }
     if(kind==OP_INTEGER_DIVIDE){
         View result=host.values.ir.inspect(node.right);
@@ -865,18 +1060,18 @@ VfAction value_instruction(address instruction,address retained_at,address value
         u32 retained=0;
         u32 paired=mask==3 ? 1 : 0;
         if((mask&1)!=0){
-            VfExpression key=VfExpression(10,0,node.a,divisor_kind,divisor.a,none,0u64);
-            VfOptional old=host.expression(values,key,quotient_result);
+            VfExpression key=VfExpression(10,0,node.a,divisor_kind,divisor.a,0u64);
+            VfOptional old=vf_expression(expressions,key,0u64,quotient_result,host.scratch);
             if(old.present!=0){
-                vf_put(values,VfRegMap::Aliases,quotient_result,old.value,host.resize_rows);
+                vf_put(register_state,VfRegMap::Aliases,quotient_result,old.value,host.resize_rows);
                 host.note(context,old.value,instruction,VfReuse(none,VfReuseKind::Expression,VfRole::Quotient,paired));
             } else {retained|=1;}
         }
         if((mask&2)!=0){
-            VfExpression key=VfExpression(10,1,node.a,divisor_kind,divisor.a,none,0u64);
-            VfOptional old=host.expression(values,key,remainder_result);
+            VfExpression key=VfExpression(10,1,node.a,divisor_kind,divisor.a,0u64);
+            VfOptional old=vf_expression(expressions,key,0u64,remainder_result,host.scratch);
             if(old.present!=0){
-                vf_put(values,VfRegMap::Aliases,remainder_result,old.value,host.resize_rows);
+                vf_put(register_state,VfRegMap::Aliases,remainder_result,old.value,host.resize_rows);
                 host.note(context,old.value,instruction,VfReuse(none,VfReuseKind::Expression,VfRole::Remainder,paired));
             } else {retained|=2;}
         }
@@ -887,40 +1082,43 @@ VfAction value_instruction(address instruction,address retained_at,address value
         else {choice=VfDivisionChoice::Both;}
         InstructionStorage storage=host.storage(instruction);
         host.rewrite_division(storage.payload,choice,quotient_result,remainder_result);
-        VfDivision previous=host.division(context,VfDivisionOp::Take,node.a,divisor_kind,divisor.a,empty);
-        if(previous.present!=0 && ((previous.mask==1 && retained==2)||(previous.mask==2 && retained==1))){
+        u64 division=vf_division_lower(divisions,node.a,divisor_kind,divisor.a);
+        VfDivision previous=vf_take_division(divisions,division,node.a,divisor_kind,divisor.a);
+        if((previous.mask==1 && retained==2)||(previous.mask==2 && retained==1)){
             u64 quotient=retained==1 ? quotient_result : previous.quotient;
             u64 remainder=retained==2 ? remainder_result : previous.remainder;
-            address quotient_from=retained==1 ? instruction : previous.instruction;
-            address remainder_from=retained==2 ? instruction : previous.instruction;
-            host.pair(previous.instruction,quotient_from,remainder_from,storage.input,node.a,quotient,remainder);
+            address earlier=unsafe_address(previous.instruction);
+            address quotient_from=retained==1 ? instruction : earlier;
+            address remainder_from=retained==2 ? instruction : earlier;
+            host.pair(earlier,quotient_from,remainder_from,storage.input,node.a,quotient,remainder);
             return VfAction::Discard;
         }
         if(retained!=3){
-            VfDivision next=VfDivision(retained_at,quotient_result,remainder_result,retained,1);
-            host.division(context,VfDivisionOp::Put,node.a,divisor_kind,divisor.a,next);
+            VfDivision next=VfDivision(address_bits(retained_at),quotient_result,remainder_result,retained);
+            vf_insert_division(divisions,division,VfDivisionEntry(node.a,divisor_kind,divisor.a,next),host.scratch);
         }
     }
     VfExpression expression=value_expression(node,registers,host.values);
     if(expression.kind!=0){
-        VfOptional old=host.expression(values,expression,node.a);
+        VfOptional old=vf_expression(expressions,expression,address_bits(node.first.data),node.a,host.scratch);
         if(old.present!=0){
-            vf_put(values,VfRegMap::Aliases,node.a,old.value,host.resize_rows);
+            vf_put(register_state,VfRegMap::Aliases,node.a,old.value,host.resize_rows);
             host.note(context,old.value,instruction,VfReuse(none,VfReuseKind::Expression,VfRole::Value,0));
             return VfAction::Discard;
         }
     }
     bool continuing=true;
     if(kind==OP_SCOPE){
-        address scoped=vf_child(values,host);
-        VfFlow scope=host.block(host.storage(instruction).first_code,scoped,context);
-        vf_move_rows(values,scoped,VfRegMap::Aliases,host.resize_rows);
+        VfValues child=vf_take_values(values);
+        address scoped=address_of(child);
+        VfFlow scope=value_block(host.storage(instruction).first_code,scoped,expressions,context,registers,host,false);
+        vf_move_rows(register_state,vf_registers(scoped),VfRegMap::Aliases,host.resize_rows);
         vf_merge(scope.next,scope.exits,host.resize_rows);
         scope.exits=vf_no_path();
         continuing=vf_resume(values,flow,scope,host);
-        host.state(VfStateOp::Drop,scoped,none);
+        vf_release_values(scoped,host);
     } else if(kind==OP_RAISE){continuing=false;}
-    else if(kind==OP_EXIT_VALUE){vf_merge(flow.exits,vf_snapshot(values,host.resize_rows),host.resize_rows);continuing=false;}
+    else if(kind==OP_EXIT_VALUE){vf_merge(flow.exits,vf_snapshot(register_state,host.resize_rows),host.resize_rows);continuing=false;}
     else if(kind==OP_BREAK_VALUE || kind==OP_CONTINUE_VALUE){continuing=false;}
     else if(kind==OP_ATOMIC){
         if(host.values.ir.inspect(node.right).tag!=0){
@@ -929,20 +1127,20 @@ VfAction value_instruction(address instruction,address retained_at,address value
         vf_clear_memory(vf_memory_rows(values),host.memory);
     } else if(kind==OP_APPEND || kind==OP_TILE_BARRIER){vf_clear_memory(vf_memory_rows(values),host.memory);}
     else if(kind==OP_LOAD_LOCAL){
-        VfOptional old=vf_get(values,VfRegMap::Locals,node.b);
+        VfOptional old=vf_get(register_state,VfRegMap::Locals,node.b);
         if(old.present!=0){
-            u64 value=value_root(values,old.value);
-            vf_put(values,VfRegMap::Aliases,node.a,value,host.resize_rows);
+            u64 value=value_root(register_state,old.value);
+            vf_put(register_state,VfRegMap::Aliases,node.a,value,host.resize_rows);
             host.note(context,value,instruction,VfReuse(none,VfReuseKind::LocalRead,VfRole::Value,0));
         }
-        vf_put(values,VfRegMap::Locals,node.b,node.a,host.resize_rows);
-    } else if(kind==OP_STORE_LOCAL){vf_put(values,VfRegMap::Locals,node.a,node.b,host.resize_rows);}
-    else if(kind==OP_STORE_LOCAL_INDEXED){vf_remove_range(values,node.a,node.a+node.b);}
+        vf_put(register_state,VfRegMap::Locals,node.b,node.a,host.resize_rows);
+    } else if(kind==OP_STORE_LOCAL){vf_put(register_state,VfRegMap::Locals,node.a,node.b,host.resize_rows);}
+    else if(kind==OP_STORE_LOCAL_INDEXED){vf_remove_range(register_state,node.a,node.a+node.b);}
     else if(kind==OP_STORE_INDEXED){vf_forget_indexed(host.values.ir.inspect(node.left),values,true,host);}
     else if(kind==OP_LOAD){
         VfMemory old=vf_memory_get(values,node.b,node.c,u32(node.d),host.memory);
         if(old.present!=0){
-            vf_put(values,VfRegMap::Aliases,node.a,old.value,host.resize_rows);
+            vf_put(register_state,VfRegMap::Aliases,node.a,old.value,host.resize_rows);
             VfReuseKind reuse;
             if(old.origin!=0u64){reuse=VfReuseKind::IndexedStoreRead;}
             else {reuse=VfReuseKind::IndexedRead;}
@@ -954,51 +1152,58 @@ VfAction value_instruction(address instruction,address retained_at,address value
         vf_memory_forget(values,node.a,true,node.b,u32(node.c),host.memory);
         vf_memory_insert(values,node.a,node.b,u32(node.c),node.d,instruction,host.memory);
     } else if(kind==OP_BRANCH){
-        address yes=host.state(VfStateOp::Clone,none,values);
-        address no=vf_child(values,host);
+        VfValues then_values=vf_fork_values(values,host);
+        VfValues else_values=vf_take_values(values);
+        address yes=address_of(then_values);
+        address no=address_of(else_values);
         InstructionStorage storage=host.storage(instruction);
-        VfFlow branches=host.block(storage.first_code,yes,context);
-        VfFlow other=host.block(storage.second_code,no,context);
+        VfFlow branches=value_block(storage.first_code,yes,expressions,context,registers,host,false);
+        VfFlow other=value_block(storage.second_code,no,expressions,context,registers,host,false);
         vf_merge(branches.next,other.next,host.resize_rows);
         vf_merge(branches.exits,other.exits,host.resize_rows);
-        vf_move_rows(values,yes,VfRegMap::Aliases,host.resize_rows);
-        value_merge_aliases(values,no,host.resize_rows);
+        vf_move_rows(register_state,vf_registers(yes),VfRegMap::Aliases,host.resize_rows);
+        value_merge_aliases(register_state,vf_registers(no),host.resize_rows);
         continuing=vf_resume(values,flow,branches,host);
-        host.state(VfStateOp::Drop,yes,none);
-        host.state(VfStateOp::Drop,no,none);
+        vf_release_values(yes,host);
+        vf_release_values(no,host);
     } else if(kind==OP_LOOP_VALUE){
-        visit_local_writes(node.first,host.values.ir,values,c_function(vf_remove_local));
-        visit_local_writes(node.second,host.values.ir,values,c_function(vf_remove_local));
+        visit_local_writes(node.first,host.values.ir,register_state,c_function(vf_remove_local));
+        visit_local_writes(node.second,host.values.ir,register_state,c_function(vf_remove_local));
         InstructionStorage storage=host.storage(instruction);
-        VfPath after=vf_snapshot(values,host.resize_rows);
+        VfPath after=vf_snapshot(register_state,host.resize_rows);
         vf_clear_memory(vf_memory_rows(values),host.memory);
-        address cycle=vf_child(values,host);
-        VfFlow condition=host.block(storage.first_code,cycle,context);
-        unsafe_position<u64>(storage.payload)=value_root(cycle,node.a);
+        VfValues cycle_values=vf_take_values(values);
+        address cycle=address_of(cycle_values);
+        VfExpressionMark mark=vf_mark_expressions(expressions);
+        VfFlow condition=value_block(storage.first_code,cycle,expressions,context,registers,host,true);
+        unsafe_position<u64>(storage.payload)=value_root(vf_registers(cycle),node.a);
         VfFlow loop_flow=VfFlow(vf_no_path(),condition.exits);
         if(condition.next.reached!=0){
             vf_release(condition.next.rows,host.resize_rows);
             loop_flow.next=after;
-            VfFlow body=host.block(storage.second_code,cycle,context);
+            VfFlow body=value_block(storage.second_code,cycle,expressions,context,registers,host,true);
             vf_release(body.next.rows,host.resize_rows);
             vf_merge(loop_flow.exits,body.exits,host.resize_rows);
         } else {vf_release(after.rows,host.resize_rows);}
-        vf_move_rows(values,cycle,VfRegMap::Aliases,host.resize_rows);
+        vf_rewind_expressions(expressions,mark);
+        vf_move_rows(register_state,vf_registers(cycle),VfRegMap::Aliases,host.resize_rows);
         continuing=vf_resume(values,flow,loop_flow,host);
-        host.state(VfStateOp::Drop,cycle,none);
+        vf_release_values(cycle,host);
     } else if(kind==OP_INVOKE){vf_forget_call(node.left,values,host);}
     return continuing ? VfAction::Keep : VfAction::Stop;
 }
-extern "C" VfFlow value_block(address block,address values,address context,Span registers,VfHost host) on cpu
+extern "C" VfFlow value_block(address block,address values,address expressions,address context,
+    Span registers,VfHost host,bool keep_expressions) on cpu
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.scalar) requires nonzero(host.storage)
-    requires nonzero(host.remap) requires nonzero(host.block) requires nonzero(host.state)
-    requires nonzero(host.resize_rows) requires nonzero(host.expression)
-    requires nonzero(host.division) requires nonzero(host.rewrite_division) requires nonzero(host.pair)
+    requires nonzero(host.remap) requires nonzero(host.resize_rows) requires nonzero(host.scratch)
+    requires nonzero(host.rewrite_division) requires nonzero(host.pair)
     requires nonzero(host.note) requires nonzero(host.memory.resize) requires nonzero(host.memory.move_rows)
-    requires nonzero(host.memory.capture_origin) requires nonzero(host.memory.drop_origin)
+    requires nonzero(host.memory.capture_origin) requires nonzero(host.memory.drop_origin) requires nonzero(host.memory.copy_origin)
     requires nonzero(host.instruction_span) requires nonzero(host.swap_instructions) requires nonzero(host.truncate) {
     Span code=host.instruction_span(block);
     VfFlow flow=VfFlow(vf_no_path(),vf_no_path());
+    VfRows divisions=vf_empty_rows();
+    VfExpressionMark mark=vf_mark_expressions(expressions);
     u64 kept=0u64;
     u64 index=0u64;
     bool continuing=true;
@@ -1006,7 +1211,7 @@ extern "C" VfFlow value_block(address block,address values,address context,Span 
     while(index<code.count){
         address instruction=span_item_at(code,index);
         address retained_at=span_item_at(code,kept);
-        VfAction action=value_instruction(instruction,retained_at,values,flow,context,registers,host);
+        VfAction action=value_instruction(instruction,retained_at,values,expressions,divisions,flow,context,registers,host);
         if(action!=VfAction::Discard){
             if(kept!=index){host.swap_instructions(instruction,retained_at);}
             kept+=1u64;
@@ -1014,8 +1219,10 @@ extern "C" VfFlow value_block(address block,address values,address context,Span 
         }
         index+=1u64;
     }
+    vf_release(divisions,host.scratch);
+    if(!keep_expressions){vf_rewind_expressions(expressions,mark);}
     if(kept!=code.count){host.truncate(block,kept);}
-    if(continuing){flow.next=vf_snapshot(values,host.resize_rows);}
+    if(continuing){flow.next=vf_snapshot(vf_registers(values),host.resize_rows);}
     return flow;
 }
 extern "C" void value_discard_flow(VfFlow flow,cfn<address,address,u64,u64> resize) on cpu

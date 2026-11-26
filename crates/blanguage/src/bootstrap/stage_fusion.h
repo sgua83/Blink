@@ -107,19 +107,18 @@ extern "C" void eliminate_code(address block,address needed,
     requires nonzero(host.prune_division) requires nonzero(host.prune_collective);
 
 enum VfRegMap:u32 { Aliases=0; Locals=1; };
-enum VfStateOp:u32 { New=0; Clone=1; Drop=2; CopyExpressions=3; };
-enum VfDivisionOp:u32 { Clear=0; Take=1; Put=2; };
 enum VfDivisionChoice:u32 { Quotient=1; Remainder=2; Both=3; };
 enum VfAction:u32 { Discard=0; Keep=1; Stop=2; };
 enum VfReuseKind:u32 { Expression=0; LocalRead=1; IndexedRead=2; IndexedStoreRead=3; };
 enum VfRole:u32 { Value=0; Quotient=1; Remainder=2; };
-struct VfExpression { u32 kind; u32 operation; u64 first; u64 second; u64 third; address arguments; u64 count; };
+struct VfExpression { u32 kind; u32 operation; u64 first; u64 second; u64 third; u64 count; };
 struct VfOptional { u64 value; u32 present; };
-struct VfDivision { address instruction; u64 quotient; u64 remainder; u32 mask; u32 present; };
+struct VfDivision { u64 instruction; u64 quotient; u64 remainder; u32 mask; };
 struct VfMemory { u64 value; u64 origin; u32 present; };
 struct VfReuse { address origin; VfReuseKind kind; VfRole role; u32 paired; };
 struct VfRows { usize data; u64 count; u64 capacity; };
 struct VfRegisters { VfRows aliases; VfRows locals; };
+struct VfExpressions { VfRows entries; VfRows arguments; VfRows buckets; };
 struct VfPath { VfRows rows; u32 reached; };
 struct VfFlow { VfPath next; VfPath exits; };
 struct VfMemoryHost {
@@ -135,14 +134,11 @@ struct VfHost {
     RegisterHost values;
     cfn<InstructionStorage,address> storage;
     cfn<void,address,address> remap;
-    cfn<VfFlow,address,address,address> block;
     cfn<Span,address> instruction_span;
     cfn<void,address,address> swap_instructions;
     cfn<void,address,u64> truncate;
-    cfn<address,VfStateOp,address,address> state;
     cfn<address,address,u64,u64> resize_rows;
-    cfn<VfOptional,address,VfExpression,u64> expression;
-    cfn<VfDivision,address,VfDivisionOp,u64,u64,u64,VfDivision> division;
+    cfn<address,address,u64,u64> scratch;
     cfn<void,address,VfDivisionChoice,u64,u64> rewrite_division;
     cfn<void,address,address,address,address,u64,u64,u64> pair;
     cfn<void,address,u64,address,VfReuse> note;
@@ -160,13 +156,15 @@ extern "C" void value_release_memory(address state,VfMemoryHost memory) on cpu
     requires nonzero(memory.resize) requires nonzero(memory.drop_origin);
 extern "C" void value_copy_memory(address target,address source,VfMemoryHost memory) on cpu
     requires nonzero(memory.resize) requires nonzero(memory.copy_origin);
-extern "C" VfFlow value_block(address block,address values,address context,Span registers,VfHost host) on cpu
+extern "C" void value_release_expressions(address state,cfn<address,address,u64,u64> resize) on cpu
+    requires nonzero(resize);
+extern "C" VfFlow value_block(address block,address values,address expressions,address context,
+    Span registers,VfHost host,bool keep_expressions) on cpu
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.scalar) requires nonzero(host.storage)
-    requires nonzero(host.remap) requires nonzero(host.block) requires nonzero(host.state)
-    requires nonzero(host.resize_rows) requires nonzero(host.expression)
-    requires nonzero(host.division) requires nonzero(host.rewrite_division) requires nonzero(host.pair)
+    requires nonzero(host.remap) requires nonzero(host.resize_rows) requires nonzero(host.scratch)
+    requires nonzero(host.rewrite_division) requires nonzero(host.pair)
     requires nonzero(host.note) requires nonzero(host.memory.resize) requires nonzero(host.memory.move_rows)
-    requires nonzero(host.memory.capture_origin) requires nonzero(host.memory.drop_origin)
+    requires nonzero(host.memory.capture_origin) requires nonzero(host.memory.drop_origin) requires nonzero(host.memory.copy_origin)
     requires nonzero(host.instruction_span) requires nonzero(host.swap_instructions) requires nonzero(host.truncate);
 extern "C" void value_discard_flow(VfFlow flow,cfn<address,address,u64,u64> resize) on cpu
     requires nonzero(resize);
