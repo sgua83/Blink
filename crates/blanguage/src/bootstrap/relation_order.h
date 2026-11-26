@@ -141,3 +141,24 @@ extern "C" void project_return(address graph, address context, usize nodes, Walk
 extern "C" u32 replay_writes(address graph, address context, usize frame,
     cfn<WalkFrame,address,usize> frame_at, cfn<u32,address,address,usize> write) on cpu
     requires nonzero(frame_at) requires nonzero(write);
+
+struct PrefixBoundary {
+    usize memory;
+    usize frame;
+};
+
+struct PrefixState {
+    usize through;
+    WalkSlice runs;
+};
+
+struct PrefixHost {
+    cfn<PrefixState,address> state;
+    cfn<usize,address,usize,usize> emit;
+    cfn<void,address,usize,PrefixBoundary,u32,usize> publish;
+};
+
+extern "C" usize lexical_frame(address context, usize memory, PrefixHost host) on cpu
+    requires nonzero(host.state) requires nonzero(host.emit) requires nonzero(host.publish);
+
+extern "C" void label_lexical_frames(WalkSlice runs, address frames, usize count) on cpu;

@@ -453,7 +453,39 @@ unsafe extern "C" fn exchange_feedback_edges(edges: *mut std::ffi::c_void, retai
     unsafe { std::ptr::swap(edges.add(retained), edges.add(next)) };
 }
 
-struct Builder<'a> { function:&'a Function,state:LoopScope<'a>,known:&'a States<'a>,keys:BTreeMap<Key,usize>,prefix:Vec<Option<usize>>,graph:Graph,parameters:BTreeMap<ValueIdentity,usize> }
+#[derive(Default)]
+struct FramePrefix {
+    through: usize,
+    runs: Vec<PrefixBoundary>,
+}
+
+#[repr(C)]
+struct PrefixBoundary {
+    memory: usize,
+    frame: usize,
+}
+
+#[repr(C)]
+struct PrefixState {
+    through: usize,
+    runs: WalkSlice,
+}
+
+#[repr(C)]
+struct PrefixHost {
+    state: unsafe extern "C" fn(Slot) -> PrefixState,
+    emit: unsafe extern "C" fn(Slot, usize, usize) -> usize,
+    publish: unsafe extern "C" fn(Slot, usize, PrefixBoundary, u32, usize),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.relation_order::lexical_frame"]
+    fn lexical_frame(context: Slot, memory: usize, host: PrefixHost) -> usize;
+    #[link_name = "bootstrap.relation_order::label_lexical_frames"]
+    fn label_lexical_frames(runs: WalkSlice, frames: *mut PrefixBoundary, count: usize);
+}
+
+struct Builder<'a> { function:&'a Function,state:LoopScope<'a>,known:&'a States<'a>,keys:BTreeMap<Key,usize>,prefix:FramePrefix,graph:Graph,parameters:BTreeMap<ValueIdentity,usize> }
 impl Builder<'_> {
     fn empty(&mut self)->usize{let id=self.graph.nodes.len();self.graph.nodes.push(Node::default());id}
     fn edge(&mut self,to:usize,from:usize,op:Op,when:bounds::Clause){self.graph.nodes[to].edges.push(Edge{from,op,when:RelationPath::Guard(when)})}
@@ -544,24 +576,61 @@ impl Builder<'_> {
     }
 
     fn frame(&mut self, memory: usize) -> Option<usize> {
-        while self.prefix.len() <= memory {
-            let at = self.prefix.len() - 1;
-            let parent = *self.prefix.last().unwrap();
-            self.prefix.push(parent);
-            let mut writes = self.writes(at, &BTreeMap::new());
-            if writes.is_empty() { continue; }
-            let execution = bounds::Condition::execution(&self.function.uses[at].path);
-            for write in &mut writes {
-                write.when = write.when.clone().logical(execution.clone(), false);
-            }
-            let id = self.graph.frames.len();
-            self.graph.frames.push(Frame { parent, writes });
-            self.prefix[at + 1] = Some(id);
-        }
-        self.prefix[memory]
+        let host = PrefixHost {
+            state: Self::prefix_state, emit: Self::emit_prefix_frame, publish: Self::publish_prefix_frame,
+        };
+        let frame = unsafe { lexical_frame(ptr::from_mut(self).cast(), memory, host) };
+        (frame != usize::MAX).then_some(frame)
     }
-    fn read_frame(&mut self,memory:usize)->Option<usize>{
-        let mut at=self.frame(memory);let mut frames=Vec::new();while let Some(id)=at{frames.push(id);at=self.graph.frames[id].parent;}
+
+    unsafe extern "C" fn prefix_state(context: Slot) -> PrefixState {
+        let builder = unsafe { &*context.cast::<Self>() };
+        let prefix = &builder.prefix;
+        PrefixState { through: prefix.through, runs: WalkSlice::of(&prefix.runs) }
+    }
+
+    unsafe extern "C" fn emit_prefix_frame(context: Slot, at: usize, parent: usize) -> usize {
+        let builder = unsafe { &mut *context.cast::<Self>() };
+        builder.prefix.through = at + 1;
+        let mut writes = builder.writes(at, &BTreeMap::new());
+        if writes.is_empty() {
+            return usize::MAX;
+        }
+        let execution = bounds::Condition::execution(&builder.function.uses[at].path);
+        for write in &mut writes {
+            write.when = write.when.clone().logical(execution.clone(), false);
+        }
+        let id = builder.graph.frames.len();
+        builder.graph.frames.push(Frame { parent: (parent != usize::MAX).then_some(parent), writes });
+        id
+    }
+
+    unsafe extern "C" fn publish_prefix_frame(
+        context: Slot,
+        position: usize,
+        boundary: PrefixBoundary,
+        restore: u32,
+        previous: usize,
+    ) {
+        let builder = unsafe { &mut *context.cast::<Self>() };
+        let runs = &mut builder.prefix.runs;
+        let memory = boundary.memory;
+        runs.insert(position, boundary);
+        if restore != 0 {
+            runs.insert(position + 1, PrefixBoundary { memory: memory + 1, frame: previous });
+        }
+    }
+
+    fn read_frame(&mut self, memory: usize) -> Option<usize> {
+        let mut current = self.frame(memory);
+        let mut frames = Vec::new();
+        while let Some(frame) = current {
+            frames.push(PrefixBoundary { memory: usize::MAX, frame });
+            current = self.graph.frames[frame].parent;
+        }
+        unsafe {
+            label_lexical_frames(WalkSlice::of(&self.prefix.runs), frames.as_mut_ptr(), frames.len());
+        }
         let function = self.function;
         let path = &function.uses[memory].path;
         let mut parent = None;
@@ -583,9 +652,7 @@ impl Builder<'_> {
                 parent = Some(id);
             }
         }
-        for id in frames.into_iter().rev() {
-            // The lexical prefix first names this frame just after its write.
-            let at = self.prefix.partition_point(|frame| *frame < Some(id)) - 1;
+        for PrefixBoundary { memory: at, frame: id } in frames.into_iter().rev() {
             let names = function.history_names(at, memory, None);
             let mut writes = if names.is_empty() {
                 self.graph.frames[id].writes.clone()
@@ -693,7 +760,7 @@ impl Builder<'_> {
     }
 }
 impl Graph {
-    fn builder<'a>(function:&'a Function,state:LoopScope<'a>,known:&'a States<'a>)->Builder<'a>{Builder{function,state,known,keys:BTreeMap::new(),prefix:vec![None],graph:Self::default(),parameters:BTreeMap::new()}}
+    fn builder<'a>(function:&'a Function,state:LoopScope<'a>,known:&'a States<'a>)->Builder<'a>{Builder{function,state,known,keys:BTreeMap::new(),prefix:FramePrefix::default(),graph:Self::default(),parameters:BTreeMap::new()}}
     pub(super) fn recursive_inputs(name:&str,function:&Function,state:LoopScope<'_>,known:&States)->Option<BTreeMap<ValueIdentity,Borrow>>{
         if !function.calls.iter().any(|call|call.function==name){return None;}
         let mut b=Self::builder(function,state,known);let mut roots=BTreeMap::new();

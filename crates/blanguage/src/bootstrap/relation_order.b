@@ -586,3 +586,60 @@ extern "C" u32 replay_writes(address graph, address context, usize frame,
     }
     return 1;
 }
+
+PrefixBoundary prefix_boundary(WalkSlice runs, usize index) on cpu {
+    return unsafe_position<PrefixBoundary>(cell(runs.data,index,16u64));
+}
+
+usize prefix_after(WalkSlice runs, usize memory) on cpu {
+    usize first = 0u64;
+    usize end = runs.count;
+    while (first < end) {
+        usize middle = first + (end - first) / 2u64;
+        if (prefix_boundary(runs,middle).memory <= memory) {
+            first = middle + 1u64;
+        } else {
+            end = middle;
+        }
+    }
+    return first;
+}
+
+extern "C" usize lexical_frame(address context, usize memory, PrefixHost host) on cpu
+    requires nonzero(host.state) requires nonzero(host.emit) requires nonzero(host.publish)
+{
+    PrefixState prefix = host.state(context);
+    while (prefix.through < memory) {
+        usize at = prefix.through;
+        usize parent = prefix.runs.count == 0u64 ? WALK_END : prefix_boundary(prefix.runs,prefix.runs.count - 1u64).frame;
+        usize frame = host.emit(context,at,parent);
+        prefix = host.state(context);
+        if (frame != WALK_END) {
+            // An inner read can advance past the inherited slot before it is published.
+            usize slot = at + 1u64;
+            usize position = prefix_after(prefix.runs,slot);
+            bool restore = slot < prefix.through
+                && (position == prefix.runs.count || prefix_boundary(prefix.runs,position).memory != slot + 1u64);
+            host.publish(context,position,PrefixBoundary(slot,frame),restore ? 1 : 0,parent);
+            prefix = host.state(context);
+        }
+    }
+
+    usize end = prefix_after(prefix.runs,memory);
+    return end == 0u64 ? WALK_END : prefix_boundary(prefix.runs,end - 1u64).frame;
+}
+
+extern "C" void label_lexical_frames(WalkSlice runs, address frames, usize count) on cpu {
+    usize remaining = count;
+    usize index = 0u64;
+    while (remaining != 0u64 && index < runs.count) {
+        PrefixBoundary run = prefix_boundary(runs,index);
+        address place = cell(frames,remaining - 1u64,16u64);
+        PrefixBoundary frame = unsafe_position<PrefixBoundary>(place);
+        if (run.frame == frame.frame) {
+            unsafe_position<PrefixBoundary>(place) = PrefixBoundary(run.memory - 1u64,frame.frame);
+            remaining -= 1u64;
+        }
+        index += 1u64;
+    }
+}
