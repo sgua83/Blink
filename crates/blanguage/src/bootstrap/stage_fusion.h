@@ -52,7 +52,7 @@ struct LocalValue { u64 slot; u64 value; };
 
 // The original IR and PrivateSlot sets stay in their native owning containers.
 // Every borrowed block and temporary clone ends with this synchronous query.
-enum LiveSetAction:u32 { Copy=0; Union=1; RemoveRegister=2; InsertLocal=3; RemoveLocal=4; Swap=5; };
+enum LiveSetAction:u32 { Copy=0; Union=1; RemoveRegister=2; InsertLocal=3; RemoveLocal=4; Swap=5; DrainUnion=6; Clear=7; };
 struct LiveHost {
     Host ir;
     cfn<u32,address,usize> insert_register;
@@ -65,9 +65,10 @@ extern "C" void private_before(Span code, address live, address break_live,
     address continue_live, address exit_live, address empty, LiveHost host) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.insert_register)
     requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change);
-extern "C" void private_loop(Span condition, u64 test, Span body,
+// Transfer the original computed loop-header set to the caller for mutation or release.
+extern "C" address private_loop(Span condition, u64 test, Span body,
     address after, address break_live, address continue_live, address exit_live,
-    address result, address empty, LiveHost host) on cpu
+    address empty, LiveHost host) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.insert_register)
     requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change);
 // Emit borrowed code ranges and the original slot sets from the last phase to the first.

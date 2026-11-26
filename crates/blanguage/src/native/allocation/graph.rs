@@ -1,16 +1,13 @@
 //! Borrowed IR and primitive access to the one native allocation graph.
 use super::*;
-use crate::ir::dataflow::{REGISTER_HOST, RegisterHost, Span};
+use crate::ir::dataflow::{REGISTER_HOST, RegisterFacts, Span};
+use crate::ir::{PRIVATE_LIVE_HOST, PrivateLiveHost};
 use super::super::{external, operands};
 
 type Slots = BTreeSet<PrivateSlot>;
 #[repr(u32)]
 #[derive(Clone, Copy)]
 enum Space { Register, Local }
-#[repr(u32)]
-enum SlotAction { Insert, Remove }
-#[repr(u32)]
-enum SetAction { Copy, Union, DrainUnion, Swap, Clear }
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Event { anchor: usize, skip: usize, kind: u32, skip_present: u32 }
@@ -18,20 +15,16 @@ struct Event { anchor: usize, skip: usize, kind: u32, skip_present: u32 }
 #[derive(Clone, Copy)]
 struct Core {
     visit_set: unsafe extern "C" fn(*const Slots, usize, *mut c_void, Event),
-    slot: unsafe extern "C" fn(*mut Slots, SlotAction, Space, usize),
 }
 #[repr(C)]
 struct Host {
     core: Core,
-    values: RegisterHost,
+    live: PrivateLiveHost,
+    scalar: unsafe extern "C" fn(Span, usize) -> RegisterFacts,
     cast_bits: unsafe extern "C" fn(Span, Reg, Reg) -> u32,
     call_outgoing: unsafe extern "C" fn(*const Call) -> u64,
     math_outgoing: unsafe extern "C" fn(u32) -> u64,
-    clone_set: unsafe extern "C" fn(*const Slots) -> *mut Slots,
-    drop_set: unsafe extern "C" fn(*mut Slots),
-    change: unsafe extern "C" fn(SetAction, *mut Slots, *mut Slots),
-    loop_live: unsafe extern "C" fn(Span, Reg, Span, *const Slots, *const Slots, *const Slots, *const Slots) -> *mut Slots,
-    register_reads: unsafe extern "C" fn(*const Inst, *mut c_void, *mut Slots, u64),
+    register_operand: unsafe extern "C" fn(*mut c_void, Reg) -> u32,
 }
 #[repr(C)]
 struct Request {
@@ -57,8 +50,8 @@ unsafe extern "C" {
     #[link_name = "bootstrap.coloring::graph_live_event"]
     fn graph_live_event(graph: *mut c_void, live: *const Slots, space: Space, index: usize,
         ordinal: usize, event: Event, core: Core);
-    #[link_name = "bootstrap.coloring::graph_read"]
-    fn graph_read(graph: *mut c_void, live: *mut Slots, space: Space, index: usize, weight: u64, core: Core);
+    #[link_name = "bootstrap.coloring::graph_register_read"]
+    fn graph_register_read(graph: *mut c_void, index: usize, weight: u64);
 }
 pub(super) fn build(places: &mut [ColorPlace], count: usize, code: &[Inst],
     registers: &[Scalar], live: &mut Slots, empty: &Slots) -> (*mut c_void, bool) {
@@ -85,33 +78,24 @@ unsafe extern "C" fn visit_set(live: *const Slots, limit: usize, graph: *mut c_v
         unsafe { graph_live_event(graph, live, space, index, ordinal, event, CORE); }
     }
 }
-unsafe extern "C" fn slot(live: *mut Slots, action: SlotAction, space: Space, index: usize) {
-    let value = match space { Space::Register => PrivateSlot::Register(index), Space::Local => PrivateSlot::Local(index) };
-    let live = unsafe { &mut *live }; match action { SlotAction::Insert => { live.insert(value); }, SlotAction::Remove => { live.remove(&value); } }
+#[repr(C)]
+struct Operand {
+    graph: *mut c_void,
+    live: *mut Slots,
+    weight: u64,
 }
-unsafe extern "C" fn clone_set(live: *const Slots) -> *mut Slots { Box::into_raw(Box::new(unsafe { &*live }.clone())) }
-unsafe extern "C" fn drop_set(live: *mut Slots) { drop(unsafe { Box::from_raw(live) }); }
-unsafe extern "C" fn change(action: SetAction, target: *mut Slots, source: *mut Slots) {
-    let target = unsafe { &mut *target }; match action {
-        SetAction::Copy => *target = unsafe { &*source }.clone(),
-        SetAction::Union => target.extend(unsafe { &*source }.iter().copied()),
-        SetAction::DrainUnion => target.append(unsafe { &mut *source }),
-        SetAction::Swap => std::mem::swap(target, unsafe { &mut *source }),
-        SetAction::Clear => target.clear(),
+
+unsafe extern "C" fn register_operand(context: *mut c_void, register: Reg) -> u32 {
+    let operand = unsafe { &*context.cast::<Operand>() };
+    unsafe {
+        graph_register_read(operand.graph, register, operand.weight);
+        (PRIVATE_LIVE_HOST.insert_register)(operand.live, register)
     }
 }
-unsafe extern "C" fn header(condition: Span, test: Reg, body: Span, after: *const Slots,
-    break_live: *const Slots, continue_live: *const Slots, exit_live: *const Slots) -> *mut Slots {
-    Box::into_raw(Box::new(loop_live(unsafe { condition.as_slice() }, test, unsafe { body.as_slice() },
-        unsafe { &*after }, unsafe { &*break_live }, unsafe { &*continue_live }, unsafe { &*exit_live })))
-}
-unsafe extern "C" fn register_reads(instruction: *const Inst, graph: *mut c_void, live: *mut Slots, weight: u64) {
-    let inst = unsafe { &*instruction };
-    inst.all_operands(&mut |reg| { unsafe { graph_read(graph, live, Space::Register, reg, weight, CORE) }; true });
-}
-const CORE: Core = Core { visit_set, slot };
+
+const CORE: Core = Core { visit_set };
 const HOST: Host = Host {
-    core: CORE, values: REGISTER_HOST, cast_bits, call_outgoing,
+    core: CORE, live: PRIVATE_LIVE_HOST, scalar: REGISTER_HOST.scalar, cast_bits, call_outgoing,
     math_outgoing: operands::scalar_math_outgoing,
-    clone_set, drop_set, change, loop_live: header, register_reads,
+    register_operand,
 };

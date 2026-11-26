@@ -300,13 +300,6 @@ impl Stage {
 }
 
 #[cfg(feature = "compiler")]
-pub(crate) fn loop_live(
-    condition: &[Inst], test: Reg, body: &[Inst], after: &BTreeSet<PrivateSlot>,
-    break_live: &BTreeSet<PrivateSlot>, continue_live: &BTreeSet<PrivateSlot>, exit_live: &BTreeSet<PrivateSlot>,
-) -> BTreeSet<PrivateSlot> {
-    private_live::loop_header(condition, test, body, after, break_live, continue_live, exit_live)
-}
-#[cfg(feature = "compiler")]
 pub(crate) fn live_before(
     code: &[Inst], live: BTreeSet<PrivateSlot>, break_live: &BTreeSet<PrivateSlot>,
     continue_live: &BTreeSet<PrivateSlot>, exit_live: &BTreeSet<PrivateSlot>,

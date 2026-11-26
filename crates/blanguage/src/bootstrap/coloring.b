@@ -1,6 +1,7 @@
 module bootstrap.coloring;
 import bootstrap.names;
 import bootstrap.ir_dataflow;
+import bootstrap.stage_fusion;
 
 const u32 UNSEEN = 0;
 const u32 IMMEDIATE = 1;
@@ -465,7 +466,7 @@ void graph_weight(address graph,u64 id,u64 amount) on cpu {
     address row=node_at(graph,id);
     unsafe_position<ColorNode>(row).weight=graph_saturating_add(unsafe_position<ColorNode>(row).weight,amount);
 }
-extern "C" void graph_live_event(address graph,handle live,GraphSpace space,u64 index,u64 ordinal,GraphEvent event,GraphCore core) on cpu
+extern "C" void graph_live_event(address graph,address live,GraphSpace space,u64 index,u64 ordinal,GraphEvent event,GraphCore core) on cpu
     requires nonzero(core.visit_set) {
     u64 id=graph_slot_id(graph,space,index);
     if(event.kind==0){
@@ -478,7 +479,7 @@ extern "C" void graph_live_event(address graph,handle live,GraphSpace space,u64 
         }
     } else {unsafe_position<ColorNode>(node_at(graph,id)).across_call=1u64;}
 }
-extern "C" void graph_together(address graph,handle live,GraphCore core) on cpu
+extern "C" void graph_together(address graph,address live,GraphCore core) on cpu
     requires nonzero(core.visit_set) {
     core.visit_set(live,18446744073709551615u64,graph,GraphEvent(0u64,0u64,1,0));
 }
@@ -495,9 +496,9 @@ extern "C" void graph_inputs(address graph,address inputs,u64 count) on cpu {
     }
 }
 struct GraphDefinition { u64 weight; u64 transfer_dst; u64 transfer_src; u64 bits; u32 transfer; u32 literal; u32 pass; };
-void graph_definition(address graph,handle live,GraphSpace space,u64 index,GraphDefinition definition,GraphCore core) on cpu
-    requires nonzero(core.visit_set) requires nonzero(core.slot) {
-    if(definition.pass!=0){core.slot(live,GraphSlotAction::Remove,space,index);return;}
+void graph_definition(address graph,address live,GraphSpace space,u64 index,GraphDefinition definition,GraphCore core,LiveHost slots) on cpu
+    requires nonzero(core.visit_set) requires nonzero(slots.change) {
+    if(definition.pass!=0){slots.change(LiveSetAction::RemoveRegister,live,address(),index);return;}
     if(space==GraphSpace::Register){record_definition(place_at(unsafe_position<GraphData>(graph).places,index),definition.literal,definition.bits);}
     u64 id=graph_slot_id(graph,space,index);
     if(unsafe_position<ColorPlace>(place_at(unsafe_position<GraphData>(graph).places,id)).width!=0){
@@ -507,12 +508,10 @@ void graph_definition(address graph,handle live,GraphSpace space,u64 index,Graph
     }
     graph_weight(graph,id,definition.weight);
 }
-extern "C" void graph_read(address graph,handle live,GraphSpace space,u64 index,u64 weight,GraphCore core) on cpu
-    requires nonzero(core.slot) {
-    u64 id=graph_slot_id(graph,space,index);
-    graph_weight(graph,id,weight);
-    core.slot(live,GraphSlotAction::Insert,space,index);
+extern "C" void graph_register_read(address graph,usize index,u64 weight) on cpu {
+    graph_weight(graph,index,weight);
 }
+struct GraphOperand {address graph;address live;u64 weight;};
 Node graph_node_at(Span span, usize index, u32 kind) on cpu {
     return Node(unsafe_address(address_bits(span.data)+u64(index)*u64(span.stride)),kind);
 }
@@ -529,19 +528,19 @@ bool graph_call_uses_r15(Node call, Host ir) on cpu requires nonzero(ir.inspect)
     }
     return false;
 }
-u32 graph_instruction(address graph,Node instruction,View node,Span registers,handle live,
+u32 graph_instruction(address graph,View node,Span registers,address live,
     u64 weight,GraphHost host) on cpu
-    requires nonzero(host.core.visit_set) requires nonzero(host.core.slot)
-    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.scalar)
+    requires nonzero(host.core.visit_set)
+    requires nonzero(host.live.ir.inspect) requires nonzero(host.scalar)
     requires nonzero(host.cast_bits) requires nonzero(host.call_outgoing)
-    requires nonzero(host.math_outgoing) requires nonzero(host.register_reads) {
+    requires nonzero(host.math_outgoing) requires nonzero(host.register_operand) requires nonzero(host.live.change) {
     u32 uses_r15=0;
     u64 outgoing=0u64;
     if(node.tag==OP_INVOKE){
         outgoing=host.call_outgoing(node.left.data);
-        if(graph_call_uses_r15(node.left,host.values.ir)){uses_r15=1;}
+        if(graph_call_uses_r15(node.left,host.live.ir)){uses_r15=1;}
     } else if(node.tag==OP_POSITION_ADDRESS){
-        if(graph_indexed_reference(node.left,host.values.ir)){uses_r15=1;}
+        if(graph_indexed_reference(node.left,host.live.ir)){uses_r15=1;}
     } else if(node.tag==OP_TEXTURE_BINDING_ADDRESS || (node.tag>=OP_TEXTURE_SIZE && node.tag<=OP_TEXTURE_FETCH) ||
         node.tag==OP_VIEW_LOAD || node.tag==OP_LOAD_INDEXED || node.tag==OP_STORE_INDEXED || node.tag==OP_ATOMIC){
         uses_r15=1;
@@ -565,8 +564,8 @@ u32 graph_instruction(address graph,Node instruction,View node,Span registers,ha
         else if(node.tag==OP_BINARY){
             preferred=1;
             if(node.left.kind==N_COMPARISON){
-                u32 comparison=host.values.ir.inspect(node.left).tag;
-                bool floating=host.values.scalar(registers,node.b).floating!=0;
+                u32 comparison=host.live.ir.inspect(node.left).tag;
+                bool floating=host.scalar(registers,node.b).floating!=0;
                 bool reverse=floating ? (comparison==COMPARE_GREATER || comparison==COMPARE_GREATER_EQUAL) :
                     (comparison==COMPARE_LESS || comparison==COMPARE_GREATER_EQUAL);
                 if(reverse){preferred_source=node.c;}
@@ -582,16 +581,16 @@ u32 graph_instruction(address graph,Node instruction,View node,Span registers,ha
     u32 literal=node.tag==OP_CONSTANT ? 1 : 0;
     GraphDefinition definition=GraphDefinition(weight,destination,source,u64(node.b),transfer,literal,0);
     if(node.tag==OP_STORE_LOCAL){
-        graph_definition(graph,live,GraphSpace::Local,node.a,definition,host.core);
-        host.core.slot(live,GraphSlotAction::Remove,GraphSpace::Local,node.a);
+        graph_definition(graph,live,GraphSpace::Local,node.a,definition,host.core,host.live);
+        host.live.change(LiveSetAction::RemoveLocal,live,address(),node.a);
     }else{
-        Results results=view_results(node,host.values.ir);
+        Results results=view_results(node,host.live.ir);
         for(pass in 0..2){
             definition.pass=u32(pass);
             Results cursor=results;
             Word next=next_result(cursor);
             while(next.present!=0){
-                graph_definition(graph,live,GraphSpace::Register,next.value,definition,host.core);
+                graph_definition(graph,live,GraphSpace::Register,next.value,definition,host.core,host.live);
                 next=next_result(cursor);
             }
         }
@@ -602,19 +601,21 @@ u32 graph_instruction(address graph,Node instruction,View node,Span registers,ha
         }
         host.core.visit_set(live,18446744073709551615u64,graph,GraphEvent(0u64,0u64,2,0));
     }
-    host.register_reads(instruction.data,graph,live,weight);
-    Locals local_reads=view_locals(node,0,host.values.ir);
-    Word next=next_local(local_reads,host.values.ir);
+    GraphOperand operand=GraphOperand(graph,live,weight);
+    visit_instruction(node,host.live.ir,address_of(operand),host.register_operand);
+    Locals local_reads=view_locals(node,0,host.live.ir);
+    Word next=next_local(local_reads,host.live.ir);
     while(next.present!=0){
-        graph_read(graph,live,GraphSpace::Local,next.value,weight,host.core);
-        next=next_local(local_reads,host.values.ir);
+        graph_weight(graph,graph_slot_id(graph,GraphSpace::Local,next.value),weight);
+        host.live.change(LiveSetAction::InsertLocal,live,address(),next.value);
+        next=next_local(local_reads,host.live.ir);
     }
     return uses_r15;
 }
-struct WalkBlock {Span code;handle live;handle breaks;handle continues;handle exits;u64 weight;};
-struct WalkJoin {handle live;handle yes;u64 test;u64 weight;};
-struct WalkCondition {WalkBlock block;handle before;handle header;u64 test;};
-struct WalkReplace {handle live;handle before;handle header;};
+struct WalkBlock {Span code;address live;address breaks;address continues;address exits;u64 weight;};
+struct WalkJoin {address live;address yes;u64 test;u64 weight;};
+struct WalkCondition {WalkBlock block;address before;address header;u64 test;};
+struct WalkReplace {address live;address before;address header;};
 enum GraphWork:u32 {
     Block(WalkBlock)=0;
     Join(WalkJoin)=1;
@@ -647,60 +648,61 @@ void save_walk_tail(address work,WalkBlock block,u64 remaining) on cpu {
         push_walk(work,GraphWork::Block(WalkBlock(tail,block.live,block.breaks,block.continues,block.exits,block.weight)));
     }
 }
-void walk_branch(address work,View node,WalkBlock block,GraphHost host) on cpu requires nonzero(host.clone_set) {
-    handle yes=host.clone_set(block.live);
+void walk_branch(address work,View node,WalkBlock block,GraphHost host) on cpu requires nonzero(host.live.clone_set) {
+    address yes=host.live.clone_set(block.live);
     push_walk(work,GraphWork::Join(WalkJoin(block.live,yes,node.a,block.weight)));
     push_walk(work,GraphWork::Block(WalkBlock(node.second,block.live,block.breaks,block.continues,block.exits,block.weight)));
     push_walk(work,GraphWork::Block(WalkBlock(node.first,yes,block.breaks,block.continues,block.exits,block.weight)));
 }
-void walk_loop(address work,View node,WalkBlock block,GraphHost host) on cpu
-    requires nonzero(host.loop_live) requires nonzero(host.clone_set) {
-    handle header=host.loop_live(node.first,node.a,node.second,block.live,block.breaks,block.continues,block.exits);
-    handle before=host.clone_set(header);
+void walk_loop(address work,View node,WalkBlock block,address empty,GraphHost host) on cpu
+    requires nonzero(host.live.ir.inspect) requires nonzero(host.live.insert_register)
+    requires nonzero(host.live.clone_set) requires nonzero(host.live.drop_set) requires nonzero(host.live.change) {
+    address header=private_loop(node.first,node.a,node.second,block.live,block.breaks,block.continues,block.exits,empty,host.live);
+    address before=host.live.clone_set(header);
     u64 weight=graph_nested_weight(block.weight);
     WalkBlock condition=WalkBlock(node.first,block.live,block.breaks,block.continues,block.exits,weight);
     push_walk(work,GraphWork::Condition(WalkCondition(condition,before,header,node.a)));
     push_walk(work,GraphWork::Block(WalkBlock(node.second,before,block.live,header,block.exits,weight)));
 }
-void walk_scope(address work,View node,WalkBlock block,GraphHost host) on cpu requires nonzero(host.clone_set) {
-    handle before=host.clone_set(block.live);
-    push_walk(work,GraphWork::Replace(WalkReplace(block.live,before,handle())));
+void walk_scope(address work,View node,WalkBlock block,GraphHost host) on cpu requires nonzero(host.live.clone_set) {
+    address before=host.live.clone_set(block.live);
+    push_walk(work,GraphWork::Replace(WalkReplace(block.live,before,address())));
     push_walk(work,GraphWork::Block(WalkBlock(node.first,before,block.breaks,block.continues,block.live,block.weight)));
 }
 void walk_join(address graph,WalkJoin join,GraphHost host) on cpu
-    requires nonzero(host.change) requires nonzero(host.drop_set) requires nonzero(host.core.slot) {
-    host.change(GraphSetAction::DrainUnion,join.live,join.yes);
-    host.drop_set(join.yes);
-    host.core.slot(join.live,GraphSlotAction::Insert,GraphSpace::Register,join.test);
+    requires nonzero(host.live.change) requires nonzero(host.live.drop_set) requires nonzero(host.live.insert_register) {
+    host.live.change(LiveSetAction::DrainUnion,join.live,join.yes,0u64);
+    host.live.drop_set(join.yes);
+    host.live.insert_register(join.live,join.test);
     graph_weight(graph,join.test,join.weight);
 }
 void walk_condition(address graph,address work,WalkCondition condition,GraphHost host) on cpu
-    requires nonzero(host.change) requires nonzero(host.core.slot) {
+    requires nonzero(host.live.change) requires nonzero(host.live.insert_register) {
     WalkBlock block=condition.block;
-    host.change(GraphSetAction::DrainUnion,condition.before,block.live);
-    host.core.slot(condition.before,GraphSlotAction::Insert,GraphSpace::Register,condition.test);
+    host.live.change(LiveSetAction::DrainUnion,condition.before,block.live,0u64);
+    host.live.insert_register(condition.before,condition.test);
     graph_weight(graph,condition.test,block.weight);
     push_walk(work,GraphWork::Replace(WalkReplace(block.live,condition.before,condition.header)));
     push_walk(work,GraphWork::Block(WalkBlock(block.code,condition.before,block.breaks,block.continues,block.exits,block.weight)));
 }
 void walk_replace(WalkReplace replace,GraphHost host) on cpu
-    requires nonzero(host.change) requires nonzero(host.drop_set) {
-    host.change(GraphSetAction::Swap,replace.live,replace.before);
-    host.drop_set(replace.before);
-    if(replace.header!=handle()){host.drop_set(replace.header);}
+    requires nonzero(host.live.change) requires nonzero(host.live.drop_set) {
+    host.live.change(LiveSetAction::Swap,replace.live,replace.before,0u64);
+    host.live.drop_set(replace.before);
+    if(replace.header!=address()){host.live.drop_set(replace.header);}
 }
-u32 walk_block(address graph,address work,WalkBlock block,Span registers,GraphHost host) on cpu
-    requires nonzero(host.core.visit_set) requires nonzero(host.core.slot)
-    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.scalar)
+u32 walk_block(address graph,address work,WalkBlock block,Span registers,address empty,GraphHost host) on cpu
+    requires nonzero(host.core.visit_set)
+    requires nonzero(host.live.ir.inspect) requires nonzero(host.scalar)
     requires nonzero(host.cast_bits) requires nonzero(host.call_outgoing) requires nonzero(host.math_outgoing)
-    requires nonzero(host.clone_set) requires nonzero(host.change)
-    requires nonzero(host.loop_live) requires nonzero(host.register_reads) {
+    requires nonzero(host.live.clone_set) requires nonzero(host.live.drop_set) requires nonzero(host.live.change)
+    requires nonzero(host.live.insert_register) requires nonzero(host.register_operand) {
     u32 uses_r15=0;
     u64 remaining=block.code.count;
     while(remaining!=0u64){
         remaining-=1u64;
         Node instruction=graph_node_at(block.code,remaining,N_INSTRUCTION);
-        View node=host.values.ir.inspect(instruction);
+        View node=host.live.ir.inspect(instruction);
         if(node.tag==OP_BRANCH){
             save_walk_tail(work,block,remaining);
             walk_branch(work,node,block,host);
@@ -708,7 +710,7 @@ u32 walk_block(address graph,address work,WalkBlock block,Span registers,GraphHo
         }
         if(node.tag==OP_LOOP_VALUE){
             save_walk_tail(work,block,remaining);
-            walk_loop(work,node,block,host);
+            walk_loop(work,node,block,empty,host);
             return uses_r15;
         }
         if(node.tag==OP_SCOPE){
@@ -717,24 +719,24 @@ u32 walk_block(address graph,address work,WalkBlock block,Span registers,GraphHo
             return uses_r15;
         }
         if(node.tag==OP_RAISE){
-            host.change(GraphSetAction::Clear,block.live,handle());
-            host.core.slot(block.live,GraphSlotAction::Insert,GraphSpace::Register,node.a);
+            host.live.change(LiveSetAction::Clear,block.live,address(),0u64);
+            host.live.insert_register(block.live,node.a);
             graph_weight(graph,node.a,block.weight);
-        }else if(node.tag==OP_EXIT_VALUE){host.change(GraphSetAction::Copy,block.live,block.exits);}
-        else if(node.tag==OP_BREAK_VALUE){host.change(GraphSetAction::Copy,block.live,block.breaks);}
-        else if(node.tag==OP_CONTINUE_VALUE){host.change(GraphSetAction::Copy,block.live,block.continues);}
-        else{uses_r15|=graph_instruction(graph,instruction,node,registers,block.live,block.weight,host);}
+        }else if(node.tag==OP_EXIT_VALUE){host.live.change(LiveSetAction::Copy,block.live,block.exits,0u64);}
+        else if(node.tag==OP_BREAK_VALUE){host.live.change(LiveSetAction::Copy,block.live,block.breaks,0u64);}
+        else if(node.tag==OP_CONTINUE_VALUE){host.live.change(LiveSetAction::Copy,block.live,block.continues,0u64);}
+        else{uses_r15|=graph_instruction(graph,node,registers,block.live,block.weight,host);}
     }
     return uses_r15;
 }
-u32 walk_step(address graph,address work,GraphWork step,Span registers,GraphHost host) on cpu
-    requires nonzero(host.core.visit_set) requires nonzero(host.core.slot)
-    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.scalar)
+u32 walk_step(address graph,address work,GraphWork step,Span registers,address empty,GraphHost host) on cpu
+    requires nonzero(host.core.visit_set)
+    requires nonzero(host.live.ir.inspect) requires nonzero(host.scalar)
     requires nonzero(host.cast_bits) requires nonzero(host.call_outgoing) requires nonzero(host.math_outgoing)
-    requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change)
-    requires nonzero(host.loop_live) requires nonzero(host.register_reads) {
+    requires nonzero(host.live.clone_set) requires nonzero(host.live.drop_set) requires nonzero(host.live.change)
+    requires nonzero(host.live.insert_register) requires nonzero(host.register_operand) {
     match(step){
-        GraphWork::Block(block){return walk_block(graph,work,block,registers,host);}
+        GraphWork::Block(block){return walk_block(graph,work,block,registers,empty,host);}
         GraphWork::Join(join){walk_join(graph,join,host);}
         GraphWork::Condition(condition){walk_condition(graph,work,condition,host);}
         GraphWork::Replace(replace){walk_replace(replace,host);}
@@ -742,28 +744,28 @@ u32 walk_step(address graph,address work,GraphWork step,Span registers,GraphHost
     return 0;
 }
 u32 walk_graph(address graph,GraphRequest input,GraphHost host) on cpu
-    requires nonzero(host.core.visit_set) requires nonzero(host.core.slot)
-    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.scalar)
+    requires nonzero(host.core.visit_set)
+    requires nonzero(host.live.ir.inspect) requires nonzero(host.scalar)
     requires nonzero(host.cast_bits) requires nonzero(host.call_outgoing) requires nonzero(host.math_outgoing)
-    requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change)
-    requires nonzero(host.loop_live) requires nonzero(host.register_reads) {
+    requires nonzero(host.live.clone_set) requires nonzero(host.live.drop_set) requires nonzero(host.live.change)
+    requires nonzero(host.live.insert_register) requires nonzero(host.register_operand) {
     address work=color_offset(graph,size_of<GraphData>());
     WalkBlock root=WalkBlock(input.code,input.live,input.empty,input.empty,input.empty,1u64);
-    u32 uses_r15=walk_block(graph,work,root,input.registers,host);
+    u32 uses_r15=walk_block(graph,work,root,input.registers,input.empty,host);
     while(unsafe_position<GraphWalk>(work).count!=0u64){
         GraphWork step=pop_walk(work);
-        uses_r15|=walk_step(graph,work,step,input.registers,host);
+        uses_r15|=walk_step(graph,work,step,input.registers,input.empty,host);
     }
     release_graph_memory(unsafe_position<GraphWalk>(work).rows);
     unsafe_position<GraphWalk>(work)=GraphWalk(address(),0u64,0u64);
     return uses_r15;
 }
 extern "C" GraphBuilt graph_create(address request,GraphHost host) on cpu
-    requires nonzero(host.core.visit_set) requires nonzero(host.core.slot)
-    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.scalar)
+    requires nonzero(host.core.visit_set)
+    requires nonzero(host.live.ir.inspect) requires nonzero(host.scalar)
     requires nonzero(host.cast_bits) requires nonzero(host.call_outgoing) requires nonzero(host.math_outgoing)
-    requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change)
-    requires nonzero(host.loop_live) requires nonzero(host.register_reads) {
+    requires nonzero(host.live.clone_set) requires nonzero(host.live.drop_set) requires nonzero(host.live.change)
+    requires nonzero(host.live.insert_register) requires nonzero(host.register_operand) {
     GraphRequest input=unsafe_position<GraphRequest>(request);
     address graph=graph_storage(input.count,input.registers.count,input.places);
     graph_together(graph,input.live,host.core);

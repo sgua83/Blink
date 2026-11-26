@@ -5,12 +5,12 @@ use crate::ir::dataflow::{self, Span};
 type Slots = BTreeSet<PrivateSlot>;
 
 #[repr(u32)]
-enum Action { Copy, Union, RemoveRegister, InsertLocal, RemoveLocal, Swap }
+enum Action { Copy, Union, RemoveRegister, InsertLocal, RemoveLocal, Swap, DrainUnion, Clear }
 type Change = unsafe extern "C" fn(Action, *mut Slots, *const Slots, usize);
 #[repr(C)]
 pub(crate) struct Host {
     ir: dataflow::Host,
-    insert_register: unsafe extern "C" fn(*mut Slots, Reg) -> u32,
+    pub(crate) insert_register: unsafe extern "C" fn(*mut Slots, Reg) -> u32,
     clone_set: unsafe extern "C" fn(*const Slots) -> *mut Slots,
     drop_set: unsafe extern "C" fn(*mut Slots),
     change: Change,
@@ -19,10 +19,6 @@ unsafe extern "C" {
     #[link_name = "bootstrap.stage_fusion::private_before"]
     fn native_before(code: Span, live: *mut Slots, break_live: *const Slots,
         continue_live: *const Slots, exit_live: *const Slots, empty: *const Slots, host: Host);
-    #[link_name = "bootstrap.stage_fusion::private_loop"]
-    fn native_loop(condition: Span, test: Reg, body: Span, after: *const Slots,
-        break_live: *const Slots, continue_live: *const Slots, exit_live: *const Slots,
-        result: *mut Slots, empty: *const Slots, host: Host);
     #[link_name = "bootstrap.stage_fusion::private_tile_phases"]
     fn native_tile_phases(code: Span, live: *mut Slots, saved: *mut Slots, empty: *const Slots,
         host: Host, context: *mut c_void, emit: PhaseOutput);
@@ -44,7 +40,9 @@ unsafe extern "C" fn change(action: Action, output: *mut Slots, input: *const Sl
         Action::RemoveRegister => { unsafe { (*output).remove(&PrivateSlot::Register(slot)) }; }
         Action::InsertLocal => { unsafe { (*output).insert(PrivateSlot::Local(slot)) }; }
         Action::RemoveLocal => { unsafe { (*output).remove(&PrivateSlot::Local(slot)) }; }
-        Action::Swap => unsafe { std::ptr::swap(output, input.cast_mut()) },
+        Action::Swap => unsafe { ptr::swap(output, input.cast_mut()) },
+        Action::DrainUnion => unsafe { (*output).append(&mut *input.cast_mut()) },
+        Action::Clear => unsafe { (*output).clear() },
     }
 }
 pub(crate) const HOST: Host = Host { ir: dataflow::HOST, insert_register, clone_set, drop_set, change };
@@ -86,11 +84,4 @@ pub(super) fn before(code: &[Inst], mut live: Slots, break_live: &Slots,
     let empty = Slots::new();
     unsafe { native_before(Span::slice(code), &mut live, break_live, continue_live, exit_live, &empty, HOST) };
     live
-}
-pub(super) fn loop_header(condition: &[Inst], test: Reg, body: &[Inst], after: &Slots,
-    break_live: &Slots, continue_live: &Slots, exit_live: &Slots) -> Slots {
-    let mut result = Slots::new(); let empty = Slots::new();
-    unsafe { native_loop(Span::slice(condition), test, Span::slice(body), after,
-        break_live, continue_live, exit_live, &mut result, &empty, HOST) };
-    result
 }

@@ -189,20 +189,18 @@ void private_reads(View value,address live,LiveHost host) on cpu
     }
 }
 
-extern "C" void private_loop(Span condition,u64 test,Span body,
+extern "C" address private_loop(Span condition,u64 test,Span body,
     address after,address break_live,address continue_live,address exit_live,
-    address result,address empty,LiveHost host) on cpu
+    address empty,LiveHost host) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.insert_register)
     requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change) {
     // Pointwise gen/kill transfers close the backedge from an empty header.
-    // after may be result: it remains borrowed until the final swap.
     address need=host.clone_set(empty);
     private_before(body,need,after,empty,exit_live,empty,host);
     host.change(LiveSetAction::Union,need,after,0u64);
     host.insert_register(need,test);
     private_before(condition,need,break_live,continue_live,exit_live,empty,host);
-    host.change(LiveSetAction::Swap,result,need,0u64);
-    host.drop_set(need);
+    return need;
 }
 
 void private_instruction(View value,address live,address break_live,
@@ -217,7 +215,9 @@ void private_instruction(View value,address live,address break_live,
         host.drop_set(first);
         host.insert_register(live,value.a);
     } else if (value.tag==OP_LOOP_VALUE) {
-        private_loop(value.first,value.a,value.second,live,break_live,continue_live,exit_live,live,empty,host);
+        address header=private_loop(value.first,value.a,value.second,live,break_live,continue_live,exit_live,empty,host);
+        host.change(LiveSetAction::Swap,live,header,0u64);
+        host.drop_set(header);
     } else if (value.tag==OP_SCOPE) {
         address after=host.clone_set(live);
         private_before(value.first,live,break_live,continue_live,after,empty,host);
@@ -406,8 +406,7 @@ bool eliminate_instruction(address instruction,address needed,
         host.live.change(LiveSetAction::Union,needed,yes_needed,0u64);host.live.drop_set(yes_needed);
         host.live.insert_register(needed,first);
     } else if(kind==OP_LOOP_VALUE){
-        address header=host.live.clone_set(empty);
-        private_loop(value.first,first,value.second,needed,break_live,continue_live,exit_live,header,empty,host.live);
+        address header=private_loop(value.first,first,value.second,needed,break_live,continue_live,exit_live,empty,host.live);
         InstructionStorage storage=host.storage(instruction);
         address before_body=host.live.clone_set(header);
         eliminate_code(storage.second_code,before_body,needed,header,exit_live,empty,context,host);
