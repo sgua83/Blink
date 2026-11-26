@@ -2800,6 +2800,7 @@ pub(super) fn math(op: MathOp, args: &[Value]) -> Proof {
 pub(super) fn arithmetic(builder: &Builder<'_>, op: &str, a: &Value, b: &Value) -> Proof {
     let count = a.regs.len().max(b.regs.len());
     let scalar = a.ty.components[0].0;
+    if scalar.is_float() { return floating::arithmetic(builder, op, a, b, count, scalar); }
     let (ranges, origins): (Vec<_>, Vec<_>) = if scalar.is_integer() {
         (0..count).map(|i| {
             let ai = i % a.regs.len();
@@ -2815,8 +2816,6 @@ pub(super) fn arithmetic(builder: &Builder<'_>, op: &str, a: &Value, b: &Value) 
             };
             (range, inherited)
         }).unzip()
-    } else if scalar.is_float() {
-        ((0..count).map(|i| floating::arithmetic(op, a, b, i)).collect(), Vec::new())
     } else {
         (Vec::new(), Vec::new())
     };
@@ -2831,9 +2830,7 @@ pub(super) fn arithmetic(builder: &Builder<'_>, op: &str, a: &Value, b: &Value) 
         } else {
             Vec::new()
         },
-        domains: if scalar == Scalar::F32 {
-            (0..count).map(|i| floating::arithmetic_domains(builder, op, a, b, i)).collect()
-        } else if scalar == Scalar::U32 {
+        domains: if scalar == Scalar::U32 {
             (0..count)
                 .map(|i| arithmetic_domains(op, a, b, i))
                 .collect()
@@ -2842,9 +2839,6 @@ pub(super) fn arithmetic(builder: &Builder<'_>, op: &str, a: &Value, b: &Value) 
         },
         ..Proof::default()
     };
-    if scalar == Scalar::F32 {
-        floating::refine(&mut proof);
-    }
     if scalar.is_integer() {
         let shift_input = matches!(op, "<<" | ">>").then(|| Proof::capture(a));
         for (component, origin) in origins.into_iter().enumerate() {

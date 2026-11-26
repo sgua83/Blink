@@ -590,8 +590,7 @@ f64 float_multiply_up(f64 left,f64 right) on cpu {f64 product=left*right;return 
 f64 float_divide_up(f64 left,f64 right) on cpu {f64 quotient=left/right;return left==0.0f64 ? quotient : fp_next(quotient,1);}
 f64 fp_min_four(f64 a,f64 b,f64 c,f64 d) on cpu {return fp_min(fp_min(fp_min(a,b),c),d);}
 f64 fp_max_four(f64 a,f64 b,f64 c,f64 d) on cpu {return fp_max(fp_max(fp_max(a,b),c),d);}
-extern "C" FloatRange float_range_arithmetic(BinaryOperation operation,u32 width,BitRange left,BitRange right) on cpu {
-    FloatInterval a=float_finite(width,left);FloatInterval b=float_finite(width,right);
+FloatRange float_interval_arithmetic(BinaryOperation operation, u32 width, FloatInterval a, FloatInterval b) on cpu {
     if(a.present==0||b.present==0){return fp_unknown();}f64 lower=0.0f64;f64 upper=0.0f64;
     if(operation==BinaryOperation::Add){lower=float_sum_bound(width,a.lower,b.lower,1);upper=float_sum_bound(width,a.upper,b.upper,0);}
     else if(operation==BinaryOperation::Subtract){lower=float_sum_bound(width,a.lower,-b.upper,1);upper=float_sum_bound(width,a.upper,-b.lower,0);}
@@ -695,17 +694,26 @@ FloatArithmeticBound rounded_float_bound(FloatArithmeticBound bound, f64 factor,
         float_multiply_up(bound.reciprocal, factor), FloatArithmeticForm::Upper);
 }
 
-void emit_finite_float_bound(address context, FloatArithmeticHost host, FloatArithmeticBound bound) on cpu
-    requires nonzero(host.emit) {
-    // The upper fact cannot hide an overflowing f32 intermediate.
+void emit_finite_float_bound(address context, FloatArithmeticHost host, FloatArithmeticBound bound,
+    inout FloatRange result) on cpu requires nonzero(host.emit) {
+    // The same finite endpoint establishes the fact and narrows the result.
+    f64 limit = fp_maximum(32);
     f64 maximum = float_upper_maximum(bound.range, bound.scale, bound.offset, bound.reciprocal);
-    if (fp_finite(maximum) && maximum <= fp_maximum(32)) {
-        host.emit(context, bound);
+    if (!fp_finite(maximum) || maximum > limit) { return; }
+    host.emit(context, bound);
+    FloatRange range = float_interval(32, -limit, maximum);
+    if (range.state == 0) { return; }
+    if (result.state == 0) {
+        result = range;
+    } else if (result.state == 1) {
+        u64 lower = max(result.lower, range.lower);
+        u64 upper = min(result.upper, range.upper);
+        result = lower <= upper ? FloatRange(lower, upper, 1) : fp_empty();
     }
 }
 
 void float_shifted_domains(address context, FloatArithmeticHost host, u32 side, BinaryOperation op,
-    FloatInterval other) on cpu requires nonzero(host.next) requires nonzero(host.emit) {
+    FloatInterval other, inout FloatRange result) on cpu requires nonzero(host.next) requires nonzero(host.emit) {
     FloatArithmeticBound bound = host.next(context, side);
     while (bound.form != FloatArithmeticForm::End) {
         if (op == BinaryOperation::Add) {
@@ -715,16 +723,16 @@ void float_shifted_domains(address context, FloatArithmeticHost host, u32 side, 
             }
             bound = FloatArithmeticBound(bound.origin, bound.scalar, bound.range, bound.scale,
                 float_add_up(bound.offset, other.upper), bound.reciprocal, FloatArithmeticForm::Upper);
-            emit_finite_float_bound(context, host, rounded_float_bound(bound, 1.0f64 + fp_power(-23), fp_power(-149)));
+            emit_finite_float_bound(context, host, rounded_float_bound(bound, 1.0f64 + fp_power(-23), fp_power(-149)), result);
         } else if (bound.form == FloatArithmeticForm::Upper) {
             bound = rounded_float_bound(bound, other.upper, 0.0f64);
-            emit_finite_float_bound(context, host, rounded_float_bound(bound, 1.0f64 + fp_power(-23), fp_power(-149)));
+            emit_finite_float_bound(context, host, rounded_float_bound(bound, 1.0f64 + fp_power(-23), fp_power(-149)), result);
         }
         bound = host.next(context, side);
     }
 }
 
-void float_divided_domains(address context, FloatArithmeticHost host, f64 maximum) on cpu
+void float_divided_domains(address context, FloatArithmeticHost host, f64 maximum, inout FloatRange result) on cpu
     requires nonzero(host.rewind) requires nonzero(host.next) requires nonzero(host.same_scalar)
     requires nonzero(host.emit) {
     f64 minimum_positive = 3.0f64 * fp_power(-149);
@@ -733,7 +741,7 @@ void float_divided_domains(address context, FloatArithmeticHost host, f64 maximu
         if (divisor.form == FloatArithmeticForm::Cast && divisor.range.lower != 0u64) {
             f64 factor = float_divide_up(1.0f64 + 3.0f64 * fp_power(-23), 1.0f64 - float_conversion_error(divisor.range.upper));
             emit_finite_float_bound(context, host, FloatArithmeticBound(divisor.origin, divisor.scalar, divisor.range,
-                0.0f64, minimum_positive, float_multiply_up(maximum, factor), FloatArithmeticForm::Upper));
+                0.0f64, minimum_positive, float_multiply_up(maximum, factor), FloatArithmeticForm::Upper), result);
             host.rewind(context, 0);
             FloatArithmeticBound numerator = host.next(context, 0);
             while (numerator.form != FloatArithmeticForm::End) {
@@ -744,7 +752,7 @@ void float_divided_domains(address context, FloatArithmeticHost host, f64 maximu
                     if (range.lower <= range.upper) {
                         emit_finite_float_bound(context, host, FloatArithmeticBound(numerator.origin, numerator.scalar, range, 0.0f64,
                             float_add_up(float_multiply_up(numerator.scale, factor), minimum_positive),
-                            float_multiply_up(numerator.offset, factor), FloatArithmeticForm::Upper));
+                            float_multiply_up(numerator.offset, factor), FloatArithmeticForm::Upper), result);
                     }
                 }
                 numerator = host.next(context, 0);
@@ -754,7 +762,7 @@ void float_divided_domains(address context, FloatArithmeticHost host, f64 maximu
     }
 }
 
-void float_multiplied_domains(address context, FloatArithmeticHost host, u32 side) on cpu
+void float_multiplied_domains(address context, FloatArithmeticHost host, u32 side, inout FloatRange result) on cpu
     requires nonzero(host.rewind) requires nonzero(host.next) requires nonzero(host.same_scalar)
     requires nonzero(host.below) requires nonzero(host.emit) {
     u32 opposite = side ^ 1;
@@ -782,7 +790,7 @@ void float_multiplied_domains(address context, FloatArithmeticHost host, u32 sid
                             float_multiply_up(left.scale, right.offset),
                             float_add_up(float_multiply_up(left.scale, right.reciprocal), float_multiply_up(offset, right.offset)),
                             float_multiply_up(offset, right.reciprocal), FloatArithmeticForm::Upper);
-                        emit_finite_float_bound(context, host, rounded_float_bound(product, 1.0f64 + fp_power(-23), fp_power(-149)));
+                        emit_finite_float_bound(context, host, rounded_float_bound(product, 1.0f64 + fp_power(-23), fp_power(-149)), result);
                     }
                 }
                 right = host.next(context, opposite);
@@ -792,24 +800,28 @@ void float_multiplied_domains(address context, FloatArithmeticHost host, u32 sid
     }
 }
 
-extern "C" void float_arithmetic_domains(BinaryOperation op, u32 left_width, BitRange left,
-    u32 right_width, BitRange right, address context, FloatArithmeticHost host) on cpu
+extern "C" FloatRange float_arithmetic_proof(BinaryOperation op, u32 width, BitRange left, BitRange right,
+    bool with_domains, address context, FloatArithmeticHost host) on cpu
     requires nonzero(host.rewind) requires nonzero(host.next) requires nonzero(host.same_scalar)
     requires nonzero(host.below) requires nonzero(host.emit) {
-    FloatInterval a = float_finite(left_width, left);
-    FloatInterval b = float_finite(right_width, right);
-    if (a.present == 0 || b.present == 0 || a.lower < 0.0f64 || b.lower < 0.0f64) { return; }
-    if (op == BinaryOperation::Add) {
-        float_shifted_domains(context, host, 0, op, b);
-        float_shifted_domains(context, host, 1, op, a);
-    } else if (op == BinaryOperation::Multiply) {
-        if (b.lower == b.upper) { float_shifted_domains(context, host, 0, op, b); }
-        if (a.lower == a.upper) { float_shifted_domains(context, host, 1, op, a); }
-        float_multiplied_domains(context, host, 0);
-        float_multiplied_domains(context, host, 1);
-    } else if (op == BinaryOperation::Divide && b.lower > 0.0f64) {
-        float_divided_domains(context, host, a.upper);
+    FloatInterval a = float_finite(width, left);
+    FloatInterval b = float_finite(width, right);
+    FloatRange result = float_interval_arithmetic(op, width, a, b);
+    if (!with_domains || a.present == 0 || b.present == 0 || a.lower < 0.0f64 || b.lower < 0.0f64) {
+        return result;
     }
+    if (op == BinaryOperation::Add) {
+        float_shifted_domains(context, host, 0, op, b, result);
+        float_shifted_domains(context, host, 1, op, a, result);
+    } else if (op == BinaryOperation::Multiply) {
+        if (b.lower == b.upper) { float_shifted_domains(context, host, 0, op, b, result); }
+        if (a.lower == a.upper) { float_shifted_domains(context, host, 1, op, a, result); }
+        float_multiplied_domains(context, host, 0, result);
+        float_multiplied_domains(context, host, 1, result);
+    } else if (op == BinaryOperation::Divide && b.lower > 0.0f64) {
+        float_divided_domains(context, host, a.upper, result);
+    }
+    return result;
 }
 
 struct BitPrefix { bool present; u64 lower; u64 upper; };

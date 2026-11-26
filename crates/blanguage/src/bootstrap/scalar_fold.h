@@ -65,7 +65,6 @@ struct FloatCastFact { address origin; BitRange range; f64 scale; f64 offset; u3
 extern "C" FloatRange float_cast_range(ScalarEncoding source, ScalarEncoding target, BitRange range,
     address origin, address context, cfn<FloatCastRelation,address> next, cfn<void,address,FloatCastFact> emit) on cpu
     requires nonzero(next) requires nonzero(emit);
-extern "C" FloatRange float_range_arithmetic(BinaryOperation operation,u32 width,BitRange left,BitRange right) on cpu;
 // math: 1 min, 2 max, 3 abs, 4 floor, 5 log, 6 log2, 7 ceil; other operations remain unknown.
 extern "C" FloatRange float_math(u32 operation,u32 width,BitRange left,BitRange right) on cpu;
 extern "C" FloatRange float_sum_range(u32 width,BitRange range,u64 maximum) on cpu;
@@ -91,8 +90,8 @@ struct FloatArithmeticHost {
     cfn<bool,address,address,address,address> below;
     cfn<void,address,FloatArithmeticBound> emit;
 };
-extern "C" void float_arithmetic_domains(BinaryOperation op, u32 left_width, BitRange left,
-    u32 right_width, BitRange right, address context, FloatArithmeticHost host) on cpu
+extern "C" FloatRange float_arithmetic_proof(BinaryOperation op, u32 width, BitRange left, BitRange right,
+    bool with_domains, address context, FloatArithmeticHost host) on cpu
     requires nonzero(host.rewind) requires nonzero(host.next) requires nonzero(host.same_scalar)
     requires nonzero(host.below) requires nonzero(host.emit);
 

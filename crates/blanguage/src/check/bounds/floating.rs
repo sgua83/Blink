@@ -1,10 +1,9 @@
 //! 同一Proof区间集合中的有限浮点次序；不拥有运行资源或另一份事实表。
 use super::*;
-use crate::builtin_types::ScalarBinaryOp;
 use crate::ir::scalar_ranges::RangeInput;
 #[path="floating/scalar.rs"]
 mod scalar;
-pub(super) use scalar::{order,bits,comparison_possible,interval,bitcast,cast,arithmetic,math,sum,negate};
+pub(super) use scalar::{order,bits,comparison_possible,interval,bitcast,cast,math,sum,negate};
 
 unsafe extern "C" {
     #[link_name = "bootstrap.scalar_fold::float_upper_maximum"]
@@ -118,7 +117,7 @@ struct ArithmeticHost {
     rewind: unsafe extern "C" fn(ArithmeticSlot, u32),
     next: unsafe extern "C" fn(ArithmeticSlot, u32) -> ArithmeticBound,
     same_scalar: unsafe extern "C" fn(ArithmeticBorrow, ArithmeticBorrow) -> u32,
-    below: unsafe extern "C" fn(ArithmeticSlot, ArithmeticBorrow, ArithmeticBorrow, ArithmeticBorrow) -> bool,
+    below: unsafe extern "C" fn(ArithmeticSlot, ArithmeticBorrow, ArithmeticBorrow, ArithmeticBorrow) -> u32,
     emit: unsafe extern "C" fn(ArithmeticSlot, ArithmeticBound),
 }
 
@@ -130,11 +129,11 @@ struct ArithmeticDomains<'a, 'program> {
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.scalar_fold::float_arithmetic_domains"]
-    fn produce_arithmetic_domains(
-        op: ScalarBinaryOp, left_width: u32, left: BitRange, right_width: u32, right: BitRange,
-        context: ArithmeticSlot, host: ArithmeticHost,
-    );
+    #[link_name = "bootstrap.scalar_fold::float_arithmetic_proof"]
+    fn produce_arithmetic(
+        op: u32, width: u32, left: BitRange, right: BitRange,
+        with_domains: u32, context: ArithmeticSlot, host: ArithmeticHost,
+    ) -> scalar::NumericalRange;
 }
 
 unsafe extern "C" fn rewind_arithmetic_operand(context: ArithmeticSlot, side: u32) {
@@ -159,11 +158,11 @@ unsafe extern "C" fn next_arithmetic_bound(context: ArithmeticSlot, side: u32) -
 
 unsafe extern "C" fn arithmetic_origin_below(
     context: ArithmeticSlot, left: ArithmeticBorrow, right: ArithmeticBorrow, scalar: ArithmeticBorrow,
-) -> bool {
+) -> u32 {
     let state = unsafe { &*context.cast::<ArithmeticDomains<'_, '_>>() };
-    unsafe {
+    u32::from(unsafe {
         state.builder.integer_below(*left.cast::<ValueIdentity>(), *right.cast::<ValueIdentity>(), *scalar.cast::<Scalar>())
-    }
+    })
 }
 
 unsafe extern "C" fn emit_arithmetic_bound(context: ArithmeticSlot, value: ArithmeticBound) {
@@ -179,36 +178,41 @@ unsafe extern "C" fn emit_arithmetic_bound(context: ArithmeticSlot, value: Arith
     state.result.insert(IndexDomain::Floating(bound));
 }
 
-pub(super) fn arithmetic_domains(builder: &Builder<'_>, op: &str, a: &Value, b: &Value, component: usize) -> Domains {
-    let Some(operation @ (ScalarBinaryOp::Add | ScalarBinaryOp::Multiply | ScalarBinaryOp::Divide)) =
-        scalar::arithmetic_operation(op)
-    else { return Domains::new(); };
-    let (ai, bi) = (component % a.regs.len(), component % b.regs.len());
-    let domains = [a.proof.domains(ai), b.proof.domains(bi)];
-    let inputs: [&Domains; 2] = domains.each_ref().map(|domains| domains.as_ref());
-    if inputs.iter().all(|domains| domains.is_empty()) { return Domains::new(); }
-    let mut state = ArithmeticDomains { builder, inputs, iterators: inputs.map(Domains::iter), result: Domains::new() };
-    unsafe {
-        produce_arithmetic_domains(
-            operation,
-            a.ty.components[ai].0.bit_width(), ranges(a, ai).hull().into(),
-            b.ty.components[bi].0.bit_width(), ranges(b, bi).hull().into(),
-            std::ptr::from_mut(&mut state).cast(),
-            ArithmeticHost {
-                rewind: rewind_arithmetic_operand, next: next_arithmetic_bound,
-                same_scalar: fact_fields::same_scalar, below: arithmetic_origin_below, emit: emit_arithmetic_bound,
-            },
-        );
+pub(super) fn arithmetic(
+    builder: &Builder<'_>, op: &str, a: &Value, b: &Value, count: usize, scalar: Scalar,
+) -> Proof {
+    let tracks_domains = scalar == Scalar::F32;
+    let Some(operation) = scalar::arithmetic_operation(op) else {
+        let mut proof = Proof::default();
+        proof.ranges.resize_with(count, ScalarRanges::default);
+        if tracks_domains { proof.domains.resize_with(count, Domains::new); }
+        return proof;
+    };
+    let operation = operation as u32;
+    let width = scalar.bit_width();
+    let mut proof = Proof {
+        ranges: Vec::with_capacity(count),
+        domains: Vec::with_capacity(if tracks_domains { count } else { 0 }),
+        ..Proof::default()
+    };
+    let empty = Domains::new();
+    for component in 0..count {
+        let (ai, bi) = (component % a.regs.len(), component % b.regs.len());
+        let inputs = [a.proof.domains.get(ai).unwrap_or(&empty), b.proof.domains.get(bi).unwrap_or(&empty)];
+        let with_domains = tracks_domains && inputs.iter().any(|domains| !domains.is_empty());
+        let mut state = ArithmeticDomains { builder, inputs, iterators: inputs.map(Domains::iter), result: Domains::new() };
+        let range = unsafe {
+            produce_arithmetic(
+                operation, width, ranges(a, ai).hull().into(), ranges(b, bi).hull().into(),
+                u32::from(with_domains), std::ptr::from_mut(&mut state).cast(),
+                ArithmeticHost {
+                    rewind: rewind_arithmetic_operand, next: next_arithmetic_bound,
+                    same_scalar: fact_fields::same_scalar, below: arithmetic_origin_below, emit: emit_arithmetic_bound,
+                },
+            )
+        };
+        proof.ranges.push(scalar::decoded(range));
+        if tracks_domains { proof.domains.push(state.result); }
     }
-    state.result
-}
-pub(super) fn refine(proof: &mut Proof) {
-    for (component,domains) in proof.domains.iter().enumerate() {
-        for domain in domains {
-            if let IndexDomain::Floating(bound) = domain && bound.form == FloatingForm::Upper {
-                let range = upper_range(bound.maximum());
-                proof.ranges[component] = proof.ranges[component].intersection(&range);
-            }
-        }
-    }
+    proof
 }

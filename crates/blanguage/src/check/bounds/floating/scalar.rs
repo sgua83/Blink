@@ -2,13 +2,14 @@
 use super::*;
 use std::{collections::btree_set, ffi::c_void, ptr};
 use crate::ast::TextureFormat;
+use crate::builtin_types::ScalarBinaryOp;
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct RawRange { lower: Bits, upper: Bits }
 #[repr(C)]
 struct TextureSampleBounds { x: BitRange, y: BitRange, z: BitRange, lod: BitRange, has_z: u32 }
 #[repr(C)]
-struct NumericalRange { lower: Bits, upper: Bits, state: u32 }
+pub(super) struct NumericalRange { lower: Bits, upper: Bits, state: u32 }
 #[repr(C)]
 struct Pieces { first: RawRange, second: RawRange, count: u32 }
 #[repr(C)]
@@ -19,7 +20,7 @@ fn encoding(value: Scalar) -> Encoding {
         else if value.is_signed() { 1 } else { 0 }, width: value.bit_width() }
 }
 fn raw(range: (Bits, Bits)) -> RawRange { RawRange { lower: range.0, upper: range.1 } }
-fn decoded(value: NumericalRange) -> ScalarRanges {
+pub(super) fn decoded(value: NumericalRange) -> ScalarRanges {
     match value.state {
         1 => ScalarRanges::interval(value.lower, value.upper),
         2 => ScalarRanges::empty(),
@@ -42,7 +43,6 @@ unsafe extern "C" {
         next: unsafe extern "C" fn(*mut c_void) -> FloatCastRelation,
         emit: unsafe extern "C" fn(*mut c_void, FloatCastFact),
     ) -> NumericalRange;
-    #[link_name="bootstrap.scalar_fold::float_range_arithmetic"] fn source_arithmetic(operation:u32,width:u32,left:RawRange,right:RawRange)->NumericalRange;
     #[link_name="bootstrap.scalar_fold::float_math"] fn source_math(operation:u32,width:u32,left:RawRange,right:RawRange)->NumericalRange;
     #[link_name="bootstrap.scalar_fold::float_sum_range"] fn source_sum(width:u32,range:RawRange,maximum:Bits)->NumericalRange;
     #[link_name = "bootstrap.scalar_fold::texture_sample_range"]
@@ -155,11 +155,6 @@ pub(super) fn arithmetic_operation(op: &str) -> Option<ScalarBinaryOp> {
         "/" => Some(ScalarBinaryOp::Divide),
         _ => None,
     }
-}
-pub(in crate::check::bounds) fn arithmetic(op:&str,a:&Value,b:&Value,component:usize)->ScalarRanges {
-    let operation = arithmetic_operation(op).map_or(u32::MAX, |op| op as u32);
-    let left=super::ranges(a,component%a.regs.len());let right=super::ranges(b,component%b.regs.len());
-    decoded(unsafe{source_arithmetic(operation,a.ty.components[0].0.bit_width(),raw(left.hull()),raw(right.hull()))})
 }
 pub(in crate::check::bounds) fn math(op:MathOp,args:&[Value],component:usize)->ScalarRanges {
     let a=&args[0];let left=super::ranges(a,component%a.regs.len());
