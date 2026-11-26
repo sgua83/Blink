@@ -893,7 +893,8 @@ impl Builder<'_> {
             if !self.application_entry() {
                 // This range has no application caller whose later closure could consume the call.
                 // Consume the already closed imported contract with its actual CPU inputs now.
-                let (known, outputs) = residency_contracts(self.world, &self.functions, None)?;
+                let (decoded, outputs) = residency_contracts(self.world, &self.functions, None)?;
+                let known = ResidencyContracts { units: &self.functions.units, decoded: &decoded };
                 if residency::check_calls(std::iter::once(&call),&known,&outputs)? {
                     return self.fail(span,"B270","CPU范围尚不能交接该已编译函数所需的条件存储位置");
                 }
@@ -1848,6 +1849,18 @@ fn publish_views(module: &mut Module, outputs: ViewOutputs) {
 }
 // Borrow current contracts; own decoded dependencies from compiled definitions,
 // including private callees without reconstructing their source declarations.
+pub(super) struct ResidencyContracts<'a> {
+    units: &'a Units,
+    decoded: &'a BTreeMap<String, residency::Contract>,
+}
+
+impl<'a> ResidencyContracts<'a> {
+    pub(super) fn get(&self, name: &str) -> &'a residency::Contract {
+        self.units.get(name).and_then(Option::as_ref)
+            .map_or_else(|| &self.decoded[name], |unit| &unit.contract.residency)
+    }
+}
+
 fn residency_contracts(
     world: &World,
     module: &Module,
@@ -1855,14 +1868,18 @@ fn residency_contracts(
 ) -> Result<(BTreeMap<String, residency::Contract>, residency::Outputs)> {
     use crate::module::codec::Decode;
     use std::borrow::Cow;
-    let mut contracts=module.units.iter().filter_map(|(name,unit)|unit.as_ref().map(|unit|(name.clone(),Cow::Borrowed(&unit.contract)))).collect::<BTreeMap<_,_>>();
-    let mut pending = contracts.keys().map(|name| {
-        let owner = world.declarations.compiled_function(name).map(|(_, declaration, _)| declaration);
-        (name.clone(), owner)
+    let mut decoded = BTreeMap::<String, Contract>::new();
+    let mut pending = module.units.iter().filter_map(|(name, unit)| {
+        unit.as_ref().map(|_| {
+            let owner = world.declarations.compiled_function(name).map(|(_, declaration, _)| declaration);
+            (Cow::Borrowed(name.as_str()), owner)
+        })
     }).collect::<Vec<_>>();
     while let Some((name, owner)) = pending.pop() {
-        for callee in contracts[&name].residency_dependencies() {
-            if contracts.contains_key(&callee) {
+        let contract = module.units.get(name.as_ref()).and_then(Option::as_ref)
+            .map_or_else(|| &decoded[name.as_ref()], |unit| &unit.contract);
+        for callee in contract.residency_dependencies() {
+            if module.units.get(&callee).is_some_and(Option::is_some) || decoded.contains_key(&callee) {
                 continue;
             }
             // Private dependencies are read from the compiled call's own contract table.
@@ -1885,12 +1902,17 @@ fn residency_contracts(
             if let Some(imports) = imports.as_deref_mut() {
                 imports.insert(callee.clone(), bytes.to_vec());
             }
-            contracts.insert(callee.clone(), Cow::Owned(contract));
-            pending.push((callee, Some(definition)));
+            decoded.insert(callee.clone(), contract);
+            pending.push((Cow::Owned(callee), Some(definition)));
         }
     }
-    let outputs=residency::output_sources(contracts.iter().map(|(name,contract)|(name.as_str(),contract.returned.as_ref(),contract.written.as_slice())));
-    Ok((contracts.into_iter().map(|(name,contract)|(name,match contract{Cow::Borrowed(contract)=>contract.residency.clone(),Cow::Owned(contract)=>contract.residency})).collect(),outputs))
+    let local = module.units.iter().filter_map(|(name, unit)| {
+        unit.as_ref().map(|unit| (name, &unit.contract))
+    });
+    let outputs = residency::output_sources(local.chain(&decoded).map(|(name, contract)| {
+        (name.as_str(), contract.returned.as_ref(), contract.written.as_slice())
+    }));
+    Ok((decoded.into_iter().map(|(name, contract)| (name, contract.residency)).collect(), outputs))
 }
 // 每个原函数持有自身Uses／Calls；调用者消费实际实参，不穷举递归后代。
 fn resolve_residencies(
@@ -1905,13 +1927,17 @@ fn resolve_residencies(
         residency::Residency::Selected(_,a,b)=>unbound(a)&&unbound(b),
     }}
     resolve_views(world,module,None)?;
-    let (mut known, outputs) = residency_contracts(world, module, imports)?;
-    for(name,unit)in &mut module.units{let unit=unit.as_mut().unwrap();if unit.function.is_none(){continue;}
+    let (decoded, outputs) = residency_contracts(world, module, imports)?;
+    for unit in module.units.values_mut() {
+        let unit = unit.as_mut().unwrap();
+        if unit.function.is_none() { continue; }
         let parameters=residency::input_parameters(&unit.view_model.parameters,unit.contract.inputs.len());
         unit.contract.residency=residency::infer(&unit.residency,&parameters,&outputs,&unit.source,unit.span)?;
-        known.insert(name.clone(),unit.contract.residency.clone());
     }
-    for(name,unit)in &mut module.units{let unit=unit.as_mut().unwrap();if unit.function.is_none(){continue;}
+    let known = ResidencyContracts { units: &module.units, decoded: &decoded };
+    for (name, unit) in &module.units {
+        let unit = unit.as_ref().unwrap();
+        if unit.function.is_none() { continue; }
         let parameters=residency::input_parameters(&unit.view_model.parameters,unit.contract.inputs.len());
         let frame_width=application::pointer_type().components.len();
         let pending=|id:&ValueIdentity|parameters.get(id).and_then(|proof|proof.known_identity(0)).is_some_and(|id|match id{
@@ -1924,6 +1950,10 @@ fn resolve_residencies(
             && !bounds::Clause::any_scalar_identity([&call.path],&pending)
         ),&known,&outputs)?;
         residency::check_loops(name,&unit.residency,&unit.contract.residency,&parameters,&outputs,&known,unit.input_access.len())?;
+    }
+    for unit in module.units.values_mut() {
+        let unit = unit.as_mut().unwrap();
+        if unit.function.is_none() { continue; }
         for written in &mut unit.contract.written{if let Some(value)=written{if !residency::resolve_returned(value,&outputs){*written=None;}}}
         if let Some(returned)=&mut unit.contract.returned{if !residency::resolve_returned(returned,&outputs){unit.contract.returned=None;}}
     }

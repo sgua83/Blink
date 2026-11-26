@@ -694,14 +694,14 @@ struct QueryFrame<'a> {
 }
 
 impl<'a> QueryFrame<'a> {
-    fn new(call: Cow<'a, Call>, key: Rc<Vec<u8>>, known: &'a BTreeMap<String, Contract>) -> Self {
-        let contract = &known[&call.function];
+    fn new(call: Cow<'a, Call>, key: Rc<Vec<u8>>, known: &'a super::native_function::ResidencyContracts<'a>) -> Self {
+        let contract = known.get(&call.function);
         Self { call, key, required: &contract.required, children: contract.calls.iter() }
     }
 }
 
 struct ResidencyQuery<'a> {
-    known: &'a BTreeMap<String, Contract>,
+    known: &'a super::native_function::ResidencyContracts<'a>,
     outputs: &'a Outputs,
     wanted: Option<&'a Input>,
     source: &'a Source,
@@ -820,7 +820,7 @@ unsafe extern "C" fn store_query_child(context: Context, child: Borrowed, path: 
     1
 }
 
-fn query(call: &Call, known: &BTreeMap<String, Contract>, outputs: &Outputs, wanted: Option<&Input>,
+fn query(call: &Call, known: &super::native_function::ResidencyContracts<'_>, outputs: &Outputs, wanted: Option<&Input>,
     source: &Source, span: Span, deferred: bool) -> Result<(Requirements, bool)> {
     let required = Requirements::new();
     if !call.path.possible() {
@@ -843,7 +843,7 @@ fn query(call: &Call, known: &BTreeMap<String, Contract>, outputs: &Outputs, wan
         None => Ok((query.required, query.deferred)),
     }
 }
-pub(super) fn check_calls<'a>(calls:impl Iterator<Item=&'a Call>,known:&BTreeMap<String,Contract>,outputs:&Outputs)->Result<bool>{
+pub(super) fn check_calls<'a>(calls:impl Iterator<Item=&'a Call>,known:&super::native_function::ResidencyContracts<'_>,outputs:&Outputs)->Result<bool>{
     let mut deferred=false;
     for call in calls{
         deferred=query(call,known,outputs,None,call.source.as_ref().unwrap(),call.span,deferred)?.1;
@@ -1121,7 +1121,7 @@ where
     };
     unsafe { compare_residency(ptr::from_mut(leaf).cast(), pair, compare_host::<F>()) != 0 }
 }
-pub(super) fn check_loops(name:&str,inputs:&Inputs,contract:&Contract,parameters:&BTreeMap<ValueIdentity,bounds::Proof>,outputs:&Outputs,known:&BTreeMap<String,Contract>,parameter_count:usize)->Result<()>{
+pub(super) fn check_loops(name:&str,inputs:&Inputs,contract:&Contract,parameters:&BTreeMap<ValueIdentity,bounds::Proof>,outputs:&Outputs,known:&super::native_function::ResidencyContracts<'_>,parameter_count:usize)->Result<()>{
     let mut required=contract.required.clone();
     let mut root=None;
     for usage in &inputs.uses{if let Use::Same{before,after,source,span,..}=usage{
