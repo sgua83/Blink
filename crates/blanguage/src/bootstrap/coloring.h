@@ -5,7 +5,6 @@ import bootstrap.scalar_fold;
 import bootstrap.call_layout;
 import bootstrap.x64_instruction;
 
-struct ColorPlace { u64 value; u32 kind; u8 width; u8 floating; };
 struct ColorLayout { u64 end; u32 gpr; u32 xmm; };
 
 // One graph owns its pairs while building and its ordered rows after sealing.

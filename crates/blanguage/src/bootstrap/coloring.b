@@ -5,13 +5,6 @@ import bootstrap.stage_fusion;
 import bootstrap.x64_instruction;
 import bootstrap.call_layout;
 
-const u32 UNSEEN = 0;
-const u32 IMMEDIATE = 1;
-const u32 GPR = 2;
-const u32 XMM = 3;
-const u32 STACK = 4;
-const u32 VARYING = 5;
-
 extern "C" handle GetProcessHeap() on cpu from "KERNEL32.dll";
 extern "C" address HeapAlloc(handle heap,u32 flags,usize bytes) on cpu from "KERNEL32.dll";
 extern "C" address HeapReAlloc(handle heap,u32 flags,address data,usize bytes) on cpu from "KERNEL32.dll";
@@ -226,7 +219,7 @@ u64 layout_spills(address places, u64 count, address scratch, u64 spills, u64 ba
     u64 id = 0u64;
     while (id < count) {
         ColorPlace place = unsafe_position<ColorPlace>(place_at(places, id));
-        if (place.kind == STACK) {
+        if (place.kind == ColorPlaceKind::Stack) {
             address row = order_at(scratch, place.value);
             u64 width = u64(place.width);
             if (unsafe_position<u64>(row) < width) {
@@ -249,7 +242,7 @@ u64 layout_spills(address places, u64 count, address scratch, u64 spills, u64 ba
     id = 0u64;
     while (id < count) {
         address row = place_at(places, id);
-        if (unsafe_position<ColorPlace>(row).kind == STACK) {
+        if (unsafe_position<ColorPlace>(row).kind == ColorPlaceKind::Stack) {
             slot = unsafe_position<ColorPlace>(row).value;
             unsafe_position<ColorPlace>(row).value = unsafe_position<u64>(order_at(scratch, slot));
         }
@@ -266,7 +259,7 @@ u64 packet_order(address graph,u64 count,address places,address order,Span uses)
         bool index_only = id < uses.count && unsafe_position<u8>(
             unsafe_address(address_bits(uses.data) + id * u64(uses.stride))) == u8(1);
         unsafe_position<ColorPlace>(place_at(places, id)) =
-            ColorPlace(0u64, UNSEEN, index_only ? u8(0) : u8(16), u8(0));
+            ColorPlace(0u64, ColorPlaceKind::Unseen, index_only ? u8(0) : u8(16), u8(0));
         if (index_only) {
             first_skipped = id < first_skipped ? id : first_skipped;
         } else {
@@ -324,7 +317,7 @@ ColorLayout color_locations(address graph,u64 count,address places,u32 mode,Span
         while (id < count) {
             ColorPlace place = unsafe_position<ColorPlace>(place_at(places, id));
             // Addressable fields receive their stack positions after coloring.
-            if (place.kind != IMMEDIATE && place.width != 0) {
+            if (place.kind != ColorPlaceKind::Immediate && place.width != 0) {
                 ColorNode facts = unsafe_position<ColorNode>(node_at(graph,id));
                 unsafe_position<array<u64,3>>(order_at(order, pending)) = array<u64,3>(facts.weight, facts.degree, id);
                 pending += 1u64;
@@ -341,14 +334,14 @@ ColorLayout color_locations(address graph,u64 count,address places,u32 mode,Span
         id = unsafe_position<array<u64,3>>(order_at(order, at))[2];
         ColorNode facts = unsafe_position<ColorNode>(node_at(graph,id));
         address destination = place_at(places, id);
-        u32 bank = GPR;
+        ColorPlaceKind bank = ColorPlaceKind::Gpr;
         u32 allowed = mode == 1 ? 0x3e0 : 0xfe0;
         if (facts.across_call != 0u64) { allowed &= 0xe0; }
         if (unsafe_position<ColorPlace>(destination).floating != 0) {
-            bank = XMM;
+            bank = ColorPlaceKind::Xmm;
             allowed = facts.across_call != 0u64 ? 0xffc0 : 0xfffc;
         }
-        if (mode == 2) { bank = XMM; allowed = 0xfff0; }
+        if (mode == 2) { bank = ColorPlaceKind::Xmm; allowed = 0xfff0; }
 
         u32 used = 0;
         u64 visit = at + 1u64;
@@ -357,7 +350,7 @@ ColorLayout color_locations(address graph,u64 count,address places,u32 mode,Span
             u64 neighbor=neighbor_at(data.adjacency,facts.edge_start+edge);
             ColorPlace place = unsafe_position<ColorPlace>(place_at(places, neighbor));
             if (place.kind == bank) { used |= 1 << u32(place.value); }
-            if (place.kind == STACK) {
+            if (place.kind == ColorPlaceKind::Stack) {
                 unsafe_position<u64>(spill_mark(order, u32(place.value))) = visit;
             }
             edge+=1u64;
@@ -378,7 +371,7 @@ ColorLayout color_locations(address graph,u64 count,address places,u32 mode,Span
             u32 candidate = 0;
             while (candidate < 16) {
                 u32 reg = candidate;
-                if (bank == GPR) {
+                if (bank == ColorPlaceKind::Gpr) {
                     if (candidate >= 7) { break; }
                     reg = candidate < 4 ? candidate + 8 : (candidate < 6 ? candidate + 2 : 5);
                 }
@@ -389,7 +382,7 @@ ColorLayout color_locations(address graph,u64 count,address places,u32 mode,Span
         if (chosen != 16) {
             unsafe_position<ColorPlace>(destination).value = u64(chosen);
             unsafe_position<ColorPlace>(destination).kind = bank;
-            if (bank == GPR) { saved_gpr |= (1 << chosen) & 0xe0; }
+            if (bank == ColorPlaceKind::Gpr) { saved_gpr |= (1 << chosen) & 0xe0; }
             else { saved_xmm |= (1 << chosen) & 0xffc0; }
         } else {
             u32 slot = 0;
@@ -403,7 +396,7 @@ ColorLayout color_locations(address graph,u64 count,address places,u32 mode,Span
                 spills += 1;
             }
             unsafe_position<ColorPlace>(destination).value = u64(slot);
-            unsafe_position<ColorPlace>(destination).kind = STACK;
+            unsafe_position<ColorPlace>(destination).kind = ColorPlaceKind::Stack;
         }
         at += 1u64;
     }
@@ -454,7 +447,7 @@ extern "C" u64 place_private(address places, u64 data_end, usize registers, addr
             address offset = unsafe_address(address_bits(offsets.data) + u64(index) * u64(offsets.stride));
             address place = place_at(places, u64(first + index));
             unsafe_position<ColorPlace>(place).value = base + u64(unsafe_position<u32>(offset));
-            unsafe_position<ColorPlace>(place).kind = STACK;
+            unsafe_position<ColorPlace>(place).kind = ColorPlaceKind::Stack;
             index += 1u64;
         }
         end = base + u64(declaration.size);
@@ -462,13 +455,13 @@ extern "C" u64 place_private(address places, u64 data_end, usize registers, addr
 }
 
 extern "C" void record_definition(address place, u32 literal, u64 bits) on cpu {
-    u32 kind = unsafe_position<ColorPlace>(place).kind;
-    if (literal != 0 && (kind == UNSEEN
-        || (kind == IMMEDIATE && unsafe_position<ColorPlace>(place).value == bits))) {
-        unsafe_position<ColorPlace>(place).kind = IMMEDIATE;
+    ColorPlaceKind kind = unsafe_position<ColorPlace>(place).kind;
+    if (literal != 0 && (kind == ColorPlaceKind::Unseen
+        || (kind == ColorPlaceKind::Immediate && unsafe_position<ColorPlace>(place).value == bits))) {
+        unsafe_position<ColorPlace>(place).kind = ColorPlaceKind::Immediate;
         unsafe_position<ColorPlace>(place).value = bits;
     } else {
-        unsafe_position<ColorPlace>(place).kind = VARYING;
+        unsafe_position<ColorPlace>(place).kind = ColorPlaceKind::Varying;
     }
 }
 

@@ -24,14 +24,14 @@ pub(super) struct Allocation {
     registers: usize,
     layout: ColorLayout,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum PacketPlace {
-    Register(u8),
-    Stack(u32),
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(super) struct PacketPositions {
+    rows: Span,
+    registers: usize,
 }
 pub(super) struct PacketAllocation {
-    locations: Span,
-    registers: usize,
+    pub(super) positions: PacketPositions,
     layout: ColorLayout,
 }
 #[repr(C)]
@@ -203,13 +203,6 @@ impl ColorPlace {
             _ => unreachable!("unplaced scalar"),
         }
     }
-    fn packet(self) -> PacketPlace {
-        match self.kind {
-            Self::XMM => PacketPlace::Register(self.value as u8),
-            Self::STACK => PacketPlace::Stack(self.value as u32),
-            _ => unreachable!("unplaced packet"),
-        }
-    }
 }
 
 
@@ -287,19 +280,12 @@ impl Allocation {
 impl PacketAllocation {
     // The result transfers the B color table and all its initialized rows.
     pub(super) unsafe fn from_b(registers: usize, locations: Span, layout: ColorLayout) -> Self {
-        Self { locations, registers, layout }
-    }
-    pub fn location(&self, slot: PrivateSlot) -> PacketPlace {
-        let locations = unsafe { self.locations.as_slice::<ColorPlace>() };
-        locations[match slot {
-            PrivateSlot::Register(r) => r,
-            PrivateSlot::Local(s) => self.registers + s,
-        }].packet()
+        Self { positions: PacketPositions { rows: locations, registers }, layout }
     }
 }
 impl Drop for PacketAllocation {
     fn drop(&mut self) {
-        unsafe { packet_colors_drop(self.locations) };
+        unsafe { packet_colors_drop(self.positions.rows) };
     }
 }
 impl Frame {

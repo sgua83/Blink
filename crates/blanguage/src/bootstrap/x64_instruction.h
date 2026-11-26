@@ -322,20 +322,24 @@ enum PacketPlanOperation:u32 {
 struct PacketPlanDecision {
     PacketPlanOperation operation;u32 uniform_count;PacketAddress dataset;PacketViewAddress view;PacketMathOperation math;
 };
+enum ColorPlaceKind:u32 { Unseen=0; Immediate=1; Gpr=2; Xmm=3; Stack=4; Varying=5; };
+struct ColorPlace { u64 value; ColorPlaceKind kind; u8 width; u8 floating; };
+// The packet emission context begins with the original color table and local base.
+struct PacketPositions { Span rows; usize registers; };
 struct PacketLayout { u32 sparse; u32 slots; u32 buffer_bytes; u32 stride_field; };
 struct PacketBodyHost {
     ControlHost control;
-    cfn<MoveLocation,address,usize> local;
     cfn<ScalarCursor,address> mark;
     cfn<void,address,address,ScalarCursor> publish;
     cfn<NativeCodeBuffer,address,u64> reserve;
     cfn<void,address,u64> commit;
-    ScalarValueHost values;
+    Host ir;
+    cfn<ScalarEncoding,address,usize> ensures memory(read) scalar;
 };
 extern "C" void emit_packet_body(address context, address emitter, Span code, ControlTargets targets, PacketLayout layout, PacketBodyHost host) on cpu
-    requires nonzero(host.local) requires nonzero(host.mark) requires nonzero(host.publish)
+    requires nonzero(host.mark) requires nonzero(host.publish)
     requires nonzero(host.reserve) requires nonzero(host.commit)
-    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location) requires nonzero(host.values.scalar)
+    requires nonzero(host.ir.inspect) requires nonzero(host.scalar)
     requires nonzero(host.control.emit) requires nonzero(host.control.load) requires nonzero(host.control.buffer)
     requires nonzero(host.control.commit);
 
@@ -367,8 +371,9 @@ extern "C" RangeEnd finish_range(address image, u64 at, u64 begin, u64 exit_fiel
     u64 skip_field, u8 step) on cpu;
 
 // Packet inputs use their original allocated XMM/stack lanes; no source is retained.
-// packet_lane needs 16 bytes; either packet view entry needs 64 bytes.
-extern "C" u64 packet_lane(MoveLocation src, u8 lane, u8 gpr, address output) on cpu;
+// The condition emits the first packet lane into EAX and needs 16 output bytes.
+extern "C" u64 packet_condition(address context, usize register, address output) on cpu;
+// Either packet view entry needs 64 bytes.
 extern "C" AddressEncoding packet_view_memory(u8 base, MoveLocation index, u8 lane, u64 stride, u32 offset, address output) on cpu;
 extern "C" AddressEncoding packet_view_memory_dynamic(u8 base, MoveLocation index, MoveLocation low, MoveLocation high, u8 lane, u32 offset, address output) on cpu;
 
