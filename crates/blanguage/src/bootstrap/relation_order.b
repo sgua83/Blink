@@ -402,3 +402,48 @@ extern "C" usize prune_identity_feedback(address graph,address edges,usize count
     }
     return retained;
 }
+
+bool round_unchanged(address context, usize count, u32 paths, RoundHost host) on cpu
+    requires nonzero(host.equivalent)
+{
+    usize index = 0u64;
+    while (index < count) {
+        if (host.equivalent(context,index,paths) == 0) { return false; }
+        index += 1u64;
+    }
+    return true;
+}
+
+extern "C" u32 solve_round(address context, RoundSchedule schedule, u32 initial, RoundHost host) on cpu
+    requires nonzero(host.evaluate) requires nonzero(host.next_variable) requires nonzero(host.observe)
+    requires nonzero(host.equivalent) requires nonzero(host.forget)
+{
+    usize index = initial != 0 ? 0u64 : schedule.stable;
+    while (index < schedule.count) {
+        usize id = unsafe_position<usize>(cell(schedule.ordered,index,8u64));
+        host.evaluate(context,id,0);
+        index += 1u64;
+    }
+
+    usize active = 0u64;
+    usize variable = host.next_variable(context);
+    while (variable != WALK_END) {
+        if (initial != 0 || unsafe_position<u8>(cell(schedule.fixed_inputs,variable,1u64)) == u8(0)) {
+            host.evaluate(context,variable,1);
+            active += 1u64;
+        }
+        variable = host.next_variable(context);
+    }
+
+    host.observe(context);
+    if (round_unchanged(context,active,0,host) && round_unchanged(context,active,1,host)) {
+        return 1;
+    }
+
+    index = schedule.stable;
+    while (index < schedule.count) {
+        host.forget(context,unsafe_position<usize>(cell(schedule.ordered,index,8u64)));
+        index += 1u64;
+    }
+    return 0;
+}

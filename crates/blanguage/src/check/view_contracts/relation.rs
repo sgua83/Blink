@@ -992,8 +992,7 @@ impl Graph {
         let loop_scopes = self.inputs.iter().filter_map(|(input, &node)| {
             evaluation.function.history.get(&input.level).map(|history| (node, (input.level, history)))
         }).collect::<BTreeMap<_, _>>();
-        let EvaluationPlan { ordered, stable, fixed_inputs, .. } = self.evaluation_plan(reachable.iter().copied(), true);
-        let feedback = &ordered[stable..];
+        let plan = self.evaluation_plan(reachable.iter().copied(), true);
         let mut variables = self.variables.intersection(&reachable)
             .map(|&id| (id, Borrow::default())).collect::<BTreeMap<_, _>>();
         let mut values = BTreeMap::new();
@@ -1019,61 +1018,133 @@ impl Graph {
                 variables: &variables,
                 values,
             };
-            let scheduled = if initial { ordered.as_slice() } else { feedback };
-            for &id in scheduled {
-                let value = query.definition(id, &mut scope);
-                query.values.insert(id, value);
-            }
-            // A fixed input has no reads or dependencies that can change on a backedge.
-            let next = variables.keys().copied().filter(|&id| initial || fixed_inputs[id] == 0)
-                .map(|id| {
-                    let mut value = query.definition(id, &mut scope);
-                    if let Some((level, history)) = loop_scopes.get(&id) {
-                        // A carried source can come from any earlier iteration.
-                        // Its local predicates do not describe the current test.
-                        let bindings = bounds::Clause::scalar_identities(value.sources.paths()).into_iter()
-                            .filter(|identity| !match identity {
-                                ValueIdentity::Register(reg) | ValueIdentity::TaskControl(reg)
-                                | ValueIdentity::TaskCompletion(reg, _) => history.registers.contains(reg),
-                                ValueIdentity::MemoryValue(memory, _) => history.uses.contains(memory),
-                                ValueIdentity::LoopValue(scope, _) => scope == level || evaluation.function.history.get(scope)
-                                    .is_some_and(|inner| inner.registers.start >= history.registers.start
-                                        && inner.registers.end <= history.registers.end),
-                                _ => false,
-                            })
-                            .map(|identity| (identity, bounds::Proof::default().with_identity(identity)))
-                            .collect();
-                        value = value.guards_at_call(&bindings);
-                    }
-                    (id, value)
-                }).collect::<BTreeMap<_, _>>();
-            if let Some(observe) = scope.known.observe {
-                use crate::compiler::{AnalysisStorage, BorrowSolveStorage};
-                observe(scope.state.name, BorrowSolveStorage::Relation {
-                    root,
-                    nodes: AnalysisStorage::vector(&self.nodes),
-                    frames: AnalysisStorage::vector(&self.frames),
-                    resolved: AnalysisStorage::entries::<usize, Borrow>(query.values.len(), None),
-                    previous_inputs: AnalysisStorage::entries::<usize, Borrow>(variables.len(), None),
-                    next_inputs: AnalysisStorage::entries::<usize, Borrow>(next.len(), None),
-                });
-            }
-            if next.iter().all(|(id, value)| value.sources.same_sources(&variables[id].sources))
-                && next.iter().all(|(id, value)| value.sources.equivalent_paths(&variables[id].sources))
-            {
+            let (converged, next) = {
+                let mut round = RelationRound {
+                    root, query: &mut query, scope: &mut scope, loop_scopes: &loop_scopes,
+                    variables: variables.keys(), next: Vec::new(),
+                };
+                let converged = round.run(&plan, initial);
+                (converged, round.next)
+            };
+            if converged {
                 let value = query.node(root);
                 let residual = std::cell::OnceCell::new();
                 return self.rebind(value, &|| residual.get_or_init(|| Arc::new(self.residual(&query))));
             }
             values = query.values;
-            for id in feedback {
-                values.remove(id);
-            }
             variables.extend(next);
             initial = false;
         }
     }
 }
+#[repr(C)]
+struct RoundSchedule {
+    ordered: *const usize,
+    count: usize,
+    stable: usize,
+    fixed_inputs: *const u8,
+}
+
+#[repr(C)]
+struct RoundHost {
+    evaluate: unsafe extern "C" fn(Slot, usize, u32),
+    next_variable: unsafe extern "C" fn(Slot) -> usize,
+    observe: unsafe extern "C" fn(Slot),
+    equivalent: unsafe extern "C" fn(Slot, usize, u32) -> u32,
+    forget: unsafe extern "C" fn(Slot, usize),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.relation_order::solve_round"]
+    fn solve_relation_round(context: Slot, schedule: RoundSchedule, initial: u32, host: RoundHost) -> u32;
+}
+
+struct RelationRound<'round, 'graph, 'scope> {
+    root: usize,
+    query: &'round mut Query<'graph>,
+    scope: &'round mut BorrowEvaluation<'scope>,
+    loop_scopes: &'round BTreeMap<usize, (usize, &'scope LoopHistory)>,
+    variables: std::collections::btree_map::Keys<'graph, usize, Borrow>,
+    next: Vec<(usize, Borrow)>,
+}
+
+impl RelationRound<'_, '_, '_> {
+    fn run(&mut self, plan: &EvaluationPlan, initial: bool) -> bool {
+        let schedule = RoundSchedule {
+            ordered: plan.ordered.as_ptr(), count: plan.ordered.len(),
+            stable: plan.stable, fixed_inputs: plan.fixed_inputs.as_ptr(),
+        };
+        let host = RoundHost {
+            evaluate: Self::evaluate, next_variable: Self::next_variable, observe: Self::observe,
+            equivalent: Self::equivalent, forget: Self::forget,
+        };
+        unsafe { solve_relation_round(ptr::from_mut(self).cast(), schedule, u32::from(initial), host) != 0 }
+    }
+
+    unsafe extern "C" fn evaluate(context: Slot, id: usize, input: u32) {
+        let round = unsafe { &mut *context.cast::<Self>() };
+        let mut value = round.query.definition(id, round.scope);
+        if input == 0 {
+            round.query.values.insert(id, value);
+            return;
+        }
+        if let Some((level, history)) = round.loop_scopes.get(&id) {
+            // A carried source can come from any earlier iteration.
+            let bindings = bounds::Clause::scalar_identities(value.sources.paths()).into_iter()
+                .filter(|identity| !match identity {
+                    ValueIdentity::Register(reg) | ValueIdentity::TaskControl(reg)
+                    | ValueIdentity::TaskCompletion(reg, _) => history.registers.contains(reg),
+                    ValueIdentity::MemoryValue(memory, _) => history.uses.contains(memory),
+                    ValueIdentity::LoopValue(scope, _) => scope == level || round.scope.function.history.get(scope)
+                        .is_some_and(|inner| inner.registers.start >= history.registers.start
+                            && inner.registers.end <= history.registers.end),
+                    _ => false,
+                })
+                .map(|identity| (identity, bounds::Proof::default().with_identity(identity)))
+                .collect();
+            value = value.guards_at_call(&bindings);
+        }
+        round.next.push((id, value));
+    }
+
+    unsafe extern "C" fn next_variable(context: Slot) -> usize {
+        let round = unsafe { &mut *context.cast::<Self>() };
+        round.variables.next().copied().unwrap_or(usize::MAX)
+    }
+
+    unsafe extern "C" fn observe(context: Slot) {
+        let round = unsafe { &*context.cast::<Self>() };
+        if let Some(observe) = round.scope.known.observe {
+            use crate::compiler::{AnalysisStorage, BorrowSolveStorage};
+            let query = &round.query;
+            observe(round.scope.state.name, BorrowSolveStorage::Relation {
+                root: round.root,
+                nodes: AnalysisStorage::vector(&query.graph.nodes),
+                frames: AnalysisStorage::vector(&query.graph.frames),
+                resolved: AnalysisStorage::entries::<usize, Borrow>(query.values.len(), None),
+                previous_inputs: AnalysisStorage::entries::<usize, Borrow>(query.variables.len(), None),
+                next_inputs: AnalysisStorage::vector(&round.next),
+            });
+        }
+    }
+
+    unsafe extern "C" fn equivalent(context: Slot, index: usize, paths: u32) -> u32 {
+        let round = unsafe { &*context.cast::<Self>() };
+        let (id, value) = &round.next[index];
+        let before = &round.query.variables[id].sources;
+        u32::from(if paths == 0 {
+            value.sources.same_sources(before)
+        } else {
+            value.sources.equivalent_paths(before)
+        })
+    }
+
+    unsafe extern "C" fn forget(context: Slot, id: usize) {
+        let round = unsafe { &mut *context.cast::<Self>() };
+        round.query.values.remove(&id);
+    }
+}
+
 struct Query<'g> {
     graph: &'g Graph,
     relation: Arc<Graph>,

@@ -79,3 +79,22 @@ struct IdentityFeedbackHost {
 
 extern "C" usize prune_identity_feedback(address graph,address edges,usize count,usize variable,IdentityFeedbackHost host) on cpu
     requires nonzero(host.edge) requires nonzero(host.node) requires nonzero(host.exchange);
+
+struct RoundSchedule {
+    address ordered;
+    usize count;
+    usize stable;
+    address fixed_inputs;
+};
+
+struct RoundHost {
+    cfn<void,address,usize,u32> evaluate;
+    cfn<usize,address> next_variable;
+    cfn<void,address> observe;
+    cfn<u32,address,usize,u32> equivalent;
+    cfn<void,address,usize> forget;
+};
+
+extern "C" u32 solve_round(address context, RoundSchedule schedule, u32 initial, RoundHost host) on cpu
+    requires nonzero(host.evaluate) requires nonzero(host.next_variable) requires nonzero(host.observe)
+    requires nonzero(host.equivalent) requires nonzero(host.forget);
