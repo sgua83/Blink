@@ -118,11 +118,7 @@ pub(super) struct Frame {
 pub(super) struct Graph {
     locations: Vec<ColorPlace>,
     private: BTreeSet<(usize, usize)>,
-    edges: Vec<BTreeSet<usize>>,
-    affinities: Vec<BTreeSet<usize>>,
-    weights: Vec<u64>,
-    across_call: BTreeSet<usize>,
-    outgoing_bytes: u64,
+    state: *mut c_void,
     registers: usize,
     pub(super) needs_r15: bool,
 }
@@ -155,22 +151,15 @@ impl Graph {
                 location.width = 0;
             }
         }
-        let mut graph = Graph {
+        let empty = BTreeSet::new();
+        let (state, needs_r15) = graph::build(&mut locations, slots, code, scalars, &mut live, &empty);
+        Self {
             locations,
             private,
-            edges: vec![BTreeSet::new(); slots],
-            affinities: vec![BTreeSet::new(); slots],
-            weights: vec![0; slots],
-            across_call: BTreeSet::new(),
-            outgoing_bytes: 0,
+            state,
             registers,
-            needs_r15: false,
-        };
-        let empty = BTreeSet::new();
-        graph.together(&live);
-        graph.needs_r15 = graph::analyze(&mut graph, code, scalars, &mut live,
-            &empty, &empty, &empty, 1);
-        graph
+            needs_r15,
+        }
     }
 
     pub(super) fn tile_interference(&mut self, phases: &[TilePhase<'_>]) {
@@ -181,11 +170,10 @@ impl Graph {
     }
 
 }
-#[repr(C)]
-struct ColorNode {
-    weight: u64,
-    degree: u64,
-    across_call: u64,
+impl Drop for Graph {
+    fn drop(&mut self) {
+        unsafe { graph_release(self.state); }
+    }
 }
 
 #[repr(C)]
@@ -253,56 +241,31 @@ unsafe extern "C" fn next_private_declaration(context: *mut c_void) -> PrivateDe
 }
 
 unsafe extern "C" {
+    #[link_name = "bootstrap.coloring::graph_count"]
+    fn graph_count(graph: *const c_void) -> usize;
+    #[link_name = "bootstrap.coloring::graph_seal"]
+    fn graph_seal(graph: *mut c_void);
+    #[link_name = "bootstrap.coloring::graph_release"]
+    fn graph_release(graph: *mut c_void);
     #[link_name = "bootstrap.coloring::color"]
-    fn color(
-        graph: *const c_void, count: u64, places: *mut ColorPlace, order: *mut [u64; 3],
-        mode: u32, base: u64, packet_uses: Span,
-        node: unsafe extern "C" fn(*const c_void, u64) -> ColorNode,
-        next: unsafe extern "C" fn(*const c_void, u64, bool, u64) -> u64,
-    ) -> ColorLayout;
+    fn color(graph: *const c_void, count: usize, places: *mut ColorPlace, mode: u32,
+        packet_uses: Span) -> ColorLayout;
     #[link_name = "bootstrap.coloring::place_private"]
     fn place_private(
         places: *mut ColorPlace, data_end: u64, registers: usize, context: *mut c_void,
         next: unsafe extern "C" fn(*mut c_void) -> PrivateDeclaration,
     ) -> u64;
 }
-unsafe extern "C" fn color_node(graph: *const c_void, id: u64) -> ColorNode {
-    let graph = unsafe { &*graph.cast::<Graph>() };
-    let id = id as usize;
-    ColorNode {
-        weight: graph.weights[id],
-        degree: graph.edges[id].len() as u64,
-        across_call: u64::from(graph.across_call.contains(&id)),
-    }
-}
-unsafe extern "C" fn color_next(graph: *const c_void, id: u64, affinity: bool, after: u64) -> u64 {
-    use std::ops::Bound::{Excluded, Unbounded};
-    let graph = unsafe { &*graph.cast::<Graph>() };
-    let set = if affinity { &graph.affinities[id as usize] } else { &graph.edges[id as usize] };
-    let next = if after == graph.edges.len() as u64 { set.first() }
-        else { set.range((Excluded(after as usize), Unbounded)).next() };
-    next.map_or(graph.edges.len() as u64, |id| *id as u64)
-}
-unsafe fn color_locations(
-    graph: &Graph, places: *mut ColorPlace, count: usize, mode: u32, base: u64, packet_uses: Span,
-) -> ColorLayout {
-    let mut order = Vec::<[u64; 3]>::with_capacity(count);
-    // B borrows the graph and writes the final locations. The order rows are
-    // scratch through coloring and byte layout and are never read by Rust.
-    unsafe {
-        color(ptr::from_ref(graph).cast(), count as u64, places, order.as_mut_ptr(),
-            mode, base, packet_uses, color_node, color_next)
-    }
-}
-
 impl Allocation {
     pub fn new(
         locals: &std::collections::BTreeMap<usize, Ty>, graph: &mut Graph, tile_scope: bool,
     ) -> Self {
+        // All entry and tile interference has now been collected. Packet coloring
+        // borrows these same ordered rows after scalar coloring returns.
         let mut locations = std::mem::take(&mut graph.locations);
         let mut layout = unsafe {
-            color_locations(graph, locations.as_mut_ptr(), locations.len(),
-                u32::from(tile_scope), graph.outgoing_bytes, Span::EMPTY)
+            graph_seal(graph.state);
+            color(graph.state, locations.len(), locations.as_mut_ptr(), u32::from(tile_scope), Span::EMPTY)
         };
         let mut private = PrivateDeclarations { spans: graph.private.iter(), locals };
         layout.end = unsafe {
@@ -324,11 +287,11 @@ impl Allocation {
 }
 impl PacketAllocation {
     pub fn new(registers: usize, graph: &Graph, uses: Vec<u8>) -> Self {
-        let count = graph.edges.len();
+        let count = unsafe { graph_count(graph.state) };
         let mut locations = Vec::with_capacity(count);
         // Packet coloring initializes the positions and consumes the planner's uses.
         let layout = unsafe {
-            let layout = color_locations(graph, locations.as_mut_ptr(), count, 2, 0, Span::slice(&uses));
+            let layout = color(graph.state, count, locations.as_mut_ptr(), 2, Span::slice(&uses));
             locations.set_len(count);
             layout
         };

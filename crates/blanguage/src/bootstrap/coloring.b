@@ -9,6 +9,194 @@ const u32 XMM = 3;
 const u32 STACK = 4;
 const u32 VARYING = 5;
 
+extern "C" handle GetProcessHeap() on cpu from "KERNEL32.dll";
+extern "C" address HeapAlloc(handle heap,u32 flags,usize bytes) on cpu from "KERNEL32.dll";
+extern "C" address HeapReAlloc(handle heap,u32 flags,address data,usize bytes) on cpu from "KERNEL32.dll";
+extern "C" i32 HeapFree(handle heap,u32 flags,address data) on cpu from "KERNEL32.dll";
+
+const u32 HEAP_GENERATE_EXCEPTIONS=4;
+const u32 HEAP_ZERO_MEMORY=8;
+const u64 EDGE=1u64;
+const u64 AFFINITY=2u64;
+
+struct ColorNode {
+    u64 weight;
+    u64 degree;
+    u64 across_call;
+    u64 edge_start;
+    u64 affinity_start;
+    u64 affinities;
+};
+struct GraphPair {u64 first;u64 second;u64 kind;};
+struct GraphWalk {address rows;u64 count;u64 capacity;};
+struct GraphData {
+    u64 count;
+    u64 registers;
+    u64 outgoing;
+    address pairs;
+    u64 capacity;
+    u64 length;
+    address adjacency;
+    address places;
+};
+
+address color_offset(address data,u64 bytes) on cpu {
+    return unsafe_address(address_bits(data)+bytes);
+}
+address node_at(address graph,u64 id) on cpu {
+    return color_offset(graph,size_of<GraphData>()+size_of<GraphWalk>()+id*size_of<ColorNode>());
+}
+address pair_at(address pairs,u64 index) on cpu {
+    return color_offset(pairs,index*size_of<GraphPair>());
+}
+address adjacency_at(address rows,u64 index) on cpu {
+    return color_offset(rows,index*size_of<u64>());
+}
+u64 neighbor_at(address rows,u64 index) on cpu {
+    return unsafe_position<u64>(adjacency_at(rows,index));
+}
+
+address graph_storage(u64 count,u64 registers,address places) on cpu {
+    address graph=HeapAlloc(GetProcessHeap(),HEAP_GENERATE_EXCEPTIONS|HEAP_ZERO_MEMORY,
+        size_of<GraphData>()+size_of<GraphWalk>()+count*size_of<ColorNode>());
+    unsafe_position<GraphData>(graph)=GraphData(count,registers,0u64,address(),0u64,0u64,address(),places);
+    return graph;
+}
+extern "C" u64 graph_count(address graph) on cpu {
+    return unsafe_position<GraphData>(graph).count;
+}
+void release_graph_memory(address memory) on cpu {
+    if(address_bits(memory)!=0u64){HeapFree(GetProcessHeap(),0,memory);}
+}
+extern "C" void graph_release(address graph) on cpu {
+    GraphData data=unsafe_position<GraphData>(graph);
+    release_graph_memory(data.pairs);
+    release_graph_memory(data.adjacency);
+    HeapFree(GetProcessHeap(),0,graph);
+}
+
+u64 pair_hash(GraphPair pair) on cpu {
+    u64 hash=pair.first^(pair.second*0x9e3779b97f4a7c15u64)^(pair.kind*0x94d049bb133111ebu64);
+    hash=(hash^(hash>>30u64))*0xbf58476d1ce4e5b9u64;
+    hash=(hash^(hash>>27u64))*0x94d049bb133111ebu64;
+    return hash^(hash>>31u64);
+}
+address seek_pair(address pairs,u64 capacity,GraphPair pair) on cpu {
+    u64 mask=capacity-1u64;
+    u64 index=pair_hash(pair)&mask;
+    while(true){
+        address slot=pair_at(pairs,index);
+        GraphPair previous=unsafe_position<GraphPair>(slot);
+        if(previous.kind==0u64 ||
+            (previous.first==pair.first && previous.second==pair.second && previous.kind==pair.kind)){
+            return slot;
+        }
+        index=(index+1u64)&mask;
+    }
+}
+address grow_pairs(address old,u64 old_capacity,u64 capacity) on cpu {
+    address pairs=HeapAlloc(GetProcessHeap(),HEAP_GENERATE_EXCEPTIONS|HEAP_ZERO_MEMORY,
+        capacity*size_of<GraphPair>());
+    u64 index=0u64;
+    while(index<old_capacity){
+        GraphPair pair=unsafe_position<GraphPair>(pair_at(old,index));
+        if(pair.kind!=0u64){unsafe_position<GraphPair>(seek_pair(pairs,capacity,pair))=pair;}
+        index+=1u64;
+    }
+    release_graph_memory(old);
+    return pairs;
+}
+void count_neighbor(address graph,u64 node,u64 kind) on cpu {
+    address row=node_at(graph,node);
+    if(kind==EDGE){unsafe_position<ColorNode>(row).degree+=1u64;}
+    else{unsafe_position<ColorNode>(row).affinities+=1u64;}
+}
+void graph_pair(address graph,u64 first,u64 second,u64 kind) on cpu {
+    // Build each unordered pair once. Self affinities still have one member.
+    GraphPair pair=first<second ? GraphPair(first,second,kind) : GraphPair(second,first,kind);
+    GraphData data=unsafe_position<GraphData>(graph);
+    address slot=address();
+    if(data.capacity!=0u64){
+        slot=seek_pair(data.pairs,data.capacity,pair);
+        if(unsafe_position<GraphPair>(slot).kind!=0u64){return;}
+    }
+    if(data.length>=data.capacity-data.capacity/4u64){
+        u64 capacity=data.capacity==0u64 ? 16u64 : data.capacity*2u64;
+        data.pairs=grow_pairs(data.pairs,data.capacity,capacity);
+        data.capacity=capacity;
+        slot=seek_pair(data.pairs,capacity,pair);
+    }
+    unsafe_position<GraphPair>(slot)=pair;
+    data.length+=1u64;
+    unsafe_position<GraphData>(graph)=data;
+    count_neighbor(graph,first,kind);
+    if(first!=second){count_neighbor(graph,second,kind);}
+}
+
+u64 reserve_neighbor_rows(address graph,u64 count) on cpu {
+    u64 end=0u64;
+    u64 node=0u64;
+    while(node<count){
+        address at=node_at(graph,node);
+        ColorNode row=unsafe_position<ColorNode>(at);
+        row.edge_start=end;
+        row.affinity_start=end+row.degree;
+        end=row.affinity_start+row.affinities;
+        row.degree=0u64;
+        row.affinities=0u64;
+        unsafe_position<ColorNode>(at)=row;
+        node+=1u64;
+    }
+    return end;
+}
+void write_neighbor(address graph,address adjacency,u64 node,u64 neighbor,u64 kind) on cpu {
+    address at=node_at(graph,node);
+    if(kind==EDGE){
+        u64 index=unsafe_position<ColorNode>(at).edge_start+unsafe_position<ColorNode>(at).degree;
+        unsafe_position<u64>(adjacency_at(adjacency,index))=neighbor;
+        unsafe_position<ColorNode>(at).degree+=1u64;
+    }else{
+        u64 index=unsafe_position<ColorNode>(at).affinity_start+unsafe_position<ColorNode>(at).affinities;
+        unsafe_position<u64>(adjacency_at(adjacency,index))=neighbor;
+        unsafe_position<ColorNode>(at).affinities+=1u64;
+    }
+}
+extern "C" bool neighbor_before(address left,address right,address context) on cpu {
+    return unsafe_position<u64>(left)<unsafe_position<u64>(right);
+}
+extern "C" void graph_seal(address graph) on cpu {
+    GraphData data=unsafe_position<GraphData>(graph);
+    unsafe_position<GraphData>(graph).places=address();
+    if(data.length==0u64){return;}
+    u64 count=reserve_neighbor_rows(graph,data.count);
+    address adjacency=HeapAlloc(GetProcessHeap(),HEAP_GENERATE_EXCEPTIONS,count*size_of<u64>());
+    u64 index=0u64;
+    while(index<data.capacity){
+        GraphPair pair=unsafe_position<GraphPair>(pair_at(data.pairs,index));
+        if(pair.kind!=0u64){
+            write_neighbor(graph,adjacency,pair.first,pair.second,pair.kind);
+            if(pair.first!=pair.second){write_neighbor(graph,adjacency,pair.second,pair.first,pair.kind);}
+        }
+        index+=1u64;
+    }
+    // Pair deduplication ends at the last interference producer. Both coloring
+    // modes then borrow the same ordered rows.
+    release_graph_memory(data.pairs);
+    unsafe_position<GraphData>(graph).pairs=address();
+    unsafe_position<GraphData>(graph).adjacency=adjacency;
+    u64 node=0u64;
+    while(node<data.count){
+        ColorNode row=unsafe_position<ColorNode>(node_at(graph,node));
+        if(row.degree>1u64){
+            sort_rows<u64>(adjacency_at(adjacency,row.edge_start),row.degree,address(),c_function(neighbor_before));
+        }
+        if(row.affinities>1u64){
+            sort_rows<u64>(adjacency_at(adjacency,row.affinity_start),row.affinities,address(),c_function(neighbor_before));
+        }
+        node+=1u64;
+    }
+}
+
 address place_at(address places, u64 index) on cpu {
     return unsafe_address(address_bits(places) + index * size_of<ColorPlace>());
 }
@@ -70,9 +258,8 @@ u64 layout_spills(address places, u64 count, address scratch, u64 spills, u64 ba
     return end;
 }
 
-u64 packet_order(address graph, u64 count, address places, address order, Span uses,
-    cfn<ColorNode,address,u64> node, cfn<u64,address,u64,bool,u64> next) on cpu
-    requires nonzero(node) requires nonzero(next) {
+u64 packet_order(address graph,u64 count,address places,address order,Span uses) on cpu {
+    address adjacency=unsafe_position<GraphData>(graph).adjacency;
     u64 first_skipped = count;
     u64 id = 0u64;
     while (id < count) {
@@ -83,7 +270,7 @@ u64 packet_order(address graph, u64 count, address places, address order, Span u
         if (index_only) {
             first_skipped = id < first_skipped ? id : first_skipped;
         } else {
-            ColorNode facts = node(graph, id);
+            ColorNode facts = unsafe_position<ColorNode>(node_at(graph,id));
             unsafe_position<array<u64,3>>(order_at(order, id)) = array<u64,3>(facts.weight, facts.degree, id);
         }
         id += 1u64;
@@ -94,15 +281,17 @@ u64 packet_order(address graph, u64 count, address places, address order, Span u
     id = first_skipped;
     while (id < uses.count) {
         if (unsafe_position<ColorPlace>(place_at(places, id)).width == u8(0)) {
-            u64 neighbor = next(graph, id, false, count);
-            while (neighbor != count) {
+            ColorNode skipped=unsafe_position<ColorNode>(node_at(graph,id));
+            u64 at=0u64;
+            while (at<skipped.degree) {
+                u64 neighbor=neighbor_at(adjacency,skipped.edge_start+at);
                 if (unsafe_position<ColorPlace>(place_at(places, neighbor)).width != u8(0)) {
                     address row = order_at(order, neighbor);
                     array<u64,3> priority = unsafe_position<array<u64,3>>(row);
                     priority[1] -= 1u64;
                     unsafe_position<array<u64,3>>(row) = priority;
                 }
-                neighbor = next(graph, id, false, neighbor);
+                at+=1u64;
             }
         }
         id += 1u64;
@@ -121,20 +310,22 @@ u64 packet_order(address graph, u64 count, address places, address order, Span u
     return pending;
 }
 
-extern "C" ColorLayout color(address graph, u64 count, address places, address order, u32 mode, u64 base, Span packet_uses,
-    cfn<ColorNode,address,u64> node,
-    cfn<u64,address,u64,bool,u64> next) on cpu
-    requires nonzero(node) requires nonzero(next) {
+extern "C" ColorLayout color(address graph,u64 count,address places,u32 mode,Span packet_uses) on cpu {
+    address order=address();
+    if(count!=0u64){
+        order=HeapAlloc(GetProcessHeap(),HEAP_GENERATE_EXCEPTIONS,count*size_of<array<u64,3>>());
+    }
+    GraphData data=unsafe_position<GraphData>(graph);
     u64 pending = 0u64;
     u64 id = 0u64;
     if (mode == 2) {
-        pending = packet_order(graph, count, places, order, packet_uses, node, next);
+        pending = packet_order(graph, count, places, order, packet_uses);
     } else {
         while (id < count) {
             ColorPlace place = unsafe_position<ColorPlace>(place_at(places, id));
             // Addressable fields receive their stack positions after coloring.
             if (place.kind != IMMEDIATE && place.width != 0) {
-                ColorNode facts = node(graph, id);
+                ColorNode facts = unsafe_position<ColorNode>(node_at(graph,id));
                 unsafe_position<array<u64,3>>(order_at(order, pending)) = array<u64,3>(facts.weight, facts.degree, id);
                 pending += 1u64;
             }
@@ -148,7 +339,7 @@ extern "C" ColorLayout color(address graph, u64 count, address places, address o
     u64 at = 0u64;
     while (at < pending) {
         id = unsafe_position<array<u64,3>>(order_at(order, at))[2];
-        ColorNode facts = node(graph, id);
+        ColorNode facts = unsafe_position<ColorNode>(node_at(graph,id));
         address destination = place_at(places, id);
         u32 bank = GPR;
         u32 allowed = mode == 1 ? 0x3e0 : 0xfe0;
@@ -161,25 +352,27 @@ extern "C" ColorLayout color(address graph, u64 count, address places, address o
 
         u32 used = 0;
         u64 visit = at + 1u64;
-        u64 neighbor = next(graph, id, false, count);
-        while (neighbor != count) {
+        u64 edge=0u64;
+        while (edge<facts.degree) {
+            u64 neighbor=neighbor_at(data.adjacency,facts.edge_start+edge);
             ColorPlace place = unsafe_position<ColorPlace>(place_at(places, neighbor));
             if (place.kind == bank) { used |= 1 << u32(place.value); }
             if (place.kind == STACK) {
                 unsafe_position<u64>(spill_mark(order, u32(place.value))) = visit;
             }
-            neighbor = next(graph, id, false, neighbor);
+            edge+=1u64;
         }
         u32 available = allowed & ~used;
         u32 chosen = 16;
-        neighbor = next(graph, id, true, count);
-        while (neighbor != count) {
+        u64 affinity=0u64;
+        while (affinity<facts.affinities) {
+            u64 neighbor=neighbor_at(data.adjacency,facts.affinity_start+affinity);
             ColorPlace place = unsafe_position<ColorPlace>(place_at(places, neighbor));
             if (place.kind == bank && (available & (1 << u32(place.value))) != 0) {
                 chosen = u32(place.value);
                 break;
             }
-            neighbor = next(graph, id, true, neighbor);
+            affinity+=1u64;
         }
         if (chosen == 16) {
             u32 candidate = 0;
@@ -214,9 +407,11 @@ extern "C" ColorLayout color(address graph, u64 count, address places, address o
         }
         at += 1u64;
     }
-    u64 end = base;
-    if (spills != 0) { end = layout_spills(places, count, order, u64(spills), base); }
-    return ColorLayout(end, saved_gpr, saved_xmm);
+    u64 base=mode==2 ? 0u64 : data.outgoing;
+    u64 end=base;
+    if(spills!=0){end=layout_spills(places,count,order,u64(spills),base);}
+    release_graph_memory(order);
+    return ColorLayout(end,saved_gpr,saved_xmm);
 }
 
 extern "C" u64 place_private(address places, u64 data_end, usize registers, address context,
@@ -260,85 +455,62 @@ u64 graph_nested_weight(u64 weight) on cpu {
     u64 maximum=18446744073709551615u64;
     return weight>maximum/8u64 ? maximum : weight*8u64;
 }
-u64 graph_slot_id(address graph,GraphSpace space,u64 index,GraphCore core) on cpu 
-    requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
-    requires nonzero(core.across) requires nonzero(core.counter) requires nonzero(core.set_outgoing) requires nonzero(core.location)
-    requires nonzero(core.visit_set) requires nonzero(core.slot) {
-    return space==GraphSpace::Register ? index : core.counter(graph,GraphCounter::Registers)+index;
+u64 graph_slot_id(address graph,GraphSpace space,u64 index) on cpu {
+    return space==GraphSpace::Register ? index : unsafe_position<GraphData>(graph).registers+index;
 }
-void graph_edge(address graph,u64 first,u64 second,GraphCore core) on cpu 
-    requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
-    requires nonzero(core.across) requires nonzero(core.counter) requires nonzero(core.set_outgoing) requires nonzero(core.location)
-    requires nonzero(core.visit_set) requires nonzero(core.slot) {
-    if(first!=second){
-        core.relation(graph,GraphRelation::Edge,first,second);
-        core.relation(graph,GraphRelation::Edge,second,first);
-    }
+void graph_edge(address graph,u64 first,u64 second) on cpu {
+    if(first!=second){graph_pair(graph,first,second,EDGE);}
 }
-void graph_weight(address graph,u64 id,u64 amount,GraphCore core) on cpu 
-    requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
-    requires nonzero(core.across) requires nonzero(core.counter) requires nonzero(core.set_outgoing) requires nonzero(core.location)
-    requires nonzero(core.visit_set) requires nonzero(core.slot) {
-    core.set_weight(graph,id,graph_saturating_add(core.weight(graph,id),amount));
+void graph_weight(address graph,u64 id,u64 amount) on cpu {
+    address row=node_at(graph,id);
+    unsafe_position<ColorNode>(row).weight=graph_saturating_add(unsafe_position<ColorNode>(row).weight,amount);
 }
-extern "C" void graph_live_event(address graph,address live,GraphSpace space,u64 index,u64 ordinal,GraphEvent event,GraphCore core) on cpu 
-    requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
-    requires nonzero(core.across) requires nonzero(core.counter) requires nonzero(core.set_outgoing) requires nonzero(core.location)
-    requires nonzero(core.visit_set) requires nonzero(core.slot) {
-    u64 id=graph_slot_id(graph,space,index,core);
+extern "C" void graph_live_event(address graph,handle live,GraphSpace space,u64 index,u64 ordinal,GraphEvent event,GraphCore core) on cpu
+    requires nonzero(core.visit_set) {
+    u64 id=graph_slot_id(graph,space,index);
     if(event.kind==0){
-        if((event.skip_present==0 || id!=event.skip) && unsafe_position<ColorPlace>(core.location(graph,id)).width!=0){
-            graph_edge(graph,event.anchor,id,core);
+        if((event.skip_present==0 || id!=event.skip) && unsafe_position<ColorPlace>(place_at(unsafe_position<GraphData>(graph).places,id)).width!=0){
+            graph_edge(graph,event.anchor,id);
         }
     } else if(event.kind==1){
-        if(unsafe_position<ColorPlace>(core.location(graph,id)).width!=0){
+        if(unsafe_position<ColorPlace>(place_at(unsafe_position<GraphData>(graph).places,id)).width!=0){
             core.visit_set(live,ordinal,graph,GraphEvent(id,0u64,0,0));
         }
-    } else {core.across(graph,id);}
+    } else {unsafe_position<ColorNode>(node_at(graph,id)).across_call=1u64;}
 }
-extern "C" void graph_together(address graph,address live,GraphCore core) on cpu 
-    requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
-    requires nonzero(core.across) requires nonzero(core.counter) requires nonzero(core.set_outgoing) requires nonzero(core.location)
-    requires nonzero(core.visit_set) requires nonzero(core.slot) {
+extern "C" void graph_together(address graph,handle live,GraphCore core) on cpu
+    requires nonzero(core.visit_set) {
     core.visit_set(live,18446744073709551615u64,graph,GraphEvent(0u64,0u64,1,0));
 }
-extern "C" void graph_inputs(address graph,address inputs,u64 count,GraphCore core) on cpu 
-    requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
-    requires nonzero(core.across) requires nonzero(core.counter) requires nonzero(core.set_outgoing) requires nonzero(core.location)
-    requires nonzero(core.visit_set) requires nonzero(core.slot) {
+extern "C" void graph_inputs(address graph,address inputs,u64 count) on cpu {
     u64 index=0u64;
     while(index<count){
-        u64 first=unsafe_position<u64>(unsafe_address(address_bits(inputs)+index*8u64));
+        u64 first=neighbor_at(inputs,index);
         u64 before=0u64;
         while(before<index){
-            u64 second=unsafe_position<u64>(unsafe_address(address_bits(inputs)+before*8u64));
-            graph_edge(graph,first,second,core);
+            graph_edge(graph,first,neighbor_at(inputs,before));
             before+=1u64;
         }
         index+=1u64;
     }
 }
 struct GraphDefinition { u64 weight; u64 transfer_dst; u64 transfer_src; u64 bits; u32 transfer; u32 literal; u32 pass; };
-void graph_definition(address graph,address live,GraphSpace space,u64 index,GraphDefinition definition,GraphCore core) on cpu
-    requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
-    requires nonzero(core.across) requires nonzero(core.counter) requires nonzero(core.set_outgoing) requires nonzero(core.location)
+void graph_definition(address graph,handle live,GraphSpace space,u64 index,GraphDefinition definition,GraphCore core) on cpu
     requires nonzero(core.visit_set) requires nonzero(core.slot) {
     if(definition.pass!=0){core.slot(live,GraphSlotAction::Remove,space,index);return;}
-    if(space==GraphSpace::Register){record_definition(core.location(graph,index),definition.literal,definition.bits);}
-    u64 id=graph_slot_id(graph,space,index,core);
-    if(unsafe_position<ColorPlace>(core.location(graph,id)).width!=0){
+    if(space==GraphSpace::Register){record_definition(place_at(unsafe_position<GraphData>(graph).places,index),definition.literal,definition.bits);}
+    u64 id=graph_slot_id(graph,space,index);
+    if(unsafe_position<ColorPlace>(place_at(unsafe_position<GraphData>(graph).places,id)).width!=0){
         GraphEvent event=GraphEvent(id,definition.transfer_src,0,0);
         if(definition.transfer!=0 && id==definition.transfer_dst){event.skip_present=1;}
         core.visit_set(live,18446744073709551615u64,graph,event);
     }
-    graph_weight(graph,id,definition.weight,core);
+    graph_weight(graph,id,definition.weight);
 }
-extern "C" void graph_read(address graph,address live,GraphSpace space,u64 index,u64 weight,GraphCore core) on cpu
-    requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
-    requires nonzero(core.across) requires nonzero(core.counter) requires nonzero(core.set_outgoing) requires nonzero(core.location)
-    requires nonzero(core.visit_set) requires nonzero(core.slot) {
-    u64 id=graph_slot_id(graph,space,index,core);
-    graph_weight(graph,id,weight,core);
+extern "C" void graph_read(address graph,handle live,GraphSpace space,u64 index,u64 weight,GraphCore core) on cpu
+    requires nonzero(core.slot) {
+    u64 id=graph_slot_id(graph,space,index);
+    graph_weight(graph,id,weight);
     core.slot(live,GraphSlotAction::Insert,space,index);
 }
 Node graph_node_at(Span span, usize index, u32 kind) on cpu {
@@ -357,128 +529,244 @@ bool graph_call_uses_r15(Node call, Host ir) on cpu requires nonzero(ir.inspect)
     }
     return false;
 }
-extern "C" u32 graph_block(address graph,Span code,Span registers,address live,
-    address break_live,address continue_live,address exit_live,u64 weight,GraphHost host) on cpu 
-    requires nonzero(host.core.relation) requires nonzero(host.core.weight) requires nonzero(host.core.set_weight)
-    requires nonzero(host.core.across) requires nonzero(host.core.counter) requires nonzero(host.core.set_outgoing) requires nonzero(host.core.location)
+u32 graph_instruction(address graph,Node instruction,View node,Span registers,handle live,
+    u64 weight,GraphHost host) on cpu
     requires nonzero(host.core.visit_set) requires nonzero(host.core.slot)
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.scalar)
-    requires nonzero(host.cast_bits) requires nonzero(host.call_outgoing) requires nonzero(host.math_outgoing) requires nonzero(host.clone_set)
-    requires nonzero(host.drop_set) requires nonzero(host.change) requires nonzero(host.loop_live)
-    requires nonzero(host.register_reads) {
-    address none=unsafe_address(0u64);
+    requires nonzero(host.cast_bits) requires nonzero(host.call_outgoing)
+    requires nonzero(host.math_outgoing) requires nonzero(host.register_reads) {
     u32 uses_r15=0;
-    u64 remaining=code.count;
-    while(remaining!=0u64){
-        remaining-=1u64;
-        Node instruction=graph_node_at(code,remaining,N_INSTRUCTION);
-        View node=host.values.ir.inspect(instruction);
-        if(node.tag==OP_BRANCH){
-            address yes=host.clone_set(live);
-            uses_r15 |= graph_block(graph,node.first,registers,yes,break_live,continue_live,exit_live,weight,host);
-            uses_r15 |= graph_block(graph,node.second,registers,live,break_live,continue_live,exit_live,weight,host);
-            host.change(GraphSetAction::DrainUnion,live,yes);
-            host.drop_set(yes);
-            host.core.slot(live,GraphSlotAction::Insert,GraphSpace::Register,node.a);
-            graph_weight(graph,node.a,weight,host.core);
-        } else if(node.tag==OP_LOOP_VALUE){
-            address header=host.loop_live(node.first,node.a,node.second,live,break_live,continue_live,exit_live);
-            u64 nested=graph_nested_weight(weight);
-            address before=host.clone_set(header);
-            uses_r15 |= graph_block(graph,node.second,registers,before,live,header,exit_live,nested,host);
-            host.change(GraphSetAction::DrainUnion,before,live);
-            host.core.slot(before,GraphSlotAction::Insert,GraphSpace::Register,node.a);
-            graph_weight(graph,node.a,nested,host.core);
-            uses_r15 |= graph_block(graph,node.first,registers,before,break_live,continue_live,exit_live,nested,host);
-            host.change(GraphSetAction::Swap,live,before);
-            host.drop_set(before);
-            host.drop_set(header);
-        } else if(node.tag==OP_SCOPE){
-            address before=host.clone_set(live);
-            uses_r15 |= graph_block(graph,node.first,registers,before,break_live,continue_live,live,weight,host);
-            host.change(GraphSetAction::Swap,live,before);
-            host.drop_set(before);
-        } else if(node.tag==OP_RAISE){
-            host.change(GraphSetAction::Clear,live,none);
-            host.core.slot(live,GraphSlotAction::Insert,GraphSpace::Register,node.a);
-            graph_weight(graph,node.a,weight,host.core);
-        } else if(node.tag==OP_EXIT_VALUE){host.change(GraphSetAction::Copy,live,exit_live);}
-        else if(node.tag==OP_BREAK_VALUE){host.change(GraphSetAction::Copy,live,break_live);}
-        else if(node.tag==OP_CONTINUE_VALUE){host.change(GraphSetAction::Copy,live,continue_live);}
-        else {
-            u64 outgoing=0u64;
-            if(node.tag==OP_INVOKE){
-                outgoing=host.call_outgoing(node.left.data);
-                if(graph_call_uses_r15(node.left,host.values.ir)){uses_r15=1;}
-            } else if(node.tag==OP_POSITION_ADDRESS){
-                if(graph_indexed_reference(node.left,host.values.ir)){uses_r15=1;}
-            } else if(node.tag==OP_TEXTURE_BINDING_ADDRESS || (node.tag>=OP_TEXTURE_SIZE && node.tag<=OP_TEXTURE_FETCH) ||
-                node.tag==OP_VIEW_LOAD || node.tag==OP_LOAD_INDEXED || node.tag==OP_STORE_INDEXED || node.tag==OP_ATOMIC){
-                uses_r15=1;
-            } else if(node.tag==OP_PRINT){outgoing=32u64;}
-            else if(node.tag==OP_MATH){outgoing=host.math_outgoing(u32(node.b));}
+    u64 outgoing=0u64;
+    if(node.tag==OP_INVOKE){
+        outgoing=host.call_outgoing(node.left.data);
+        if(graph_call_uses_r15(node.left,host.values.ir)){uses_r15=1;}
+    } else if(node.tag==OP_POSITION_ADDRESS){
+        if(graph_indexed_reference(node.left,host.values.ir)){uses_r15=1;}
+    } else if(node.tag==OP_TEXTURE_BINDING_ADDRESS || (node.tag>=OP_TEXTURE_SIZE && node.tag<=OP_TEXTURE_FETCH) ||
+        node.tag==OP_VIEW_LOAD || node.tag==OP_LOAD_INDEXED || node.tag==OP_STORE_INDEXED || node.tag==OP_ATOMIC){
+        uses_r15=1;
+    } else if(node.tag==OP_PRINT){outgoing=32u64;}
+    else if(node.tag==OP_MATH){outgoing=host.math_outgoing(u32(node.b));}
 
-            u32 transfer=0;
-            u64 destination=node.a;
-            u64 source=node.b;
-            if(node.tag==OP_LOAD_LOCAL){transfer=1;source+=host.core.counter(graph,GraphCounter::Registers);}
-            else if(node.tag==OP_STORE_LOCAL){transfer=1;destination+=host.core.counter(graph,GraphCounter::Registers);}
-            else if(node.tag==OP_CAST && host.cast_bits(registers,node.b,node.a)!=0){transfer=1;}
-            if(transfer!=0 && (unsafe_position<ColorPlace>(host.core.location(graph,destination)).width==0 ||
-                unsafe_position<ColorPlace>(host.core.location(graph,source)).width==0)){transfer=0;}
-            u32 preferred=transfer;
-            u64 preferred_destination=destination;
-            u64 preferred_source=source;
-            if(preferred==0){
-                if(node.tag==OP_UNARY){preferred=1;}
-                else if(node.tag==OP_SELECT_VALUE){preferred=1;preferred_source=node.d;}
-                else if(node.tag==OP_BINARY){
-                    preferred=1;
-                    if(node.left.kind==N_COMPARISON){
-                        u32 comparison=host.values.ir.inspect(node.left).tag;
-                        bool floating=host.values.scalar(registers,node.b).floating!=0;
-                        bool reverse=floating ? (comparison==COMPARE_GREATER || comparison==COMPARE_GREATER_EQUAL) :
-                            (comparison==COMPARE_LESS || comparison==COMPARE_GREATER_EQUAL);
-                        if(reverse){preferred_source=node.c;}
-                    }
-                } else if(node.tag==OP_MATH && outgoing==0u64){
-                    preferred=1;
-                    preferred_source=unsafe_position<usize>(node.first.data);
-                }
+    u32 transfer=0;
+    u64 destination=node.a;
+    u64 source=node.b;
+    if(node.tag==OP_LOAD_LOCAL){transfer=1;source+=unsafe_position<GraphData>(graph).registers;}
+    else if(node.tag==OP_STORE_LOCAL){transfer=1;destination+=unsafe_position<GraphData>(graph).registers;}
+    else if(node.tag==OP_CAST && host.cast_bits(registers,node.b,node.a)!=0){transfer=1;}
+    if(transfer!=0 && (unsafe_position<ColorPlace>(place_at(unsafe_position<GraphData>(graph).places,destination)).width==0 ||
+        unsafe_position<ColorPlace>(place_at(unsafe_position<GraphData>(graph).places,source)).width==0)){transfer=0;}
+    u32 preferred=transfer;
+    u64 preferred_destination=destination;
+    u64 preferred_source=source;
+    if(preferred==0){
+        if(node.tag==OP_UNARY){preferred=1;}
+        else if(node.tag==OP_SELECT_VALUE){preferred=1;preferred_source=node.d;}
+        else if(node.tag==OP_BINARY){
+            preferred=1;
+            if(node.left.kind==N_COMPARISON){
+                u32 comparison=host.values.ir.inspect(node.left).tag;
+                bool floating=host.values.scalar(registers,node.b).floating!=0;
+                bool reverse=floating ? (comparison==COMPARE_GREATER || comparison==COMPARE_GREATER_EQUAL) :
+                    (comparison==COMPARE_LESS || comparison==COMPARE_GREATER_EQUAL);
+                if(reverse){preferred_source=node.c;}
             }
-            if(preferred!=0){
-                host.core.relation(graph,GraphRelation::Affinity,preferred_destination,preferred_source);
-                host.core.relation(graph,GraphRelation::Affinity,preferred_source,preferred_destination);
-            }
-            u32 literal=node.tag==OP_CONSTANT ? 1 : 0;
-            GraphDefinition definition=GraphDefinition(weight,destination,source,u64(node.b),transfer,literal,0);
-            if(node.tag==OP_STORE_LOCAL){
-                graph_definition(graph,live,GraphSpace::Local,node.a,definition,host.core);
-                host.core.slot(live,GraphSlotAction::Remove,GraphSpace::Local,node.a);
-            }else{
-                Results results=view_results(node,host.values.ir);
-                for(pass in 0..2){
-                    definition.pass=u32(pass);
-                    Results cursor=results;
-                    Word next=next_result(cursor);
-                    while(next.present!=0){
-                        graph_definition(graph,live,GraphSpace::Register,next.value,definition,host.core);
-                        next=next_result(cursor);
-                    }
-                }
-            }
-            if(node.tag==OP_INVOKE || outgoing!=0u64){
-                if(outgoing>host.core.counter(graph,GraphCounter::Outgoing)){host.core.set_outgoing(graph,outgoing);}
-                host.core.visit_set(live,18446744073709551615u64,graph,GraphEvent(0u64,0u64,2,0));
-            }
-            host.register_reads(instruction.data,graph,live,weight);
-            Locals local_reads=view_locals(node,0,host.values.ir);
-            Word next=next_local(local_reads,host.values.ir);
+        } else if(node.tag==OP_MATH && outgoing==0u64){
+            preferred=1;
+            preferred_source=unsafe_position<usize>(node.first.data);
+        }
+    }
+    if(preferred!=0){
+        graph_pair(graph,preferred_destination,preferred_source,AFFINITY);
+    }
+    u32 literal=node.tag==OP_CONSTANT ? 1 : 0;
+    GraphDefinition definition=GraphDefinition(weight,destination,source,u64(node.b),transfer,literal,0);
+    if(node.tag==OP_STORE_LOCAL){
+        graph_definition(graph,live,GraphSpace::Local,node.a,definition,host.core);
+        host.core.slot(live,GraphSlotAction::Remove,GraphSpace::Local,node.a);
+    }else{
+        Results results=view_results(node,host.values.ir);
+        for(pass in 0..2){
+            definition.pass=u32(pass);
+            Results cursor=results;
+            Word next=next_result(cursor);
             while(next.present!=0){
-                graph_read(graph,live,GraphSpace::Local,next.value,weight,host.core);
-                next=next_local(local_reads,host.values.ir);
+                graph_definition(graph,live,GraphSpace::Register,next.value,definition,host.core);
+                next=next_result(cursor);
             }
         }
     }
+    if(node.tag==OP_INVOKE || outgoing!=0u64){
+        if(outgoing>unsafe_position<GraphData>(graph).outgoing){
+            unsafe_position<GraphData>(graph).outgoing=outgoing;
+        }
+        host.core.visit_set(live,18446744073709551615u64,graph,GraphEvent(0u64,0u64,2,0));
+    }
+    host.register_reads(instruction.data,graph,live,weight);
+    Locals local_reads=view_locals(node,0,host.values.ir);
+    Word next=next_local(local_reads,host.values.ir);
+    while(next.present!=0){
+        graph_read(graph,live,GraphSpace::Local,next.value,weight,host.core);
+        next=next_local(local_reads,host.values.ir);
+    }
     return uses_r15;
+}
+struct WalkBlock {Span code;handle live;handle breaks;handle continues;handle exits;u64 weight;};
+struct WalkJoin {handle live;handle yes;u64 test;u64 weight;};
+struct WalkCondition {WalkBlock block;handle before;handle header;u64 test;};
+struct WalkReplace {handle live;handle before;handle header;};
+enum GraphWork:u32 {
+    Block(WalkBlock)=0;
+    Join(WalkJoin)=1;
+    Condition(WalkCondition)=2;
+    Replace(WalkReplace)=3;
+};
+
+void push_walk(address work,GraphWork step) on cpu {
+    GraphWalk list=unsafe_position<GraphWalk>(work);
+    if(list.count==list.capacity){
+        handle heap=GetProcessHeap();
+        u64 capacity=list.capacity==0u64 ? 8u64 : list.capacity*2u64;
+        u64 bytes=capacity*size_of<GraphWork>();
+        if(list.capacity==0u64){list.rows=HeapAlloc(heap,HEAP_GENERATE_EXCEPTIONS,bytes);}
+        else{list.rows=HeapReAlloc(heap,HEAP_GENERATE_EXCEPTIONS,list.rows,bytes);}
+        list.capacity=capacity;
+    }
+    unsafe_position<GraphWork>(color_offset(list.rows,list.count*size_of<GraphWork>()))=step;
+    list.count+=1u64;
+    unsafe_position<GraphWalk>(work)=list;
+}
+GraphWork pop_walk(address work) on cpu {
+    unsafe_position<GraphWalk>(work).count-=1u64;
+    GraphWalk list=unsafe_position<GraphWalk>(work);
+    return unsafe_position<GraphWork>(color_offset(list.rows,list.count*size_of<GraphWork>()));
+}
+void save_walk_tail(address work,WalkBlock block,u64 remaining) on cpu {
+    if(remaining!=0u64){
+        Span tail=Span(block.code.data,remaining,block.code.stride);
+        push_walk(work,GraphWork::Block(WalkBlock(tail,block.live,block.breaks,block.continues,block.exits,block.weight)));
+    }
+}
+void walk_branch(address work,View node,WalkBlock block,GraphHost host) on cpu requires nonzero(host.clone_set) {
+    handle yes=host.clone_set(block.live);
+    push_walk(work,GraphWork::Join(WalkJoin(block.live,yes,node.a,block.weight)));
+    push_walk(work,GraphWork::Block(WalkBlock(node.second,block.live,block.breaks,block.continues,block.exits,block.weight)));
+    push_walk(work,GraphWork::Block(WalkBlock(node.first,yes,block.breaks,block.continues,block.exits,block.weight)));
+}
+void walk_loop(address work,View node,WalkBlock block,GraphHost host) on cpu
+    requires nonzero(host.loop_live) requires nonzero(host.clone_set) {
+    handle header=host.loop_live(node.first,node.a,node.second,block.live,block.breaks,block.continues,block.exits);
+    handle before=host.clone_set(header);
+    u64 weight=graph_nested_weight(block.weight);
+    WalkBlock condition=WalkBlock(node.first,block.live,block.breaks,block.continues,block.exits,weight);
+    push_walk(work,GraphWork::Condition(WalkCondition(condition,before,header,node.a)));
+    push_walk(work,GraphWork::Block(WalkBlock(node.second,before,block.live,header,block.exits,weight)));
+}
+void walk_scope(address work,View node,WalkBlock block,GraphHost host) on cpu requires nonzero(host.clone_set) {
+    handle before=host.clone_set(block.live);
+    push_walk(work,GraphWork::Replace(WalkReplace(block.live,before,handle())));
+    push_walk(work,GraphWork::Block(WalkBlock(node.first,before,block.breaks,block.continues,block.live,block.weight)));
+}
+void walk_join(address graph,WalkJoin join,GraphHost host) on cpu
+    requires nonzero(host.change) requires nonzero(host.drop_set) requires nonzero(host.core.slot) {
+    host.change(GraphSetAction::DrainUnion,join.live,join.yes);
+    host.drop_set(join.yes);
+    host.core.slot(join.live,GraphSlotAction::Insert,GraphSpace::Register,join.test);
+    graph_weight(graph,join.test,join.weight);
+}
+void walk_condition(address graph,address work,WalkCondition condition,GraphHost host) on cpu
+    requires nonzero(host.change) requires nonzero(host.core.slot) {
+    WalkBlock block=condition.block;
+    host.change(GraphSetAction::DrainUnion,condition.before,block.live);
+    host.core.slot(condition.before,GraphSlotAction::Insert,GraphSpace::Register,condition.test);
+    graph_weight(graph,condition.test,block.weight);
+    push_walk(work,GraphWork::Replace(WalkReplace(block.live,condition.before,condition.header)));
+    push_walk(work,GraphWork::Block(WalkBlock(block.code,condition.before,block.breaks,block.continues,block.exits,block.weight)));
+}
+void walk_replace(WalkReplace replace,GraphHost host) on cpu
+    requires nonzero(host.change) requires nonzero(host.drop_set) {
+    host.change(GraphSetAction::Swap,replace.live,replace.before);
+    host.drop_set(replace.before);
+    if(replace.header!=handle()){host.drop_set(replace.header);}
+}
+u32 walk_block(address graph,address work,WalkBlock block,Span registers,GraphHost host) on cpu
+    requires nonzero(host.core.visit_set) requires nonzero(host.core.slot)
+    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.scalar)
+    requires nonzero(host.cast_bits) requires nonzero(host.call_outgoing) requires nonzero(host.math_outgoing)
+    requires nonzero(host.clone_set) requires nonzero(host.change)
+    requires nonzero(host.loop_live) requires nonzero(host.register_reads) {
+    u32 uses_r15=0;
+    u64 remaining=block.code.count;
+    while(remaining!=0u64){
+        remaining-=1u64;
+        Node instruction=graph_node_at(block.code,remaining,N_INSTRUCTION);
+        View node=host.values.ir.inspect(instruction);
+        if(node.tag==OP_BRANCH){
+            save_walk_tail(work,block,remaining);
+            walk_branch(work,node,block,host);
+            return uses_r15;
+        }
+        if(node.tag==OP_LOOP_VALUE){
+            save_walk_tail(work,block,remaining);
+            walk_loop(work,node,block,host);
+            return uses_r15;
+        }
+        if(node.tag==OP_SCOPE){
+            save_walk_tail(work,block,remaining);
+            walk_scope(work,node,block,host);
+            return uses_r15;
+        }
+        if(node.tag==OP_RAISE){
+            host.change(GraphSetAction::Clear,block.live,handle());
+            host.core.slot(block.live,GraphSlotAction::Insert,GraphSpace::Register,node.a);
+            graph_weight(graph,node.a,block.weight);
+        }else if(node.tag==OP_EXIT_VALUE){host.change(GraphSetAction::Copy,block.live,block.exits);}
+        else if(node.tag==OP_BREAK_VALUE){host.change(GraphSetAction::Copy,block.live,block.breaks);}
+        else if(node.tag==OP_CONTINUE_VALUE){host.change(GraphSetAction::Copy,block.live,block.continues);}
+        else{uses_r15|=graph_instruction(graph,instruction,node,registers,block.live,block.weight,host);}
+    }
+    return uses_r15;
+}
+u32 walk_step(address graph,address work,GraphWork step,Span registers,GraphHost host) on cpu
+    requires nonzero(host.core.visit_set) requires nonzero(host.core.slot)
+    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.scalar)
+    requires nonzero(host.cast_bits) requires nonzero(host.call_outgoing) requires nonzero(host.math_outgoing)
+    requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change)
+    requires nonzero(host.loop_live) requires nonzero(host.register_reads) {
+    match(step){
+        GraphWork::Block(block){return walk_block(graph,work,block,registers,host);}
+        GraphWork::Join(join){walk_join(graph,join,host);}
+        GraphWork::Condition(condition){walk_condition(graph,work,condition,host);}
+        GraphWork::Replace(replace){walk_replace(replace,host);}
+    }
+    return 0;
+}
+u32 walk_graph(address graph,GraphRequest input,GraphHost host) on cpu
+    requires nonzero(host.core.visit_set) requires nonzero(host.core.slot)
+    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.scalar)
+    requires nonzero(host.cast_bits) requires nonzero(host.call_outgoing) requires nonzero(host.math_outgoing)
+    requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change)
+    requires nonzero(host.loop_live) requires nonzero(host.register_reads) {
+    address work=color_offset(graph,size_of<GraphData>());
+    WalkBlock root=WalkBlock(input.code,input.live,input.empty,input.empty,input.empty,1u64);
+    u32 uses_r15=walk_block(graph,work,root,input.registers,host);
+    while(unsafe_position<GraphWalk>(work).count!=0u64){
+        GraphWork step=pop_walk(work);
+        uses_r15|=walk_step(graph,work,step,input.registers,host);
+    }
+    release_graph_memory(unsafe_position<GraphWalk>(work).rows);
+    unsafe_position<GraphWalk>(work)=GraphWalk(address(),0u64,0u64);
+    return uses_r15;
+}
+extern "C" GraphBuilt graph_create(address request,GraphHost host) on cpu
+    requires nonzero(host.core.visit_set) requires nonzero(host.core.slot)
+    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.scalar)
+    requires nonzero(host.cast_bits) requires nonzero(host.call_outgoing) requires nonzero(host.math_outgoing)
+    requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change)
+    requires nonzero(host.loop_live) requires nonzero(host.register_reads) {
+    GraphRequest input=unsafe_position<GraphRequest>(request);
+    address graph=graph_storage(input.count,input.registers.count,input.places);
+    graph_together(graph,input.live,host.core);
+    u32 uses_r15=walk_graph(graph,input,host);
+    return GraphBuilt(graph,uses_r15);
 }
