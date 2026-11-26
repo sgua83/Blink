@@ -47,14 +47,14 @@ struct RangeQuery {
 }
 
 #[repr(C)]
-struct RangeInput {
+pub(crate) struct RangeInput {
     values: *const c_void,
     count: usize,
     get: Read,
 }
 
 impl RangeInput {
-    fn borrowed(values: &&[Pair]) -> Self {
+    pub(crate) fn borrowed(values: &&[Pair]) -> Self {
         Self { values: ptr::from_ref(values).cast(), count: values.len(), get: interval }
     }
 }
@@ -67,7 +67,7 @@ unsafe extern "C" {
         known: BitPattern, required: BitPattern) -> u32;
     #[cfg(feature = "compiler")]
     #[link_name = "codec.scalar_ranges::intersect_ranges"]
-    fn intersect_ranges(left: RangeInput, right: RangeInput, output: *mut c_void, push: Push);
+    fn intersect_ranges(left: RangeInput, right: RangeInput, output: *mut c_void, push: Push) -> usize;
     #[link_name = "codec.scalar_ranges::intersect_element_ranges"]
     fn intersect_element_ranges(left: RangeInput, right: RangeInput, write_left: Write,
         write_right: Write, left_bits: BitPattern, right_bits: BitPattern, output: *mut c_void,

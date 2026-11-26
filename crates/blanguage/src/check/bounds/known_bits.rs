@@ -1,7 +1,15 @@
 //! Numerical values cross synchronously; the original Proof owns every fact.
-use super::{Bits, Fact, Facts, IndexDomain, KnownBits, Scalar, ValueIdentity, bitwise::Operation};
+use super::{Bits, Fact, Facts, IndexDomain, KnownBits, Scalar, ValueIdentity};
 use crate::builtin_types::ScalarEncoding;
 use std::{collections::btree_set, ffi::c_void, slice};
+
+#[derive(Clone, Copy)]
+#[repr(u32)]
+pub(super) enum Operation {
+    And,
+    Or,
+    Xor,
+}
 
 #[derive(Clone, Copy)]
 #[repr(C)]

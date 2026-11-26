@@ -1110,13 +1110,155 @@ extern "C" u64 range_set_counts(address input,u64 count,cfn<BitRange,address,u32
     u64 range_index_6=0u64;while(range_index_6<count){result+=range_set_parts(output,host.push,integer_range_counts(width,bias,get(input,0,range_index_6)));range_index_6+=1u64;}
     return range_set_normalize(output,result,host);
 }
-extern "C" u64 range_set_apply(address input,u64 left,u64 right,cfn<BitRange,address,u32,u64> get,address operation,cfn<u64,address,BitRange,BitRange,address> invoke,address output,RangeSetOutput host,u32 combine) on cpu
-    requires nonzero(get) requires nonzero(invoke) requires nonzero(host.get) requires nonzero(host.set) {
-    u64 count=0u64;
-    u64 range_index_7=0u64;while(range_index_7<left){
-        BitRange a=get(input,0,range_index_7);
-        if(combine==0){count=invoke(operation,a,BitRange(0u64,0u64),output);}
-        else{u64 range_index_8=0u64;while(range_index_8<right){count=invoke(operation,a,get(input,1,range_index_8),output);range_index_8+=1u64;}}
-    range_index_7+=1u64;}
-    return range_set_normalize(output,count,host);
+
+BitRange input_hull(RangeInput input) on cpu requires nonzero(input.get) {
+    if (input.count == 0u64) { return BitRange(1u64, 0u64); }
+    return BitRange(input.get(input.values, 0u64).lower,
+        input.get(input.values, input.count - 1u64).upper);
+}
+
+bool order_selects_operand(IntegerRangeOperation operation) on cpu {
+    return operation == IntegerRangeOperation::Minimum || operation == IntegerRangeOperation::Maximum;
+}
+
+bool same_value_preserves_operand(IntegerRangeOperation operation) on cpu {
+    return order_selects_operand(operation) || operation == IntegerRangeOperation::BitAnd
+        || operation == IntegerRangeOperation::BitOr;
+}
+
+bool range_is_value(BitRange range, u64 bias, u64 value) on cpu {
+    return range.lower == range.upper && (range.lower ^ bias) == value;
+}
+
+bool singleton_shift(RangeInput input, RangeInput counts, IntegerBinaryProof proof) on cpu
+    requires nonzero(input.get) requires nonzero(counts.get) {
+    if (proof.right_width == proof.width && proof.right_bias == proof.bias) {
+        return range_is_value(input_hull(counts), proof.right_bias, 0u64);
+    }
+    bool found = false;
+    u64 i = 0u64;
+    while (i < input.count) {
+        IntegerRangePieces pieces = integer_range_counts(proof.right_width, proof.right_bias,
+            input.get(input.values, i));
+        if (pieces.count != 0) {
+            if (!range_is_value(pieces.first, proof.right_bias, 0u64)) { return false; }
+            if (pieces.count == 2 && !range_is_value(pieces.second, proof.right_bias, 0u64)) {
+                return false;
+            }
+            found = true;
+        }
+        i += 1u64;
+    }
+    return found;
+}
+
+u32 binary_origin(RangeInput left, RangeInput right, RangeInput counts, IntegerBinaryProof proof) on cpu
+    requires nonzero(left.get) requires nonzero(right.get) requires nonzero(counts.get) {
+    IntegerRangeOperation operation = proof.operation;
+    if (proof.same_value != 0 && same_value_preserves_operand(operation)) { return 1; }
+    if (order_selects_operand(operation)) {
+        BitRange a = input_hull(left);
+        BitRange b = input_hull(right);
+        bool minimum = operation == IntegerRangeOperation::Minimum;
+        if (a.upper <= b.lower) { return minimum ? 1 : 2; }
+        if (b.upper <= a.lower) { return minimum ? 2 : 1; }
+        return 0;
+    }
+    if (operation == IntegerRangeOperation::ShiftLeft || operation == IntegerRangeOperation::ShiftRight) {
+        return singleton_shift(right, counts, proof) ? 1 : 0;
+    }
+    u64 neutral = 0u64;
+    if (operation == IntegerRangeOperation::Multiply || operation == IntegerRangeOperation::Divide) {
+        neutral = 1u64;
+    } else if (operation == IntegerRangeOperation::BitAnd) {
+        neutral = proof.mask;
+    } else if (operation != IntegerRangeOperation::Add && operation != IntegerRangeOperation::Subtract
+        && operation != IntegerRangeOperation::BitOr && operation != IntegerRangeOperation::BitXor) {
+        return 0;
+    }
+    bool commutes = operation != IntegerRangeOperation::Subtract && operation != IntegerRangeOperation::Divide;
+    if (range_is_value(input_hull(right), proof.right_bias, neutral)) { return 1; }
+    if (commutes && range_is_value(input_hull(left), proof.bias, neutral)) { return 2; }
+    return 0;
+}
+
+IntegerRangePieces binary_range_pair(IntegerBinaryProof proof, BitRange left, BitRange right) on cpu {
+    IntegerRangeOperation op = proof.operation;
+    BitRange empty = BitRange(1u64, 0u64);
+    if (op == IntegerRangeOperation::BitAnd || op == IntegerRangeOperation::BitOr
+        || op == IntegerRangeOperation::BitXor) {
+        IntegerBitwise operation = op == IntegerRangeOperation::BitAnd ? IntegerBitwise::And
+            : op == IntegerRangeOperation::BitOr ? IntegerBitwise::Or : IntegerBitwise::Xor;
+        return IntegerRangePieces(integer_bitwise_range(operation, proof.width, proof.bias, left, right),
+            empty, 1);
+    }
+    if (op == IntegerRangeOperation::Unknown) {
+        return IntegerRangePieces(BitRange(0u64, proof.mask), empty, 1);
+    }
+    return integer_range(op, proof.width, proof.signed, left, right);
+}
+
+u64 append_binary_range(address output, cfn<void,address,BitRange> push, BitRange range,
+    u64 minimum) on cpu requires nonzero(push) {
+    u64 lower = max(range.lower, minimum);
+    if (lower > range.upper) { return 0u64; }
+    push(output, BitRange(lower, range.upper));
+    return 1u64;
+}
+
+extern "C" IntegerBinaryResult range_set_integer_binary(RangeInput left, RangeInput right,
+    RangeInput right_counts, address output, RangeSetOutput host, IntegerBinaryProof proof) on cpu
+    requires nonzero(left.get) requires nonzero(right.get) requires nonzero(right_counts.get)
+    requires nonzero(host.get) requires nonzero(host.set) requires nonzero(host.push) {
+    u32 origin = proof.track_origin == 0 ? 0 : binary_origin(left, right, right_counts, proof);
+    if (left.count == 0u64 || right.count == 0u64) { return IntegerBinaryResult(0u64, origin); }
+    if (proof.zero_quotient != 0) {
+        host.push(output, BitRange(proof.bias, proof.bias));
+        return IntegerBinaryResult(1u64, origin);
+    }
+    if (proof.same_value != 0) {
+        IntegerRangeOperation op = proof.operation;
+        if (same_value_preserves_operand(op)) {
+            return IntegerBinaryResult(intersect_ranges(left, right, output, host.push), origin);
+        }
+        if (op == IntegerRangeOperation::Subtract || op == IntegerRangeOperation::BitXor
+            || op == IntegerRangeOperation::Divide || op == IntegerRangeOperation::Remainder) {
+            if (!ranges_overlap(left, right)) { return IntegerBinaryResult(0u64, origin); }
+            u64 value = op == IntegerRangeOperation::Divide ? proof.bias ^ 1u64 : proof.bias;
+            host.push(output, BitRange(value, value));
+            return IntegerBinaryResult(1u64, origin);
+        }
+    }
+
+    u64 count = 0u64;
+    u64 i = 0u64;
+    while (i < left.count) {
+        BitRange lhs = left.get(left.values, i);
+        u64 j = 0u64;
+        while (j < right_counts.count) {
+            IntegerRangePieces pieces = binary_range_pair(proof, lhs,
+                right_counts.get(right_counts.values, j));
+            if (pieces.count != 0) {
+                count += append_binary_range(output, host.push, pieces.first, proof.minimum_difference);
+            }
+            if (pieces.count == 2) {
+                count += append_binary_range(output, host.push, pieces.second, proof.minimum_difference);
+            }
+            j += 1u64;
+        }
+        i += 1u64;
+    }
+    return IntegerBinaryResult(range_set_normalize(output, count, host), origin);
+}
+
+extern "C" u64 range_set_map(RangeInput input, address operation,
+    cfn<u64,address,BitRange,address> invoke, address output, RangeSetOutput host) on cpu
+    requires nonzero(input.get) requires nonzero(invoke) requires nonzero(host.get) requires nonzero(host.set) {
+    u64 count = 0u64;
+    u64 index = 0u64;
+    while (index < input.count) {
+        count = invoke(operation, input.get(input.values, index), output);
+        index += 1u64;
+    }
+    return range_set_normalize(output, count, host);
 }

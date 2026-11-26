@@ -24,7 +24,6 @@ mod range_sets;
 mod required_roots;
 use super::*;
 mod floating;
-mod bitwise;
 mod known_bits;
 mod integer;
 mod contract;
@@ -671,14 +670,13 @@ impl ScalarRanges {
     fn without(&self,value:Bits)->Self {range_sets::without(&self.0,value)}
     fn map(&self,operation:impl FnMut((Bits,Bits))->Self)->Self {range_sets::map(&self.0,operation)}
     fn shift_counts(&self,scalar:Scalar)->Self {range_sets::shift_counts(&self.0,scalar)}
-    fn combine(&self,other:&Self,operation:impl FnMut((Bits,Bits),(Bits,Bits))->Self)->Self {range_sets::combine(&self.0,&other.0,operation)}
 }
 #[derive(Clone,Copy,PartialEq,Eq)]
 struct KnownBits { scalar:Scalar, mask:Bits, value:Bits }
 impl KnownBits {
     fn domain(self)->IndexDomain {IndexDomain::KnownBits(self.scalar,self.mask,self.value)}
     fn bitwise(operation:IntegerOperation,scalar:Scalar,a:Option<Self>,b:Option<Self>)->Option<Self> {
-        let operation=match operation {IntegerOperation::And=>bitwise::Operation::And,IntegerOperation::Or=>bitwise::Operation::Or,IntegerOperation::Xor=>bitwise::Operation::Xor,_=>return None};
+        let operation=match operation {IntegerOperation::And=>known_bits::Operation::And,IntegerOperation::Or=>known_bits::Operation::Or,IntegerOperation::Xor=>known_bits::Operation::Xor,_=>return None};
         known_bits::bitwise(scalar,operation,a,b)
     }
     fn common(self,other:Self)->Option<Self> {known_bits::common(self,other)}
@@ -2842,56 +2840,28 @@ pub(super) fn math(op: MathOp, args: &[Value]) -> Proof {
 pub(super) fn arithmetic(builder: &Builder<'_>, op: &str, a: &Value, b: &Value) -> Proof {
     let count = a.regs.len().max(b.regs.len());
     let scalar = a.ty.components[0].0;
+    let (ranges, origins): (Vec<_>, Vec<_>) = if scalar.is_integer() {
+        (0..count).map(|i| {
+            let ai = i % a.regs.len();
+            let bi = i % b.regs.len();
+            let evidence = binary_evidence(op, scalar, a, b, ai, bi);
+            let (range, origin) = range_sets::binary(
+                op, scalar, &a.component_ranges(ai), &b.component_ranges(bi), Some(evidence),
+            );
+            let inherited = match origin {
+                range_sets::Origin::Neither => None,
+                range_sets::Origin::Left => Some((a, ai)),
+                range_sets::Origin::Right => Some((b, bi)),
+            };
+            (range, inherited)
+        }).unzip()
+    } else if scalar.is_float() {
+        ((0..count).map(|i| floating::arithmetic(op, a, b, i)).collect(), Vec::new())
+    } else {
+        (Vec::new(), Vec::new())
+    };
     let mut proof = Proof {
-        ranges: if scalar.is_integer() {
-            (0..count)
-                .map(|i| {
-                    let ai = i % a.regs.len();
-                    let bi = i % b.regs.len();
-                    let left = a.component_ranges(ai);
-                    let right = b.component_ranges(bi);
-                    let signed = scalar.is_signed();
-                    let bias = scalar.order_bias();
-                    if op == "/" && !signed && a.proof.domains.get(ai).is_some_and(|domains| {
-                        domains.iter().any(|domain| matches!(domain,
-                            IndexDomain::Computed(IntegerExpression::Binary(
-                                IntegerOperation::Remainder, source, _, divisor
-                            )) if *source == scalar && *divisor == Operand::of(b, bi)))
-                    }) {
-                        return left.combine(&right, |_, _| ScalarRanges::interval(bias, bias));
-                    }
-                    if matches!(op, "-" | "^" | "&" | "|" | "/" | "%" | "min" | "max")
-                        && a.same_component(ai, b, bi)
-                    {
-                        // 同值快照只取共同可达片段；空路径仍为空。
-                        let shared = left.intersection(&right);
-                        return match op {
-                            "&" | "|" | "min" | "max" => shared,
-                            _ => {
-                                // 整数除余在进入范围计算前已由 binary 证明除数非零。
-                                let value = if op == "/" { bias ^ 1 } else { bias };
-                                shared.map(|_| ScalarRanges::interval(value, value))
-                            }
-                        };
-                    }
-                    let range = arithmetic_ranges(op, scalar, &left, &right);
-                    if !signed && op == "-" {
-                        let left_origins = a.component_origins(ai);
-                        let right_origins = b.component_origins(bi);
-                        if let Some(minimum) = a.proof.domains(ai).iter().copied().filter_map(|domain| match domain {
-                            IndexDomain::Lower(base, distance) | IndexDomain::Offset(base, distance) if right_origins.contains(&base) => Some(distance),
-                            _ => None,
-                        }).chain(b.proof.domains(bi).iter().copied().filter_map(|domain| match domain {
-                            IndexDomain::Upper(limit, distance) if left_origins.contains(&limit) => Some(distance),
-                            _ => None,
-                        })).max().filter(|&distance| distance != 0) { return range.restrict(Bits::from(minimum), scalar.bit_mask()); }
-                    }
-                    range
-                })
-                .collect()
-        } else if scalar.is_float() {
-            (0..count).map(|i| floating::arithmetic(op, a, b, i)).collect()
-        } else { Vec::new() },
+        ranges,
         nonzero: if scalar.is_integer() && op == "|" {
             (0..count)
                 .map(|i| {
@@ -2917,7 +2887,7 @@ pub(super) fn arithmetic(builder: &Builder<'_>, op: &str, a: &Value, b: &Value) 
     }
     if scalar.is_integer() {
         let shift_input = matches!(op, "<<" | ">>").then(|| Proof::capture(a));
-        for component in 0..count {
+        for (component, origin) in origins.into_iter().enumerate() {
             if let Some(input) = &shift_input {
                 let source = input.known_bits(component % a.regs.len(), scalar)
                     .unwrap_or(KnownBits { scalar, mask: 0, value: 0 });
@@ -2926,7 +2896,7 @@ pub(super) fn arithmetic(builder: &Builder<'_>, op: &str, a: &Value, b: &Value) 
                     proof.mark_domain(component, bits.domain());
                 }
             }
-            if let Some((value, source)) = arithmetic_source(op, a, b, component) {
+            if let Some((value, source)) = origin {
                 let mut exact = value.projected_proof(&[source]);
                 // 继承操作数身份，但仍与运算的可达片段相交，保留空路径。
                 exact.ranges[0] = range_sets::intersection(
@@ -2940,70 +2910,36 @@ pub(super) fn arithmetic(builder: &Builder<'_>, op: &str, a: &Value, b: &Value) 
     proof
 }
 fn arithmetic_ranges(op: &str, scalar: Scalar, left: &ScalarRanges, right: &ScalarRanges) -> ScalarRanges {
-    let shifted;
-    let right = if matches!(op, "<<" | ">>") {
-        shifted = right.shift_counts(scalar);
-        &shifted
-    } else { right };
-    left.combine(right, |left, right| {
-        let bitwise = |operation| {
-            let (lower, upper) = bitwise::range(left, right, scalar, operation);
-            ScalarRanges::interval(lower, upper)
-        };
-        match op {
-            "&" => bitwise(bitwise::Operation::And),
-            "|" => bitwise(bitwise::Operation::Or),
-            "^" => bitwise(bitwise::Operation::Xor),
-            _ => integer::arithmetic(op,scalar,left,right),
-        }
-    })
+    range_sets::binary(op, scalar, left, right, None).0
 }
-fn arithmetic_source<'a>(
-    op: &str,
-    a: &'a Value,
-    b: &'a Value,
-    component: usize,
-) -> Option<(&'a Value, usize)> {
-    let ai = component % a.regs.len();
-    let bi = component % b.regs.len();
-    if matches!(op, "&" | "|" | "min" | "max") && a.same_component(ai, b, bi) {
-        return Some((a, ai));
-    }
-    if matches!(op, "min" | "max") {
-        let (al, ah) = a.component_range(ai);
-        let (bl, bh) = b.component_range(bi);
-        return if ah <= bl {
-            Some(if op == "min" { (a, ai) } else { (b, bi) })
-        } else if bh <= al {
-            Some(if op == "min" { (b, bi) } else { (a, ai) })
-        } else {
-            None
-        };
-    }
-    if matches!(op, "<<" | ">>") {
-        let scalar = b.ty.components[bi].0;
-        return (b.component_ranges(bi).shift_counts(scalar).hull()
-            == (scalar.order_bias(), scalar.order_bias())).then_some((a, ai));
-    }
-    let (right, left) = match op {
-        "+" | "|" | "^" => (0, Some(0)),
-        "*" => (1, Some(1)),
-        "-" => (0, None),
-        "/" => (1, None),
-        "&" => {let mask=a.ty.components[ai].0.bit_mask(); (mask, Some(mask))},
-        _ => return None,
-    };
-    let bits = |value: &Value, index| {
-        let (lower, upper) = value.component_range(index);
-        let bias = value.ty.components[index].0.order_bias();
-        (lower == upper).then_some(lower ^ bias)
-    };
-    if bits(b, bi) == Some(right) {
-        Some((a, ai))
-    } else if left.is_some_and(|neutral| bits(a, ai) == Some(neutral)) {
-        Some((b, bi))
+fn binary_evidence(
+    op: &str, scalar: Scalar, a: &Value, b: &Value, ai: usize, bi: usize,
+) -> range_sets::BinaryEvidence {
+    let same_value = matches!(op, "-" | "^" | "&" | "|" | "/" | "%" | "min" | "max")
+        && a.same_component(ai, b, bi);
+    let zero_quotient = op == "/" && !scalar.is_signed() && a.proof.domains.get(ai).is_some_and(|domains| {
+        let divisor = Operand::of(b, bi);
+        domains.iter().any(|domain| matches!(domain,
+            IndexDomain::Computed(IntegerExpression::Binary(IntegerOperation::Remainder, source, _, value))
+            if *source == scalar && *value == divisor))
+    });
+    let minimum_difference = if op == "-" && !scalar.is_signed() && !same_value {
+        let left = a.component_origins(ai);
+        let right = b.component_origins(bi);
+        let lower = a.proof.domains(ai);
+        let upper = b.proof.domains(bi);
+        lower.iter().filter_map(|domain| match domain {
+            IndexDomain::Lower(base, distance) | IndexDomain::Offset(base, distance) if right.contains(base) => Some(*distance),
+            _ => None,
+        }).chain(upper.iter().filter_map(|domain| match domain {
+            IndexDomain::Upper(limit, distance) if left.contains(limit) => Some(*distance),
+            _ => None,
+        })).max().unwrap_or(0)
     } else {
-        None
+        0
+    };
+    range_sets::BinaryEvidence {
+        same_value, zero_quotient, minimum_difference, right_scalar: b.ty.components[bi].0,
     }
 }
 fn arithmetic_domains(op:&str,a:&Value,b:&Value,component:usize)->Domains {index_domains::arithmetic(op,a,b,component)}

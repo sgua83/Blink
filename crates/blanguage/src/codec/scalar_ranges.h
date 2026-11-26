@@ -18,9 +18,11 @@ extern "C" bool element_ranges_within(RangeInput actual, RangeInput allowed,
     u64 order_bias, BitPattern known, BitPattern required) on cpu
     requires nonzero(actual.get) requires nonzero(allowed.get);
 
-extern "C" void intersect_ranges(RangeInput left, RangeInput right,
+extern "C" u64 intersect_ranges(RangeInput left, RangeInput right,
     address output, cfn<void,address,BitRange> push) on cpu
     requires nonzero(left.get) requires nonzero(right.get) requires nonzero(push);
+bool ranges_overlap(RangeInput left, RangeInput right) on cpu
+    requires nonzero(left.get) requires nonzero(right.get);
 extern "C" BitPattern intersect_element_ranges(RangeInput left, RangeInput right,
     cfn<void,address,u64,BitRange> write_left, cfn<void,address,u64,BitRange> write_right,
     BitPattern left_bits, BitPattern right_bits, address output, cfn<void,address,BitRange> push) on cpu

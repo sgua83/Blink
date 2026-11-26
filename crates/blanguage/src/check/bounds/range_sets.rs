@@ -1,7 +1,7 @@
 //! B owns complete scalar-set rules; native containers retain their ownership.
 use super::{Bits,Scalar,ScalarRanges};
 use std::{ffi::c_void,ptr};
-use crate::ir::scalar_ranges::{self, BitPattern as Pattern, BitRange as Range, Pair, push};
+use crate::ir::scalar_ranges::{self, BitPattern as Pattern, BitRange as Range, Pair, RangeInput, push};
 type Slot=*mut c_void;
 type Borrowed=*const c_void;
 #[repr(C)]
@@ -12,12 +12,86 @@ struct Sources<'a>{left:&'a [Pair],right:&'a [Pair]}
 type Read=unsafe extern "C" fn(Borrowed,u32,usize)->Range;
 type Push=unsafe extern "C" fn(Slot,Range);
 type Pull=unsafe extern "C" fn(Slot)->Next;
-type Invoke=unsafe extern "C" fn(Slot,Range,Range,Slot)->usize;
+type Invoke=unsafe extern "C" fn(Slot,Range,Slot)->usize;
 #[repr(C)]
 struct Output {
     get:unsafe extern "C" fn(Slot,usize)->Range,
     set:unsafe extern "C" fn(Slot,usize,Range),
     push:Push,
+}
+
+#[derive(Clone, Copy)]
+#[repr(u32)]
+enum BinaryOperation {
+    Minimum,
+    Maximum,
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Remainder,
+    ShiftLeft,
+    ShiftRight,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Unknown,
+}
+
+impl BinaryOperation {
+    fn from_operator(op: &str) -> Self {
+        match op {
+            "min" => Self::Minimum,
+            "max" => Self::Maximum,
+            "+" => Self::Add,
+            "-" => Self::Subtract,
+            "*" => Self::Multiply,
+            "/" => Self::Divide,
+            "%" => Self::Remainder,
+            "<<" => Self::ShiftLeft,
+            ">>" => Self::ShiftRight,
+            "&" => Self::BitAnd,
+            "|" => Self::BitOr,
+            "^" => Self::BitXor,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+pub(super) struct BinaryEvidence {
+    pub(super) same_value: bool,
+    pub(super) zero_quotient: bool,
+    pub(super) minimum_difference: u32,
+    pub(super) right_scalar: Scalar,
+}
+
+#[repr(C)]
+struct BinaryProof {
+    operation: BinaryOperation,
+    width: u32,
+    signed: u32,
+    same_value: u32,
+    bias: u64,
+    mask: u64,
+    minimum_difference: u64,
+    right_bias: u64,
+    right_width: u32,
+    zero_quotient: u32,
+    track_origin: u32,
+}
+
+#[derive(Clone, Copy)]
+#[repr(u32)]
+pub(super) enum Origin {
+    Neither,
+    Left,
+    Right,
+}
+
+#[repr(C)]
+struct BinaryResult {
+    count: usize,
+    origin: Origin,
 }
 #[repr(C)]
 pub(super) struct Projection {
@@ -95,8 +169,8 @@ unsafe extern "C" fn set(slot:Slot,index:usize,value:Range) {let values=unsafe{&
 unsafe extern "C" fn pull<I:Iterator<Item=Pair>>(slot:Slot)->Next {
     unsafe{&mut *slot.cast::<I>()}.next().map(|v|Next{value:v.into(),present:1}).unwrap_or(Next{value:Range::default(),present:0})
 }
-unsafe extern "C" fn invoke<F:FnMut(Pair,Pair)->ScalarRanges>(slot:Slot,left:Range,right:Range,output:Slot)->usize {
-    let value=unsafe{&mut *slot.cast::<F>()}(left.into(),right.into());
+unsafe extern "C" fn invoke<F:FnMut(Pair)->ScalarRanges>(slot:Slot,input:Range,output:Slot)->usize {
+    let value=unsafe{&mut *slot.cast::<F>()}(input.into());
     let output=unsafe{&mut *output.cast::<Vec<Pair>>()};output.extend(value.0);output.len()
 }
 fn host()->Output {Output{get,set,push}}
@@ -147,8 +221,11 @@ unsafe extern "C" {
         first: Cast, second: CastStep, last: CastStep) -> CastSummary;
     #[link_name="bootstrap.scalar_fold::range_set_counts"]
     fn counts(input:Borrowed,count:usize,read:Read,output:Slot,host:Output,width:u32,bias:u64)->usize;
-    #[link_name="bootstrap.scalar_fold::range_set_apply"]
-    fn applied(input:Borrowed,left:usize,right:usize,read:Read,operation:Slot,invoke:Invoke,output:Slot,host:Output,combine:u32)->usize;
+    #[link_name="bootstrap.scalar_fold::range_set_map"]
+    fn mapped(input: RangeInput, operation: Slot, invoke: Invoke, output: Slot, host: Output) -> usize;
+    #[link_name="bootstrap.scalar_fold::range_set_integer_binary"]
+    fn integer_binary(left: RangeInput, right: RangeInput, right_counts: RangeInput,
+        output: Slot, host: Output, proof: BinaryProof) -> BinaryResult;
 }
 pub(super) fn full()->ScalarRanges {output(|o|unsafe{all(o,push)})}
 pub(super) fn interval(lower:u64,upper:u64)->ScalarRanges {output(|o|unsafe{single(o,push,lower,upper)})}
@@ -224,8 +301,46 @@ pub(super) fn cast_summary(values: &[Pair], [from, low, extended, to]: [Scalar; 
     (summary.hull.into(), summary.contains)
 }
 pub(super) fn shift_counts(values:&[Pair],scalar:Scalar)->ScalarRanges {inputs(values,&[],|s,n,_|normalized_output(|o,h|unsafe{counts(s,n,read,o,h,scalar.bit_width(),scalar.order_bias())}))}
-fn apply<F:FnMut(Pair,Pair)->ScalarRanges>(left:&[Pair],right:&[Pair],combine:bool,mut operation:F)->ScalarRanges {
-    inputs(left,right,|s,n,m|normalized_output(|o,h|unsafe{applied(s,n,m,read,ptr::from_mut(&mut operation).cast(),invoke::<F>,o,h,u32::from(combine))}))
+
+pub(super) fn binary(
+    op: &str, scalar: Scalar, left: &ScalarRanges, right: &ScalarRanges, evidence: Option<BinaryEvidence>,
+) -> (ScalarRanges, Origin) {
+    let operation = BinaryOperation::from_operator(op);
+    let projected;
+    let left = left.0.as_slice();
+    let right = right.0.as_slice();
+    let right_counts = if matches!(operation, BinaryOperation::ShiftLeft | BinaryOperation::ShiftRight) {
+        projected = shift_counts(right, scalar);
+        projected.0.as_slice()
+    } else {
+        right
+    };
+    let right_scalar = evidence.as_ref().map_or(scalar, |facts| facts.right_scalar);
+    let proof = BinaryProof {
+        operation,
+        width: scalar.bit_width(),
+        signed: u32::from(scalar.is_signed()),
+        same_value: u32::from(evidence.as_ref().is_some_and(|facts| facts.same_value)),
+        bias: scalar.order_bias(),
+        mask: scalar.bit_mask(),
+        minimum_difference: evidence.as_ref().map_or(0, |facts| u64::from(facts.minimum_difference)),
+        right_bias: right_scalar.order_bias(),
+        right_width: right_scalar.bit_width(),
+        zero_quotient: u32::from(evidence.as_ref().is_some_and(|facts| facts.zero_quotient)),
+        track_origin: u32::from(evidence.is_some()),
+    };
+    let mut output = Vec::<Pair>::new();
+    let result = unsafe {
+        integer_binary(
+            RangeInput::borrowed(&left), RangeInput::borrowed(&right),
+            RangeInput::borrowed(&right_counts), ptr::from_mut(&mut output).cast(), host(), proof,
+        )
+    };
+    output.truncate(result.count);
+    (ScalarRanges(output), result.origin)
 }
-pub(super) fn map(values:&[Pair],mut operation:impl FnMut(Pair)->ScalarRanges)->ScalarRanges {apply(values,&[],false,|a,_|operation(a))}
-pub(super) fn combine(left:&[Pair],right:&[Pair],operation:impl FnMut(Pair,Pair)->ScalarRanges)->ScalarRanges {apply(left,right,true,operation)}
+pub(super) fn map<F: FnMut(Pair) -> ScalarRanges>(values: &[Pair], mut operation: F) -> ScalarRanges {
+    normalized_output(|output, host| unsafe {
+        mapped(RangeInput::borrowed(&values), ptr::from_mut(&mut operation).cast(), invoke::<F>, output, host)
+    })
+}

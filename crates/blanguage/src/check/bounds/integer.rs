@@ -7,19 +7,6 @@ use std::{collections::btree_set::Iter, ffi::c_void};
 
 #[derive(Clone, Copy)]
 #[repr(u32)]
-enum Operation {
-    Minimum,
-    Maximum,
-    Add,
-    Subtract,
-    Multiply,
-    Divide,
-    Remainder,
-    ShiftLeft,
-    ShiftRight,
-}
-#[derive(Clone, Copy)]
-#[repr(u32)]
 pub(super) enum Unary {
     BitNot,
     Negate,
@@ -135,9 +122,6 @@ fn decoded(value: Pieces) -> ScalarRanges {
     )
 }
 unsafe extern "C" {
-    #[link_name = "bootstrap.scalar_fold::integer_range"]
-    fn evaluate(operation: Operation, width: u32, signed: u32, left: Range, right: Range)
-    -> Pieces;
     #[link_name = "bootstrap.scalar_fold::integer_range_unary"]
     fn evaluate_unary(operation: Unary, width: u32, signed: u32, value: Range) -> Pieces;
     #[link_name = "bootstrap.scalar_fold::tile_nonzero_bound"]
@@ -150,34 +134,6 @@ unsafe extern "C" {
     fn evaluate_tile_sum(width: u32, signed: u32, values: Range, lanes: TileSumLanes) -> Pieces;
     #[link_name = "bootstrap.scalar_fold::integer_range_project"]
     fn project_values(width: u32, bias: Bits, lower: Wide, upper: Wide) -> Pieces;
-}
-pub(super) fn arithmetic(
-    op: &str,
-    scalar: Scalar,
-    left: (Bits, Bits),
-    right: (Bits, Bits),
-) -> ScalarRanges {
-    let operation = match op {
-        "min" => Operation::Minimum,
-        "max" => Operation::Maximum,
-        "+" => Operation::Add,
-        "-" => Operation::Subtract,
-        "*" => Operation::Multiply,
-        "/" => Operation::Divide,
-        "%" => Operation::Remainder,
-        "<<" => Operation::ShiftLeft,
-        ">>" => Operation::ShiftRight,
-        _ => return ScalarRanges::interval(0, scalar.bit_mask()),
-    };
-    decoded(unsafe {
-        evaluate(
-            operation,
-            scalar.bit_width(),
-            u32::from(scalar.is_signed()),
-            left.into(),
-            right.into(),
-        )
-    })
 }
 pub(super) fn unary(operation: Unary, scalar: Scalar, value: (Bits, Bits)) -> ScalarRanges {
     decoded(unsafe {

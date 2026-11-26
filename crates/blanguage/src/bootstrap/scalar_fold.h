@@ -88,7 +88,10 @@ extern "C" KnownProjection known_facts(u64 mask,u64 bias,address context,u64 cou
     requires nonzero(read_bound) requires nonzero(next_domain);
 extern "C" BitPattern known_shifted(u64 mask,u64 bias,u32 direction,BitPattern value,address context,u64 count,cfn<BitRange,address,u64> read) on cpu requires nonzero(read);
 
-enum IntegerRangeOperation : u32 { Minimum=0;Maximum=1;Add=2;Subtract=3;Multiply=4;Divide=5;Remainder=6;ShiftLeft=7;ShiftRight=8; };
+enum IntegerRangeOperation : u32 {
+    Minimum=0; Maximum=1; Add=2; Subtract=3; Multiply=4; Divide=5; Remainder=6;
+    ShiftLeft=7; ShiftRight=8; BitAnd=9; BitOr=10; BitXor=11; Unknown=12;
+};
 enum IntegerRangeUnary : u32 { BitNot=0;Negate=1; };
 struct IntegerWide {u64 low;u64 high;};
 struct IntegerRangePieces {BitRange first;BitRange second;u32 count;};
@@ -127,6 +130,24 @@ struct RangeSetOutput {
     cfn<void,address,u64,BitRange> set;
     cfn<void,address,BitRange> push;
 };
+struct IntegerBinaryProof {
+    IntegerRangeOperation operation;
+    u32 width;
+    u32 signed;
+    u32 same_value;
+    u64 bias;
+    u64 mask;
+    u64 minimum_difference;
+    u64 right_bias;
+    u32 right_width;
+    u32 zero_quotient;
+    u32 track_origin;
+};
+struct IntegerBinaryResult { u64 count; u32 origin; };
+extern "C" IntegerBinaryResult range_set_integer_binary(RangeInput left, RangeInput right,
+    RangeInput right_counts, address output, RangeSetOutput host, IntegerBinaryProof proof) on cpu
+    requires nonzero(left.get) requires nonzero(right.get) requires nonzero(right_counts.get)
+    requires nonzero(host.get) requires nonzero(host.set) requires nonzero(host.push);
 struct RangeSetCastInfo {
     u32 source_width; u32 source_signed; u32 target_width;
     u32 source_integer; u32 same; u32 nonzero;
@@ -179,5 +200,6 @@ extern "C" RangeSetCastSummary range_set_cast_summary(address input,u64 count,cf
     RangeSetCastInfo first,RangeSetCastStep second,RangeSetCastStep last) on cpu requires nonzero(get);
 extern "C" u64 range_set_counts(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,RangeSetOutput host,u32 width,u64 bias) on cpu
     requires nonzero(get) requires nonzero(host.get) requires nonzero(host.set) requires nonzero(host.push);
-extern "C" u64 range_set_apply(address input,u64 left,u64 right,cfn<BitRange,address,u32,u64> get,address operation,cfn<u64,address,BitRange,BitRange,address> invoke,address output,RangeSetOutput host,u32 combine) on cpu
-    requires nonzero(get) requires nonzero(invoke) requires nonzero(host.get) requires nonzero(host.set);
+extern "C" u64 range_set_map(RangeInput input, address operation,
+    cfn<u64,address,BitRange,address> invoke, address output, RangeSetOutput host) on cpu
+    requires nonzero(input.get) requires nonzero(invoke) requires nonzero(host.get) requires nonzero(host.set);

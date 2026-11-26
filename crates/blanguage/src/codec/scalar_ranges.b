@@ -160,24 +160,27 @@ void sort_if_unordered(RangeInput source, cfn<void,address,u64,BitRange> set) on
     }
 }
 
-void intersect<const Join:u32>(RangeInput left, RangeInput right,
+u64 intersect<const Mode:u32>(RangeInput left, RangeInput right,
     address output, cfn<void,address,BitRange> push) on cpu
     requires nonzero(left.get) requires nonzero(right.get) requires nonzero(push) {
-    if (left.count == 0u64 || right.count == 0u64) { return; }
+    if (left.count == 0u64 || right.count == 0u64) { return 0u64; }
     u64 i = 0u64;
     u64 j = 0u64;
     BitRange a = left.get(left.values, i);
     BitRange b = right.get(right.values, j);
     RangeSetNext pending = RangeSetNext(BitRange(0u64, 0u64), 0);
+    u64 count = 0u64;
     while (true) {
         u64 lower = max(a.lower, b.lower);
         u64 upper = min(a.upper, b.upper);
         if (lower <= upper) {
+            if (Mode == 2) { return 1u64; }
             BitRange value = BitRange(lower, upper);
-            if (Join != 0) {
+            if (Mode == 1) {
                 pending = range_set_accept(pending, value, output, push);
             } else {
                 push(output, value);
+                count += 1u64;
             }
         }
         bool move_left = a.upper <= b.upper;
@@ -188,13 +191,21 @@ void intersect<const Join:u32>(RangeInput left, RangeInput right,
         if (move_left) { a = left.get(left.values, i); }
         if (move_right) { b = right.get(right.values, j); }
     }
-    if (Join != 0 && pending.present != 0) { push(output, pending.value); }
+    if (Mode == 1 && pending.present != 0) { push(output, pending.value); }
+    return count;
 }
 
-extern "C" void intersect_ranges(RangeInput left, RangeInput right,
+extern "C" u64 intersect_ranges(RangeInput left, RangeInput right,
     address output, cfn<void,address,BitRange> push) on cpu
     requires nonzero(left.get) requires nonzero(right.get) requires nonzero(push) {
-    intersect<0>(left, right, output, push);
+    return intersect<0>(left, right, output, push);
+}
+
+extern "C" void ignore_intersection(address output, BitRange range) on cpu {}
+
+bool ranges_overlap(RangeInput left, RangeInput right) on cpu
+    requires nonzero(left.get) requires nonzero(right.get) {
+    return intersect<2>(left, right, address(), c_function(ignore_intersection)) != 0u64;
 }
 
 extern "C" BitPattern intersect_element_ranges(RangeInput left, RangeInput right,
