@@ -507,16 +507,6 @@ enum PayloadAccess {
 }
 
 #[repr(C)]
-struct PayloadEmission {
-    access: PayloadAccess,
-    raw_type: u32,
-    unit_type: u32,
-    unit_bytes: u32,
-    count: u32,
-    next: u32,
-}
-
-#[repr(C)]
 struct PackedField {
     value: u32,
     offset: u32,
@@ -564,6 +554,14 @@ unsafe extern "C" fn packing_constant<I>(
 }
 
 #[repr(C)]
+struct PayloadShape {
+    access: PayloadAccess,
+    scalar: ScalarCode,
+    unit: ScalarCode,
+    count: u32,
+}
+
+#[repr(C)]
 struct PayloadRead {
     words: u64,
     next: u32,
@@ -574,13 +572,6 @@ struct PayloadRead {
 struct PayloadWrite {
     words: u64,
     next: u32,
-}
-
-#[repr(C)]
-struct PayloadResult {
-    type_id: u32,
-    id: u32,
-    compare_zero: u32,
 }
 
 #[repr(C)]
@@ -734,10 +725,38 @@ struct BlockPaging {
 }
 
 #[repr(C)]
+struct PrivateField {
+    variable: u32,
+    pointer_type: u32,
+    unit: ScalarCode,
+    offset: u32,
+}
+
+#[repr(C)]
+struct BlockLocals {
+    slots: *const u32,
+    array: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> PrivateField,
+}
+
+unsafe extern "C" fn private_array_field(context: *mut std::ffi::c_void, base: usize) -> PrivateField {
+    use std::ops::Bound::{Excluded, Unbounded};
+
+    let emitter = unsafe { &*context.cast::<Emitter<'_>>() };
+    let (_, array) = emitter.private_arrays.range((Excluded(base), Unbounded)).next().unwrap();
+    PrivateField {
+        variable: array.variable,
+        pointer_type: emitter.pointers[&array.unit],
+        unit: array.unit.into(),
+        offset: array.shape.components[base - array.start].1,
+    }
+}
+
+#[repr(C)]
 struct BlockHost {
     ir: dataflow::Host,
     values: BlockValues,
     paging: BlockPaging,
+    locals: BlockLocals,
     reject: unsafe extern "C" fn(StructuredContext, BlockRejection) -> BlockFlow,
     texture_sample: unsafe extern "C" fn(StructuredContext, *const [Reg; 4], *const TextureSource, Span, Reg),
     ray: unsafe extern "C" fn(StructuredContext, *const Inst),
@@ -750,10 +769,6 @@ struct BlockHost {
     tile_lane: unsafe extern "C" fn(StructuredContext, Reg),
     tile_load: unsafe extern "C" fn(StructuredContext, Reg, usize, Reg, u32, Reg, u32),
     tile_store: unsafe extern "C" fn(StructuredContext, usize, Reg, Reg, u32, Reg),
-    local_load: unsafe extern "C" fn(StructuredContext, Reg, usize),
-    local_store: unsafe extern "C" fn(StructuredContext, usize, Reg),
-    private_load: unsafe extern "C" fn(StructuredContext, Reg, usize, Reg, u32),
-    private_store: unsafe extern "C" fn(StructuredContext, Reg, usize, Reg, u32),
 }
 
 fn block_host(emitter: &mut Emitter<'_>) -> BlockHost {
@@ -778,6 +793,10 @@ fn block_host(emitter: &mut Emitter<'_>) -> BlockHost {
             current_label: block_current_label,
             ballot_type: emitter.ballot_type,
         },
+        locals: BlockLocals {
+            slots: emitter.locals.as_ptr(),
+            array: private_array_field,
+        },
         reject: block_reject,
         texture_sample: block_texture_sample,
         ray: block_ray,
@@ -790,10 +809,6 @@ fn block_host(emitter: &mut Emitter<'_>) -> BlockHost {
         tile_lane: block_tile_lane,
         tile_load: block_tile_load,
         tile_store: block_tile_store,
-        local_load: block_local_load,
-        local_store: block_local_store,
-        private_load: block_private_load,
-        private_store: block_private_store,
     }
 }
 
@@ -894,34 +909,6 @@ unsafe extern "C" fn block_tile_store(context: StructuredContext, tile: usize, i
     }
     let raw = e.raw_bits(value);
     e.store_raw(scalar, unit, &pointers[..count], raw, true);
-}
-
-unsafe extern "C" fn block_local_load(context: StructuredContext, dst: Reg, slot: usize) {
-    let e = unsafe { block_emitter(context) };
-    let pointer = e.locals[slot];
-    if pointer == 0 {
-        e.load_private(dst, slot, None, 0);
-    } else {
-        e.read_pointer(e.ty(dst), e.value(dst), pointer);
-    }
-}
-
-unsafe extern "C" fn block_local_store(context: StructuredContext, slot: usize, value: Reg) {
-    let e = unsafe { block_emitter(context) };
-    let pointer = e.locals[slot];
-    if pointer == 0 {
-        e.store_private(value, slot, None, 0);
-    } else {
-        e.store_pointer(pointer, e.value(value));
-    }
-}
-
-unsafe extern "C" fn block_private_load(context: StructuredContext, dst: Reg, slot: usize, index: Reg, word: u32) {
-    unsafe { block_emitter(context) }.load_private(dst, slot, Some(index), word);
-}
-
-unsafe extern "C" fn block_private_store(context: StructuredContext, value: Reg, slot: usize, index: Reg, word: u32) {
-    unsafe { block_emitter(context) }.store_private(value, slot, Some(index), word);
 }
 
 #[repr(C)]
@@ -1062,24 +1049,6 @@ struct PrefixIndexWords {
 }
 
 #[repr(C)]
-struct PrivateAddress {
-    index_type: u32,
-    pointer_type: u32,
-    variable: u32,
-    index: u32,
-    offset: u32,
-    width: u32,
-    count: u32,
-    next: u32,
-}
-
-#[repr(C)]
-struct PrivateAddressWords {
-    words: u64,
-    next: u32,
-}
-
-#[repr(C)]
 struct RayEmission {
     acceleration_type: u32,
     acceleration: u32,
@@ -1153,10 +1122,6 @@ unsafe extern "C" {
     fn emit_tile_extract(input: TileExtract, body: *mut u32) -> PayloadRead;
     #[link_name = "bootstrap.spirv_envelope::encode_ray"]
     fn encode_ray(input: RayEmission, results: *const u32, body: *mut u32) -> RayWords;
-    #[link_name = "bootstrap.spirv_envelope::private_address"]
-    fn emit_private_address(
-        input: PrivateAddress, parts: *const u32, pointers: *mut u32, body: *mut u32,
-    ) -> PrivateAddressWords;
     #[link_name = "bootstrap.spirv_envelope::workgroup_barrier"]
     fn encode_workgroup_barrier(body: *mut u32, at: u64, scope: u32, semantics: u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::encode_sort_rank"]
@@ -1207,18 +1172,11 @@ unsafe extern "C" {
     fn read_summary_words(body: *mut u32, type_id: u32, first: u32, pointers: *const u32, count: u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::write_summary_words"]
     fn write_summary_words(body: *mut u32, pointers: *const u32, values: *const u32, count: u32) -> u64;
-    #[link_name = "bootstrap.spirv_envelope::payload_read"]
-    fn payload_read(input: PayloadEmission, operands: *const u32, shifts: *const u32, body: *mut u32) -> PayloadRead;
-    #[link_name = "bootstrap.spirv_envelope::typed_payload_read"]
-    fn typed_payload_read(
-        input: PayloadEmission, result: PayloadResult, operands: *const u32, shifts: *const u32,
-        body: *mut u32,
-    ) -> PayloadWrite;
-    #[link_name = "bootstrap.spirv_envelope::payload_write"]
-    fn payload_write(
-        input: PayloadEmission, value: u32, pointers: *const u32, shifts: *const u32,
-        output: *mut u32, body: *mut u32,
-    ) -> PayloadWrite;
+    #[link_name = "bootstrap.spirv_envelope::emit_payload_load"]
+    fn emit_payload_load(input: PayloadShape, operands: *const u32, result: u32, host: MemoryHost) -> u32;
+    #[link_name = "bootstrap.spirv_envelope::emit_payload_store"]
+    fn emit_payload_store(input: PayloadShape, value: u32, pointers: *const u32,
+        output: *mut u32, host: MemoryHost);
     #[link_name = "bootstrap.spirv_envelope::pack_record"]
     fn pack_record(host: PackingHost, word_type: u32, zero: u32, next: u32,
         packed: *mut u32, body: *mut u32) -> PayloadWrite;
@@ -1423,60 +1381,6 @@ struct Emitter<'a> {
     return_scopes: Vec<returns::ReturnScope>,
 }
 impl Emitter<'_> {
-    fn private_address(
-        &mut self, base: usize, index: Option<Reg>, word: u32, scalar: Scalar,
-    ) -> (Scalar, [u32; 8], usize) {
-        use std::ops::Bound::{Excluded, Unbounded};
-        let (_, array) = self.private_arrays.range((Excluded(base), Unbounded)).next().unwrap();
-        let offset = array.shape.components[base - array.start].1 + word;
-        let unit = array.unit;
-        let variable = array.variable;
-        let bytes = unit.size();
-        let count = scalar.size().div_ceil(bytes) as usize;
-        let mut parts = [0; 8];
-        let (index, offset, width) = if let Some(index) = index {
-            let offset = if offset == 0 { 0 } else { self.constant(Scalar::U32, offset) };
-            let width = if bytes == 1 { 0 } else { self.constant(Scalar::U32, bytes) };
-            for (part, slot) in parts[..count].iter_mut().enumerate().skip(1) {
-                *slot = self.constant(Scalar::U32, part as u32);
-            }
-            (self.value(index), offset, width)
-        } else {
-            let first = offset / bytes;
-            for (part, slot) in parts[..count].iter_mut().enumerate() {
-                *slot = self.constant(Scalar::U32, first + part as u32);
-            }
-            (0, 0, 0)
-        };
-        let input = PrivateAddress {
-            index_type: self.types[&Scalar::U32], pointer_type: self.pointers[&unit], variable,
-            index, offset, width, count: count as u32, next: self.next,
-        };
-        let mut pointers = [0; 8];
-        let at = self.body.len();
-        self.body.reserve(10 * count + 5);
-        unsafe {
-            let emitted = emit_private_address(input, parts.as_ptr(), pointers.as_mut_ptr(), self.body.as_mut_ptr().add(at));
-            self.body.set_len(at + emitted.words as usize);
-            self.next = emitted.next;
-        }
-        (unit, pointers, count)
-    }
-
-    fn load_private(&mut self, dst: Reg, base: usize, index: Option<Reg>, word: u32) {
-        let scalar = self.stage.registers[dst];
-        let (unit, pointers, count) = self.private_address(base, index, word, scalar);
-        let raw = self.load_raw(scalar, unit, &pointers[..count]);
-        self.from_words(dst, &[raw], Self::raw_scalar(scalar));
-    }
-
-    fn store_private(&mut self, src: Reg, base: usize, index: Option<Reg>, word: u32) {
-        let scalar = self.stage.registers[src];
-        let (unit, pointers, count) = self.private_address(base, index, word, scalar);
-        let raw = self.raw_bits(src);
-        self.store_raw(scalar, unit, &pointers[..count], raw, false);
-    }
-
     fn id(&mut self) -> u32 {
         let v = self.next;
         self.next += 1;
@@ -1906,23 +1810,11 @@ impl Emitter<'_> {
     }
 
     fn from_words(&mut self, dst: Reg, words: &[u32], unit: Scalar) {
-        let scalar = self.stage.registers[dst];
-        let (mut input, shifts) = self.payload_input(scalar, unit, words.len(), PayloadAccess::Words);
-        let result = PayloadResult {
-            type_id: self.ty(dst),
-            id: self.value(dst),
-            compare_zero: if scalar == Scalar::Bool { self.constant(Scalar::U32, 0) } else { 0 },
+        let input = PayloadShape {
+            access: PayloadAccess::Words, scalar: self.stage.registers[dst].into(),
+            unit: unit.into(), count: words.len() as u32,
         };
-        input.next = self.next;
-        let at = self.body.len();
-        self.body.reserve(20 * words.len() + 5);
-        unsafe {
-            let read = typed_payload_read(
-                input, result, words.as_ptr(), shifts.as_ptr(), self.body.as_mut_ptr().add(at),
-            );
-            self.body.set_len(at + read.words as usize);
-            self.next = read.next;
-        }
+        unsafe { emit_payload_load(input, words.as_ptr(), self.value(dst), self.memory_host()); }
     }
     fn pack_words<I>(&mut self, size: u32, components: I) -> Vec<u32>
     where
@@ -1966,34 +1858,9 @@ impl Emitter<'_> {
     fn raw_constant(&mut self, scalar: Scalar, bits: Bits) -> u32 {
         self.constant_bits(Self::raw_scalar(scalar), bits)
     }
-    fn payload_input(&mut self, scalar: Scalar, unit: Scalar, count: usize, access: PayloadAccess)
-        -> (PayloadEmission, [u32; 8])
-    {
-        let mut shifts = [0; 8];
-        for (part, shift) in shifts.iter_mut().enumerate().take(count).skip(1) {
-            *shift = self.constant(Scalar::U32, part as u32 * unit.bit_width());
-        }
-        let input = PayloadEmission {
-            access,
-            raw_type: self.raw_type(scalar),
-            unit_type: self.types[&unit],
-            unit_bytes: unit.size(),
-            count: count as u32,
-            next: self.next,
-        };
-        (input, shifts)
-    }
-
     fn read_payload(&mut self, scalar: Scalar, unit: Scalar, operands: &[u32], access: PayloadAccess) -> u32 {
-        let (input, shifts) = self.payload_input(scalar, unit, operands.len(), access);
-        let at = self.body.len();
-        self.body.reserve(20 * operands.len());
-        unsafe {
-            let read = payload_read(input, operands.as_ptr(), shifts.as_ptr(), self.body.as_mut_ptr().add(at));
-            self.body.set_len(at + read.words as usize);
-            self.next = read.next;
-            read.value
-        }
+        let input = PayloadShape { access, scalar: scalar.into(), unit: unit.into(), count: operands.len() as u32 };
+        unsafe { emit_payload_load(input, operands.as_ptr(), 0, self.memory_host()) }
     }
 
     fn join_words(&mut self, scalar: Scalar, words: &[u32], unit: Scalar) -> u32 {
@@ -2006,24 +1873,14 @@ impl Emitter<'_> {
         unsafe { encode_raw_bits(scalar, value, self.memory_host()) }
     }
 
-    fn write_payload(&mut self, input: PayloadEmission, value: u32, pointers: &[u32], shifts: &[u32; 8], output: *mut u32) {
-        let at = self.body.len();
-        self.body.reserve(14 * input.count as usize);
-        unsafe {
-            let write = payload_write(
-                input, value, pointers.as_ptr(), shifts.as_ptr(), output, self.body.as_mut_ptr().add(at),
-            );
-            self.body.set_len(at + write.words as usize);
-            self.next = write.next;
-        }
-    }
-
     fn split_words(&mut self, scalar: Scalar, bits: u32, unit: Scalar) -> Vec<u32> {
-        let count = scalar.size().div_ceil(unit.size()) as usize;
-        let (input, shifts) = self.payload_input(scalar, unit, count, PayloadAccess::Words);
-        let mut words = Vec::with_capacity(count);
-        self.write_payload(input, bits, &[], &shifts, words.as_mut_ptr());
-        unsafe { words.set_len(count); }
+        let count = scalar.size().div_ceil(unit.size());
+        let input = PayloadShape { access: PayloadAccess::Words, scalar: scalar.into(), unit: unit.into(), count };
+        let mut words = Vec::with_capacity(count as usize);
+        unsafe {
+            emit_payload_store(input, bits, std::ptr::null(), words.as_mut_ptr(), self.memory_host());
+            words.set_len(count as usize);
+        }
         words
     }
 
@@ -2033,8 +1890,8 @@ impl Emitter<'_> {
 
     fn store_raw(&mut self, scalar: Scalar, unit: Scalar, pointers: &[u32], value: u32, physical: bool) {
         let access = if physical { PayloadAccess::Physical } else { PayloadAccess::Local };
-        let (input, shifts) = self.payload_input(scalar, unit, pointers.len(), access);
-        self.write_payload(input, value, pointers, &shifts, std::ptr::null_mut());
+        let input = PayloadShape { access, scalar: scalar.into(), unit: unit.into(), count: pointers.len() as u32 };
+        unsafe { emit_payload_store(input, value, pointers.as_ptr(), std::ptr::null_mut(), self.memory_host()); }
     }
     fn physical_unit(scalar: Scalar) -> Scalar {
         Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 })

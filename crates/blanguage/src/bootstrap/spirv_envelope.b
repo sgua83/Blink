@@ -1110,7 +1110,7 @@ extern "C" u64 write_summary_words(address body, address pointers, address value
     return at;
 }
 
-extern "C" PayloadRead payload_read(PayloadEmission input, address operands, address shifts, address body) on cpu {
+PayloadRead payload_read(PayloadEmission input, address operands, address shifts, address body) on cpu {
     u64 at = 0u64;
     u32 next = input.next;
     if (input.access != PayloadAccess::Words) {
@@ -1144,7 +1144,7 @@ extern "C" PayloadRead payload_read(PayloadEmission input, address operands, add
     return PayloadRead(at, next, value);
 }
 
-extern "C" PayloadWrite typed_payload_read(PayloadEmission input, PayloadResult result, address operands, address shifts, address body) on cpu {
+PayloadWrite typed_payload_read(PayloadEmission input, PayloadResult result, address operands, address shifts, address body) on cpu {
     PayloadRead read = payload_read(input, operands, shifts, body);
     if (result.compare_zero != 0) {
         return PayloadWrite(words_four(body, read.words, 171, result.type_id,
@@ -1204,7 +1204,7 @@ u32 payload_word(inout StageCursor out, PayloadEmission input, u32 value, u32 sh
     return word;
 }
 
-extern "C" PayloadWrite payload_write(PayloadEmission input, u32 value, address pointers, address shifts, address output, address body) on cpu {
+PayloadWrite payload_write(PayloadEmission input, u32 value, address pointers, address shifts, address output, address body) on cpu {
     StageCursor out = StageCursor(body, 0u64, input.next);
     for (part in 0..input.count) {
         u32 word = payload_word(out, input, value, part == 0 ? 0 : read_word(shifts, part));
@@ -1217,6 +1217,56 @@ extern "C" PayloadWrite payload_write(PayloadEmission input, u32 value, address 
         }
     }
     return PayloadWrite(out.words, out.next);
+}
+
+PayloadEmission prepare_payload(PayloadShape shape, inout array<u32,8> shifts, ScalarHost host) on cpu
+    requires nonzero(host.constant) requires nonzero(host.type_id) requires nonzero(host.ids) {
+    address context = host.context;
+    u32 width = scalar_definition(shape.unit).width;
+    for (part in 1..shape.count) {
+        put(address_of(shifts[0]), u64(part), host.constant(context, BuiltinScalar::U32, u64(part * width)));
+    }
+    BuiltinScalar raw = unsigned_scalar(scalar_definition(shape.scalar).width);
+    return PayloadEmission(shape.access, host.type_id(context, raw), host.type_id(context, shape.unit),
+        width / 8, shape.count, host.ids(context, 0));
+}
+
+extern "C" u32 emit_payload_load(PayloadShape shape, address operands, u32 result, MemoryHost host) on cpu
+    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.finish_body) {
+    ScalarHost scalars = host.scalars;
+    address context = scalars.context;
+    array<u32,8> shifts = array<u32,8>(0);
+    PayloadEmission input = prepare_payload(shape, shifts, scalars);
+    u64 capacity = 20u64 * u64(shape.count);
+    if (result != 0) {
+        u32 zero = shape.scalar == BuiltinScalar::Bool ? scalars.constant(context, BuiltinScalar::U32, 0u64) : 0;
+        input.next = scalars.ids(context, 0);
+        PayloadResult target = PayloadResult(scalars.type_id(context, shape.scalar), result, zero);
+        address body = scalars.reserve(context, capacity + 5u64, 0u64).body;
+        PayloadWrite read = typed_payload_read(input, target, operands, address_of(shifts[0]), body);
+        host.finish_body(context, read.words);
+        scalars.ids(context, read.next - input.next);
+        return result;
+    }
+    address body = scalars.reserve(context, capacity, 0u64).body;
+    PayloadRead read = payload_read(input, operands, address_of(shifts[0]), body);
+    host.finish_body(context, read.words);
+    scalars.ids(context, read.next - input.next);
+    return read.value;
+}
+
+extern "C" void emit_payload_store(PayloadShape shape, u32 value, address pointers, address output, MemoryHost host) on cpu
+    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.finish_body) {
+    ScalarHost scalars = host.scalars;
+    address context = scalars.context;
+    array<u32,8> shifts = array<u32,8>(0);
+    PayloadEmission input = prepare_payload(shape, shifts, scalars);
+    address body = scalars.reserve(context, 14u64 * u64(shape.count), 0u64).body;
+    PayloadWrite emitted = payload_write(input, value, pointers, address_of(shifts[0]), output, body);
+    host.finish_body(context, emitted.words);
+    scalars.ids(context, emitted.next - input.next);
 }
 
 extern "C" u32 encode_raw_bits(BuiltinScalar scalar, u32 value, MemoryHost host) on cpu
@@ -1662,28 +1712,18 @@ u32 block_register(address registers, usize reg) on cpu {
     return unsafe_position<u32>(unsafe_address(address_bits(registers) + u64(reg) * 4u64));
 }
 
-void block_float_constant(View instruction, BlockValues values) on cpu
-    requires nonzero(values.scalars.constant) requires nonzero(values.scalars.type_id)
-    requires nonzero(values.scalars.ids) requires nonzero(values.scalars.reserve)
-    requires nonzero(values.finish) requires nonzero(values.scalar) {
-    ScalarHost host = values.scalars;
+void block_float_constant(View instruction, BlockValues values, MemoryHost memory) on cpu
+    requires nonzero(values.scalar)
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
+    ScalarHost host = memory.scalars;
     address context = host.context;
     BuiltinScalar scalar = values.scalar(context, instruction.a);
     u32 count = BuiltinScalar(u32(instruction.c)) == BuiltinScalar::F64 ? 2 : 1;
     array<u32,2> words = array<u32,2>(host.constant(context, BuiltinScalar::U32, u64(u32(instruction.b))), 0);
     if (count == 2) { words[1] = host.constant(context, BuiltinScalar::U32, u64(instruction.b) >> 32u64); }
-    u32 shift = count == 2 ? host.constant(context, BuiltinScalar::U32, 32u64) : 0;
-    array<u32,2> shifts = array<u32,2>(0, shift);
-    u32 uint_type = host.type_id(context, BuiltinScalar::U32);
-    BuiltinScalar raw = unsigned_scalar(scalar_definition(scalar).width);
-    u32 next = host.ids(context, 0);
-    PayloadEmission input = PayloadEmission(PayloadAccess::Words, host.type_id(context, raw), uint_type, 4, count, next);
-    u32 zero = scalar == BuiltinScalar::Bool ? host.constant(context, BuiltinScalar::U32, 0u64) : 0;
-    PayloadResult result = PayloadResult(host.type_id(context, scalar), block_register(values.registers, instruction.a), zero);
-    address body = host.reserve(context, 20u64 * u64(count) + 5u64, 0u64).body;
-    PayloadWrite emitted = typed_payload_read(input, result, address_of(words[0]), address_of(shifts[0]), body);
-    values.finish(context, ScalarWords(emitted.words, 0u64));
-    host.ids(context, emitted.next - next);
+    PayloadShape shape = PayloadShape(PayloadAccess::Words, scalar, BuiltinScalar::U32, count);
+    emit_payload_load(shape, address_of(words[0]), block_register(values.registers, instruction.a), memory);
 }
 
 void block_uniform(View instruction, BlockValues values) on cpu
@@ -1842,6 +1882,73 @@ void block_append(View instruction, BlockValues values, BlockPaging paging, Memo
         control.reserve_words(control.context, 4u64)));
 }
 
+void block_private_storage(View instruction, BlockValues values, BlockLocals locals, MemoryHost memory) on cpu
+    requires nonzero(values.scalar) requires nonzero(locals.array)
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
+    ScalarHost scalars = memory.scalars;
+    address context = scalars.context;
+    bool indexed = instruction.tag == OP_LOAD_LOCAL_INDEXED || instruction.tag == OP_STORE_LOCAL_INDEXED;
+    bool write = instruction.tag == OP_STORE_LOCAL || instruction.tag == OP_STORE_LOCAL_INDEXED;
+    usize base = write ? instruction.a : instruction.b;
+    usize reg = write ? (indexed ? instruction.d : instruction.b) : instruction.a;
+    BuiltinScalar scalar = values.scalar(context, reg);
+    u32 value = block_register(values.registers, reg);
+    if (!indexed) {
+        u32 pointer = block_register(locals.slots, base);
+        if (pointer != 0) {
+            address body = scalars.reserve(context, 4u64, 0u64).body;
+            u64 words = write ? plain_store(body, 0u64, pointer, value) :
+                plain_load(body, 0u64, scalars.type_id(context, scalar), value, pointer);
+            memory.finish_body(context, words);
+            return;
+        }
+    }
+
+    PrivateField field = locals.array(context, base);
+    u32 bytes = scalar_definition(field.unit).width / 8;
+    u32 scalar_bytes = scalar_definition(scalar).width / 8;
+    u32 count = (scalar_bytes + bytes - 1) / bytes;
+    u32 byte_offset = field.offset + (indexed ? read_word(instruction.first.data, 0) : 0);
+    array<u32,8> parts = array<u32,8>(0);
+    address slots = address_of(parts[0]);
+    u32 index = 0;
+    u32 offset = 0;
+    u32 width = 0;
+    if (indexed) {
+        offset = byte_offset == 0 ? 0 : scalars.constant(context, BuiltinScalar::U32, u64(byte_offset));
+        width = bytes == 1 ? 0 : scalars.constant(context, BuiltinScalar::U32, u64(bytes));
+        for (part in 1..count) {
+            put(slots, u64(part), scalars.constant(context, BuiltinScalar::U32, u64(part)));
+        }
+        index = block_register(values.registers, write ? instruction.c : instruction.d);
+    } else {
+        u32 first = byte_offset / bytes;
+        for (part in 0..count) {
+            put(slots, u64(part), scalars.constant(context, BuiltinScalar::U32, u64(first + part)));
+        }
+    }
+    u32 next = scalars.ids(context, 0);
+    PrivateAddress input = PrivateAddress(scalars.type_id(context, BuiltinScalar::U32), field.pointer_type,
+        field.variable, index, offset, width, count, next);
+    address body = scalars.reserve(context, 10u64 * u64(count) + 5u64, 0u64).body;
+    // Each address replaces its part index after that index has been consumed.
+    PrivateAddressWords emitted = private_address(input, slots, slots, body);
+    memory.finish_body(context, emitted.words);
+    scalars.ids(context, emitted.next - next);
+
+    PayloadShape storage = PayloadShape(PayloadAccess::Local, scalar, field.unit, count);
+    if (write) {
+        u32 raw = encode_raw_bits(scalar, value, memory);
+        emit_payload_store(storage, raw, slots, address(), memory);
+    } else {
+        u32 raw = emit_payload_load(storage, slots, 0, memory);
+        BuiltinScalar unit = unsigned_scalar(scalar_definition(scalar).width);
+        PayloadShape result = PayloadShape(PayloadAccess::Words, scalar, unit, 1);
+        emit_payload_load(result, address_of(raw), value, memory);
+    }
+}
+
 extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     StructuredHost host, BlockHost emit) on cpu
     requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
@@ -1855,8 +1962,7 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     requires nonzero(emit.values.scalar) requires nonzero(emit.values.binary) requires nonzero(emit.values.finish)
     requires nonzero(emit.values.scalars.constant) requires nonzero(emit.values.scalars.type_id)
     requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve)
-    requires nonzero(emit.local_load) requires nonzero(emit.local_store)
-    requires nonzero(emit.private_load) requires nonzero(emit.private_store)
+    requires nonzero(emit.locals.array)
     requires nonzero(host.labels) requires nonzero(host.reserve_words) requires nonzero(host.finish_words)
     requires nonzero(host.block) requires nonzero(host.value) requires nonzero(host.begin_return)
     requires nonzero(host.normal_exit) requires nonzero(host.finish_return)
@@ -1942,7 +2048,7 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
         } else if (kind == OP_CONSTANT) {
             BuiltinScalar scalar = BuiltinScalar(u32(value.c));
             if (scalar == BuiltinScalar::F32 || scalar == BuiltinScalar::F64) {
-                block_float_constant(value, emit.values);
+                block_float_constant(value, emit.values, memory);
             } else {
                 ScalarHost stream = emit.values.scalars;
                 put(emit.values.registers, u64(value.a), stream.constant(stream.context, scalar, u64(value.b)));
@@ -1956,14 +2062,8 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
             emit.values.finish(stream.context, ScalarWords(length, 0u64));
         } else if (kind == OP_UNIFORM) {
             block_uniform(value, emit.values);
-        } else if (kind == OP_LOAD_LOCAL) {
-            emit.local_load(context, value.a, value.b);
-        } else if (kind == OP_STORE_LOCAL) {
-            emit.local_store(context, value.a, value.b);
-        } else if (kind == OP_LOAD_LOCAL_INDEXED) {
-            emit.private_load(context, value.a, value.b, value.d, read_word(value.first.data, 0));
-        } else if (kind == OP_STORE_LOCAL_INDEXED) {
-            emit.private_store(context, value.d, value.a, value.c, read_word(value.first.data, 0));
+        } else if (kind >= OP_LOAD_LOCAL && kind <= OP_STORE_LOCAL_INDEXED) {
+            block_private_storage(value, emit.values, emit.locals, memory);
         } else if (kind == OP_LOAD || kind == OP_STORE) {
             bool write = kind == OP_STORE;
             PageInputs page = block_dataset_page(emit.paging, write ? value.a : value.b);
@@ -3150,7 +3250,7 @@ extern "C" TreeWords tree_layer(TreeLayer input, address components, u32 count,
     return stage_tree_layer(out, input, 0, components, count, address(), decorations);
 }
 
-extern "C" PrivateAddressWords private_address(PrivateAddress input, address parts, address pointers, address body) on cpu {
+PrivateAddressWords private_address(PrivateAddress input, address parts, address pointers, address body) on cpu {
     u64 at = 0u64;
     u32 next = input.next;
     u32 position = input.index;

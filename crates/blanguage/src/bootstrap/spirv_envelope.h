@@ -344,11 +344,13 @@ extern "C" PayloadWrite summary_addresses(PageAddress input, u32 step, address p
 // Summary cells are consecutive u32 result IDs or borrowed u32 value IDs.
 extern "C" u64 read_summary_words(address body, u32 type_id, u32 first, address pointers, u32 count) on cpu;
 extern "C" u64 write_summary_words(address body, address pointers, address values, u32 count) on cpu;
-extern "C" PayloadRead payload_read(PayloadEmission input, address operands, address shifts, address body) on cpu;
-// Result emission adds up to five words. compare_zero is the zero constant ID for a bool result.
-extern "C" PayloadWrite typed_payload_read(PayloadEmission input, PayloadResult result, address operands, address shifts, address body) on cpu;
-// Boolean storage supplies its one and zero constant IDs. Other inputs use a same-width bitcast.
-extern "C" PayloadWrite payload_write(PayloadEmission input, u32 value, address pointers, address shifts, address output, address body) on cpu;
+struct PayloadShape { PayloadAccess access; BuiltinScalar scalar; BuiltinScalar unit; u32 count; };
+extern "C" u32 emit_payload_load(PayloadShape shape, address operands, u32 result, MemoryHost host) on cpu
+    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.finish_body);
+extern "C" void emit_payload_store(PayloadShape shape, u32 value, address pointers, address output, MemoryHost host) on cpu
+    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.finish_body);
 
 extern "C" u64 copy_shader_value(address body, u64 at, u32 type_id, u32 result, u32 value) on cpu;
 extern "C" u64 plain_load(address body, u64 at, u32 type_id, u32 result, u32 pointer) on cpu;
@@ -436,10 +438,13 @@ struct BlockPaging {
     cfn<u32,address> current_label;
     u32 ballot_type;
 };
+struct PrivateField { u32 variable; u32 pointer_type; BuiltinScalar unit; u32 offset; };
+struct BlockLocals { address slots; cfn<PrivateField,address,usize> array; };
 struct BlockHost {
     Host ir;
     BlockValues values;
     BlockPaging paging;
+    BlockLocals locals;
     cfn<BlockFlow,address,BlockRejection> reject;
     cfn<void,address,address,address,Span,usize> texture_sample;
     cfn<void,address,address> ray;
@@ -452,10 +457,6 @@ struct BlockHost {
     cfn<void,address,usize> tile_lane;
     cfn<void,address,usize,usize,usize,u32,usize,u32> tile_load;
     cfn<void,address,usize,usize,usize,u32,usize> tile_store;
-    cfn<void,address,usize,usize> local_load;
-    cfn<void,address,usize,usize> local_store;
-    cfn<void,address,usize,usize,usize,u32> private_load;
-    cfn<void,address,usize,usize,usize,u32> private_store;
 };
 extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     StructuredHost host, BlockHost emit) on cpu
@@ -470,8 +471,7 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     requires nonzero(emit.values.scalar) requires nonzero(emit.values.binary) requires nonzero(emit.values.finish)
     requires nonzero(emit.values.scalars.constant) requires nonzero(emit.values.scalars.type_id)
     requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve)
-    requires nonzero(emit.local_load) requires nonzero(emit.local_store)
-    requires nonzero(emit.private_load) requires nonzero(emit.private_store)
+    requires nonzero(emit.locals.array)
     requires nonzero(host.labels) requires nonzero(host.reserve_words) requires nonzero(host.finish_words)
     requires nonzero(host.block) requires nonzero(host.value) requires nonzero(host.begin_return)
     requires nonzero(host.normal_exit) requires nonzero(host.finish_return)
@@ -986,7 +986,6 @@ struct PrivateAddressWords { u64 words; u32 next; };
 // holds the relative element IDs after the first one. Zero offset or width
 // omits the corresponding arithmetic. The caller owns count pointer slots
 // and 10*count+5 body words.
-extern "C" PrivateAddressWords private_address(PrivateAddress input, address parts, address pointers, address body) on cpu;
 
 struct RayEmission {
     u32 acceleration_type;
