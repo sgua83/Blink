@@ -85,18 +85,13 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut host::Reuses) {
 pub(super) fn run(code: &mut Vec<Inst>, registers: &[Scalar]) {
     run_code(code, registers, &mut []);
 }
-pub(super) fn run_reduction(parts: &mut [Vec<Inst>; 3], kernel: &mut ReductionKernel) {
+pub(super) fn run_reduction(
+    parts: &mut [Vec<Inst>; 3], kernel: &mut PreparedReductionKernel,
+    inputs: Option<&mut Vec<ReductionInputReadForward>>,
+) {
     let mut origins = Origins::default();
     let mut reads = Vec::new();
-    let mut inputs = Vec::new();
-    host::run_reduction(parts, kernel, &mut origins, &mut reads, &mut inputs);
-    if !inputs.is_empty() {
-        let retained = kernel.stage.generated_origin.take();
-        kernel.stage.generated_origin = Some(Arc::new(GeneratedOrigin {
-            reason: GenerationReason::LocalReadForward,
-            trigger: Some(GenerationAnchor::ReductionInputForward { retained, inputs }),
-        }));
-    }
+    host::run_reduction(parts, kernel, &mut origins, &mut reads, inputs);
 }
 
 unsafe extern "C" fn finish_reduction_input(

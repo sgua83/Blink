@@ -691,7 +691,7 @@ struct BlockValues {
 }
 
 unsafe extern "C" fn value_scalar(context: *mut std::ffi::c_void, register: Reg) -> ScalarCode {
-    unsafe { &*context.cast::<Emitter<'_>>() }.stage.registers[register].into()
+    unsafe { &*context.cast::<Emitter<'_>>() }.registers[register].into()
 }
 
 unsafe extern "C" fn value_binary(op: *const BinaryOp) -> ScalarBinaryOp {
@@ -1106,7 +1106,7 @@ struct FunctionStorageHost {
 }
 
 struct FunctionStorage<'a, 'emit> {
-    stage: &'a Stage,
+    declarations: &'a BTreeMap<usize, Ty>,
     pending: std::collections::btree_set::IntoIter<(usize, usize)>,
     locals: std::collections::btree_map::Iter<'a, usize, Ty>,
     pointers: &'emit ScalarIds,
@@ -1118,7 +1118,7 @@ unsafe extern "C" fn next_function_array(context: FunctionStorageContext) -> Fun
     let Some((start, end)) = source.pending.next() else {
         return FunctionArray { start: 0, end: 0, fields: 0, shape: std::ptr::null(), bytes: 0 };
     };
-    let shape = &source.stage.locals[&end];
+    let shape = &source.declarations[&end];
     FunctionArray { start, end, fields: shape.components.len(), shape: std::ptr::from_ref(shape).cast(), bytes: shape.size }
 }
 
@@ -1182,6 +1182,7 @@ struct Emitter<'a> {
     locals: Vec<u32>,
     private_arrays: BTreeMap<usize, PrivateArray<'a>>,
     stage: &'a Stage,
+    registers: &'a [Scalar],
     program: &'a Program,
     execution_buffers: ExecutionBuffers,
     ext: u32,
@@ -1200,7 +1201,7 @@ struct Emitter<'a> {
     current_label: u32,
     return_scopes: Vec<returns::ReturnScope>,
 }
-impl Emitter<'_> {
+impl<'ir> Emitter<'ir> {
     fn id(&mut self) -> u32 {
         let v = self.next;
         self.next += 1;
@@ -1246,10 +1247,12 @@ impl Emitter<'_> {
         }
         id
     }
-    fn declare_function_storage(&mut self, ray_pointer: u32, facts: &ShaderStageFacts) {
-        let stage = self.stage;
-        let spans = private_spans(&stage.code);
-        let slots = stage.locals.last_key_value().map_or(0, |(end, _)| *end);
+    fn declare_function_storage(
+        &mut self, ray_pointer: u32, facts: &ShaderStageFacts, code: &[Inst],
+        declarations: &'ir BTreeMap<usize, Ty>,
+    ) {
+        let spans = private_spans(code);
+        let slots = declarations.last_key_value().map_or(0, |(end, _)| *end);
         let definitions = self.defs.len();
         let body = self.body.len();
         let rays = &facts.ray_queries;
@@ -1259,7 +1262,7 @@ impl Emitter<'_> {
         self.locals.resize(slots, 0);
         let result = {
             let mut storage = FunctionStorage {
-                stage, pending: spans.into_iter(), locals: stage.locals.iter(),
+                declarations, pending: spans.into_iter(), locals: declarations.iter(),
                 pointers: &self.pointers, arrays: &mut self.private_arrays,
             };
             let host = FunctionStorageHost {
@@ -1434,7 +1437,7 @@ impl Emitter<'_> {
         self.regs[r]
     }
     fn ty(&self, r: Reg) -> u32 {
-        self.types[&self.stage.registers[r]]
+        self.types[&self.registers[r]]
     }
     fn scalar_host(&mut self) -> ScalarHost {
         ScalarHost {
@@ -1561,7 +1564,7 @@ impl Emitter<'_> {
 
     fn from_words(&mut self, dst: Reg, words: &[u32], unit: Scalar) {
         let input = PayloadShape {
-            access: PayloadAccess::Words, scalar: self.stage.registers[dst].into(),
+            access: PayloadAccess::Words, scalar: self.registers[dst].into(),
             unit: unit.into(), count: words.len() as u32,
         };
         unsafe { emit_payload_load(input, words.as_ptr(), self.value(dst), self.memory_host()); }
@@ -1595,7 +1598,7 @@ impl Emitter<'_> {
         self.types[&Self::raw_scalar(scalar)]
     }
     fn raw_bits(&mut self, value: Reg) -> u32 {
-        let scalar = self.stage.registers[value].into();
+        let scalar = self.registers[value].into();
         let value = self.value(value);
         unsafe { encode_raw_bits(scalar, value, self.memory_host()) }
     }
@@ -1692,18 +1695,16 @@ struct ShaderStageFacts {
 }
 
 impl ShaderStageFacts {
-    fn new(stage: &Stage, numeric: bool, subgroups: bool) -> Self {
+    fn new(operation: &Operation, code: &[Inst], registers: &[Scalar], numeric: bool, subgroups: bool) -> Self {
         Self {
-            ray_queries: crate::ir::dataflow::shader_ray_queries(stage),
-            code: crate::ir::dataflow::shader_code_requirements(
-                stage, numeric, subgroups,
-            ),
+            ray_queries: crate::ir::dataflow::shader_ray_queries(code),
+            code: crate::ir::dataflow::shader_code_requirements(operation, code, registers, numeric, subgroups),
         }
     }
 }
 
 struct PreparedReduction {
-    kernel: ReductionKernel,
+    kernel: PreparedReductionKernel,
     facts: ShaderStageFacts,
 }
 
@@ -1720,8 +1721,10 @@ fn prepare_reduction(stage: &Stage, pass: ShaderPass) -> Option<PreparedReductio
         KernelPreparation::Identity => (false, true),
         KernelPreparation::Combine => (false, false),
     };
-    let kernel = reduction.kernel(stage, project, identity);
-    let facts = ShaderStageFacts::new(&kernel.stage, pass.numeric != 0, pass.kind == EntryPass::Main);
+    let kernel = crate::optimize::reduction_kernel(reduction, project, identity, None);
+    let facts = ShaderStageFacts::new(
+        &stage.operation, &kernel.stage.code, &kernel.stage.registers, pass.numeric != 0, pass.kind == EntryPass::Main,
+    );
     Some(PreparedReduction { kernel, facts })
 }
 
@@ -1775,7 +1778,7 @@ struct ShaderBodyEmission<'a, 'ir> {
     inputs: &'a crate::ir::dataflow::InputFragments,
     operation: *const std::ffi::c_void,
     selection: *const Selection,
-    kernel: Option<&'ir ReductionKernel>,
+    kernel: Option<&'ir PreparedReductionKernel>,
     segment_head: u32,
     request: ShaderPass,
     pass: EntryPass,
@@ -1929,23 +1932,27 @@ fn emit_shader(
     let numeric_pass = request.numeric != 0;
     let local_facts;
     let empty_tiles;
-    let (stage, tile_layout, tile_width, facts, custom_kernel) = match reduction {
+    let stage = original_stage;
+    let (code, registers, locals, tile_layout, tile_width, facts, custom_kernel) = match reduction {
         Some(prepared) => {
             empty_tiles = PlacedTiles {
                 words: BTreeMap::new(),
                 extents: Default::default(),
             };
-            (&prepared.kernel.stage, &empty_tiles, None, &prepared.facts, Some(&prepared.kernel))
+            let body = &prepared.kernel.stage;
+            (&body.code, &body.registers, &body.locals, &empty_tiles, None, &prepared.facts, Some(&prepared.kernel))
         }
         None => {
             let facts = match shared_original_facts {
                 Some(shared) => shared,
                 None => {
-                    local_facts = ShaderStageFacts::new(original_stage, numeric_pass, pass == EntryPass::Main);
+                    local_facts = ShaderStageFacts::new(
+                        &stage.operation, &stage.code, &stage.registers, numeric_pass, pass == EntryPass::Main,
+                    );
                     &local_facts
                 }
             };
-            (original_stage, layout, original_stage.tile_workgroup_width(), facts, None)
+            (&stage.code, &stage.registers, &stage.locals, layout, stage.tile_workgroup_width(), facts, None)
         }
     };
     let mut e = Emitter {
@@ -1976,6 +1983,7 @@ fn emit_shader(
         locals: Vec::new(),
         private_arrays: BTreeMap::new(),
         stage,
+        registers,
         program,
         execution_buffers: program_features.buffers,
         ext: 0,
@@ -2103,8 +2111,8 @@ fn emit_shader(
     };
     e.emit_control(7, |body| unsafe { begin_shader_body(void, main, fn_ty, entry, body) });
     if !argument_pass {
-        e.regs = (0..stage.registers.len()).map(|_| e.id()).collect();
-        e.declare_function_storage(ray_pointer, facts);
+        e.regs = (0..registers.len()).map(|_| e.id()).collect();
+        e.declare_function_storage(ray_pointer, facts, code, locals);
     }
     let gid = e.id();
     let local_index = e.id();

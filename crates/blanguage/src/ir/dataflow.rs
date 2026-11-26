@@ -854,8 +854,8 @@ unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::subgroup_operations"]
     fn b_subgroup_operations(code: Span, host: RegisterHost) -> u32;
     #[link_name = "bootstrap.ir_dataflow::shader_code_requirements"]
-    fn b_shader_code_requirements(source: Node, requested: u32, subgroups: bool,
-        host: RegisterHost) -> ShaderCodeRequirements;
+    fn b_shader_code_requirements(operation: Node, code: Span, registers: Span, requested: u32,
+        subgroups: bool, host: RegisterHost) -> ShaderCodeRequirements;
     #[link_name = "bootstrap.ir_dataflow::subgroup_from_operations"]
     fn b_subgroup_from_operations(context: *mut c_void,
         next: unsafe extern "C" fn(*mut c_void) -> Word) -> SubgroupFlags;
@@ -888,10 +888,13 @@ pub(super) fn subgroup_operations(stage: &Stage) -> BTreeSet<SubgroupOp> {
         .collect()
 }
 pub(crate) fn shader_code_requirements(
-    stage: &Stage, float_preserve: bool, subgroups: bool,
+    operation: &Operation, code: &[Inst], registers: &[Scalar], float_preserve: bool, subgroups: bool,
 ) -> ShaderCodeRequirements {
     let requested = if float_preserve { PRESERVE_FLOATS } else { 0 };
-    unsafe { b_shader_code_requirements(Node::of(stage, Kind::Stage), requested, subgroups, REGISTER_HOST) }
+    unsafe {
+        b_shader_code_requirements(Node::of(operation, Kind::Operation), Span::slice(code), Span::slice(registers),
+            requested, subgroups, REGISTER_HOST)
+    }
 }
 pub(super) fn subgroup_from_operations<I: IntoIterator<Item = SubgroupOp>>(operations: I) -> SubgroupCapabilities {
     let mut operations = operations.into_iter();
@@ -978,8 +981,8 @@ pub(crate) struct RayFields {
     pub world_to_object: bool,
 }
 
-pub(crate) fn shader_ray_queries(stage: &Stage) -> Vec<(Reg, RayFields)> {
-    let code = Span::slice(&stage.code);
+pub(crate) fn shader_ray_queries(code: &[Inst]) -> Vec<(Reg, RayFields)> {
+    let code = Span::slice(code);
     let (queries, closest) = scan_ray_queries(code, false);
     let mut used: Vec<_> = queries.iter().map(|query| (query.result, RayFields::default())).collect();
     if closest {

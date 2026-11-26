@@ -156,7 +156,9 @@ pub(crate) fn compile_stage(
             EntryKernel::Add => add_kernel.as_ref(),
         };
         let facts = (request.flags & SHARED_FACTS != 0)
-            .then(|| &*original_facts.get_or_insert_with(|| ShaderStageFacts::new(stage, true, true)));
+            .then(|| &*original_facts.get_or_insert_with(|| {
+                ShaderStageFacts::new(&stage.operation, &stage.code, &stage.registers, true, true)
+            }));
         let result = emit_shader(
             program, stage, pass, &inputs, &tile_layout, features, kernel, facts,
             request.flags & SUMMARY != 0,

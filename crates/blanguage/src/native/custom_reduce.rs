@@ -140,7 +140,7 @@ unsafe extern "C" {
 }
 
 struct RangeWriter<'a> {
-    stage: &'a mut Stage,
+    lowered: &'a mut ReductionBody,
     reduction: &'a CustomReduction,
     project: Vec<Inst>,
     combine: Vec<Inst>,
@@ -150,7 +150,7 @@ struct RangeWriter<'a> {
 impl RangeWriter<'_> {
     fn block(&mut self, part: RangeBlock) -> &mut Vec<Inst> {
         match part {
-            RangeBlock::Body => &mut self.stage.code,
+            RangeBlock::Body => &mut self.lowered.code,
             RangeBlock::Yes => &mut self.yes,
             RangeBlock::No => &mut self.no,
             RangeBlock::Project => &mut self.project,
@@ -166,8 +166,8 @@ unsafe extern "C" fn range_reg(context: *mut c_void, ty: RangeType, component: u
         RangeType::Bool => Scalar::Bool,
         RangeType::Value => writer.reduction.ty.components[component].0,
     };
-    let reg = writer.stage.registers.len();
-    writer.stage.registers.push(scalar);
+    let reg = writer.lowered.registers.len();
+    writer.lowered.registers.push(scalar);
     reg
 }
 
@@ -178,8 +178,8 @@ unsafe extern "C" fn range_local(context: *mut c_void, ty: RangeType) -> usize {
         RangeType::Bool => Ty::scalar(Scalar::Bool),
         RangeType::Value => writer.reduction.ty.clone(),
     };
-    let slot = writer.stage.locals.last_key_value().map_or(0, |(&end, _)| end);
-    writer.stage.locals.insert(slot + layout.components.len(), layout);
+    let slot = writer.lowered.locals.last_key_value().map_or(0, |(&end, _)| end);
+    writer.lowered.locals.insert(slot + layout.components.len(), layout);
     slot
 }
 
@@ -195,7 +195,7 @@ unsafe extern "C" fn range_put(context: *mut c_void, part: RangeBlock, op: Range
     let writer = unsafe { &mut *context.cast::<RangeWriter<'_>>() };
     let kind = match op {
         RangeOp::Index => InstKind::Index(a),
-        RangeOp::Constant => InstKind::Constant(a, writer.stage.registers[a], b as Bits),
+        RangeOp::Constant => InstKind::Constant(a, writer.lowered.registers[a], b as Bits),
         RangeOp::Load => InstKind::Load { dst: a, binding: b, index: c, word },
         RangeOp::Store => InstKind::Store { value: a, binding: b, index: c, word },
         RangeOp::LocalLoad => InstKind::LoadLocal(a, b),
@@ -213,18 +213,18 @@ unsafe extern "C" fn range_put(context: *mut c_void, part: RangeBlock, op: Range
 unsafe extern "C" fn range_move_block(context: *mut c_void, part: RangeBlock) {
     let writer = unsafe { &mut *context.cast::<RangeWriter<'_>>() };
     let code = std::mem::take(writer.block(part));
-    writer.stage.code.extend(code);
+    writer.lowered.code.extend(code);
 }
 
 unsafe extern "C" fn range_branch(context: *mut c_void, condition: Reg, alternate: RangeBlock) {
     let writer = unsafe { &mut *context.cast::<RangeWriter<'_>>() };
     let yes = std::mem::take(&mut writer.yes);
     let no = std::mem::take(writer.block(alternate));
-    writer.stage.code.push(Inst::new(InstKind::If { condition, yes, no }));
+    writer.lowered.code.push(Inst::new(InstKind::If { condition, yes, no }));
 }
 
 unsafe extern "C" fn range_size(context: *mut c_void) -> usize {
-    unsafe { &*context.cast::<RangeWriter<'_>>() }.stage.code.len()
+    unsafe { &*context.cast::<RangeWriter<'_>>() }.lowered.code.len()
 }
 
 const RANGE_HOST: RangeHost = RangeHost {
@@ -317,18 +317,19 @@ pub(super) fn emit(
     let counted = count.is_some();
     let has_head = u32::from(head_word.is_some());
     let plan = unsafe { cpu_range_plan(pass, k, has_head, u32::from(counted)) };
-    let mut kernel = r.kernel(&program.stages[index], plan.project != 0, plan.identity != 0);
-    let mut stage = kernel.stage;
+    let stage = &program.stages[index];
+    let mut kernel = crate::optimize::reduction_kernel(r, plan.project != 0, plan.identity != 0, None);
+    let mut lowered = kernel.stage;
     let private = program.buffers.len();
     let buffer_count = private + usize::from(plan.apply != 0 || plan.finish != 0);
 
-    let mut combine = stage.code.split_off(kernel.project_end);
-    let project = stage.code.split_off(kernel.initialize_end);
+    let mut combine = lowered.code.split_off(kernel.project_end);
+    let project = lowered.code.split_off(kernel.initialize_end);
     if plan.apply != 0 {
-        stage.code.truncate(kernel.invariant_end);
+        lowered.code.truncate(kernel.invariant_end);
     }
     crate::ir::rewrite::bind_reduction_arguments(
-        &mut combine, &mut kernel.result, &kernel.right, &kernel.projected, stage.registers.len(),
+        &mut combine, &mut kernel.result, &kernel.right, &kernel.projected, lowered.registers.len(),
     );
 
     let input = RangeInput {
@@ -343,12 +344,12 @@ pub(super) fn emit(
         result: Span::slice(&kernel.result),
     };
     let mut writer = RangeWriter {
-        stage: &mut stage, reduction: r, project, combine, yes: Vec::new(), no: Vec::new(),
+        lowered: &mut lowered, reduction: r, project, combine, yes: Vec::new(), no: Vec::new(),
     };
     let body = unsafe { cpu_range_body(input, plan, std::ptr::from_mut(&mut writer).cast(), RANGE_HOST) };
     let carry = body.carry;
     let mut phase_ends = [body.initialization_end, body.loop_end];
-    reads::place_phases(&mut stage.code, &mut stage.registers, &stage.writes, &mut phase_ends);
+    reads::place_phases(&mut lowered.code, &mut lowered.registers, &stage.writes, &mut phase_ends);
     let [initialize_end, loop_end] = phase_ends;
     let mut live: std::collections::BTreeSet<_> =
         (0..fields).map(|field| PrivateSlot::Local(carry + field)).collect();
@@ -365,14 +366,14 @@ pub(super) fn emit(
         live.extend(kernel.initial.iter().map(|r| PrivateSlot::Register(*r)));
     }
     live.extend(live_before(
-        &stage.code[initialize_end..loop_end],
+        &lowered.code[initialize_end..loop_end],
         live.clone(),
         &live,
         &live,
         &std::collections::BTreeSet::new(),
     ));
-    let mut graph = allocation::Graph::with_live(&stage.code, &stage.registers, &stage.locals, live);
-    let allocation = Allocation::new(&stage.locals, &mut graph, false);
+    let mut graph = allocation::Graph::with_live(&lowered.code, &lowered.registers, &lowered.locals, live);
+    let allocation = Allocation::new(&lowered.locals, &mut graph, false);
     drop(graph);
     let layout = Frame::new(&allocation, None);
     let frame = i32::try_from(layout.end.div_ceil(16) * 16)
@@ -388,7 +389,7 @@ pub(super) fn emit(
         operation_ranges: Vec::new(),
         function_abi: None,
         literals: std::collections::BTreeMap::new(),
-        registers: &stage.registers,
+        registers: &lowered.registers,
         tiles: &[],
         range_origin: OperationOrigin::default(),
         workgroup: Stage::DEFAULT_WORKGROUP_WIDTH,
@@ -405,9 +406,9 @@ pub(super) fn emit(
         emitter, first_slot: carry, fields: &r.ty.components, payload_words: k,
     };
     let input = CustomRangeInput {
-        initialize: Span::slice(&stage.code[..initialize_end]),
-        body: Span::slice(&stage.code[initialize_end..loop_end]),
-        finish: Span::slice(&stage.code[loop_end..]),
+        initialize: Span::slice(&lowered.code[..initialize_end]),
+        body: Span::slice(&lowered.code[initialize_end..loop_end]),
+        finish: Span::slice(&lowered.code[loop_end..]),
         frame,
         break_on_head: body.break_on_head,
         publish: plan.publish,

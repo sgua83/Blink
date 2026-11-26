@@ -533,7 +533,7 @@ struct ShaderCodeRequirements {
  ShaderSubgroups subgroups; u32 atomic64; u32 float_preserve;
 };
 extern "C" ShaderCodeRequirements shader_code_requirements(
- Node source,u32 requested,bool subgroups,RegisterHost host) on cpu
+ Node operation,Span code,Span registers,u32 requested,bool subgroups,RegisterHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar);
 extern "C" SubgroupFlags subgroup_from_operations(address context,cfn<Word,address> next) on cpu
  requires nonzero(next);

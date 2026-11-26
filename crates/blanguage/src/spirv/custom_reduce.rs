@@ -37,7 +37,7 @@ unsafe extern "C" {
 struct CheckedCollective<'a, 'stage> {
     emitter: *mut Emitter<'stage>,
     reduction: &'a CustomReduction,
-    kernel: &'a ReductionKernel,
+    kernel: &'a PreparedReductionKernel,
     definitions: Vec<u8>,
     error: Option<&'static str>,
 }
@@ -119,7 +119,7 @@ impl Emitter<'_> {
     fn custom_pair(
         &mut self,
         r: &CustomReduction,
-        kernel: &ReductionKernel,
+        kernel: &PreparedReductionKernel,
         definitions: &[u8],
         left: &[u32],
         right: &[u32],
@@ -147,7 +147,7 @@ impl Emitter<'_> {
             .map(|((scalar, byte), value)| (*scalar, *byte, *value)));
     }
     pub(super) fn custom_collective(
-        &mut self, step: BodyStep, operation: *const c_void, kernel: &ReductionKernel,
+        &mut self, step: BodyStep, operation: *const c_void, kernel: &PreparedReductionKernel,
         pass: EntryPass, single_group: bool, dispatch: NumericDispatch,
     ) -> Result<(), &'static str> {
         let (reduction, head, counter) = match step {

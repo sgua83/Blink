@@ -129,7 +129,7 @@ unsafe extern "C" fn tile_word(context: *mut c_void, tile: usize, word: u32) -> 
 
 unsafe extern "C" fn tile_identity(context: *mut c_void, operator: CollectiveOperator, register: Reg) -> Bits {
     let emitter = unsafe { &*context.cast::<Emitter<'_>>() };
-    operator.identity(emitter.stage.registers[register])
+    operator.identity(emitter.registers[register])
 }
 
 unsafe extern "C" fn tile_tree_components(context: *mut c_void, count: usize) -> *mut scan::TreeComponent {

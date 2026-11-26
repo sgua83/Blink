@@ -34,6 +34,8 @@ pub use custom_reduce::{
 };
 #[cfg(feature = "compiler")]
 pub use custom_reduce::ReductionKernel;
+#[cfg(feature = "compiler")]
+pub(crate) use custom_reduce::{PreparedReductionKernel, ReductionBody};
 
 pub type Reg = usize;
 pub type Bits = u64;

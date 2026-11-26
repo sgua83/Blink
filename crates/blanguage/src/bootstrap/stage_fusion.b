@@ -1439,19 +1439,21 @@ extern "C" void value_reduction(VfReduction input,VfHost host,VfOriginWriter wri
         value_retain_origins(RewriteSpan(code.data,code.count,code.stride),book,host.values.ir,host.rewrite,host.origin.stride,writer);
         part+=1u64;
     }
-    // The original input registers still identify the reads waiting for a real input.
-    u64 role=0u64;
-    while(role<3u64){
-        RewriteSpan root=vf_reduction_root(input.roots,role==2u64 ? 0u64 : 3u64+role);
-        u64 index=0u64;
-        while(index<root.count){
-            u64 reg=unsafe_position<u64>(unsafe_address(address_bits(root.data)+index*root.stride));
-            if(value_take_input_origins(book,reg,origins.reads,host.origin,origins.accept)){
-                origins.finish_input(origins.reads,origins.inputs,u32(role),index);
+    if(origins.inputs!=address()){
+        // The original input registers still identify the reads waiting for a real input.
+        u64 role=0u64;
+        while(role<3u64){
+            RewriteSpan root=vf_reduction_root(input.roots,role==2u64 ? 0u64 : 3u64+role);
+            u64 index=0u64;
+            while(index<root.count){
+                u64 reg=unsafe_position<u64>(unsafe_address(address_bits(root.data)+index*root.stride));
+                if(value_take_input_origins(book,reg,origins.reads,host.origin,origins.accept)){
+                    origins.finish_input(origins.reads,origins.inputs,u32(role),index);
+                }
+                index+=1u64;
             }
-            index+=1u64;
+            role+=1u64;
         }
-        role+=1u64;
     }
     value_release_origins(book,host.scratch,host.origin);
     u64 root=0u64;

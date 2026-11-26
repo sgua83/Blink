@@ -198,8 +198,8 @@ pub(super) fn rebind_roots(values: &Values, outputs: &mut [Reg]) {
 }
 
 pub(super) fn run_reduction(
-    parts: &mut [Vec<Inst>; 3], kernel: &mut ReductionKernel, origins: &mut Origins,
-    reads: &mut Vec<OperationOrigin>, inputs: &mut Vec<ReductionInputReadForward>,
+    parts: &mut [Vec<Inst>; 3], kernel: &mut PreparedReductionKernel, origins: &mut Origins,
+    reads: &mut Vec<OperationOrigin>, inputs: Option<&mut Vec<ReductionInputReadForward>>,
 ) {
     let [identity, project, combine] = parts;
     let blocks = [
@@ -214,7 +214,7 @@ pub(super) fn run_reduction(
     let input = Reduction { parts: blocks.as_ptr(), registers: Span::slice(&kernel.stage.registers), roots: roots.as_ptr() };
     let writer = OriginWriter { sink: ptr::from_mut(origins).cast(), collect: collect_origin, attach: attach_origin };
     let input_origins = ReductionOrigins {
-        reads: ptr::from_mut(reads).cast(), inputs: ptr::from_mut(inputs).cast(),
+        reads: ptr::from_mut(reads).cast(), inputs: inputs.map_or(ptr::null_mut(), |output| ptr::from_mut(output).cast()),
         accept: accept_input, finish_input: finish_reduction_input,
     };
     unsafe { value_reduction(input, HOST, writer, input_origins); }
