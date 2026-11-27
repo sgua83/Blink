@@ -54,14 +54,11 @@ impl GraphRange {
 }
 
 #[repr(C)]
-struct EntryKey { path: ByteField, root: ByteField, providers: GraphRange, unit: usize }
+struct CapturePath { path: ByteField, root: ByteField }
 #[repr(C)]
 struct CaptureSource {
     context: *mut c_void,
-    unit_count: usize,
-    entry_count: usize,
-    ids: *const usize,
-    key: unsafe extern "C" fn(*mut c_void, usize, *mut EntryKey) -> bool,
+    key: unsafe extern "C" fn(*mut c_void, usize, *mut CapturePath) -> bool,
     capture: unsafe extern "C" fn(*mut c_void, usize, bool),
 }
 
@@ -112,6 +109,7 @@ struct GraphStorage {
     followers: *const usize,
     ready: *mut usize,
     counts: *mut ScheduleCounts,
+    captures: *const usize,
 }
 
 const OUT_OF_RANGE: u64 = 1;
@@ -123,6 +121,8 @@ struct GraphPlan<'object> {
     ids: *const usize,
     count: usize,
     storage: GraphStorage,
+    units: usize,
+    entries: usize,
     status: u64,
     unit: usize,
     objects: PhantomData<&'object Object>,
@@ -134,7 +134,7 @@ unsafe extern "C" {
     #[link_name = "bootstrap.build_graph::release_plan"]
     fn release_dependency_plan(ids: *const usize, storage: *const GraphRange);
     #[link_name = "bootstrap.build_graph::capture_sources"]
-    fn capture_sources(source: CaptureSource, indices: *mut usize) -> i32;
+    fn capture_sources(owner: *const GraphPlan<'_>, source: CaptureSource) -> i32;
     #[link_name = "bootstrap.build_schedule::run_worker"]
     fn run_worker(context: *mut c_void, host: WorkHost);
 }
@@ -154,24 +154,26 @@ impl<'object> GraphPlan<'object> {
         }
     }
 
-    fn provider_row(&self, unit: usize, unit_count: usize) -> GraphRange {
-        // A successful B plan initialized one provider row per input unit.
-        let rows = unsafe { std::slice::from_raw_parts(self.storage.providers, unit_count) };
-        rows[unit]
-    }
-
-    fn dependencies(&self, unit: usize, unit_count: usize) -> impl Iterator<Item = Dependency<'object>> + '_ {
+    fn dependencies(&self, unit: usize) -> impl Iterator<Item = Dependency<'object>> + '_ {
         let ids = self.ids();
-        let row = self.provider_row(unit, unit_count);
+        // A successful B plan initializes one provider row per input unit.
+        let rows = unsafe { std::slice::from_raw_parts(self.storage.providers, self.units) };
+        let row = rows[unit];
         row.slice(ids).iter().copied().map(move |id| {
-            if id < unit_count {
+            if id < self.units {
                 Dependency::Unit(id)
             } else {
-                let object = ptr::with_exposed_provenance::<Object>(ids[id - unit_count]);
+                let object = ptr::with_exposed_provenance::<Object>(ids[id - self.units]);
                 // Each identity in the prefix came from a borrowed Dependency::Object.
                 Dependency::Object(unsafe { &*object })
             }
         })
+    }
+
+    fn capture_index(&self, unit: usize) -> usize {
+        // Workers start after B has assigned the final indices for all units.
+        let indices = unsafe { std::slice::from_raw_parts(self.storage.captures, self.units) };
+        indices[unit]
     }
 }
 
@@ -267,7 +269,6 @@ struct GraphExecution<'graph, 'source> {
     compiler: &'graph Compiler,
     prepared: &'graph [Prepared<'source>],
     inputs: &'graph [super::Inputs],
-    capture_indices: &'graph [usize],
     state: Mutex<State<'source>>,
     changed: Condvar,
 }
@@ -280,9 +281,8 @@ impl GraphExecution<'_, '_> {
         }); }
     }
 
-    fn compile(&self, index: usize, providers: &[Provider<'_>]) -> Result<Output> {
+    fn compile(&self, index: usize, inputs: &super::Inputs, providers: &[Provider<'_>]) -> Result<Output> {
         let unit = &self.prepared[index];
-        let inputs = &self.inputs[self.capture_indices[index]];
         let artifact = super::Artifact { path: &unit.artifact, replace_existing: unit.replace_existing };
         self.compiler.execute(|worker| match unit.kind {
             UnitKind::Object(kind) => super::object::compile(worker, &unit.path, &unit.root,
@@ -340,7 +340,8 @@ unsafe extern "C" fn execute_unit(context: *mut c_void, index: usize) -> WorkRes
     let worker = unsafe { &mut *context.cast::<GraphWorker<'_, '_>>() };
     let graph = worker.execution;
     let state = worker.guard.take().unwrap();
-    let providers = state.plan.dependencies(index, graph.prepared.len()).map(|dependency| match dependency {
+    let inputs = &graph.inputs[state.plan.capture_index(index)];
+    let providers = state.plan.dependencies(index).map(|dependency| match dependency {
         Dependency::Unit(id) => match state.outputs[id].as_ref().unwrap() {
             Output::Object(value) => Provider::Built(value.clone()),
             Output::Entry(_) => unreachable!(),
@@ -348,7 +349,7 @@ unsafe extern "C" fn execute_unit(context: *mut c_void, index: usize) -> WorkRes
         Dependency::Object(value) => Provider::Object(value),
     }).collect::<Vec<_>>();
     drop(state);
-    let result = graph.compile(index, &providers);
+    let result = graph.compile(index, inputs, &providers);
     let success = u32::from(result.is_ok());
     worker.result = Some((index, result));
     let guard = graph.state.lock().unwrap();
@@ -383,15 +384,13 @@ struct GraphCapture<'graph, 'source> {
     captured: Vec<CapturedUnit>,
 }
 
-unsafe extern "C" fn capture_key(context: *mut c_void, index: usize, key: *mut EntryKey) -> bool {
+unsafe extern "C" fn capture_key(context: *mut c_void, index: usize, key: *mut CapturePath) -> bool {
     let state = unsafe { &*context.cast::<GraphCapture<'_, '_>>() };
     let unit = &state.prepared[index];
     if !matches!(unit.kind, UnitKind::Entry { .. }) { return false; }
-    unsafe { key.write(EntryKey {
+    unsafe { key.write(CapturePath {
         path: unit.path.as_os_str().as_encoded_bytes().into(),
         root: unit.root.as_os_str().as_encoded_bytes().into(),
-        providers: state.dependencies.provider_row(index, state.prepared.len()),
-        unit: index,
     }); }
     true
 }
@@ -400,7 +399,7 @@ unsafe extern "C" fn capture_unit(context: *mut c_void, index: usize, shared: bo
     let state = unsafe { &mut *context.cast::<GraphCapture<'_, '_>>() };
     let unit = &state.prepared[index];
     let mut providers = BTreeMap::new();
-    for dependency in state.dependencies.dependencies(index, state.prepared.len()) {
+    for dependency in state.dependencies.dependencies(index) {
         let (name, interface) = match dependency {
             Dependency::Unit(id) => {
                 let header = &state.headers[id];
@@ -423,10 +422,9 @@ pub fn compile_graph(units: &[Unit<'_>]) -> Result<Vec<Output>> {
 impl Compiler {
     pub fn build_graph(&self, units: &[Unit<'_>]) -> Result<Vec<Output>> {
         if units.is_empty() { return Ok(Vec::new()); }
-        let (prepared, inputs, capture_indices, dependency_plan) = self.execute(|_| {
+        let (prepared, inputs, dependency_plan) = self.execute(|_| {
         let dependency_plan = dependency_plan(units)?;
         let mut destinations = BTreeMap::new();
-        let mut entry_count = 0;
         let prepared = units.iter().enumerate().map(|(index, unit)| {
             let header = source_path::canonicalize(&source_path::with_extension(unit.path, u16::from(b'h')))?;
             let extension: Vec<_> = unit.path.extension().unwrap_or_else(|| OsStr::new("b")).encode_wide().collect();
@@ -435,10 +433,8 @@ impl Compiler {
             let output = source_path::absolute(unit.output)?;
             let artifact = match unit.kind {
                 UnitKind::Object(_) => output,
-                UnitKind::Entry { entry, target } => {
-                    entry_count += 1;
-                    super::entry_artifact(&path, &root, entry, super::entry_backend(target)?, &output)
-                }
+                UnitKind::Entry { entry, target } =>
+                    super::entry_artifact(&path, &root, entry, super::entry_backend(target)?, &output),
             };
             let replace_existing = if units.len() > 1 {
                 let (destination, exists) = source_path::output_destination(&artifact)?;
@@ -459,23 +455,21 @@ impl Compiler {
             prepared: &prepared, dependencies: &dependency_plan, headers: &headers,
             capture, captured: Vec::new(),
         };
-        let mut capture_indices = vec![prepared.len(); prepared.len()];
-        // The planner borrows the original paths and provider rows during
-        // the synchronous capture. It writes the final worker indices here.
-        let status = unsafe { capture_sources(CaptureSource {
+        // B assigns the worker indices in the plan while lending each capture
+        // callback the unit's original position.
+        let status = unsafe { capture_sources(ptr::from_ref(&dependency_plan), CaptureSource {
             context: ptr::from_mut(&mut state).cast(),
-            unit_count: prepared.len(), entry_count, ids: dependency_plan.ids().as_ptr(),
             key: capture_key, capture: capture_unit,
-        }, capture_indices.as_mut_ptr()) };
+        }) };
         if status != 0 { return Err(std::io::Error::from_raw_os_error(status).into()); }
         let inputs = state.capture.finish(state.captured);
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>((prepared, inputs, capture_indices, dependency_plan))
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>((prepared, inputs, dependency_plan))
         }).map_err(|error| match error {
             crate::parallel::Error::Work(error) => error,
             crate::parallel::Error::Resource(error) => Box::new(error) as Box<dyn std::error::Error + Send + Sync>,
         })?;
         let graph = GraphExecution {
-            compiler: self, prepared: &prepared, inputs: &inputs, capture_indices: &capture_indices,
+            compiler: self, prepared: &prepared, inputs: &inputs,
             state: Mutex::new(State {
                 plan: dependency_plan, outputs: (0..units.len()).map(|_| None).collect(), failure: None,
             }),

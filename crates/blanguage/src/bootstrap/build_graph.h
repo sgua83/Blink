@@ -15,27 +15,27 @@ struct GraphSource {
 };
 struct GraphStorage {
     address providers; address following; address waiting; address followers;
-    address ready; address counts;
+    address ready; address counts; address captures;
 };
 
 // The allocation starts with borrowed external identities. Provider IDs below
 // the unit count name units, and the remaining IDs index that prefix.
-struct GraphPlan { address ids; u64 count; GraphStorage storage; u64 status; u64 unit; };
+struct GraphPlan {
+    address ids; u64 count; GraphStorage storage;
+    u64 units; u64 entries; u64 status; u64 unit;
+};
 extern "C" GraphPlan plan(GraphSource source) on cpu
     requires nonzero(source.row) requires nonzero(source.edge);
 extern "C" void release_plan(address ids,address storage) on cpu;
 
-// Entry keys borrow canonical paths and the planner's existing provider rows.
-struct EntryKey { NameBytes path; NameBytes root; GraphRange providers; u64 unit; };
+// The host only lends the canonical paths for the current entry.
+struct CapturePath { NameBytes path; NameBytes root; };
 struct CaptureSource {
     address context;
-    u64 unit_count;
-    u64 entry_count;
-    address ids;
     cfn<bool,address,u64,address> key;
     cfn<void,address,u64,bool> capture;
 };
 
-// Indices start at unit_count and finish as indices into the captured inputs.
-extern "C" i32 capture_sources(CaptureSource source,address indices) on cpu
+// Final indices live in the same plan through the last unit.
+extern "C" i32 capture_sources(address owner,CaptureSource source) on cpu
     requires nonzero(source.key) requires nonzero(source.capture);

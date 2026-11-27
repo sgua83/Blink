@@ -14,6 +14,7 @@ const u64 ERROR_NOT_ENOUGH_MEMORY = 8u64;
 
 struct GraphUnit { GraphRange dependencies; u64 object; };
 struct GraphInput { address units; address edges; u64 count; };
+struct GraphShape { u64 external_edges; u64 entries; };
 struct Visit { u64 unit; u64 next; };
 struct Scratch { address states; address order; address visits; address seen; };
 struct Providers { address ids; u64 count; u64 capacity; };
@@ -43,13 +44,14 @@ GraphRange range_at(address rows,u64 index) on cpu {
 void put_range(address rows,u64 index,GraphRange range) on cpu {
     unsafe_position<GraphRange>(offset(rows,index*size_of<GraphRange>()))=range;
 }
+struct EntryKey { CapturePath location; GraphRange providers; u64 unit; };
 EntryKey entry_key(address entries,u64 index) on cpu {
     return unsafe_position<EntryKey>(offset(entries,index*size_of<EntryKey>()));
 }
 i32 compare_entries(EntryKey first,EntryKey second,address ids) on cpu {
-    i32 path=compare_name(first.path,second.path);
+    i32 path=compare_name(first.location.path,second.location.path);
     if (path!=i32(0)) { return path; }
-    i32 root=compare_name(first.root,second.root);
+    i32 root=compare_name(first.location.root,second.location.root);
     if (root!=i32(0)) { return root; }
     if (first.providers.count!=second.providers.count) {
         return first.providers.count<second.providers.count ? i32(-1) : i32(1);
@@ -72,28 +74,33 @@ extern "C" bool entry_before(address left,address right,address context) on cpu 
     return order==i32(0) ? first.unit<second.unit : order<i32(0);
 }
 
-void capture_owners(CaptureSource source,address entries,address indices) on cpu
+void capture_owners(GraphPlan graph,CaptureSource source,address entries) on cpu
     requires nonzero(source.key) {
-    address order=offset(entries,source.entry_count*size_of<EntryKey>());
+    address indices=graph.storage.captures;
+    u64 index=0u64;
+    while (index<graph.units) { put_word(indices,index,graph.units); index+=1u64; }
+    address order=offset(entries,graph.entries*size_of<EntryKey>());
     u64 unit=0u64;
     u64 at=0u64;
-    while (at<source.entry_count) {
+    while (at<graph.entries) {
         address row=offset(entries,at*size_of<EntryKey>());
-        if (source.key(source.context,unit,row)) {
+        if (source.key(source.context,unit,address_of(unsafe_position<EntryKey>(row).location))) {
+            unsafe_position<EntryKey>(row).providers=range_at(graph.storage.providers,unit);
+            unsafe_position<EntryKey>(row).unit=unit;
             put_word(order,at,at);
             at+=1u64;
         }
         unit+=1u64;
     }
-    EntryOrder input=EntryOrder(entries,source.ids);
-    sort_rows<u64>(order,source.entry_count,address_of(input),c_function(entry_before));
+    EntryOrder input=EntryOrder(entries,graph.ids);
+    sort_rows<u64>(order,graph.entries,address_of(input),c_function(entry_before));
     u64 first=0u64;
-    while (first<source.entry_count) {
+    while (first<graph.entries) {
         EntryKey owner=entry_key(entries,word(order,first));
         u64 end=first+1u64;
-        while (end<source.entry_count) {
+        while (end<graph.entries) {
             EntryKey member=entry_key(entries,word(order,end));
-            if (compare_entries(owner,member,source.ids)!=i32(0)) { break; }
+            if (compare_entries(owner,member,graph.ids)!=i32(0)) { break; }
             put_word(indices,member.unit,owner.unit);
             end+=1u64;
         }
@@ -102,25 +109,28 @@ void capture_owners(CaptureSource source,address entries,address indices) on cpu
     }
 }
 
-extern "C" i32 capture_sources(CaptureSource source,address indices) on cpu
+extern "C" i32 capture_sources(address owner,CaptureSource source) on cpu
     requires nonzero(source.key) requires nonzero(source.capture) {
-    if (source.entry_count>1u64) {
+    GraphPlan graph=unsafe_position<GraphPlan>(owner);
+    address indices=graph.storage.captures;
+    bool grouped=graph.entries>1u64;
+    if (grouped) {
         handle heap=GetProcessHeap();
-        address entries=HeapAlloc(heap,0,source.entry_count*(size_of<EntryKey>()+8u64));
+        address entries=HeapAlloc(heap,0,graph.entries*(size_of<EntryKey>()+8u64));
         if (address_bits(entries)==0u64) { return i32(ERROR_NOT_ENOUGH_MEMORY); }
-        capture_owners(source,entries,indices);
+        capture_owners(graph,source,entries);
         HeapFree(heap,0,entries);
     }
     // The earliest original unit has filled its snapshot index before its
     // borrowers. Only owners and independent units read sources.
     u64 count=0u64;
     u64 unit=0u64;
-    while (unit<source.unit_count) {
-        u64 owner=word(indices,unit);
-        if (owner<unit) {
-            put_word(indices,unit,word(indices,owner));
+    while (unit<graph.units) {
+        u64 source_unit=grouped ? word(indices,unit) : graph.units;
+        if (source_unit<unit) {
+            put_word(indices,unit,word(indices,source_unit));
         } else {
-            source.capture(source.context,unit,owner==unit);
+            source.capture(source.context,unit,source_unit==unit);
             put_word(indices,unit,count);
             count+=1u64;
         }
@@ -136,8 +146,8 @@ void put_visit(address visits,u64 index,Visit visit) on cpu {
 }
 
 GraphPlan failure(u64 status,u64 unit) on cpu {
-    GraphStorage empty=GraphStorage(address(),address(),address(),address(),address(),address());
-    return GraphPlan(address(),0u64,empty,status,unit);
+    GraphStorage empty=GraphStorage(address(),address(),address(),address(),address(),address(),address());
+    return GraphPlan(address(),0u64,empty,0u64,0u64,status,unit);
 }
 
 void release_allocation(handle heap,address data) on cpu {
@@ -150,22 +160,25 @@ GraphStorage allocate_storage(GraphSource source,handle heap) on cpu {
     u64 waiting=rows*2u64;
     u64 ready=waiting+words;
     u64 followers=ready+words;
-    u64 counts=followers+source.edge_count*size_of<u64>();
+    u64 captures=followers+source.edge_count*size_of<u64>();
+    u64 counts=captures+words;
     address memory=HeapAlloc(heap,0,counts+size_of<ScheduleCounts>());
     if (memory==address()) {
-        return GraphStorage(memory,memory,memory,memory,memory,memory);
+        return GraphStorage(memory,memory,memory,memory,memory,memory,memory);
     }
     return GraphStorage(memory,offset(memory,rows),offset(memory,waiting),
-        offset(memory,followers),offset(memory,ready),offset(memory,counts));
+        offset(memory,followers),offset(memory,ready),offset(memory,counts),offset(memory,captures));
 }
 
-u64 read_dependencies(GraphSource source,GraphInput input,address external_order) on cpu
+GraphShape read_dependencies(GraphSource source,GraphInput input,address external_order) on cpu
     requires nonzero(source.row) requires nonzero(source.edge) {
     u64 unit=0u64;
     u64 at=0u64;
     u64 external_count=0u64;
+    u64 entries=0u64;
     while (unit<source.count) {
         GraphRow row=source.row(source.units,unit);
+        entries+=u64(row.object==0u64);
         unsafe_position<GraphUnit>(offset(input.units,unit*size_of<GraphUnit>()))=
             GraphUnit(GraphRange(at,row.count),row.object);
         u64 index=0u64;
@@ -181,7 +194,7 @@ u64 read_dependencies(GraphSource source,GraphInput input,address external_order
         }
         unit+=1u64;
     }
-    return external_count;
+    return GraphShape(external_count,entries);
 }
 
 PlanStatus dependency_order(GraphInput input,Scratch work) on cpu {
@@ -379,7 +392,7 @@ extern "C" GraphPlan plan(GraphSource source) on cpu
     }
     GraphInput input=GraphInput(offset(memory,stride*4u64),offset(memory,stride*4u64+unit_bytes),source.count);
     // The final follower table provides the ordering workspace until scheduling.
-    u64 external_edges=read_dependencies(source,input,output.followers);
+    GraphShape shape=read_dependencies(source,input,output.followers);
     Scratch work=Scratch(memory,offset(memory,stride),offset(memory,stride*2u64),address());
     PlanStatus order=dependency_order(input,work);
     if (order.status!=0u64) {
@@ -389,13 +402,13 @@ extern "C" GraphPlan plan(GraphSource source) on cpu
     }
 
     Providers providers=Providers(address(),0u64,0u64);
-    if (index_externals(input,output.followers,external_edges,heap,providers)) {
+    if (index_externals(input,output.followers,shape.external_edges,heap,providers)) {
         work.seen=HeapAlloc(heap,8,stride+providers.count*8u64);
         if (work.seen!=address() && expand_providers(input,output,work,heap,providers)) {
             write_schedule(input,output,work);
             HeapFree(heap,0,work.seen);
             HeapFree(heap,0,memory);
-            return GraphPlan(providers.ids,providers.count,output,0u64,0u64);
+            return GraphPlan(providers.ids,providers.count,output,source.count,shape.entries,0u64,0u64);
         }
     }
     release_allocation(heap,work.seen);
