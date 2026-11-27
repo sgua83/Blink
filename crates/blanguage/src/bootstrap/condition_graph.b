@@ -567,86 +567,109 @@ extern "C" u32 equivalent(usize first,usize second,address plan,address context,
 NodeFields required_node(ConditionNodes nodes,usize index) on compute {
  return unsafe_position<NodeFields>(unsafe_address(address_bits(nodes.fields)+u64(index)*size_of<NodeFields>()));
 }
-address required_use(RequiredGraph graph,usize index) on compute {
- return unsafe_address(address_bits(graph.uses)+u64(index)*size_of<RequiredUses>());
+address required_slot(RequiredGraph graph,usize index) on compute {
+ return unsafe_address(address_bits(graph.slots)+u64(index)*u64(graph.stride));
 }
-u32 required_consume(RequiredGraph graph,usize index) on compute {
- address counter=required_use(graph,index);
- usize remaining=unsafe_position<RequiredUses>(counter).remaining-1u64;
- unsafe_position<RequiredUses>(counter).remaining=remaining;
+u32 required_consume(address slot) on compute {
+ usize remaining=unsafe_position<RequiredSlot>(slot).remaining-1u64;
+ unsafe_position<RequiredSlot>(slot).remaining=remaining;
  return remaining==0u64 ? 1 : 0;
+}
+RequiredState required_state(u32 present) on compute {
+ return present!=0 ? RequiredState::Ready : RequiredState::Impossible;
 }
 extern "C" void required_prepare(RequiredGraph graph) on cpu {
  usize index=0u64;
  while(index<graph.nodes.count){
   NodeFields node=required_node(graph.nodes,index);
   if(node.kind==NodeKind::Both||node.kind==NodeKind::Either){
-   unsafe_position<RequiredUses>(required_use(graph,node.first)).users+=1u64;
-   unsafe_position<RequiredUses>(required_use(graph,node.second)).users+=1u64;
+   unsafe_position<RequiredSlot>(required_slot(graph,node.first)).users+=1u64;
+   unsafe_position<RequiredSlot>(required_slot(graph,node.second)).users+=1u64;
   }
   index+=1u64;
  }
- unsafe_position<RequiredUses>(required_use(graph,graph.root)).users+=1u64;
+ unsafe_position<RequiredSlot>(required_slot(graph,graph.root)).users+=1u64;
+}
+RequiredState required_additions(address slot,address context,RequiredHost host,usize id) on cpu
+ requires nonzero(host.valid_additions) {
+ if(unsafe_position<RequiredSlot>(slot).users==1u64){return required_state(host.valid_additions(context,id));}
+ RequiredState additions=unsafe_position<RequiredSlot>(slot).additions;
+ if(additions==RequiredState::Pending){
+  additions=required_state(host.valid_additions(context,id));
+  unsafe_position<RequiredSlot>(slot).additions=additions;
+ }
+ return additions;
 }
 void required_abandon(RequiredGraph graph,inout TraversalStack pending,address context,RequiredHost host,usize index) on cpu
- requires nonzero(host.release) {
+ requires nonzero(host.discard) {
  usize before=pending.length;
  stack_push(pending,index);
  while(pending.length>before){
   usize id=stack_pop<usize>(pending);
-  u32 last=required_consume(graph,id);
-  u32 computed=host.release(context,id,last);
-  if(last!=0&&computed==0){
+  address slot=required_slot(graph,id);
+  if(required_consume(slot)==0){continue;}
+  RequiredState state=unsafe_position<RequiredSlot>(slot).state;
+  if(state==RequiredState::Ready){host.discard(context,id);}
+  if(state==RequiredState::Pending){
    NodeFields node=required_node(graph.nodes,id);
    if(node.kind==NodeKind::Both||node.kind==NodeKind::Either){stack_push(pending,node.first);stack_push(pending,node.second);}
   }
  }
 }
 extern "C" void required_evaluate(RequiredGraph graph,inout TraversalStack pending,address context,RequiredHost host) on cpu
- requires nonzero(host.status) requires nonzero(host.impossible)
  requires nonzero(host.leaf) requires nonzero(host.union) requires nonzero(host.common)
- requires nonzero(host.valid_additions) requires nonzero(host.release) {
+ requires nonzero(host.valid_additions) requires nonzero(host.discard) {
  usize at=0u64;
  while(at<graph.nodes.count){
-  address counter=required_use(graph,at);
-  unsafe_position<RequiredUses>(counter).remaining=unsafe_position<RequiredUses>(counter).users;
+  address slot=required_slot(graph,at);
+  unsafe_position<RequiredSlot>(slot).remaining=unsafe_position<RequiredSlot>(slot).users;
+  unsafe_position<RequiredSlot>(slot).state=RequiredState::Pending;
+  unsafe_position<RequiredSlot>(slot).additions=RequiredState::Pending;
   at+=1u64;
  }
  stack_push(pending,graph.root);
  while(pending.length!=0u64){
   usize id=stack_pop<usize>(pending);
-  if(host.status(context,id)!=0){continue;}
+  address slot=required_slot(graph,id);
+  if(unsafe_position<RequiredSlot>(slot).state!=RequiredState::Pending){continue;}
   NodeFields node=required_node(graph.nodes,id);
-  if(node.kind==NodeKind::Impossible){host.impossible(context,id);continue;}
-  if(node.kind==NodeKind::Facts){host.leaf(context,id,node.facts);continue;}
-  u32 a=host.status(context,node.first);
-  if(a==0){stack_push(pending,id);stack_push(pending,node.first);continue;}
-  if(node.kind==NodeKind::Both&&a==1){
-   u32 last=required_consume(graph,node.first);
-   u32 computed=host.release(context,node.first,last);
-   required_abandon(graph,pending,context,host,node.second);
-   host.impossible(context,id);continue;
+  if(node.kind==NodeKind::Impossible){unsafe_position<RequiredSlot>(slot).state=RequiredState::Impossible;continue;}
+  if(node.kind==NodeKind::Facts){
+   unsafe_position<RequiredSlot>(slot).state=required_state(host.leaf(context,id,node.facts));continue;
   }
-  u32 b=host.status(context,node.second);
-  if(b==0){stack_push(pending,id);stack_push(pending,node.second);continue;}
+  address left=required_slot(graph,node.first);
+  RequiredState a=unsafe_position<RequiredSlot>(left).state;
+  if(a==RequiredState::Pending){stack_push(pending,id);stack_push(pending,node.first);continue;}
+  if(node.kind==NodeKind::Both&&a==RequiredState::Impossible){
+   u32 last=required_consume(left);
+   required_abandon(graph,pending,context,host,node.second);
+   unsafe_position<RequiredSlot>(slot).state=RequiredState::Impossible;continue;
+  }
+  address right=required_slot(graph,node.second);
+  RequiredState b=unsafe_position<RequiredSlot>(right).state;
+  if(b==RequiredState::Pending){stack_push(pending,id);stack_push(pending,node.second);continue;}
   u32 valid=1;
   if(node.kind==NodeKind::Both){
-   if(a!=2||b!=2){valid=0;}
+   if(b!=RequiredState::Ready){valid=0;}
    else if(required_node(graph.nodes,node.first).kind==NodeKind::Either&&
-       host.valid_additions(context,node.first,unsafe_position<RequiredUses>(required_use(graph,node.first)).users)==0){valid=0;}
+       required_additions(left,context,host,node.first)==RequiredState::Impossible){valid=0;}
    else if(required_node(graph.nodes,node.second).kind==NodeKind::Either&&
-       host.valid_additions(context,node.second,unsafe_position<RequiredUses>(required_use(graph,node.second)).users)==0){valid=0;}
+       required_additions(right,context,host,node.second)==RequiredState::Impossible){valid=0;}
   }
-  u32 left_last=required_consume(graph,node.first);u32 right_last=required_consume(graph,node.second);
-  if(node.kind==NodeKind::Either){host.common(context,id,node.first,node.second,left_last,right_last);}
-  else if(valid!=0){host.union(context,id,node.first,node.second,left_last,right_last);}
+  u32 left_last=required_consume(left);u32 right_last=required_consume(right);
+  if(node.kind==NodeKind::Either){
+   unsafe_position<RequiredSlot>(slot).state=required_state(host.common(context,id,node.first,node.second,left_last,right_last));
+  }
+  else if(valid!=0){
+   unsafe_position<RequiredSlot>(slot).state=required_state(host.union(context,id,node.first,node.second,left_last,right_last));
+  }
   else{
-   u32 left_computed=host.release(context,node.first,left_last);
-   u32 right_computed=host.release(context,node.second,right_last);
-   host.impossible(context,id);
+   if(left_last!=0){host.discard(context,node.first);}
+   if(right_last!=0&&b==RequiredState::Ready){host.discard(context,node.second);}
+   unsafe_position<RequiredSlot>(slot).state=RequiredState::Impossible;
   }
  }
- u32 root_last=required_consume(graph,graph.root);
+ u32 root_last=required_consume(required_slot(graph,graph.root));
 }
 
 FactView fact_equal(FactView value,i32 order) on cpu {

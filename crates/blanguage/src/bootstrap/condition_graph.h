@@ -113,23 +113,21 @@ extern "C" u32 equivalent(usize first,usize second,address plan,address context,
  requires nonzero(preparation.append) requires nonzero(preparation.gate_get) requires nonzero(preparation.gate_put)
  requires nonzero(preparation.size) requires nonzero(preparation.build);
 
-// The original index owns the topology. The solver mutates counts independently of host results.
-struct RequiredUses { usize users; usize remaining; };
-struct RequiredGraph { ConditionNodes nodes; address uses; usize root; };
+// The original index owns the topology. Each result slot starts with the solver's state.
+enum RequiredState:u32 { Pending=0; Impossible=1; Ready=2; };
+struct RequiredSlot { usize users; usize remaining; RequiredState state; RequiredState additions; };
+struct RequiredGraph { ConditionNodes nodes; address slots; usize stride; usize root; };
 struct RequiredHost {
- cfn<u32,address,usize> ensures memory(read) status;
- cfn<void,address,usize> impossible;
- cfn<void,address,usize,address> leaf;
- cfn<void,address,usize,usize,usize,u32,u32> union;
- cfn<void,address,usize,usize,usize,u32,u32> common;
- cfn<u32,address,usize,usize> valid_additions;
- cfn<u32,address,usize,u32> release;
+ cfn<u32,address,usize,address> leaf;
+ cfn<u32,address,usize,usize,usize,u32,u32> union;
+ cfn<u32,address,usize,usize,usize,u32,u32> common;
+ cfn<u32,address,usize> valid_additions;
+ cfn<void,address,usize> discard;
 };
 extern "C" void required_prepare(RequiredGraph graph) on cpu;
 extern "C" void required_evaluate(RequiredGraph graph,inout TraversalStack pending,address context,RequiredHost host) on cpu
- requires nonzero(host.status) requires nonzero(host.impossible)
  requires nonzero(host.leaf) requires nonzero(host.union) requires nonzero(host.common)
- requires nonzero(host.valid_additions) requires nonzero(host.release);
+ requires nonzero(host.valid_additions) requires nonzero(host.discard);
 
 struct CrossScalars { array<address,4> values; };
 struct CrossHost {
