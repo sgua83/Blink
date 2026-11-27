@@ -2,33 +2,47 @@
 use crate::Result;
 use std::ffi::{CStr, c_char, c_void};
 
-#[link(name = "kernel32")]
-unsafe extern "system" {
-    fn LoadLibraryW(name: *const u16) -> *mut c_void;
-    fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *const c_void;
-    fn FreeLibrary(module: *mut c_void) -> i32;
+#[repr(C)]
+struct NativeLibraryOpen {
+    value: *mut c_void,
+    os_code: u32,
+    allocation_failed: u32,
+}
+
+#[repr(C)]
+struct NativeLibrarySymbol {
+    value: *const (),
+    os_code: u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "blink.windows.cpu_image::open_native_library"]
+    fn open_native_library(name: *const u8, length: usize) -> NativeLibraryOpen;
+    #[link_name = "blink.windows.cpu_image::native_library_symbol"]
+    fn native_library_symbol(module: *mut c_void, nul_name: *const c_char) -> NativeLibrarySymbol;
+    #[link_name = "blink.windows.cpu_image::release_native_library"]
+    fn release_native_library(module: *mut c_void);
 }
 
 pub(crate) struct Library(*mut c_void);
 impl Library {
     pub(crate) fn load(name: &str) -> Result<Self> {
-        let name: Vec<_> = name.encode_utf16().chain(Some(0)).collect();
-        let handle = unsafe { LoadLibraryW(name.as_ptr()) };
-        if handle.is_null() {
-            return Err(std::io::Error::last_os_error().into());
+        let opened = unsafe { open_native_library(name.as_ptr(), name.len()) };
+        if opened.value.is_null() {
+            return Err(std::io::Error::from_raw_os_error(opened.os_code as i32).into());
         }
-        Ok(Self(handle))
+        Ok(Self(opened.value))
     }
     pub(crate) fn symbol(&self, name: &CStr) -> Result<*const ()> {
-        let address = unsafe { GetProcAddress(self.0, name.as_ptr()) };
-        if address.is_null() {
-            return Err(std::io::Error::last_os_error().into());
+        let symbol = unsafe { native_library_symbol(self.0, name.as_ptr()) };
+        if symbol.value.is_null() {
+            return Err(std::io::Error::from_raw_os_error(symbol.os_code as i32).into());
         }
-        Ok(address.cast())
+        Ok(symbol.value)
     }
 }
 impl Drop for Library {
     fn drop(&mut self) {
-        unsafe { FreeLibrary(self.0); }
+        unsafe { release_native_library(self.0); }
     }
 }

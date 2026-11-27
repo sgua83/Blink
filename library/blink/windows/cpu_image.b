@@ -136,23 +136,31 @@ Search find_library(Rows keys, ReadBytes name) on cpu {
     return Search(low, false);
 }
 
-OpenLibrary open_library(ImageName name) on cpu {
+extern "C" NativeLibraryOpen open_native_library(address name, u64 length) on cpu {
     handle none = handle();
-    u64 length = name.library.length;
-    if (length > I32_MAX) { return OpenLibrary(none, ImageError(ImageFailure::Library, 87, name)); }
+    if (length > I32_MAX) { return NativeLibraryOpen(none, 87, 0); }
     // Every UTF-8 byte contributes at most one UTF-16 unit. The last unit starts zero.
     address wide = HeapAlloc(GetProcessHeap(), 8, (length + 1u64) * 2u64);
-    if (address_bits(wide) == 0u64) { return OpenLibrary(none, failure(ImageFailure::Heap, 8)); }
-    if (length != 0u64 && MultiByteToWideChar(65001, 8, name.library.bytes, i32(length), wide, i32(length)) == 0) {
+    if (address_bits(wide) == 0u64) { return NativeLibraryOpen(none, 8, 1); }
+    if (length != 0u64 && MultiByteToWideChar(65001, 8, name, i32(length), wide, i32(length)) == 0) {
         u32 error = GetLastError();
         free_bytes(wide);
-        return OpenLibrary(none, ImageError(ImageFailure::Library, error, name));
+        return NativeLibraryOpen(none, error, 0);
     }
     handle library = LoadLibraryW(wide);
     u32 error = library == none ? GetLastError() : 0;
     free_bytes(wide);
-    if (library == none) { return OpenLibrary(none, ImageError(ImageFailure::Library, error, name)); }
-    return OpenLibrary(library, failure(ImageFailure::None, 0));
+    return NativeLibraryOpen(library, error, 0);
+}
+
+extern "C" NativeLibrarySymbol native_library_symbol(handle library, address nul_name) on cpu {
+    address value = GetProcAddress(library, nul_name);
+    u32 error = address_bits(value) == 0u64 ? GetLastError() : 0;
+    return NativeLibrarySymbol(value, error);
+}
+
+extern "C" void release_native_library(handle library) on cpu {
+    FreeLibrary(library);
 }
 
 OpenLibrary library_for(inout Rows keys, inout Rows libraries, ImageName name) on cpu {
@@ -164,8 +172,13 @@ OpenLibrary library_for(inout Rows keys, inout Rows libraries, ImageName name) o
     if (!reserve_one(keys, size_of<ReadBytes>()) || !reserve_one(libraries, size_of<handle>())) {
         return OpenLibrary(handle(), failure(ImageFailure::Heap, 8));
     }
-    OpenLibrary opened = open_library(name);
-    if (opened.error.kind != ImageFailure::None) { return opened; }
+    NativeLibraryOpen opened = open_native_library(name.library.bytes, name.library.length);
+    if (opened.value == handle()) {
+        ImageError error = opened.allocation_failed != 0
+            ? failure(ImageFailure::Heap, opened.os_code)
+            : ImageError(ImageFailure::Library, opened.os_code, name);
+        return OpenLibrary(opened.value, error);
+    }
     // The original DLL-name order also determines the final release order.
     shift_rows(keys, found.index, size_of<ReadBytes>());
     shift_rows(libraries, found.index, size_of<handle>());
@@ -173,7 +186,7 @@ OpenLibrary library_for(inout Rows keys, inout Rows libraries, ImageName name) o
     unsafe_position<handle>(offset_at(libraries.data, found.index * size_of<handle>())) = opened.value;
     keys.count += 1u64;
     libraries.count += 1u64;
-    return opened;
+    return OpenLibrary(opened.value, failure(ImageFailure::None, 0));
 }
 
 BoundSymbol bind_external(ImageInput input, inout Rows keys, inout Rows libraries, ImageName name) on cpu
@@ -196,11 +209,12 @@ BoundSymbol bind_external(ImageInput input, inout Rows keys, inout Rows librarie
     address text = HeapAlloc(GetProcessHeap(), 8, name.symbol.length + 1u64);
     if (address_bits(text) == 0u64) { return BoundSymbol(empty, failure(ImageFailure::Heap, 8)); }
     if (name.symbol.length != 0u64) { RtlMoveMemory(text, name.symbol.bytes, name.symbol.length); }
-    address value = GetProcAddress(opened.value, text);
-    u32 error = address_bits(value) == 0u64 ? GetLastError() : 0;
+    NativeLibrarySymbol symbol = native_library_symbol(opened.value, text);
     free_bytes(text);
-    if (address_bits(value) == 0u64) { return BoundSymbol(empty, ImageError(ImageFailure::Symbol, error, name)); }
-    return BoundSymbol(value, failure(ImageFailure::None, 0));
+    if (address_bits(symbol.value) == 0u64) {
+        return BoundSymbol(empty, ImageError(ImageFailure::Symbol, symbol.os_code, name));
+    }
+    return BoundSymbol(symbol.value, failure(ImageFailure::None, 0));
 }
 
 u64 section_base(ImageLayout layout, u64 index) on cpu {
@@ -528,7 +542,7 @@ extern "C" void release_image(address owner) on cpu {
     u64 library_index = 0u64;
     while (library_index < image.libraries.count) {
         handle library = unsafe_position<handle>(offset_at(image.libraries.data, library_index * size_of<handle>()));
-        FreeLibrary(library);
+        release_native_library(library);
         library_index += 1u64;
     }
     free_bytes(image.registered.data);

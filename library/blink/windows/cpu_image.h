@@ -1,6 +1,15 @@
 module blink.windows.cpu_image;
 import blink.windows.coff;
 
+struct NativeLibraryOpen { handle value; u32 os_code; u32 allocation_failed; };
+struct NativeLibrarySymbol { address value; u32 os_code; };
+
+// Each successful open returns one reference. Callers retain it through the
+// last consumer of the library's code and release it once.
+extern "C" NativeLibraryOpen open_native_library(address name, u64 length) on cpu;
+extern "C" NativeLibrarySymbol native_library_symbol(handle library, address nul_name) on cpu;
+extern "C" void release_native_library(handle library) on cpu;
+
 struct ImageName {
     ReadBytes library;
     ReadBytes symbol;
