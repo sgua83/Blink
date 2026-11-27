@@ -83,15 +83,10 @@ extern "C" BindingOrder order_bindings(address bindings, u64 definitions, u64 co
 MetadataBinding ordered_binding_at(MetadataInput input, u64 index) on cpu {
     return binding_at(input.bindings, binding_index(input.binding_order, index));
 }
-MetadataFrame frame_at(MetadataInput input,u64 index) on cpu {
-    return unsafe_position<MetadataFrame>(unsafe_address(address_bits(input.frames)+index*FRAME_BYTES));
-}
-MetadataCall call_at(MetadataInput input,u64 index) on cpu {
-    return unsafe_position<MetadataCall>(unsafe_address(address_bits(input.calls)+index*CALL_BYTES));
-}
 MetadataLayout invalid(u32 error) on cpu {return MetadataLayout(0u64,error);}
 
-extern "C" MetadataLayout layout(MetadataInput input) on cpu {
+extern "C" MetadataLayout layout(MetadataInput input,MetadataStackHost stack) on cpu
+    requires nonzero(stack.frame) requires nonzero(stack.call) {
     if(input.name.length>4294967295u64){return invalid(2);}
     u64 at=16u64+input.name.length;
     if(input.kind==0u64){at+=4u64;}
@@ -147,9 +142,8 @@ extern "C" MetadataLayout layout(MetadataInput input) on cpu {
         if(at>4294967295u64){return invalid(3);}i+=1u64;
     }
     at+=4u64;i=0u64;
-    u64 call_index=0u64;
     while(i<input.frame_count){
-        MetadataFrame frame=frame_at(input,i);
+        MetadataFrame frame=stack.frame(input.stack,i);
         if(frame.name.length>4294967295u64){return invalid(2);}
         if(frame.call_count>4294967295u64){return invalid(1);}
         at+=16u64+frame.name.length;
@@ -158,9 +152,9 @@ extern "C" MetadataLayout layout(MetadataInput input) on cpu {
             at+=8u64;
         }
         if(at>4294967295u64){return invalid(3);}
-        u64 call_end=call_index+frame.call_count;
-        while(call_index<call_end){
-            MetadataCall call=call_at(input,call_index);
+        u64 call_index=0u64;
+        while(call_index<frame.call_count){
+            MetadataCall call=stack.call(input.stack,i,call_index);
             at+=4u64;
             if(call.kind<2u64){
                 if(call.offset>4294967295u64){return invalid(2);}
@@ -222,7 +216,8 @@ u64 encode_resource(address output,u64 at,MetadataResource resource) on cpu {
     word(output,at,next-begin);
     return next;
 }
-extern "C" void encode(MetadataInput input,address output) on cpu {
+extern "C" void encode(MetadataInput input,address output,MetadataStackHost stack) on cpu
+    requires nonzero(stack.frame) requires nonzero(stack.call) {
     u64 at=word(output,0u64,1329810498u64);
     at=word(output,at,input.format_version);at=bytes(output,at,input.name);at=word(output,at,input.kind);
     if(input.kind==0u64){at=word(output,at,input.stack_bytes);}
@@ -247,15 +242,14 @@ extern "C" void encode(MetadataInput input,address output) on cpu {
         at=bytes(output,at,binding.name);at=bytes(output,at,binding.value);i+=1u64;
     }
     at=word(output,at,input.frame_count);i=0u64;
-    u64 call_index=0u64;
     while(i<input.frame_count){
-        MetadataFrame frame=frame_at(input,i);
+        MetadataFrame frame=stack.frame(input.stack,i);
         at=bytes(output,at,frame.name);at=word(output,at,frame.has_coff);
         if(frame.has_coff!=0u64){at=word(output,at,frame.section);at=word(output,at,frame.start);}
         at=word(output,at,frame.local);at=word(output,at,frame.call_count);
-        u64 call_end=call_index+frame.call_count;
-        while(call_index<call_end){
-            MetadataCall call=call_at(input,call_index);at=word(output,at,call.kind);
+        u64 call_index=0u64;
+        while(call_index<frame.call_count){
+            MetadataCall call=stack.call(input.stack,i,call_index);at=word(output,at,call.kind);
             if(call.kind<2u64){at=word(output,at,call.offset);}
             else if(call.kind==3u64){at=bytes(output,at,call.reason);}
             call_index+=1u64;

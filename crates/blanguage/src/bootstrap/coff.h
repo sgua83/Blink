@@ -1,5 +1,6 @@
 module bootstrap.coff;
 import bootstrap.bindings;
+import bootstrap.metadata;
 // Windows x64 C ABI; all borrowed-view fields occupy eight bytes.
 const u64 SYMBOL_BYTES=80u64;
 const u64 COFF_RELOCATION_RECORD_BYTES=10u64;
@@ -39,7 +40,8 @@ extern "C" u32 with_output(CoffSource source,CoffWork work) on cpu
 CoffSection section_at(address sections,u64 index) on cpu;
 void section_put(address sections,u64 index,CoffSection value) on cpu;
 extern "C" u32 needs_body(u64 flags,u64 relocation_count) on cpu;
-extern "C" void write(read CoffPlan plan,address output) on cpu;
+extern "C" void write(read CoffPlan plan,address output,MetadataStackHost stack) on cpu
+    requires nonzero(stack.frame) requires nonzero(stack.call);
 extern "C" void host_headers(address output, u64 sections, u64 symbols, u64 cache_end, u64 cache_length) on cpu;
 
 struct NativeObjectPlace { usize section; u32 present; };

@@ -4,8 +4,6 @@ import bootstrap.names;
 const u64 BYTES_BYTES=16u64;
 const u64 REQUIREMENT_BYTES=24u64;
 const u64 BINDING_BYTES=32u64;
-const u64 FRAME_BYTES=56u64;
-const u64 CALL_BYTES=32u64;
 struct MetadataBytes {address bytes;u64 length;};
 struct MetadataRequirement {MetadataBytes name;u64 kind;};
 struct MetadataBinding {MetadataBytes name;MetadataBytes value;};
@@ -32,7 +30,7 @@ struct MetadataInput {
     address exports;u64 export_count;
     MetadataResource resource;
     address bindings;address binding_order;u64 binding_count;
-    address frames;u64 frame_count;address calls;
+    address stack;u64 frame_count;
 };
 struct BindingOrder {u64 count;u64 conflict;};
 // Rows borrow original object contracts. Definitions precede unique imports sorted by name.
@@ -40,8 +38,14 @@ struct BindingOrder {u64 count;u64 conflict;};
 // conflict is the original input index of the first conflicting import, or count.
 extern "C" BindingOrder order_bindings(address bindings,u64 definitions,u64 count,address order) on cpu;
 struct MetadataLayout {u64 length;u32 error;};
-extern "C" MetadataLayout layout(MetadataInput input) on cpu;
-extern "C" void encode(MetadataInput input,address output) on cpu;
+struct MetadataStackHost {
+    cfn<MetadataFrame,address,u64> ensures memory(read) frame;
+    cfn<MetadataCall,address,u64,u64> ensures memory(read) call;
+};
+extern "C" MetadataLayout layout(MetadataInput input,MetadataStackHost stack) on cpu
+    requires nonzero(stack.frame) requires nonzero(stack.call);
+extern "C" void encode(MetadataInput input,address output,MetadataStackHost stack) on cpu
+    requires nonzero(stack.frame) requires nonzero(stack.call);
 
 // A null output measures the result. Zero means the original bytes are sufficient.
 extern "C" u64 rust_link_binding(MetadataBytes binding,MetadataBytes prefix,

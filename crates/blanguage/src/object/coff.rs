@@ -74,7 +74,7 @@ unsafe extern "C" {
     #[link_name = "bootstrap.coff::with_output"]
     fn coff_with_output(source: CoffSource, work: CoffWork<'_>) -> CoffError;
     #[link_name = "bootstrap.coff::write"]
-    fn coff_write(plan: &CoffOutput<'_>, output: *mut u8);
+    fn coff_write(plan: &CoffOutput<'_>, output: *mut u8, stack: MetadataStackHost);
     #[link_name = "bootstrap.bindings::relocation_symbol"]
     fn relocation_symbol(binding: &CoffBindingSource, section: usize, relocation: usize) -> usize;
     #[link_name = "bootstrap.bindings::write_generated_name"]
@@ -625,7 +625,7 @@ struct MetadataInput {
     exports: *const MetadataBytes, export_count: usize,
     resource: MetadataResource,
     bindings: *const MetadataBinding, binding_order: *const usize, binding_count: usize,
-    frames: *const MetadataFrame, frame_count: usize, calls: *const MetadataCall,
+    stack: *const c_void, frame_count: usize,
 }
 #[repr(u32)]
 #[derive(Clone, Copy)]
@@ -639,7 +639,47 @@ unsafe extern "C" {
         bindings: *const MetadataBinding, definitions: usize, count: usize, order: *mut usize,
     ) -> BindingOrder;
     #[link_name = "bootstrap.metadata::layout"]
-    fn metadata_layout(input: MetadataInput) -> MetadataLayout;
+    fn metadata_layout(input: MetadataInput, stack: MetadataStackHost) -> MetadataLayout;
+}
+
+#[repr(C)]
+struct MetadataStackHost {
+    frame: unsafe extern "C" fn(*const c_void, usize) -> MetadataFrame,
+    call: unsafe extern "C" fn(*const c_void, usize, usize) -> MetadataCall,
+}
+
+const METADATA_STACK: MetadataStackHost = MetadataStackHost {
+    frame: metadata_frame,
+    call: metadata_call,
+};
+
+unsafe extern "C" fn metadata_frame(source: *const c_void, index: usize) -> MetadataFrame {
+    let object = unsafe { &*source.cast::<Object>() };
+    let frame = &object.stack[index];
+    let (has_coff, section, start) = match frame.coff {
+        Some((section, start)) => (1, section as u64, u64::from(start)),
+        None => (0, 0, 0),
+    };
+    MetadataFrame {
+        name: MetadataBytes::new(frame.name.as_bytes()), has_coff, section, start,
+        local: u64::from(frame.local), call_count: frame.calls.len(),
+    }
+}
+
+unsafe extern "C" fn metadata_call(source: *const c_void, frame: usize, index: usize) -> MetadataCall {
+    let object = unsafe { &*source.cast::<Object>() };
+    let frame = &object.stack[frame];
+    let empty = MetadataBytes::new(&[]);
+    let (kind, offset, reason) = match &frame.calls[index] {
+        stack::Call::Reference { relocation, tail } => {
+            let (section, _) = frame.coff.unwrap();
+            let offset = object.sections[section].relocations[*relocation].offset;
+            (u64::from(*tail), offset as u64, empty)
+        }
+        stack::Call::Indirect => (2, 0, empty),
+        stack::Call::Unreported(reason) => (3, 0, MetadataBytes::new(reason.as_bytes())),
+    };
+    MetadataCall { kind, offset, reason }
 }
 
 fn metadata<T>(o: &Object, consume: impl FnOnce(MetadataInput, usize) -> Result<T>) -> Result<T> {
@@ -686,29 +726,6 @@ fn metadata<T>(o: &Object, consume: impl FnOnce(MetadataInput, usize) -> Result<
             },
         }).collect::<Vec<_>>()
     } else { Vec::new() };
-    let mut calls = Vec::with_capacity(o.stack.iter().map(|frame| frame.calls.len()).sum());
-    let frames = o.stack.iter().map(|frame| {
-        calls.extend(frame.calls.iter().map(|call| {
-            let (kind, offset, reason) = match call {
-                stack::Call::Reference { relocation, tail } => {
-                    let (section, _) = frame.coff.unwrap();
-                    let offset = o.sections[section].relocations[*relocation].offset;
-                    (u64::from(*tail), offset as u64, empty)
-                }
-                stack::Call::Indirect => (2, 0, empty),
-                stack::Call::Unreported(reason) => (3, 0, MetadataBytes::new(reason.as_bytes())),
-            };
-            MetadataCall { kind, offset, reason }
-        }));
-        let (has_coff, section, start) = match frame.coff {
-            Some((section, start)) => (1, section as u64, u64::from(start)),
-            None => (0, 0, 0),
-        };
-        MetadataFrame {
-            name: MetadataBytes::new(frame.name.as_bytes()), has_coff, section, start,
-            local: u64::from(frame.local), call_count: frame.calls.len(),
-        }
-    }).collect::<Vec<_>>();
     let mut input = MetadataInput {
         format_version: u64::from(FORMAT), name: MetadataBytes::new(o.name.as_bytes()), kind: 0,
         interface: empty, stack_bytes: 0, prefix: empty, header: empty, binding: empty,
@@ -716,7 +733,7 @@ fn metadata<T>(o: &Object, consume: impl FnOnce(MetadataInput, usize) -> Result<
         libraries: libraries.as_ptr(), library_count: libraries.len(),
         exports: exports.as_ptr(), export_count: exports.len(), resource,
         bindings: bindings.as_ptr(), binding_order: binding_order.as_ptr(), binding_count: order.count,
-        frames: frames.as_ptr(), frame_count: frames.len(), calls: calls.as_ptr(),
+        stack: std::ptr::from_ref(o).cast(), frame_count: o.stack.len(),
     };
     match &o.kind {
         Kind::Application { stack_bytes } => input.stack_bytes = u64::from(*stack_bytes),
@@ -732,7 +749,7 @@ fn metadata<T>(o: &Object, consume: impl FnOnce(MetadataInput, usize) -> Result<
             input.stack_bytes = u64::from(*stack_bytes);
         }
     }
-    let layout = unsafe { metadata_layout(input) };
+    let layout = unsafe { metadata_layout(input, METADATA_STACK) };
     match layout.error {
         MetadataError::None => (),
         MetadataError::Count => return Err("对象元数据条目数量超过32位字段".into()),
@@ -960,7 +977,7 @@ impl CoffOutput<'_> {
 
     /// The caller owns this exclusive, non-overlapping range of len() bytes.
     pub(super) unsafe fn write(&self, output: *mut u8) {
-        unsafe { coff_write(self, output); }
+        unsafe { coff_write(self, output, METADATA_STACK); }
     }
 }
 

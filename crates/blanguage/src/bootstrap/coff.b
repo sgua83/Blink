@@ -140,7 +140,8 @@ extern "C" u32 with_output(CoffSource source,CoffWork work) on cpu
     return 0;
 }
 
-extern "C" void write(read CoffPlan plan,address output) on cpu {
+extern "C" void write(read CoffPlan plan,address output,MetadataStackHost stack) on cpu
+    requires nonzero(stack.frame) requires nonzero(stack.call) {
     CoffInput input=plan.input;
     CoffLayout layout=plan.layout;
     CoffBindingSource binding=plan.binding;
@@ -224,7 +225,7 @@ extern "C" void write(read CoffPlan plan,address output) on cpu {
         if(section.offset!=0u64){
             address destination=unsafe_address(address_bits(output)+section.offset);
             if(section.body_kind==1u64){
-                bootstrap.metadata::encode(unsafe_position<MetadataInput>(section.body),destination);
+                bootstrap.metadata::encode(unsafe_position<MetadataInput>(section.body),destination,stack);
             }else if(section.body_kind==2u64){
                 NativeImportBody body=unsafe_position<NativeImportBody>(section.body);
                 encode_section(body.input,body.plan,i,section.byte_length,destination);
