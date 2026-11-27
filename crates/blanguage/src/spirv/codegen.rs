@@ -448,80 +448,11 @@ struct PageAddressResult {
     second: u32,
 }
 
-#[repr(u32)]
-#[derive(Clone, Copy)]
-enum PayloadAccess {
-    Words = 0,
-    Local = 1,
-    Physical = 2,
-}
-
-#[repr(C)]
-struct PackedField {
-    value: u32,
-    offset: u32,
-    raw_type: u32,
-    bytes: u32,
-}
-
-#[repr(C)]
-struct PackingConstant {
-    id: u32,
-    next: u32,
-}
-
-type PackingContext = *mut std::ffi::c_void;
-
-#[repr(C)]
-struct PackingHost {
-    context: PackingContext,
-    field: unsafe extern "C" fn(PackingContext, *mut PackedField) -> u32,
-    constant: unsafe extern "C" fn(PackingContext, u32, u32) -> PackingConstant,
-}
-
-struct PackingSource<'a, 'program, I> {
-    emitter: &'a mut Emitter<'program>,
-    components: I,
-}
-
-unsafe extern "C" fn packing_field<I: Iterator<Item = (Scalar, u32, u32)>>(
-    context: PackingContext, field: *mut PackedField,
-) -> u32 {
-    let source = unsafe { &mut *context.cast::<PackingSource<'_, '_, I>>() };
-    let Some((scalar, offset, value)) = source.components.next() else { return 0 };
-    let component = PackedField { value, offset, raw_type: source.emitter.raw_type(scalar), bytes: scalar.size() };
-    unsafe { field.write(component); }
-    1
-}
-
-unsafe extern "C" fn packing_constant<I>(
-    context: PackingContext, bits: u32, next: u32,
-) -> PackingConstant {
-    let emitter = &mut unsafe { &mut *context.cast::<PackingSource<'_, '_, I>>() }.emitter;
-    emitter.next = next;
-    let id = emitter.constant(Scalar::U32, bits);
-    PackingConstant { id, next: emitter.next }
-}
-
-#[repr(C)]
-struct PayloadShape {
-    access: PayloadAccess,
-    scalar: ScalarCode,
-    unit: ScalarCode,
-    count: u32,
-}
-
 #[repr(C)]
 struct PayloadRead {
     words: u64,
     next: u32,
     value: u32,
-}
-
-#[repr(C)]
-struct PayloadWrite {
-    words: u64,
-    next: u32,
 }
 
 #[repr(C)]
@@ -926,15 +857,8 @@ unsafe extern "C" {
     fn physical_scalar_read(input: PhysicalAccess, host: MemoryHost) -> u32;
     #[link_name = "bootstrap.spirv_envelope::physical_scalar_write"]
     fn physical_scalar_write(input: PhysicalAccess, host: MemoryHost);
-    #[link_name = "bootstrap.spirv_envelope::encode_raw_bits"]
-    fn encode_raw_bits(scalar: ScalarCode, value: u32, host: MemoryHost) -> u32;
     #[link_name = "bootstrap.spirv_envelope::page_address"]
     fn page_address(input: PageAddress, step: u32, body: *mut u32) -> PageAddressResult;
-    #[link_name = "bootstrap.spirv_envelope::emit_payload_load"]
-    fn emit_payload_load(input: PayloadShape, operands: *const u32, result: u32, host: MemoryHost) -> u32;
-    #[link_name = "bootstrap.spirv_envelope::pack_record"]
-    fn pack_record(host: PackingHost, word_type: u32, zero: u32, next: u32,
-        packed: *mut u32, body: *mut u32) -> PayloadWrite;
     #[link_name = "bootstrap.spirv_envelope::begin_shader_body"]
     fn begin_shader_body(
         result_type: u32, function: u32, signature: u32, entry: u32, body: *mut u32,
@@ -953,8 +877,6 @@ unsafe extern "C" {
     fn open_selection(merge: u32, condition: u32, yes: u32, no: u32, body: *mut u32) -> ControlWords;
     #[link_name = "bootstrap.spirv_envelope::next_control_block"]
     fn next_control_block(target: u32, label: u32, reaches: u32, body: *mut u32) -> ControlWords;
-    #[link_name = "bootstrap.spirv_envelope::unpack_summary_word"]
-    fn unpack_summary_word(type_id: u32, result: u32, word: u32, shift: u32, body: *mut u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::declare_dispatch_continuation"]
     fn declare_dispatch_continuation(type_id: u32, result: u32, spec_id: u32, bytes: u32,
         definitions: *mut u32, decorations: *mut u32);
@@ -1468,45 +1390,11 @@ impl<'ir> Emitter<'ir> {
         emission.error.map_or(Ok(matches!(flow, BlockFlow::Next)), Err)
     }
 
-    fn from_words(&mut self, dst: Reg, words: &[u32], unit: Scalar) {
-        let input = PayloadShape {
-            access: PayloadAccess::Words, scalar: self.registers[dst].into(),
-            unit: unit.into(), count: words.len() as u32,
-        };
-        unsafe { emit_payload_load(input, words.as_ptr(), self.value(dst), self.memory_host()); }
-    }
-    fn pack_word_fields<I>(&mut self, values: &mut [u32], zero: u32, components: I)
-    where
-        I: IntoIterator<Item = (Scalar, u32, u32)>,
-        I::IntoIter: ExactSizeIterator,
-    {
-        let components = components.into_iter();
-        let at = self.body.len();
-        // A field can emit one split shift, two conversions and two shift/merge pairs.
-        self.body.reserve(33 * components.len());
-        let body = unsafe { self.body.as_mut_ptr().add(at) };
-        let word_type = self.types[&Scalar::U32];
-        let next = self.next;
-        let mut source = PackingSource { emitter: self, components };
-        let host = PackingHost {
-            context: std::ptr::from_mut(&mut source).cast(),
-            field: packing_field::<I::IntoIter>,
-            constant: packing_constant::<I::IntoIter>,
-        };
-        let result = unsafe { pack_record(host, word_type, zero, next, values.as_mut_ptr(), body) };
-        unsafe { self.body.set_len(at + result.words as usize); }
-        self.next = result.next;
-    }
     fn raw_scalar(scalar: Scalar) -> Scalar {
         match scalar.size() { 1 => Scalar::U8, 2 => Scalar::U16, 4 => Scalar::U32, _ => Scalar::U64 }
     }
     fn raw_type(&self, scalar: Scalar) -> u32 {
         self.types[&Self::raw_scalar(scalar)]
-    }
-    fn raw_bits(&mut self, value: Reg) -> u32 {
-        let scalar = self.registers[value].into();
-        let value = self.value(value);
-        unsafe { encode_raw_bits(scalar, value, self.memory_host()) }
     }
 }
 pub fn emit(program: &Program, stage_index: usize) -> Result<Vec<u32>, &'static str> {

@@ -5,7 +5,6 @@ use std::ffi::c_void;
 #[repr(C)]
 struct CustomCollective {
     source_layout: CollectiveLayout,
-    value_layout: CollectiveLayout,
     value_bytes: u32,
     pass: EntryPass,
     step: BodyStep,
@@ -23,9 +22,22 @@ struct CustomCollective {
 #[repr(C)]
 struct CustomCollectiveHost {
     context: *mut c_void,
-    identity: unsafe extern "C" fn(*mut c_void, *mut u32, u32) -> u32,
-    project: unsafe extern "C" fn(*mut c_void, *mut u32, u32, u32, u32) -> u32,
-    combine: unsafe extern "C" fn(*mut c_void, *const u32, *const u32, *mut u32, u32, u32) -> u32,
+    registers: *mut u32,
+    definitions: *const u8,
+    combine_first: usize,
+    combine_end: usize,
+    layout: CollectiveLayout,
+    identity_code: Span,
+    project_code: Span,
+    combine_code: Span,
+    initial: Span,
+    source: Span,
+    projected: Span,
+    left: Span,
+    right: Span,
+    result: Span,
+    scalar: unsafe extern "C" fn(*mut c_void, Reg) -> ScalarCode,
+    emit: unsafe extern "C" fn(*mut c_void, Span, u32) -> u32,
 }
 
 unsafe extern "C" {
@@ -34,66 +46,17 @@ unsafe extern "C" {
         page: PageInputs, temporary: WordScratch, memory: MemoryHost, host: CustomCollectiveHost) -> u32;
 }
 
-struct CheckedCollective<'a, 'stage> {
+struct CheckedCollective<'stage> {
     emitter: *mut Emitter<'stage>,
-    reduction: &'a CustomReduction,
-    kernel: &'a PreparedReductionKernel,
-    definitions: Vec<u8>,
     error: Option<&'static str>,
 }
 
-unsafe extern "C" fn emit_checked_identity(
-    context: *mut std::ffi::c_void, output: *mut u32, count: u32,
-) -> u32 {
-    let context = unsafe { &mut *context.cast::<CheckedCollective<'_, '_>>() };
+unsafe extern "C" fn emit_checked_block(context: *mut c_void, code: Span, label: u32) -> u32 {
+    let context = unsafe { &mut *context.cast::<CheckedCollective<'_>>() };
     let emitter = unsafe { &mut *context.emitter };
-    let kernel = context.kernel;
-    if let Err(error) = emitter.block(&kernel.stage.code[kernel.invariant_end..kernel.initialize_end]) {
-        context.error = Some(error);
-        return 0;
-    }
-    let output = unsafe { std::slice::from_raw_parts_mut(output, count as usize) };
-    emitter.pack_custom_values(&context.reduction.ty, &kernel.initial, output);
-    emitter.current_label
-}
-
-unsafe extern "C" fn emit_checked_projection(
-    context: *mut std::ffi::c_void, values: *mut u32, fields: u32, count: u32, label: u32,
-) -> u32 {
-    let context = unsafe { &mut *context.cast::<CheckedCollective<'_, '_>>() };
-    let emitter = unsafe { &mut *context.emitter };
-    let kernel = context.kernel;
-    let (fields, count) = (fields as usize, count as usize);
-    let values = unsafe { std::slice::from_raw_parts_mut(values, fields.max(count)) };
     emitter.current_label = label;
-    for (reg, raw) in kernel.source.iter().zip(&values[..fields]) {
-        let scalar = kernel.stage.registers[*reg];
-        emitter.from_words(*reg, &[*raw], Emitter::raw_scalar(scalar));
-    }
-    if let Err(error) = emitter.block(&kernel.stage.code[kernel.initialize_end..kernel.project_end]) {
-        context.error = Some(error);
-        return 0;
-    }
-    for (dst, src) in kernel.right.iter().zip(&kernel.projected) {
-        emitter.regs[*dst] = emitter.value(*src);
-    }
-    emitter.pack_custom_values(&context.reduction.ty, &kernel.right, &mut values[..count]);
-    emitter.current_label
-}
-
-unsafe extern "C" fn emit_checked_combine(
-    context: *mut std::ffi::c_void, left: *const u32, right: *const u32,
-    output: *mut u32, count: u32, label: u32,
-) -> u32 {
-    let context = unsafe { &mut *context.cast::<CheckedCollective<'_, '_>>() };
-    let emitter = unsafe { &mut *context.emitter };
-    let count = count as usize;
-    let left = unsafe { std::slice::from_raw_parts(left, count) };
-    let right = unsafe { std::slice::from_raw_parts(right, count) };
-    let output = unsafe { std::slice::from_raw_parts_mut(output, count) };
-    emitter.current_label = label;
-    match emitter.custom_pair(context.reduction, context.kernel, &context.definitions, left, right, output) {
-        Ok(()) => emitter.current_label,
+    match emitter.block(unsafe { code.as_slice() }) {
+        Ok(_) => emitter.current_label,
         Err(error) => {
             context.error = Some(error);
             0
@@ -102,50 +65,6 @@ unsafe extern "C" fn emit_checked_combine(
 }
 
 impl Emitter<'_> {
-    fn custom_arguments(&mut self, ty: &Ty, registers: &[Reg], values: &[u32]) {
-        for (reg, (scalar, offset)) in registers.iter().zip(&ty.components) {
-            let at = (offset / 4) as usize;
-            if offset % 4 != 0 {
-                let shift = self.constant(Scalar::U32, offset % 4 * 8);
-                let raw = self.id();
-                let ty = self.types[&Scalar::U32];
-                self.emit_body(5, |body| unsafe { unpack_summary_word(ty, raw, values[at], shift, body) });
-                self.from_words(*reg, &[raw], Scalar::U32);
-            } else {
-                self.from_words(*reg, &values[at..at + scalar.size().div_ceil(4) as usize], Scalar::U32);
-            }
-        }
-    }
-    fn custom_pair(
-        &mut self,
-        r: &CustomReduction,
-        kernel: &PreparedReductionKernel,
-        definitions: &[u8],
-        left: &[u32],
-        right: &[u32],
-        output: &mut [u32],
-    ) -> Result<(), &'static str> {
-        for reg in
-            kernel.stage.registers.len() - r.combine.registers.len()..kernel.stage.registers.len()
-        {
-            if definitions[reg] == 0 {
-                self.regs[reg] = self.id();
-            }
-        }
-        self.custom_arguments(&r.ty, &kernel.left, left);
-        self.custom_arguments(&r.ty, &kernel.right, right);
-        self.block(&kernel.stage.code[kernel.project_end..])?;
-        self.pack_custom_values(&r.ty, &kernel.result, output);
-        Ok(())
-    }
-
-    fn pack_custom_values(&mut self, ty: &Ty, registers: &[Reg], output: &mut [u32]) {
-        let values: Vec<_> = registers.iter().map(|reg| self.raw_bits(*reg)).collect();
-        let zero = self.constant(Scalar::U32, 0);
-        output.fill(zero);
-        self.pack_word_fields(output, zero, ty.components.iter().zip(&values)
-            .map(|((scalar, byte), value)| (*scalar, *byte, *value)));
-    }
     pub(super) fn custom_collective(
         &mut self, step: BodyStep, operation: *const c_void, kernel: &PreparedReductionKernel,
         pass: EntryPass, single_group: bool, dispatch: NumericDispatch,
@@ -164,7 +83,6 @@ impl Emitter<'_> {
         let fields = &reduction.fields;
         let input = CustomCollective {
             source_layout: CollectiveLayout::borrow(&reduction.source_ty),
-            value_layout: CollectiveLayout::borrow(&reduction.ty),
             value_bytes: reduction.ty.size,
             pass, step, tags: u32::from(head.is_some()) + u32::from(counter.is_some()),
             single_group: u32::from(single_group),
@@ -175,15 +93,24 @@ impl Emitter<'_> {
         };
         let bindings = self.collective_bindings(fields.source, fields.target);
         let page = self.page_inputs(0, self.index, None, 0);
+        let registers = self.regs.as_mut_ptr();
         let memory = self.memory_host();
-        let mut context = CheckedCollective {
-            emitter: memory.scalars.context.cast(), reduction, kernel, definitions: kernel.prefix_definitions(), error: None,
-        };
+        let definitions = kernel.prefix_definitions();
+        let code = &kernel.stage.code;
+        let mut context = CheckedCollective { emitter: memory.scalars.context.cast(), error: None };
         let host = CustomCollectiveHost {
-            context: std::ptr::from_mut(&mut context).cast(),
-            identity: emit_checked_identity,
-            project: emit_checked_projection,
-            combine: emit_checked_combine,
+            context: std::ptr::from_mut(&mut context).cast(), registers,
+            definitions: definitions.as_ptr(),
+            combine_first: kernel.stage.registers.len() - reduction.combine.registers.len(),
+            combine_end: kernel.stage.registers.len(),
+            layout: CollectiveLayout::borrow(&reduction.ty),
+            identity_code: Span::slice(&code[kernel.invariant_end..kernel.initialize_end]),
+            project_code: Span::slice(&code[kernel.initialize_end..kernel.project_end]),
+            combine_code: Span::slice(&code[kernel.project_end..]),
+            initial: Span::slice(&kernel.initial), source: Span::slice(&kernel.source),
+            projected: Span::slice(&kernel.projected), left: Span::slice(&kernel.left),
+            right: Span::slice(&kernel.right), result: Span::slice(&kernel.result),
+            scalar: value_scalar, emit: emit_checked_block,
         };
         let mut words = Vec::new();
         let label = unsafe {

@@ -305,10 +305,6 @@ extern "C" void physical_scalar_write(PhysicalAccess input, MemoryHost host) on 
     requires nonzero(host.scalars.constant)
     requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve)
     requires nonzero(host.finish_body);
-extern "C" u32 encode_raw_bits(BuiltinScalar scalar, u32 value, MemoryHost host) on cpu
-    requires nonzero(host.scalars.constant)
-    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve)
-    requires nonzero(host.finish_body);
 struct UniformRead {
     u32 next;
     u32 push_pointer;
@@ -325,16 +321,6 @@ struct UniformRead {
 // The emitter supplies the declared IDs and room for both word loads,
 // the original payload join and the final scalar definition.
 struct PackedField { u32 value; u32 offset; u32 raw_type; u32 bytes; };
-struct PackingConstant { u32 id; u32 next; };
-struct PackingHost {
-    address context;
-    cfn<u32,address,address> field;
-    cfn<PackingConstant,address,u32,u32> constant;
-};
-// Borrow the component stream, constant pool and both output buffers for this record.
-// Record slots start at zero; the body can hold up to 33 words per component.
-extern "C" PayloadWrite pack_record(PackingHost host, u32 word_type, u32 zero, u32 next, address packed, address body) on cpu
-    requires nonzero(host.field) requires nonzero(host.constant);
 // The original paged record contains count consecutive u32 words. The caller
 // provides count pointer slots; step is the constant ID for a four-byte advance.
 // Operands are word IDs in Words mode and pointer IDs for storage accesses.
@@ -343,9 +329,6 @@ extern "C" PayloadWrite pack_record(PackingHost host, u32 word_type, u32 zero, u
 // (write) body words. Only a Words write uses the output-ID buffer.
 // Summary cells are consecutive u32 result IDs or borrowed u32 value IDs.
 struct PayloadShape { PayloadAccess access; BuiltinScalar scalar; BuiltinScalar unit; u32 count; };
-extern "C" u32 emit_payload_load(PayloadShape shape, address operands, u32 result, MemoryHost host) on cpu
-    requires nonzero(host.scalars.constant)
-    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.finish_body);
 extern "C" void emit_payload_store(PayloadShape shape, u32 value, address pointers, address output, MemoryHost host) on cpu
     requires nonzero(host.scalars.constant)
     requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.finish_body);
@@ -354,7 +337,6 @@ extern "C" u64 plain_load(address body, u64 at, u32 type_id, u32 result, u32 poi
 extern "C" u64 plain_store(address body, u64 at, u32 pointer, u32 value) on cpu;
 extern "C" u64 aligned_load(address body, u64 at, u32 type_id, u32 result, u32 pointer, u32 alignment) on cpu;
 extern "C" u64 read_shader_index(u32 vector_type, u32 uint_type, u32 input, u32 global, u32 x, address body) on cpu;
-extern "C" u64 unpack_summary_word(u32 type_id, u32 result, u32 word, u32 shift, address body) on cpu;
 
 struct ControlWords { u64 words; u32 label; u32 reaches_next; };
 // The emitter supplies allocated labels and the actual exit status of each
@@ -590,12 +572,24 @@ struct CustomMerge {
 
 struct CustomCollectiveHost {
     address context;
-    // The checked emitter returns its last block label, or zero with its diagnostic.
-    cfn<u32,address,address,u32> identity;
-    cfn<u32,address,address,u32,u32,u32> project;
-    cfn<u32,address,address,address,address,u32,u32> combine;
+    address registers;
+    address definitions;
+    usize combine_first;
+    usize combine_end;
+    CollectiveLayout layout;
+    Span identity_code;
+    Span project_code;
+    Span combine_code;
+    Span initial;
+    Span source;
+    Span projected;
+    Span left;
+    Span right;
+    Span result;
+    cfn<BuiltinScalar,address,usize> scalar;
+    // The original block emitter reports the final label or its diagnostic.
+    cfn<u32,address,Span,u32> emit;
 };
-
 
 struct TreeLayer {
     u32 uint_type;
@@ -735,6 +729,7 @@ struct CustomInput {
     u32 tag_words;
     u32 head_word;
     u32 tail;
+    u32 before;
 };
 
 struct CollectiveBranch {
@@ -1070,7 +1065,6 @@ enum BodyStep:u32 {
 };
 struct CustomCollective {
     CollectiveLayout source_layout;
-    CollectiveLayout value_layout;
     u32 value_bytes;
     EntryPass pass;
     BodyStep step;
@@ -1087,12 +1081,11 @@ struct CustomCollective {
 
 extern "C" u32 emit_custom_collective(CustomCollective input, CollectiveBindings bindings,
     NumericDispatch dispatch, PageInputs page, WordScratch temporary, MemoryHost memory, CustomCollectiveHost host) on cpu
-    requires nonzero(input.source_layout.component) requires nonzero(input.value_layout.component)
+    requires nonzero(input.source_layout.component) requires nonzero(host.layout.component)
     requires nonzero(temporary.reserve) requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids)
     requires nonzero(memory.scalars.reserve)
-    requires nonzero(memory.finish_body) requires nonzero(host.identity)
-    requires nonzero(host.project) requires nonzero(host.combine);
+    requires nonzero(memory.finish_body) requires nonzero(host.scalar) requires nonzero(host.emit);
 
 enum BodyStepResult:u32 { Error=0; No=1; Yes=2; };
 enum ShaderBodyEnd:u32 { Plain=0; Prepared=1; BadSortPass=2; BadSegmentedPass=3; };
