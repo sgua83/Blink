@@ -1986,7 +1986,7 @@ unsafe extern "C" {
                        next: unsafe extern "C" fn(*mut std::ffi::c_void) -> *const std::ffi::c_void);
     #[link_name = "bootstrap.condition_graph::clause_postorder_next"]
     fn postorder_next(stack: &mut ClausePostorder<'_>, context: *const std::ffi::c_void,
-                      inspect: unsafe extern "C" fn(*const std::ffi::c_void, *const std::ffi::c_void, u32) -> PostorderChildren)
+                      inspect: unsafe extern "C" fn(*const std::ffi::c_void, *const std::ffi::c_void) -> PostorderChildren)
                       -> *const std::ffi::c_void;
     #[link_name = "bootstrap.condition_graph::clause_postorder_drop"]
     fn postorder_drop(stack: &mut ClausePostorder<'_>);
@@ -2006,12 +2006,14 @@ impl<'a> ClausePostorder<'a> {
     }
 
     fn next<F: Fn(usize) -> bool>(&mut self, completed: F) -> Option<&'a Clause> {
-        unsafe extern "C" fn inspect<F: Fn(usize) -> bool>(context: *const std::ffi::c_void, clause: *const std::ffi::c_void,
-                                                           expanded: u32) -> PostorderChildren {
+        unsafe extern "C" fn inspect<F: Fn(usize) -> bool>(
+            context: *const std::ffi::c_void,
+            clause: *const std::ffi::c_void,
+        ) -> PostorderChildren {
             let clause = unsafe { &*clause.cast::<Clause>() };
             let completed = unsafe { &*context.cast::<F>() };
             let visited = completed(clause.key());
-            if !visited && expanded == 0 && let Some((first, second, _)) = clause.query_inputs() {
+            if !visited && let Some((first, second, _)) = clause.query_inputs() {
                 return PostorderChildren { first: std::ptr::from_ref(first).cast(), second: std::ptr::from_ref(second).cast(), visited: 0 };
             }
             PostorderChildren { first: std::ptr::null(), second: std::ptr::null(), visited: u32::from(visited) }

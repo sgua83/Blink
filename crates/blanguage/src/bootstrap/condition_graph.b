@@ -55,14 +55,16 @@ extern "C" void clause_postorder_start(address owner,address context,cfn<address
 }
 
 extern "C" address clause_postorder_next(address owner,address context,
-    cfn<PostorderChildren,address,address,u32> inspect) on cpu requires nonzero(inspect) {
+    cfn<PostorderChildren,address,address> inspect) on cpu requires nonzero(inspect) {
     u64 length=unsafe_position<ClausePostorder>(owner).length;
     while(length!=0u64){
         length-=1u64;
         address records=unsafe_position<ClausePostorder>(owner).records;
         PostorderFrame frame=unsafe_position<PostorderFrame>(postorder_at(records,length));
         unsafe_position<ClausePostorder>(owner).length=length;
-        PostorderChildren children=inspect(context,frame.source,frame.expanded);
+        // Descendants finish before this frame and cannot visit their ancestor.
+        if(frame.expanded!=0){return frame.source;}
+        PostorderChildren children=inspect(context,frame.source);
         if(children.visited==0){
             if(children.first==address()){return frame.source;}
             postorder_push(owner,PostorderFrame(frame.source,1));
