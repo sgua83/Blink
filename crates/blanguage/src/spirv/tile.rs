@@ -1,6 +1,6 @@
 //! 输入与中间发布共用共享布局；阶段屏障覆盖所有 workgroup invocations。
 use super::*;
-use crate::ir::dataflow::InputFragments;
+use crate::ir::{TileKey, dataflow::InputFragments};
 use std::collections::{btree_map, btree_set};
 use std::ffi::c_void;
 
@@ -64,25 +64,6 @@ unsafe extern "C" fn next_tile_value(cursor: *mut c_void, context: StructuredCon
     TilePhaseValue::default()
 }
 
-#[repr(u32)]
-enum TileKeyKind { Input, Published }
-
-#[repr(C)]
-struct TileKey {
-    owner: usize,
-    word: u32,
-    kind: TileKeyKind,
-}
-
-impl TileKey {
-    fn shared_word(self) -> SharedWord {
-        match self.kind {
-            TileKeyKind::Input => SharedWord::Input { binding: self.owner, word: self.word },
-            TileKeyKind::Published => SharedWord::Published { tile: self.owner, word: self.word },
-        }
-    }
-}
-
 #[repr(C)]
 struct TileCell {
     unit: ScalarCode,
@@ -113,7 +94,7 @@ pub(super) struct TileStorage {
 
 unsafe extern "C" fn tile_cell(context: *mut c_void, key: TileKey) -> TileCell {
     let emitter = unsafe { &*context.cast::<Emitter<'_>>() };
-    emitter.tile_layout.get(&key.shared_word()).map_or(TileCell::ABSENT, |&(unit, slot, byte)| {
+    emitter.tile_layout.get(&key.word()).map_or(TileCell::ABSENT, |&(unit, slot, byte)| {
         TileCell { unit: unit.into(), slot: slot as u32, byte, present: 1 }
     })
 }

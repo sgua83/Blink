@@ -41,7 +41,7 @@ struct CallHost {
 extern "C" u64 emit_call(address context, CallInput input, CallHost host) on cpu
     requires nonzero(host.addresses.values.ir.inspect)
     requires nonzero(host.addresses.values.location) requires nonzero(host.addresses.values.scalar)
-    requires nonzero(host.addresses.tile_stream) requires nonzero(host.local)
+    requires nonzero(host.addresses.tiles.slot) requires nonzero(host.local)
     requires nonzero(host.component) requires nonzero(host.reserve) requires nonzero(host.commit);
 
 struct FunctionCodeInput {

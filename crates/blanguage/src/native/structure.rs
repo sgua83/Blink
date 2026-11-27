@@ -153,13 +153,13 @@ pub(super) unsafe extern "C" fn emit_scalar(slot: Slot, leaf: ScalarLeaf, value:
 }
 
 impl ScalarHost {
-    pub(super) fn new(slot: Slot, workgroup: u32) -> Self {
+    pub(super) fn new(slot: Slot, workgroup: u32, tiles: Span) -> Self {
         Self {
             control: control_host(scalar_child, scalar_load),
             mark: mark_scalar,
             publish: publish_scalar,
             emit: emit_scalar,
-            addresses: operands::scalar_body_addresses(slot, workgroup),
+            addresses: operands::scalar_body_addresses(slot, workgroup, tiles),
             local: operands::scalar_body_local,
             reserve: reserve_scalar,
             commit: commit_scalar,
@@ -172,8 +172,9 @@ impl ScalarHost {
 impl Emitter<'_> {
     pub(super) fn block(&mut self, code: &[Inst], targets: ControlTargets) -> Result<(), &'static str> {
         let workgroup = self.workgroup;
+        let tiles = Span::slice(self.tiles);
         let slot = std::ptr::from_mut(self).cast();
-        let mut host = ScalarHost::new(slot, workgroup);
+        let mut host = ScalarHost::new(slot, workgroup, tiles);
         unsafe { emit_scalar_body(std::ptr::from_mut(&mut host).cast(), slot, Span::slice(code), targets, host) }.result()
     }
 }

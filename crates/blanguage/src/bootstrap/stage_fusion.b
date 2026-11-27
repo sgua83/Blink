@@ -64,16 +64,15 @@ void tile_describe_cells(Span tiles, TileLayoutHost host) on cpu
     u64 index = 0u64;
     while (index < tiles.count) {
         View tile = host.ir.inspect(Node(span_item_at(tiles, index), N_TILE));
-        u64 owner = tile.tag == 0 ? tile.a : index;
-        u32 offset = tile.tag == 0 ? u32(tile.b) : 0;
+        TileKey origin = tile_key_for_view(tile, index, 0);
         u64 component = 0u64;
         while (component < tile.first.count) {
             View field = host.ir.inspect(Node(span_item_at(tile.first, component), N_COMPONENT));
-            u32 low = (offset + u32(field.a)) & 0xfffffffc;
+            u32 low = (origin.byte + u32(field.a)) & 0xfffffffc;
             u32 bytes = field.b == 8u64 ? 8 : 4;
-            host.describe(host.context, TileKey(u64(tile.tag), owner, low), TileCell(low, bytes));
+            host.describe(host.context, TileKey(origin.storage, origin.owner, low), TileCell(low, bytes));
             if (bytes == 8) {
-                host.describe(host.context, TileKey(u64(tile.tag), owner, low + 4), TileCell(low, bytes));
+                host.describe(host.context, TileKey(origin.storage, origin.owner, low + 4), TileCell(low, bytes));
             }
             component += 1u64;
         }

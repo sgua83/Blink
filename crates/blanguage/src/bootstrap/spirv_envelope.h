@@ -377,8 +377,6 @@ struct BlockPaging {
 };
 struct BlockSubgroup { u32 lane; u32 size; u32 id; u32 ballot_type; };
 struct BlockLocals { address slots; Span arrays; address pointers; };
-enum TileKeyKind : u32 { Input = 0; Published = 1; };
-struct TileKey { usize owner; u32 word; TileKeyKind kind; };
 struct TileCell { BuiltinScalar unit; u32 slot; u32 byte; u32 present; };
 struct TilePlanes { u32 narrow; u32 narrow_pointer; u32 wide; u32 wide_pointer; };
 struct TileInputLayout {

@@ -1313,7 +1313,7 @@ pub use tile::SharedWord;
 pub(crate) use tile::{PRIVATE_LIVE_HOST, PrivateLiveHost, TilePhase};
 #[cfg(feature = "compiler")]
 #[cfg(feature = "compiler")]
-pub(crate) use tile::{PlacedTiles, PrivateSlot};
+pub(crate) use tile::{PlacedTiles, PrivateSlot, TileKey};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum SubgroupOp {

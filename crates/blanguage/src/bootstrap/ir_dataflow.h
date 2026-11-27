@@ -47,6 +47,10 @@ struct View {
 };
 struct Host { cfn<View,Node> ensures memory(read) inspect; };
 
+struct TileKey { u64 storage; u64 owner; u32 byte; };
+TileKey tile_key_for_view(View tile, usize index, u32 byte) on cpu;
+TileKey tile_key(Span tiles, usize index, u32 byte, Host ir) on cpu requires nonzero(ir.inspect);
+
 struct StoredPositionHost {
  Host ir;
  cfn<u32,address,usize> zero_offset;

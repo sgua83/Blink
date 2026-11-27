@@ -2,7 +2,7 @@
 use super::*;
 use allocation::Location;
 use crate::builtin_types::ScalarEncoding;
-use crate::ir::dataflow::{HOST, Host, View};
+use crate::ir::{TileKey, dataflow::{HOST, Host, Span, View}};
 
 #[derive(Clone, Copy)]
 pub(super) struct Memory {
@@ -128,7 +128,7 @@ impl<'a> ScalarLocations<'a> {
     }
 
     pub(super) fn indexed_host(&self) -> IndexedAddressHost {
-        IndexedAddressHost::new(self.host(), indexed_tile_stream, self.workgroup)
+        IndexedAddressHost::new(self.host(), TileSlots { tiles: Span::slice(self.tiles), slot: indexed_tile_slot }, self.workgroup)
     }
 
     pub(super) fn host(&self) -> ScalarValueHost {
@@ -145,41 +145,34 @@ impl<'a> ScalarLocations<'a> {
     fn scalar(&self, reg: Reg) -> ScalarEncoding {
         self.registers[reg].into()
     }
+}
 
-    fn tile_stream(&self, tile: usize, word: u32) -> IndexedTileWord {
-        let source = self.tiles[tile].shared_word(tile, word);
-        let byte_offset = match source {
-            SharedWord::Input { word, .. } | SharedWord::Published { word, .. } => word % 4,
-        };
-        IndexedTileWord { offset: self.frame.tile_shared[&source.aligned()], byte_offset }
-    }
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(super) struct TileSlots {
+    pub(super) tiles: Span,
+    pub(super) slot: unsafe extern "C" fn(*const std::ffi::c_void, TileKey) -> u32,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(super) struct IndexedAddressHost {
     values: ScalarValueHost,
-    tile_stream: unsafe extern "C" fn(*const std::ffi::c_void, usize, u32) -> IndexedTileWord,
+    tiles: TileSlots,
     buffer_bytes: u32,
     stride_field: u32,
     workgroup: u32,
 }
 
-#[repr(C)]
-struct IndexedTileWord { offset: u32, byte_offset: u32 }
-
 impl IndexedAddressHost {
-    fn new(
-        values: ScalarValueHost,
-        tile_stream: unsafe extern "C" fn(*const std::ffi::c_void, usize, u32) -> IndexedTileWord,
-        workgroup: u32,
-    ) -> Self {
-        Self { values, tile_stream, buffer_bytes: BUFFER_BYTES, stride_field: BUFFER_STRIDE, workgroup }
+    fn new(values: ScalarValueHost, tiles: TileSlots, workgroup: u32) -> Self {
+        Self { values, tiles, buffer_bytes: BUFFER_BYTES, stride_field: BUFFER_STRIDE, workgroup }
     }
 }
 
-unsafe extern "C" fn indexed_tile_stream(context: *const std::ffi::c_void, tile: usize, word: u32) -> IndexedTileWord {
-    unsafe { &*context.cast::<ScalarLocations<'_>>() }.tile_stream(tile, word)
+unsafe extern "C" fn indexed_tile_slot(context: *const std::ffi::c_void, key: TileKey) -> u32 {
+    let locations = unsafe { &*context.cast::<ScalarLocations<'_>>() };
+    locations.frame.tile_shared[&key.word()]
 }
 
 pub(super) unsafe extern "C" fn value_local(context: *const std::ffi::c_void, local: usize) -> MoveLocation {
@@ -194,10 +187,10 @@ unsafe extern "C" fn value_scalar(context: *const std::ffi::c_void, reg: Reg) ->
     unsafe { &*context.cast::<ScalarLocations<'_>>() }.scalar(reg)
 }
 
-pub(super) fn scalar_body_addresses(context: *const std::ffi::c_void, workgroup: u32) -> IndexedAddressHost {
+pub(super) fn scalar_body_addresses(context: *const std::ffi::c_void, workgroup: u32, tiles: Span) -> IndexedAddressHost {
     IndexedAddressHost::new(
         ScalarValueHost { ir: HOST, context, location: body_value_location, scalar: body_value_scalar },
-        body_tile_stream,
+        TileSlots { tiles, slot: body_tile_slot },
         workgroup,
     )
 }
@@ -214,8 +207,9 @@ unsafe extern "C" fn body_value_scalar(context: *const std::ffi::c_void, reg: Re
     ScalarLocations::from_emitter(unsafe { &*context.cast::<Emitter<'_>>() }).scalar(reg)
 }
 
-unsafe extern "C" fn body_tile_stream(context: *const std::ffi::c_void, tile: usize, word: u32) -> IndexedTileWord {
-    ScalarLocations::from_emitter(unsafe { &*context.cast::<Emitter<'_>>() }).tile_stream(tile, word)
+unsafe extern "C" fn body_tile_slot(context: *const std::ffi::c_void, key: TileKey) -> u32 {
+    let emitter = unsafe { &*context.cast::<Emitter<'_>>() };
+    emitter.frame.tile_shared[&key.word()]
 }
 
 unsafe extern "C" {

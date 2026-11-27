@@ -3150,3 +3150,12 @@ extern "C" void lower_sdk_resources(read SdkResourceInput input, SdkResourceHost
         program_index += 1u64;
     }
 }
+
+TileKey tile_key_for_view(View tile, usize index, u32 byte) on cpu {
+    return tile.tag == 0 ? TileKey(0u64, tile.a, u32(tile.b) + byte) : TileKey(1u64, index, byte);
+}
+
+TileKey tile_key(Span tiles, usize index, u32 byte, Host ir) on cpu requires nonzero(ir.inspect) {
+    address element = unsafe_address(address_bits(tiles.data) + index * tiles.stride);
+    return tile_key_for_view(ir.inspect(Node(element, N_TILE)), index, byte);
+}

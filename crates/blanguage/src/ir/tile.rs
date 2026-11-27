@@ -24,7 +24,7 @@ impl SharedWord {
 #[cfg(feature = "compiler")]
 #[derive(Clone, Copy)]
 #[repr(C)]
-struct TileKey { storage: u64, owner: usize, byte: u32 }
+pub(crate) struct TileKey { storage: u64, owner: usize, byte: u32 }
 
 #[cfg(feature = "compiler")]
 impl From<SharedWord> for TileKey {
@@ -38,7 +38,7 @@ impl From<SharedWord> for TileKey {
 
 #[cfg(feature = "compiler")]
 impl TileKey {
-    fn word(self) -> SharedWord {
+    pub(crate) fn word(self) -> SharedWord {
         if self.storage == 0 {
             SharedWord::Input { binding: self.owner, word: self.byte }
         } else {

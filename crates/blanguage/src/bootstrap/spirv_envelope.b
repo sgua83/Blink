@@ -3586,18 +3586,10 @@ void block_ray_query(View source, Span direction_values, BlockValues values, Ray
 
 struct TileLocation { u32 pointer; u32 byte; };
 
-TileKey tile_key(Span tiles, usize tile, u32 word, Host ir) on cpu requires nonzero(ir.inspect) {
-    address element = unsafe_address(address_bits(tiles.data) + tile * tiles.stride);
-    View source = ir.inspect(Node(element, N_TILE));
-    return source.tag == 0
-        ? TileKey(source.a, u32(source.b) + word, TileKeyKind::Input)
-        : TileKey(tile, word, TileKeyKind::Published);
-}
-
 TileCell tile_storage_cell(TileStorage storage, TileKey key, address context) on cpu requires nonzero(storage.cell) {
-    TileKey aligned = TileKey(key.owner, key.word & 0xfffffffc, key.kind);
+    TileKey aligned = TileKey(key.storage, key.owner, key.byte & 0xfffffffc);
     TileCell cell = storage.cell(context, aligned);
-    cell.byte += key.word % 4;
+    cell.byte += key.byte % 4;
     return cell;
 }
 
@@ -3684,7 +3676,7 @@ u32 tile_storage_read(TileStorage storage, TileKey key, u32 index, u32 offset,
     array<u32,2> pointers = array<u32,2>(at.pointer, 0);
     u32 count = 1;
     if (width > cell_width) {
-        TileKey high = TileKey(key.owner, key.word + 4, key.kind);
+        TileKey high = TileKey(key.storage, key.owner, key.byte + 4);
         pointers[1] = tile_storage_pointer(storage, high, index, offset, memory);
         count = 2;
     }
@@ -3711,7 +3703,7 @@ void block_tile_write(BlockValues values, TileStorage storage, TileKey key, u32 
     PhysicalShape shape = physical_shape(scalar);
     array<u32,2> pointers = array<u32,2>(0);
     for (part in 0..shape.count) {
-        TileKey word = TileKey(key.owner, key.word + part * 4, key.kind);
+        TileKey word = TileKey(key.storage, key.owner, key.byte + part * 4);
         pointers[part] = tile_storage_pointer(storage, word, index, offset, memory);
     }
     u32 raw = encode_raw_bits(scalar, block_register(values.registers, src), memory);
@@ -3849,7 +3841,7 @@ void block_tile_publish(View publication, BlockValues values, TileStorage storag
         u32 offset = unsafe_position<u32>(field);
         u32 word = offset - offset % 4;
         if (packed != 0 && word != packed_word) {
-            TileKey key = TileKey(publication.a, packed_word, TileKeyKind::Published);
+            TileKey key = TileKey(1u64, publication.a, packed_word);
             emit_shared_store(tile_storage_cell(storage, key, context), storage.planes, storage.lane, storage.width, packed, memory);
             packed = 0;
         }
@@ -3859,7 +3851,7 @@ void block_tile_publish(View publication, BlockValues values, TileStorage storag
         u32 raw = encode_raw_bits(type, block_register(values.registers, source), memory);
         u32 width = scalar_definition(type).width;
         if (width == 64) {
-            TileKey key = TileKey(publication.a, offset, TileKeyKind::Published);
+            TileKey key = TileKey(1u64, publication.a, offset);
             TileCell cell = tile_storage_cell(storage, key, context);
             if (cell.present != 0) { emit_shared_store(cell, storage.planes, storage.lane, storage.width, raw, memory); }
         } else {
@@ -3870,7 +3862,7 @@ void block_tile_publish(View publication, BlockValues values, TileStorage storag
         i += 1u64;
     }
     if (packed != 0) {
-        TileKey key = TileKey(publication.a, packed_word, TileKeyKind::Published);
+        TileKey key = TileKey(1u64, publication.a, packed_word);
         emit_shared_store(tile_storage_cell(storage, key, context), storage.planes, storage.lane, storage.width, packed, memory);
     }
 }

@@ -377,6 +377,7 @@ pub(super) fn emit(
         frame: layout,
     };
     let saved = e.frame.saved_count;
+    let tiles = Span::slice(e.tiles);
     let emitter = std::ptr::from_mut(&mut e);
     let summary = RangeSummary {
         emitter, first_slot: carry, fields: &r.ty.components, payload_words: k,
@@ -393,7 +394,7 @@ pub(super) fn emit(
         saved,
     };
     let emitted = unsafe {
-        emit_custom_range(emitter.cast(), input, ScalarHost::new(emitter.cast(), Stage::DEFAULT_WORKGROUP_WIDTH),
+        emit_custom_range(emitter.cast(), input, ScalarHost::new(emitter.cast(), Stage::DEFAULT_WORKGROUP_WIDTH, tiles),
             CustomRangeHost {
                 frame: RangeFrameHost { reserve: range_frame, publish: publish_range_frame },
                 summary_component,

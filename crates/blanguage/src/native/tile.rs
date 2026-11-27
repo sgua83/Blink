@@ -4,9 +4,11 @@ use crate::native::{ParallelRangePart, TileCollectivePart};
 use super::allocation::Location;
 use std::ffi::c_void;
 use crate::builtin_types::ScalarEncoding;
+use crate::ir::{TileKey, dataflow::{HOST, Host}};
 
 #[repr(C)]
 struct TileCollectiveLayout {
+    tile: usize,
     operation: CollectiveOperator,
     exclusive: u32,
     length_offset: u32,
@@ -17,13 +19,14 @@ struct TileCollectiveLayout {
 struct TileCollectiveField {
     identity: u64,
     scalar: ScalarEncoding,
-    input_offset: u32,
     output_offset: u32,
-    input_high_delta: u32,
     word: u32,
     result: Reg,
     scalar_origin: *const Scalar,
 }
+
+#[repr(C)]
+struct TileCollectiveInput { offset: u32, high_delta: u32 }
 
 #[repr(C)]
 struct TileCollectiveCode {
@@ -71,10 +74,12 @@ struct TilePublishHost {
 
 #[repr(C)]
 struct TileCollectiveHost {
+    ir: Host,
+    slots: operands::TileSlots,
     reserve: unsafe extern "C" fn(TileSlot, usize) -> NativeCodeBuffer,
     commit: unsafe extern "C" fn(TileSlot, usize),
     next: unsafe extern "C" fn(TileSlot, CollectiveOperator) -> TileCollectiveField,
-    observe: unsafe extern "C" fn(TileSlot, usize, TileCollectiveLayout, TileCollectiveCode, TileCollectiveField),
+    observe: unsafe extern "C" fn(TileSlot, usize, TileCollectiveLayout, TileCollectiveCode, TileCollectiveField, TileCollectiveInput),
 }
 
 struct TileFields<'a, 'stage, Op> {
@@ -141,11 +146,13 @@ impl Emitter<'_> {
 
     pub(super) fn tile_collective(&mut self, collective: &TileCollective) {
         let layout = TileCollectiveLayout {
+            tile: collective.tile,
             operation: collective.op.operator(),
             exclusive: u32::from(collective.op.exclusive()),
             length_offset: self.tile_length_slot(),
             plane_stride: self.workgroup * 4,
         };
+        let slots = operands::TileSlots { tiles: Span::slice(self.tiles), slot: collective_tile_slot };
         let mut state = TileFields {
             emitter: self,
             values: collective.results.iter(),
@@ -154,6 +161,8 @@ impl Emitter<'_> {
         };
         unsafe {
             emit_tile_collective(std::ptr::from_mut(&mut state).cast(), layout, TileCollectiveHost {
+                ir: HOST,
+                slots,
                 reserve: reserve_tile::<TileOp>,
                 commit: commit_tile::<TileOp>,
                 next: next_collective,
@@ -250,41 +259,32 @@ unsafe extern "C" fn next_collective(slot: TileSlot, operator: CollectiveOperato
         return TileCollectiveField {
             identity: 0,
             scalar: Scalar::U32.into(),
-            input_offset: 0,
             output_offset: 0,
-            input_high_delta: 0,
             word: 0,
             result: 0,
             scalar_origin: std::ptr::null(),
         };
     };
     let emitter = &*state.emitter;
-    let source = emitter.tiles[state.tile].shared_word(state.tile, word);
-    let byte = match source {
-        SharedWord::Input { word, .. } | SharedWord::Published { word, .. } => word % 4,
-    };
-    let input_base = emitter.shared_stream(source);
     let scalar = &emitter.registers[result];
-    let input_high_delta = if scalar.size() == 8 {
-        let high = emitter.tiles[state.tile].shared_word(state.tile, word + 4);
-        emitter.shared_stream(high).wrapping_sub(input_base)
-    } else {
-        0
-    };
     TileCollectiveField {
         identity: operator.identity(*scalar),
         scalar: (*scalar).into(),
-        input_offset: input_base + byte,
         output_offset: emitter.private_stream(PrivateSlot::Register(result)),
-        input_high_delta,
         word,
         result,
         scalar_origin: scalar,
     }
 }
 
+unsafe extern "C" fn collective_tile_slot(slot: *const c_void, key: TileKey) -> u32 {
+    let state = unsafe { &*slot.cast::<TileFields<'_, '_, TileOp>>() };
+    state.emitter.frame.tile_shared[&key.word()]
+}
+
 unsafe extern "C" fn observe_collective(
     slot: TileSlot, start: usize, layout: TileCollectiveLayout, code: TileCollectiveCode, field: TileCollectiveField,
+    input: TileCollectiveInput,
 ) {
     let state = unsafe { &mut *slot.cast::<TileFields<'_, '_, TileOp>>() };
     let emitter = &mut *state.emitter;
@@ -300,7 +300,7 @@ unsafe extern "C" fn observe_collective(
     let fill_start = start + code.fill_start as usize;
     let end = start + code.length as usize;
     emitter.parallel_abi_range(start..identity_start, range(TileCollectivePart::Setup {
-        input_offset: field.input_offset, output_offset: field.output_offset,
+        input_offset: input.offset, output_offset: field.output_offset,
         length_offset: layout.length_offset, plane_stride: layout.plane_stride,
     }));
     emitter.parallel_abi_range(identity_start..loop_start, range(TileCollectivePart::Identity { bits: field.identity }));
@@ -308,7 +308,7 @@ unsafe extern "C" fn observe_collective(
         emitter.parallel_abi_range(loop_start..accumulate_start, range(TileCollectivePart::ScanOutput));
     }
     emitter.parallel_abi_range(accumulate_start..fill_start, range(TileCollectivePart::Accumulate {
-        input_high_delta: field.input_high_delta, loop_start,
+        input_high_delta: input.high_delta, loop_start,
     }));
     if fill_start != end {
         let loop_start = start + code.fill_loop_start as usize;

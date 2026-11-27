@@ -533,7 +533,13 @@ extern "C" void emit_tile_publish(address context, u32 base_offset, TilePublishH
     requires nonzero(host.reserve) requires nonzero(host.commit)
     requires nonzero(host.next) requires nonzero(host.observe);
 
+struct TileSlots {
+    Span tiles;
+    cfn<u32,address,TileKey> ensures memory(read) slot;
+};
+
 struct TileCollectiveLayout {
+    usize tile;
     ReductionOperator operation;
     bool exclusive;
     u32 length_offset;
@@ -543,13 +549,13 @@ struct TileCollectiveLayout {
 struct TileCollectiveField {
     u64 identity;
     ScalarEncoding scalar;
-    u32 input_offset;
     u32 output_offset;
-    u32 input_high_delta;
     u32 word;
     usize result;
     address scalar_origin;
 };
+
+struct TileCollectiveInput { u32 offset; u32 high_delta; };
 
 struct TileCollectiveCode {
     u64 length;
@@ -561,13 +567,16 @@ struct TileCollectiveCode {
 };
 
 struct TileCollectiveHost {
+    Host ir;
+    TileSlots slots;
     cfn<NativeCodeBuffer,address,u64> reserve;
     cfn<void,address,u64> commit;
     cfn<TileCollectiveField,address,ReductionOperator> next;
-    cfn<void,address,u64,TileCollectiveLayout,TileCollectiveCode,TileCollectiveField> observe;
+    cfn<void,address,u64,TileCollectiveLayout,TileCollectiveCode,TileCollectiveField,TileCollectiveInput> observe;
 };
 
 extern "C" void emit_tile_collective(address context, TileCollectiveLayout layout, TileCollectiveHost host) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.slots.slot)
     requires nonzero(host.reserve) requires nonzero(host.commit)
     requires nonzero(host.next) requires nonzero(host.observe);
 
@@ -746,10 +755,9 @@ struct ScalarStorageHost {
     u32 buffer_bytes;
     u32 stride_field;
 };
-struct IndexedTileWord { u32 offset; u32 byte_offset; };
 struct IndexedAddressHost {
     ScalarValueHost values;
-    cfn<IndexedTileWord,address,usize,u32> ensures memory(read) tile_stream;
+    TileSlots tiles;
     u32 buffer_bytes;
     u32 stride_field;
     u32 workgroup;
@@ -758,7 +766,7 @@ struct IndexedAddressHost {
 extern "C" u64 emit_reference_address(Node reference, IndexedAddressHost host,
     cfn<MoveLocation,address,usize> ensures memory(read) local, address output) on cpu
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
-    requires nonzero(host.values.scalar) requires nonzero(host.tile_stream) requires nonzero(local);
+    requires nonzero(host.values.scalar) requires nonzero(host.tiles.slot) requires nonzero(local);
 
 struct ScalarBodyHost {
     ControlHost control;
@@ -774,7 +782,7 @@ struct ScalarBodyHost {
 };
 extern "C" u32 emit_scalar_body(address context, address emitter, Span code, ControlTargets targets, ScalarBodyHost host) on cpu
     requires nonzero(host.addresses.values.ir.inspect) requires nonzero(host.addresses.values.location)
-    requires nonzero(host.addresses.values.scalar) requires nonzero(host.addresses.tile_stream)
+    requires nonzero(host.addresses.values.scalar) requires nonzero(host.addresses.tiles.slot)
     requires nonzero(host.local) requires nonzero(host.reserve) requires nonzero(host.commit)
     requires nonzero(host.literal) requires nonzero(host.math_symbol)
     requires nonzero(host.mark) requires nonzero(host.publish) requires nonzero(host.emit)
@@ -807,7 +815,7 @@ extern "C" CustomRangeProduct emit_custom_range(address emitter, CustomRangeInpu
     requires nonzero(host.frame.reserve) requires nonzero(host.frame.publish)
     requires nonzero(host.summary_component)
     requires nonzero(scalar.addresses.values.ir.inspect) requires nonzero(scalar.addresses.values.location)
-    requires nonzero(scalar.addresses.values.scalar) requires nonzero(scalar.addresses.tile_stream)
+    requires nonzero(scalar.addresses.values.scalar) requires nonzero(scalar.addresses.tiles.slot)
     requires nonzero(scalar.local) requires nonzero(scalar.reserve) requires nonzero(scalar.commit)
     requires nonzero(scalar.literal) requires nonzero(scalar.math_symbol)
     requires nonzero(scalar.mark) requires nonzero(scalar.publish) requires nonzero(scalar.emit)

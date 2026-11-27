@@ -131,7 +131,7 @@ u64 call_value_at(u64 cursor, u32 home, CallValueLoan value, AbiMemoryMode mode,
 extern "C" u64 emit_call(address context, CallInput input, CallHost host) on cpu
     requires nonzero(host.addresses.values.ir.inspect)
     requires nonzero(host.addresses.values.location) requires nonzero(host.addresses.values.scalar)
-    requires nonzero(host.addresses.tile_stream) requires nonzero(host.local)
+    requires nonzero(host.addresses.tiles.slot) requires nonzero(host.local)
     requires nonzero(host.component) requires nonzero(host.reserve) requires nonzero(host.commit) {
     ScalarValueHost values = host.addresses.values;
     View call = values.ir.inspect(input.source);
