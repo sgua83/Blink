@@ -33,13 +33,13 @@ impl Returned {
     pub(super) fn bind_outputs(
         &mut self,
         registers: Option<&[Reg]>,
-        bindings: &BTreeMap<ValueIdentity, ValueIdentity>,
+        bindings: &bounds::OutputBindings,
         aliases: &bounds::Clause,
     ) {
         fn value(
             value: &mut Value,
             registers: Option<&[Reg]>,
-            bindings: &BTreeMap<ValueIdentity, ValueIdentity>,
+            bindings: &bounds::OutputBindings,
             aliases: &bounds::Clause,
         ) {
             value.proof = bounds::Proof::bound_return(value, registers, bindings, aliases);
@@ -157,7 +157,7 @@ impl Builder<'_> {
         let proofs = outputs.map(|(owner, registers)| {
             (bounds::Proof::capture(&self.returned_storage(owner)), registers)
         }).collect::<Vec<_>>();
-        let mut bindings = BTreeMap::new();
+        let mut bindings = bounds::OutputBindings::new();
         for (proof, registers) in &proofs {
             proof.output_bindings(registers, entry, &mut bindings);
         }

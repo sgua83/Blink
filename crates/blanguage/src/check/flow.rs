@@ -1338,11 +1338,11 @@ where Scope: Fn(&Ty, bounds::Proof) -> bounds::Proof,
     let scope = state.scopes[index].get_or_init(|| (state.scope)(&edge.path, &edge.env));
     let next = scope(&Ty::scalar(scalar), next);
     if let Some((common, aliases, reg)) = state.repeated.as_mut() {
-        *aliases = bounds::Clause::either(aliases, &next.output_aliases(&[*reg], &state.builder.registers, &BTreeMap::new()));
+        *aliases = bounds::Clause::either(aliases, &next.output_aliases(&[*reg], &state.builder.registers, &bounds::OutputBindings::new()));
         common.join(&next, 1, None);
     } else {
         let reg = state.builder.reg(scalar);
-        let aliases = next.output_aliases(&[reg], &state.builder.registers, &BTreeMap::new());
+        let aliases = next.output_aliases(&[reg], &state.builder.registers, &bounds::OutputBindings::new());
         state.repeated = Some((next, aliases, reg));
     }
     1
@@ -1362,7 +1362,7 @@ unsafe extern "C" fn publish_repeated_scalar<Scope>(context: *mut c_void, compon
         let width = state.place.ty().components.len();
         let proof = &mut state.proof;
         let mut common = proof.project(&[component], width);
-        let entry = common.output_aliases(&[reg], &state.builder.registers, &BTreeMap::new());
+        let entry = common.output_aliases(&[reg], &state.builder.registers, &bounds::OutputBindings::new());
         *state.path = bounds::Clause::both(state.path, &bounds::Clause::either(&empty.assume(&entry, true), &empty.assume(&alias, false)));
         common.join_condition(&repeated, 1, Some(empty));
         let mut common = common.with_identity(ValueIdentity::Register(reg));

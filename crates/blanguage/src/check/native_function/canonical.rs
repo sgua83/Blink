@@ -103,13 +103,13 @@ unsafe extern "C" fn element_source_apply(context:*mut c_void){
 fn bind_element_sources(sources:BTreeSet<ValueIdentity>,bindings:&mut Bindings){
  let mut context=ElementSources{iter:sources.into_iter(),current:None,bindings};unsafe{apply_known(ptr::from_mut(&mut context).cast(),BindingHost{next:element_source_next,apply:element_source_apply})};
 }
-struct Names<'a>{iter:std::collections::btree_map::Iter<'a,ValueIdentity,bounds::Proof>,current:Option<(ValueIdentity,ValueIdentity)>,output:BTreeMap<ValueIdentity,ValueIdentity>}
+struct Names<'a>{iter:std::collections::btree_map::Iter<'a,ValueIdentity,bounds::Proof>,current:Option<(ValueIdentity,ValueIdentity)>,output:bounds::OutputBindings}
 unsafe extern "C" fn name_next(context:*mut c_void)->Known{
  let c=unsafe{&mut *context.cast::<Names<'_>>()};let source=c.iter.next();c.current=source.and_then(|(id,proof)|proof.known_identity(0).map(|target|(*id,target)));Known{present:u32::from(source.is_some()),known:u32::from(c.current.is_some())}
 }
 unsafe extern "C" fn name_apply(context:*mut c_void){let c=unsafe{&mut *context.cast::<Names<'_>>()};let(source,target)=unsafe{c.current.unwrap_unchecked()};c.output.insert(source,target);}
-fn names(bindings:&Bindings)->BTreeMap<ValueIdentity,ValueIdentity>{
- let mut context=Names{iter:bindings.iter(),current:None,output:BTreeMap::new()};unsafe{apply_known(ptr::from_mut(&mut context).cast(),BindingHost{next:name_next,apply:name_apply})};context.output
+fn names(bindings:&Bindings)->bounds::OutputBindings{
+ let mut context=Names{iter:bindings.iter(),current:None,output:bounds::OutputBindings::new()};unsafe{apply_known(ptr::from_mut(&mut context).cast(),BindingHost{next:name_next,apply:name_apply})};context.output
 }
 struct Nested<'a,I>{iter:I,current:Option<Reg>,name:&'a view::Borrow,bindings:&'a mut Bindings}
 unsafe extern "C" fn nested_next<'s,I:Iterator<Item=&'s view::Source>>(context:*mut c_void)->Known{
@@ -167,7 +167,7 @@ fn canonical_model(builder:&mut Builder<'_>,source:Option<Returned>,model_index:
  }}
 }
 
-fn initialization(builder:&Builder<'_>,names:&BTreeMap<ValueIdentity,ValueIdentity>)->Option<Vec<address::Initialization>>{
+fn initialization(builder:&Builder<'_>,names:&bounds::OutputBindings)->Option<Vec<address::Initialization>>{
  let mut cursor=unsafe{start()};let mut facts=InitialFacts{present:0,position:0,pending:0};
  let mut effects=builder.view_model.initialization.iter();let mut current=None;let mut original=Vec::new();
  loop{let step=unsafe{initial_step(cursor,facts)};cursor=step.cursor;match step.need{
@@ -267,7 +267,7 @@ pub(in crate::check) async fn canonical(
  }}
 }
 
-struct ElementInputs<'a>{iter:std::collections::btree_map::Iter<'a,ValueIdentity,ValueIdentity>,current:Option<(ValueIdentity,ValueIdentity)>,bindings:&'a mut Bindings}
+struct ElementInputs<'a>{iter:bounds::OutputBindingEntries<'a>,current:Option<(ValueIdentity,ValueIdentity)>,bindings:&'a mut Bindings}
 unsafe extern "C" fn element_input_next(context:*mut c_void)->Known{
  let c=unsafe{&mut *context.cast::<ElementInputs<'_>>()};c.current=c.iter.next().map(|(source,target)|(*source,*target));Known{present:u32::from(c.current.is_some()),known:u32::from(matches!(c.current,Some((ValueIdentity::DatasetContent(..),_))))}
 }

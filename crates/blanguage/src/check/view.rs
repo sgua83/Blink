@@ -99,7 +99,7 @@ impl<K:Ord+Clone> Edges<K>{
         Self(self.0.keys().cloned().zip(paths).collect())
     }
 
-    fn output_bound(&self, bindings: &BTreeMap<ValueIdentity,ValueIdentity>) -> Self {
+    fn output_bound(&self, bindings: &bounds::OutputBindings) -> Self {
         Self(self.0.iter().map(|(key, when)| (key.clone(), when.output_bound(bindings))).collect())
     }
 }
@@ -546,7 +546,7 @@ impl Borrow{
         }
         result
     }
-    pub(super) fn bind_guards(&self,bindings:&BTreeMap<ValueIdentity,ValueIdentity>)->Self {
+    pub(super) fn bind_guards(&self,bindings:&bounds::OutputBindings)->Self {
         Self{sources:self.sources.output_bound(bindings),inputs:self.inputs.output_bound(bindings),
             calls:self.calls.output_bound(bindings),reads:self.reads.output_bound(bindings)}
     }
@@ -710,7 +710,7 @@ impl Borrow{
     pub fn at_call(&self, bindings: &BTreeMap<ValueIdentity, bounds::Proof>) -> Self {
         self.map_sources_at_call(bindings, |source, _| source.at_call(bindings))
     }
-    pub fn output_bound(&self,bindings:&BTreeMap<ValueIdentity,ValueIdentity>)->Self{
+    pub fn output_bound(&self,bindings:&bounds::OutputBindings)->Self{
         let mut result=Self{inputs:self.inputs.output_bound(bindings),calls:self.calls.output_bound(bindings),reads:self.reads.output_bound(bindings),..Self::default()};
         for(source,when)in self.sources.entries(){result.sources.insert_when(source.clone().bind_outputs(bindings),when.output_bound(bindings));}result
     }
@@ -1021,7 +1021,7 @@ impl Source {
             _=>std::mem::discriminant(self)==std::mem::discriminant(other)&&path().possible()&&self==other,
         }
     }
-    pub(super) fn bind_outputs(self, bindings: &BTreeMap<ValueIdentity, ValueIdentity>) -> Self {
+    pub(super) fn bind_outputs(self, bindings: &bounds::OutputBindings) -> Self {
         match self {
             Self::Data(id) => Self::Data(bindings.get(&id).copied().unwrap_or(id)),
             Self::Parameter(id,indices) => Self::Parameter(bindings.get(&id).copied().unwrap_or(id),indices.into_iter().map(|index|index.and_then(|index|index.map(|id|Some(bindings.get(&id).copied().unwrap_or(id))))).collect()),

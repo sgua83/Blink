@@ -1499,7 +1499,7 @@ impl Builder<'_> {
         &mut self,borrow:&view::Borrow,component:usize,origin:Reg,
         translate:impl Fn(view::Source)->view::Borrow,
     )->view::Borrow {
-        let bindings=BTreeMap::from([(ValueIdentity::TaskReturnSource(component),ValueIdentity::Register(origin))]);
+        let bindings=bounds::OutputBindings::from([(ValueIdentity::TaskReturnSource(component),ValueIdentity::Register(origin))]);
         self.select_task_return_sources(borrow,component,origin,|source,when|
             translate(source.clone()).restricted(&when.output_bound(&bindings)))
             .unwrap_or_else(||borrow.bind_guards(&bindings).map_sources(translate))

@@ -60,7 +60,7 @@ enum MergeOperation {
 
 unsafe extern "C" {
     #[link_name = "bootstrap.proof_facts::fact_tree_clear"]
-    fn clear(tree: &mut Facts);
+    pub(super) fn clear_tree(tree: Slot);
     #[link_name = "bootstrap.proof_facts::fact_tree_copy"]
     fn copy(original: &Facts, output: &mut Facts);
     #[link_name = "bootstrap.proof_facts::fact_tree_insert"]
@@ -108,7 +108,7 @@ impl Facts {
     }
 
     pub(super) fn clear(&mut self) {
-        unsafe { clear(self) }
+        unsafe { clear_tree(ptr::from_mut(self).cast()) }
     }
 
     pub(super) fn insert(&mut self, key: Fact) -> bool {

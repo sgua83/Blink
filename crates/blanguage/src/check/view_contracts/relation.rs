@@ -413,7 +413,7 @@ struct PublicRelationValues<'a> {
 enum RelationValues<'a> {
     Arguments(&'a BTreeMap<ValueIdentity, bounds::Proof>),
     Substitution(&'a BTreeMap<ValueIdentity, bounds::Proof>),
-    Outputs(&'a BTreeMap<ValueIdentity, ValueIdentity>),
+    Outputs(&'a bounds::OutputBindings),
     Public(&'a PublicRelationValues<'a>),
 }
 
@@ -900,11 +900,11 @@ impl Function {
         1 + u32::from(consumer(scope, at, prior))
     }
     pub(super) fn history_names(&self, at: usize, memory: usize, prior: Option<usize>)
-        -> BTreeMap<ValueIdentity, ValueIdentity>
+        -> bounds::OutputBindings
     {
         let mut source = self.uses[at].active_loops.iter().copied();
         let mut active = self.uses[memory].active_loops.iter().copied();
-        let mut names = BTreeMap::new();
+        let mut names = bounds::OutputBindings::new();
         let host = HistoryBindingsHost {
             next_scope: next_relation_root::<ActiveScopes<'_>>,
             registers: Self::history_registers,
@@ -928,7 +928,7 @@ impl Function {
     }
 
     unsafe extern "C" fn insert_history_name(output: Slot, source: usize, destination: usize) {
-        let names = unsafe { &mut *output.cast::<BTreeMap<ValueIdentity, ValueIdentity>>() };
+        let names = unsafe { &mut *output.cast::<bounds::OutputBindings>() };
         names.insert(ValueIdentity::Register(source), ValueIdentity::Register(destination));
     }
     pub(in crate::check) fn call_at_memory(&self, memory: usize, immediate: bool) -> Option<(usize, &Call)> {
@@ -1382,7 +1382,7 @@ impl Builder<'_> {
         else{self.graph.nodes[id].seeds.sources.insert(Origin::Position(Arc::new(value.clone())));}
         id
     }
-    fn writes(&mut self, memory: usize, names: &BTreeMap<ValueIdentity, ValueIdentity>) -> Vec<Write> {
+    fn writes(&mut self, memory: usize, names: &bounds::OutputBindings) -> Vec<Write> {
         let usage = &self.function.uses[memory];
         let Requirement::Memory { borrow, access, written, address_fields, .. } = &usage.requirement else {
             return Vec::new();
@@ -1438,7 +1438,7 @@ impl Builder<'_> {
     unsafe extern "C" fn emit_prefix_frame(context: Slot, at: usize, parent: usize) -> usize {
         let builder = unsafe { &mut *context.cast::<Self>() };
         builder.prefix.through = at + 1;
-        let mut writes = builder.writes(at, &BTreeMap::new());
+        let mut writes = builder.writes(at, &bounds::OutputBindings::new());
         if writes.is_empty() {
             return usize::MAX;
         }
@@ -1559,7 +1559,7 @@ impl Builder<'_> {
             },
             Key::Read(ContentRead::Snapshot{memory,position:Position::Local(slot),initial,..})=>{
                 let from=self.borrow(&initial.view_borrow(0),&Epoch::Input);
-                let writes = self.writes(memory, &BTreeMap::new());
+                let writes = self.writes(memory, &bounds::OutputBindings::new());
                 let frame = if writes.is_empty() {
                     None
                 } else {
@@ -1792,7 +1792,7 @@ impl SelfCallInputs<'_, '_> {
 
         let roots = roots.get_or_insert_with(|| {
             let mut nodes = BTreeMap::new();
-            for (&local, &formal) in &function.parameters {
+            for (&local, &formal) in function.parameters.iter() {
                 if function.input(formal) {
                     let id = *nodes.entry(formal).or_insert_with(|| {
                         let id = builder.empty();
@@ -1861,7 +1861,7 @@ impl Graph {
                 })
             })).collect::<BTreeSet<_>>();
             let mut inverse = BTreeMap::new();
-            for (&local, &formal) in &function.parameters {
+            for (&local, &formal) in function.parameters.iter() {
                 inverse.entry(formal).or_insert_with(|| {
                     let mut proof = bounds::Proof::default().with_identity(local);
                     proof.set_view_borrow(0, Borrow::source(Origin::Parameter(local, Vec::new())));
@@ -2110,7 +2110,7 @@ impl Graph {
         self.bind_values(RelationValues::Substitution(values))
     }
 
-    pub(in crate::check) fn output_bound(&self, values: &BTreeMap<ValueIdentity, ValueIdentity>) -> Self {
+    pub(in crate::check) fn output_bound(&self, values: &bounds::OutputBindings) -> Self {
         self.bind_values(RelationValues::Outputs(values))
     }
 

@@ -141,6 +141,7 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
             );
             let inputs: &[&str] = match name {
                 "condition_index" => &["proof_facts"],
+                "output_bindings" => &["fact_key", "proof_facts"],
                 "condition_graph" => &["condition_index"],
                 "contract_codec" => &["value_format", "condition_index", "fact_key", "proof_facts", "scalar_fold"],
                 "host_sdk" => {
@@ -309,6 +310,7 @@ const MODULES: &[&str] = &[
     "ownership_place",
     "fact_key",
     "proof_facts",
+    "output_bindings",
     "condition_index",
     "contract_codec",
     "condition_graph",

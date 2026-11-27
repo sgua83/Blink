@@ -275,7 +275,7 @@ unsafe extern "C" fn selection_action(context:*mut SelectionValues<'_,'_>,action
   SelectionAction::BeginPaths=>v.selected=Some(bounds::Clause::impossible()),
   SelectionAction::Aliases=>{
    let value=if side==0{v.a.as_ref().unwrap()}else{v.b.as_ref().unwrap()};
-   let aliases=bounds::Proof::capture(value).output_aliases(&v.regs,&v.builder.registers,&BTreeMap::new());
+   let aliases=bounds::Proof::capture(value).output_aliases(&v.regs,&v.builder.registers,&bounds::OutputBindings::new());
    v.selected=Some(bounds::Clause::either(v.selected.as_ref().unwrap(),&v.partition.assume(&aliases,side==0)));
   },
   SelectionAction::Path=>v.builder.path=bounds::Clause::both(&v.builder.path,v.selected.as_ref().unwrap()),

@@ -321,7 +321,7 @@ pub(super) struct Function {
     pub initialization:Vec<address::InitializationEffect>,
     pub normal_returns:Option<bounds::Condition>,
     pub resource_names:BTreeMap<Output,Borrow>,
-    pub parameters:BTreeMap<ValueIdentity,ValueIdentity>,
+    pub parameters:bounds::OutputBindings,
     pub element_inputs:BTreeMap<residency::Input,(usize,usize)>,
     pub input_width:usize,
     pub uses:Vec<Use>,
@@ -832,7 +832,7 @@ impl ContentAtRead {
     }
 
     fn write_with_history(&mut self, incoming: &Borrow, when: &bounds::Condition, complete: bool,
-        names: &BTreeMap<ValueIdentity, ValueIdentity>,
+        names: &bounds::OutputBindings,
     ) {
         if names.is_empty() {
             self.write(incoming, when, complete);

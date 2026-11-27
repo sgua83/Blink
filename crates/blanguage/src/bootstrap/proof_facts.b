@@ -102,11 +102,11 @@ void rebalance(TreeRows tree,u64 start) on cpu {
     }
 }
 
-u64 extreme(address records, u64 start, bool reverse) on cpu {
+u64 tree_extreme(address records, u64 stride, u64 start, bool reverse) on cpu {
     u64 current = start;
     if (current != 0u64) {
         while (true) {
-            OrderedNode value = unsafe_position<OrderedNode>(node(records,current));
+            OrderedNode value = unsafe_position<OrderedNode>(row(records,stride,current));
             u64 child = reverse ? value.right : value.left;
             if (child == 0u64) { break; }
             current = child;
@@ -115,19 +115,35 @@ u64 extreme(address records, u64 start, bool reverse) on cpu {
     return current;
 }
 
-u64 neighbor(address records, u64 start, bool reverse) on cpu {
+u64 tree_neighbor(address records, u64 stride, u64 start, bool reverse) on cpu {
     u64 current = start;
-    OrderedNode value = unsafe_position<OrderedNode>(node(records,current));
+    OrderedNode value = unsafe_position<OrderedNode>(row(records,stride,current));
     u64 child = reverse ? value.left : value.right;
-    if (child != 0u64) { return extreme(records,child,reverse); }
+    if (child != 0u64) { return tree_extreme(records,stride,child,reverse); }
     u64 parent = value.parent;
     while (parent != 0u64) {
-        OrderedNode higher = unsafe_position<OrderedNode>(node(records,parent));
+        OrderedNode higher = unsafe_position<OrderedNode>(row(records,stride,parent));
         if ((reverse ? higher.right : higher.left) == current) { break; }
         current = parent;
         parent = higher.parent;
     }
     return parent;
+}
+
+u64 extreme(address records,u64 start,bool reverse) on cpu {
+    return tree_extreme(records,size_of<FactCell>(),start,reverse);
+}
+
+u64 neighbor(address records,u64 start,bool reverse) on cpu {
+    return tree_neighbor(records,size_of<FactCell>(),start,reverse);
+}
+
+u64 ordered_tree_first(OrderedTree tree,u64 stride) on cpu {
+    return tree_extreme(tree.records,stride,tree.root,false);
+}
+
+u64 ordered_tree_next(OrderedTree tree,u64 stride,u64 current) on cpu {
+    return tree_neighbor(tree.records,stride,current,false);
 }
 
 struct Search { u64 exact; u64 parent; i32 order; };

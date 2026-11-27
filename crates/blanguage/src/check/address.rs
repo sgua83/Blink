@@ -331,7 +331,7 @@ impl Origin {
         }
         value
     }
-    pub fn bind_outputs(&self, bindings: &BTreeMap<ValueIdentity,ValueIdentity>) -> Self {
+    pub fn bind_outputs(&self, bindings: &bounds::OutputBindings) -> Self {
         let mut value=self.clone();
         match &mut value.root {
             Root::Resource{borrow,..} | Root::Derived(borrow) | Root::Dataset{borrow,..} => *borrow=borrow.output_bound(bindings),
@@ -388,7 +388,7 @@ impl Identity {
         }
     }
 
-    pub(super) fn output_bound(&self,bindings:&BTreeMap<ValueIdentity,ValueIdentity>)->Self {
+    pub(super) fn output_bound(&self,bindings:&bounds::OutputBindings)->Self {
         match self {Self::Value(ids)=>Self::Value(ids.iter().map(|id|bindings.get(id).copied().unwrap_or(*id)).collect()),Self::Storage(borrow)=>Self::Storage(borrow.output_bound(bindings)),constant=>constant.clone()}
     }
     pub(super) fn at_call(&self,bindings:&BTreeMap<ValueIdentity,bounds::Proof>)->Self {
@@ -849,7 +849,7 @@ impl InitializationSource {
             Self::Task(borrow)=>Self::Task(map(borrow)),
         }
     }
-    fn bind_outputs(&self,bindings:&BTreeMap<ValueIdentity,ValueIdentity>)->Self {
+    fn bind_outputs(&self,bindings:&bounds::OutputBindings)->Self {
         match self {
             Self::Position(origin)=>Self::Position(origin.bind_outputs(bindings)),
             Self::Task(borrow)=>Self::Task(borrow.output_bound(bindings)),
@@ -898,7 +898,7 @@ impl InitializationEffect {
         Self::Position(fact)=>fact.source.pending(),
         Self::Iteration{iteration,..}=>iteration.states.iter().any(|state| has_pending_initialization(&state.initialized)),
     }}
-    pub fn output_bound(&self,bindings:&BTreeMap<ValueIdentity,ValueIdentity>)->Self {
+    pub fn output_bound(&self,bindings:&bounds::OutputBindings)->Self {
         match self {
             Self::Position(fact)=>Self::Position(Initialization{source:fact.source.bind_outputs(bindings),when:fact.when.output_bound(bindings)}),
             Self::Call{call,when}=>Self::Call{call:*call,when:when.output_bound(bindings)},
@@ -933,7 +933,7 @@ impl Initialization {
         };
         Self{source,when:self.when.guaranteed_at_call(bindings)}
     }
-    pub fn output_bound(&self,bindings:&BTreeMap<ValueIdentity,ValueIdentity>)->Self {
+    pub fn output_bound(&self,bindings:&bounds::OutputBindings)->Self {
         Self{source:self.source.bind_outputs(bindings),when:self.when.guaranteed_at_call(&bindings.iter().map(|(source,target)|(*source,bounds::Proof::default().with_identity(*target))).collect())}
     }
     pub(super) fn position_parts(&self,path:&bounds::Clause)->Option<Vec<(Self,Option<Position>)>> {

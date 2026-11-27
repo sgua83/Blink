@@ -4,6 +4,8 @@ struct OrderedTree { address records; u64 root; u64 count; u64 capacity; };
 struct OrderedNode { u64 left; u64 right; u64 parent; u64 height; };
 address ordered_tree_prepare(address owner,u64 stride) on cpu requires nonzero(stride);
 void ordered_tree_publish(address owner,u64 stride,u64 parent,i32 order) on cpu;
+u64 ordered_tree_first(OrderedTree tree,u64 stride) on cpu;
+u64 ordered_tree_next(OrderedTree tree,u64 stride,u64 current) on cpu;
 struct FactCursor { u64 front; u64 back; };
 struct FactBound { address key; u32 exclusive; };
 

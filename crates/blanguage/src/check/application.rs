@@ -2915,10 +2915,10 @@ impl Builder<'_> {
         let mut model=returned.clone();
         residency::visit(&mut model,&mut residency::Input::new(0),&mut|resource,input|{
             let depth=input.fields.iter().filter(|part|matches!(part,residency::Part::Elements)).count();
-            resource.residency=resource.residency.output_bound(&BTreeMap::from([(ordinal,ValueIdentity::ElementIndex(depth))]));
+            resource.residency=resource.residency.output_bound(&bounds::OutputBindings::from([(ordinal,ValueIdentity::ElementIndex(depth))]));
         });
         fn bind_indices(returned:&mut returns::Returned,ordinal:ValueIdentity,depth:usize){
-            let bindings=BTreeMap::from([(ordinal,ValueIdentity::ElementIndex(depth))]);
+            let bindings=bounds::OutputBindings::from([(ordinal,ValueIdentity::ElementIndex(depth))]);
             let value=match returned{returns::Returned::Value(value)=>Some(value.as_mut()),returns::Returned::OwnedValue(value)=>Some(&mut value.value),returns::Returned::Dataset(data)=>{data.length.proof=bounds::Proof::capture_output(&data.length,&bindings);Some(&mut data.root)},returns::Returned::Unit=>None};
             if let Some(value)=value{value.proof=bounds::Proof::capture_output(value,&bindings);}
             match returned{
@@ -4179,7 +4179,7 @@ pub(super) fn element_scope_bindings(bindings:&ElementBindings,width:usize,paren
         }
     }
     let shifts=bindings.keys().copied().filter(|id|matches!(id,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)|ValueIdentity::ElementIndex(_)))
-        .map(|id|(id,parent(id))).collect::<BTreeMap<_,_>>();
+        .map(|id|(id,parent(id))).collect::<bounds::OutputBindings>();
     let mut out=bindings.iter().map(|(id,proof)|{
         if parent_stored&&!matches!(id,ValueIdentity::DatasetContent(..)){(parent(*id),proof.output_bound(&shifts))}
         else{(*id,proof.clone())}
@@ -4718,7 +4718,7 @@ impl Builder<'_> {
         &self,data:&Data,projection:&[usize],mut model:returns::Returned,
         indices:Option<&BTreeMap<ValueIdentity,ValueIdentity>>,
     )->Box<returns::Returned>{
-        model.bind_outputs(None,&BTreeMap::new(),&bounds::Clause::default());
+        model.bind_outputs(None,&bounds::OutputBindings::new(),&bounds::Clause::default());
         let value=self.returned_storage(&model);let mut bindings=self.element_owner_bindings(data);
         // The stored model uses the destination ordinal on the selected write arm.
         for (&source,&ordinal) in indices.into_iter().flatten(){
@@ -5131,7 +5131,7 @@ impl Builder<'_> {
         }
         async fn check(builder:&mut Builder<'_>,data:&Data,owned:&view::Borrow,parents:&[usize],span:Span)->Result<()> {
             if !data.ownership.may_own()||data.length.maximum()==0{return Ok(());}
-            let mut shifts=BTreeMap::new();
+            let mut shifts=bounds::OutputBindings::new();
             for(depth,width)in parents.iter().enumerate(){for component in 0..*width {
                 let id=if depth==0{ValueIdentity::ElementComponent(component)}else{ValueIdentity::ElementParent(depth-1,component)};
                 shifts.insert(id,ValueIdentity::ElementParent(depth,component));
@@ -5163,7 +5163,7 @@ impl Builder<'_> {
         let names=bindings.iter().filter_map(|(source,proof)|{
             matches!(source,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..))
                 .then(||proof.known_identity(0).map(|target|(*source,target))).flatten()
-        }).collect::<BTreeMap<_,_>>();
+        }).collect::<bounds::OutputBindings>();
         let value=self.returned_storage(model);
         for path in view::resource_paths(&value.ty){if let(Some(data),Some(source))=(model_data_mut(Some(model),&path),model_data(Some(original),&path)){
             if data.ownership.may_own(){data.root.proof.set_view_borrow(0,view::resource_borrow(source).output_bound(&names));}

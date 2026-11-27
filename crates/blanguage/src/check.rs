@@ -2147,7 +2147,7 @@ impl<'a> Builder<'a> {
             WritePlaceNeed::Zero=>zero=Some(self.constant(Scalar::U32,0).regs[0]),
             WritePlaceNeed::DatasetEffect=>{self.dataset_effect(p,Access::Write,false,span)?;},
             WritePlaceNeed::CaptureProof=>{proof=Some(bounds::Proof::capture(value.as_ref().unwrap()));facts.iterator=u32::from(self.iterators.last().is_some_and(Option::is_some));},
-            WritePlaceNeed::Alias=>self.path=bounds::Clause::both(&self.path,&proof.as_ref().unwrap().output_aliases(&value.as_ref().unwrap().regs,&self.registers,&BTreeMap::new())),
+            WritePlaceNeed::Alias=>self.path=bounds::Clause::both(&self.path,&proof.as_ref().unwrap().output_aliases(&value.as_ref().unwrap().regs,&self.registers,&bounds::OutputBindings::new())),
             WritePlaceNeed::ApplicationWrite=>{let Place::ApplicationElement {handle,identity,index,stride,words,..}=p else{unsafe {std::hint::unreachable_unchecked()}};self.write_application_place(*handle,*identity,*index,*stride,words,value.take().unwrap(),span,None)?;},
             WritePlaceNeed::AssignApplicationProof=>{unsafe {self.world.call(self.assign_owned_proof(p,proof.take().unwrap(),false)).await}?;facts.loops_empty=u32::from(self.loop_contexts.is_empty());},
             WritePlaceNeed::CompleteWrites=>{let Place::ApplicationElement {sources,..}=p else{unsafe {std::hint::unreachable_unchecked()}};unsafe {self.world.call(self.complete_application_writes(|_,data|sources.contains(&data.root.identity()),span)).await}?;},

@@ -37,7 +37,7 @@ impl Part {
         }
     }
 
-    fn output_bound(&self, bindings: &BTreeMap<ValueIdentity, ValueIdentity>) -> Self {
+    fn output_bound(&self, bindings: &bounds::OutputBindings) -> Self {
         match self {
             Self::Selected(index) => Self::Selected(index.and_then(|index|
                 index.map(|id| Some(bindings.get(&id).copied().unwrap_or(id))))),
@@ -103,7 +103,7 @@ impl Input {
     fn at_call(&self,bindings:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{
         Self{parameter:self.parameter,fields:self.fields.iter().map(|part|part.at_call(bindings)).collect()}
     }
-    fn output_bound(&self,bindings:&BTreeMap<ValueIdentity,ValueIdentity>)->Self{
+    fn output_bound(&self,bindings:&bounds::OutputBindings)->Self{
         Self{parameter:self.parameter,fields:self.fields.iter().map(|part|part.output_bound(bindings)).collect()}
     }
     fn element_indices(&self,indices:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{Self{parameter:self.parameter,fields:self.fields.iter().map(|part|part.element_indices(indices)).collect()}}
@@ -121,7 +121,7 @@ fn scoped_indices<'a>(
     let mut out=bindings.into_iter().map(|(id,value)|(match id{ValueIdentity::ElementIndex(index)=>ValueIdentity::ElementIndex(index+depth),other=>*other},value.scope_element_indices(depth))).collect::<BTreeMap<_,_>>();
     for index in 0..depth{let id=ValueIdentity::ElementIndex(index);out.insert(id,bounds::Proof::default().with_identity(id));}out
 }
-fn scoped_names(bindings:&BTreeMap<ValueIdentity,ValueIdentity>,depth:usize)->BTreeMap<ValueIdentity,ValueIdentity>{
+fn scoped_names(bindings:&bounds::OutputBindings,depth:usize)->bounds::OutputBindings{
     let shift=|id|match id{ValueIdentity::ElementIndex(index)=>ValueIdentity::ElementIndex(index+depth),other=>other};
     bindings.iter().map(|(a,b)|(shift(*a),shift(*b))).collect()
 }
@@ -275,7 +275,7 @@ impl Residency {
             Self::conditional(when.with_aliases(aliases),a.with_aliases(&yes),b.with_aliases(&no))
         },_=>self.clone(),
     }}
-    pub(super) fn output_bound(&self,bindings:&BTreeMap<ValueIdentity,ValueIdentity>)->Self{match self{
+    pub(super) fn output_bound(&self,bindings:&bounds::OutputBindings)->Self{match self{
         Self::Selected(when,a,b)=>Self::conditional(when.output_bound(bindings),a.output_bound(bindings),b.output_bound(bindings)),
         Self::Origins(origins)=>Self::Origins(origins.iter().map(|origin|match origin{Origin::Input(input)=>Origin::Input(input.output_bound(bindings)),Origin::Output(output)=>Origin::Output(Output{function:output.function.clone(),kind:output.kind.clone(),fields:output.fields.clone(),arguments:Arc::new(output.arguments.iter().map(|(input,value)|(input.clone(),value.output_bound(&scoped_names(bindings,input.depth())))).collect()),bindings:output.bindings.iter().map(|(input,value)|(*input,value.output_bound(bindings))).collect()}),_=>origin.clone()}).collect()),
         Self::Absent=>Self::Absent,
@@ -628,7 +628,7 @@ fn consume(required: &mut Requirements, value: &Residency, target: Target, path:
     let visit = ResidencyVisit::new(value, target, path, ResidencyCheckMode::Require);
     unsafe { visit.run(ptr::from_mut(required).cast()) }.accepted != 0
 }
-pub(super) fn input_parameters(parameters:&BTreeMap<ValueIdentity,ValueIdentity>,width:usize)->BTreeMap<ValueIdentity,bounds::Proof>{
+pub(super) fn input_parameters(parameters:&bounds::OutputBindings,width:usize)->BTreeMap<ValueIdentity,bounds::Proof>{
     parameters.iter().filter(|(_,target)|match target{ValueIdentity::Register(n)=>*n<width,ValueIdentity::ParameterContent(..)|ValueIdentity::ResourceParameter(..)=>true,_=>false}).map(|(source,target)|(*source,bounds::Proof::default().with_identity(*target))).collect()
 }
 fn canonical(

@@ -18,6 +18,8 @@ mod index_conditions;
 mod numeric_bounds;
 mod execution_conditions;
 mod proof_facts;
+mod output_bindings;
+pub(super) use output_bindings::{Entries as OutputBindingEntries, OutputBindings};
 mod facts;
 mod fact_key;
 mod call_projection;
@@ -430,7 +432,6 @@ impl CallBindings for Substitution<'_, '_> {
     }
 }
 
-type OutputBindings = BTreeMap<ValueIdentity, ValueIdentity>;
 fn output_identity(identity: ValueIdentity, bindings: &OutputBindings) -> ValueIdentity {
     bindings.get(&identity).copied().unwrap_or(identity)
 }
@@ -800,15 +801,7 @@ impl Proof {
         bindings: &mut OutputBindings,
     ) {
         for (origins, reg) in self.origins.iter().zip(registers) {
-            for identity in origins {
-                if matches!(identity,ValueIdentity::Register(source) if *source>=entry && source!=reg)
-                    || matches!(identity,ValueIdentity::TaskCompletion(..)) {
-
-                    bindings
-                        .entry(*identity)
-                        .or_insert(ValueIdentity::Register(*reg));
-                }
-            }
+            bindings.bind_row(origins, *reg, entry);
         }
     }
     pub(super) fn output_aliases(
@@ -1356,7 +1349,7 @@ impl Proof {
                     for condition in target.conditions[component].iter_mut(){
                         for case in &mut condition.cases{*case=Clause::both(case,aliases);}
                         if let Some(regs)=outputs{
-                            **condition=condition.output_bound(&BTreeMap::from([(source.component_identity(component),ValueIdentity::Register(regs[component]))]));
+                            **condition=condition.output_bound(&OutputBindings::from([(source.component_identity(component),ValueIdentity::Register(regs[component]))]));
                         }
                     }
                 }
@@ -3500,8 +3493,8 @@ impl Builder<'_> {
         when:&owned_presence::Presence,
         choice:&Condition,
     ) {
-        let bindings=BTreeMap::new();
-        let mut names=[BTreeMap::new(),BTreeMap::new()];
+        let bindings=OutputBindings::new();
+        let mut names=[OutputBindings::new(),OutputBindings::new()];
         let mut aliases=[bounds::Clause::default(),bounds::Clause::default()];
         for(name,binding)in &mut self.env {
             let Some((a,_,place))=binding.proof_storage()else{continue};
