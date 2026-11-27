@@ -1589,7 +1589,7 @@ impl Stage {
     }
     pub fn storage_words(&self) -> std::collections::BTreeSet<SharedWord> {
         #[cfg(feature = "compiler")]
-        { dataflow::storage_words(self) }
+        { dataflow::storage_usage(self).0 }
         #[cfg(not(feature = "compiler"))]
         {
         fn visit(stage: &Stage, code: &[Inst], words: &mut std::collections::BTreeSet<SharedWord>) {

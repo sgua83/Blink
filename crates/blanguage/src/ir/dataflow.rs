@@ -633,31 +633,31 @@ struct StorageOutput {
 
 unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::storage_facts"]
-    fn b_storage_facts(code: Span, tiles: Span, host: StorageHost, phase: i64, output: StorageOutput);
+    fn b_storage_facts(code: Span, tiles: Span, host: StorageHost, phase: i64, output: StorageOutput) -> u32;
 }
 
 unsafe extern "C" fn register_bytes(stage: *const c_void, register: usize) -> u32 {
     unsafe { &*stage.cast::<Stage>() }.registers[register].size()
 }
 
-fn storage_facts(stage: &Stage, phase: i64, output: StorageOutput) {
+fn storage_facts(stage: &Stage, phase: i64, output: StorageOutput) -> u32 {
     unsafe {
         b_storage_facts(
             Span::slice(&stage.code), Span::slice(&stage.tiles),
             StorageHost { ir: HOST, stage: ptr::from_ref(stage).cast(), scalar_bytes: register_bytes },
             phase, output,
-        );
+        )
     }
 }
 
 struct WordOutput<'a> { stage: &'a Stage, words: BTreeSet<SharedWord> }
 
-pub(super) fn storage_words(stage: &Stage) -> BTreeSet<SharedWord> {
+pub(crate) fn storage_usage(stage: &Stage) -> (BTreeSet<SharedWord>, u32) {
     let mut output = WordOutput { stage, words: BTreeSet::new() };
-    if !stage.tiles.is_empty() {
-        storage_facts(stage, -1, StorageOutput { context: ptr::from_mut(&mut output).cast(), emit: emit_word });
-    }
-    output.words
+    let preserve = if stage.tiles.is_empty() { 0 } else {
+        storage_facts(stage, -1, StorageOutput { context: ptr::from_mut(&mut output).cast(), emit: emit_word })
+    };
+    (output.words, preserve)
 }
 
 unsafe extern "C" fn emit_word(context: *mut c_void, _: StorageEvent, tile: usize, byte: u32, _: i64) {
@@ -814,16 +814,11 @@ struct ProgramCodeRequirements {
     maximal_reconvergence: u32,
 }
 unsafe extern "C" {
-    #[link_name = "bootstrap.ir_dataflow::has_subgroups"]
-    fn b_has_subgroups(code: Span, host: Host) -> u32;
     #[link_name = "bootstrap.ir_dataflow::shader_code_requirements"]
     fn b_shader_code_requirements(operation: Node, code: Span, registers: Span, requested: u32,
         subgroups: bool, host: RegisterHost) -> ShaderCodeRequirements;
     #[link_name = "bootstrap.ir_dataflow::program_code_requirements"]
     fn b_program_code_requirements(stages: Span, requested: u32, host: RegisterHost) -> ProgramCodeRequirements;
-}
-pub(crate) fn has_subgroups(stage: &Stage) -> bool {
-    unsafe { b_has_subgroups(Span::slice(&stage.code), HOST) != 0 }
 }
 pub(crate) fn shader_code_requirements(
     operation: &Operation, code: &[Inst], registers: &[Scalar], float_preserve: bool, subgroups: bool,

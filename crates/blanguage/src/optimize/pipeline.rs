@@ -79,7 +79,7 @@ struct StageHost {
     custom: unsafe extern "C" fn(*mut c_void) -> Values,
     flow: unsafe extern "C" fn(*mut c_void),
     eliminate: unsafe extern "C" fn(*mut c_void),
-    words: unsafe extern "C" fn(*mut c_void),
+    words: unsafe extern "C" fn(*mut c_void) -> u32,
     prune: unsafe extern "C" fn(*mut c_void, u32) -> u32,
     select: unsafe extern "C" fn(*mut c_void) -> u32,
     bindings: unsafe extern "C" fn(*mut c_void),
@@ -289,9 +289,11 @@ unsafe extern "C" fn stage_eliminate(context: *mut c_void) {
         &BTreeSet::new(), &BTreeSet::new(), &stage.registers);
     GeneratedOrigin::eliminated_operations(&mut stage.generated_origin, removed);
 }
-unsafe extern "C" fn stage_words(context: *mut c_void) {
+unsafe extern "C" fn stage_words(context: *mut c_void) -> u32 {
     let state = unsafe { &mut *context.cast::<StageState<'_>>() };
-    state.words = state.stage.storage_words();
+    let (words, preserve) = crate::ir::dataflow::storage_usage(state.stage);
+    state.words = words;
+    preserve
 }
 unsafe extern "C" fn release_words(context: *mut c_void) {
     let state = unsafe { &mut *context.cast::<StageState<'_>>() };

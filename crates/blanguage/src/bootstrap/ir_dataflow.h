@@ -282,7 +282,7 @@ struct PipelineStageHost {
  cfn<PipelineValues,address> custom;
  cfn<void,address> flow;
  cfn<void,address> eliminate;
- cfn<void,address> words;
+ cfn<u32,address> words;
  cfn<u32,address,u32> prune;
  cfn<u32,address> select;
  cfn<void,address> bindings;
@@ -511,7 +511,7 @@ struct StorageOutput {
  cfn<void,address,StorageEvent,usize,u32,i64> emit;
 };
 // Use phase zero for layout and -1 for the standalone word query.
-extern "C" void storage_facts(Span code,Span tiles,StorageHost host,i64 phase,StorageOutput output) on cpu
+extern "C" u32 storage_facts(Span code,Span tiles,StorageHost host,i64 phase,StorageOutput output) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar_bytes) requires nonzero(output.emit);
 
 // Borrow the Stage tiles and used words for this call and deliver only matching input fragments.
@@ -527,7 +527,6 @@ struct ShaderSubgroups {
 struct ProgramCodeRequirements {
  SubgroupFlags subgroup; u32 atomic64; u32 float_preserve; u32 maximal_reconvergence;
 };
-extern "C" u32 has_subgroups(Span code,Host host) on cpu requires nonzero(host.inspect);
 struct ShaderCodeRequirements {
  ShaderSubgroups subgroups; u32 atomic64; u32 float_preserve;
 };

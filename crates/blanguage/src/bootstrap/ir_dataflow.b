@@ -1119,9 +1119,7 @@ extern "C" void optimize_stage(PipelineStageHost host,u32 has_tiles) on cpu
   host.eliminate(host.context);
   u32 changed=0;
   if(has_tiles!=0){
-   Span code=host.ir.inspect(Node(host.stage(host.context),N_STAGE)).first;
-   u32 preserve=has_subgroups(code,host.ir);
-   host.words(host.context);
+   u32 preserve=host.words(host.context);
    changed=host.prune(host.context,preserve);
   }
   if(host.select(host.context)!=0){changed=1;host.flow(host.context);}
@@ -1932,9 +1930,10 @@ void shared_parts(usize tile,u32 byte,u32 bytes,i64 phase,StorageOutput output) 
  }
 }
 
-void storage_visit(Span code,Span tiles,StorageHost host,i64 first_phase,bool root,StorageOutput output) on cpu
+u32 storage_visit(Span code,Span tiles,StorageHost host,i64 first_phase,bool root,StorageOutput output) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar_bytes) requires nonzero(output.emit) {
  i64 phase=first_phase;
+ u32 preserve=0;
  usize index=0u64;
  while(index<code.count) {
   View value=host.ir.inspect(node_at(code,index,N_INSTRUCTION));
@@ -1968,8 +1967,10 @@ void storage_visit(Span code,Span tiles,StorageHost host,i64 first_phase,bool ro
     result+=1u64;
    }
   }else if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE) {
-   storage_visit(value.first,tiles,host,phase,false,output);
-   storage_visit(value.second,tiles,host,phase,false,output);
+   preserve|=storage_visit(value.first,tiles,host,phase,false,output);
+   preserve|=storage_visit(value.second,tiles,host,phase,false,output);
+  }else if(value.tag==OP_APPEND || value.tag==OP_SUBGROUP) {
+   preserve=1;
   }
   if(root && phase>=i64(0)) {
    if(value.tag==OP_TILE_PUBLISH) {
@@ -1981,11 +1982,12 @@ void storage_visit(Span code,Span tiles,StorageHost host,i64 first_phase,bool ro
   }
   index+=1u64;
  }
+ return preserve;
 }
 
-extern "C" void storage_facts(Span code,Span tiles,StorageHost host,i64 phase,StorageOutput output) on cpu
+extern "C" u32 storage_facts(Span code,Span tiles,StorageHost host,i64 phase,StorageOutput output) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar_bytes) requires nonzero(output.emit) {
- storage_visit(code,tiles,host,phase,true,output);
+ return storage_visit(code,tiles,host,phase,true,output);
 }
 
 address tile_group_at(address groups,u64 index) on cpu {
@@ -2045,21 +2047,18 @@ extern "C" void tile_input_words(Span tiles,Host host,address used,
  }
 }
 
-u32 collective_presence(Span code,Host host,bool include_subgroups) on cpu requires nonzero(host.inspect) {
+u32 has_append(Span code,Host host) on cpu requires nonzero(host.inspect) {
  usize index=0u64;
  while(index<code.count) {
   View value=host.inspect(node_at(code,index,N_INSTRUCTION));
-  if(value.tag==OP_APPEND || (include_subgroups && value.tag==OP_SUBGROUP)){return 1;}
+  if(value.tag==OP_APPEND){return 1;}
   if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE) {
-   if(collective_presence(value.first,host,include_subgroups)!=0){return 1;}
-   if(collective_presence(value.second,host,include_subgroups)!=0){return 1;}
+   if(has_append(value.first,host)!=0){return 1;}
+   if(has_append(value.second,host)!=0){return 1;}
   }
   index+=1u64;
  }
  return 0;
-}
-extern "C" u32 has_subgroups(Span code,Host host) on cpu requires nonzero(host.inspect) {
- return collective_presence(code,host,true);
 }
 const u32 CODE_SUBGROUPS=1;
 const u32 CODE_SUBGROUP_WIDTHS=2;
@@ -2266,13 +2265,13 @@ extern "C" NumericRequirements numeric_requirements(Span stages,Span buffers,Spa
 }
 
 extern "C" u32 maximal_reconvergence(Span code,Host host) on cpu requires nonzero(host.inspect) {
- return collective_presence(code,host,false);
+ return has_append(code,host);
 }
 extern "C" u32 program_maximal_reconvergence(Span stages,Host host) on cpu requires nonzero(host.inspect) {
  usize index=0u64;
  while(index<stages.count) {
   View stage=host.inspect(node_at(stages,index,N_STAGE));
-  if(collective_presence(stage.first,host,false)!=0){return 1;}
+  if(has_append(stage.first,host)!=0){return 1;}
   index+=1u64;
  }
  return 0;
