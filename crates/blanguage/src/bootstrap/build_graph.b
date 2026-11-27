@@ -140,16 +140,15 @@ extern "C" u64 lookup_capture_provider(ProviderNames providers,NameBytes name) o
     return 18446744073709551615u64;
 }
 
-bool capture_with_providers(GraphPlan graph,CaptureSource source,u64 unit,bool shared) on cpu
+i32 capture_with_providers(GraphPlan graph,CaptureSource source,u64 unit,bool shared) on cpu
     requires nonzero(source.provider) requires nonzero(source.capture) {
     GraphRange providers=range_at(graph.storage.providers,unit);
     if (providers.count==0u64) {
-        source.capture(source.context,unit,shared,ProviderNames(address(),0u64,graph.ids));
-        return true;
+        return source.capture(source.context,unit,shared,ProviderNames(address(),0u64,graph.ids));
     }
     handle heap=GetProcessHeap();
     address rows=HeapAlloc(heap,0,providers.count*size_of<ProviderName>());
-    if (rows==address()) { return false; }
+    if (rows==address()) { return i32(ERROR_NOT_ENOUGH_MEMORY); }
     u64 at=0u64;
     while (at<providers.count) {
         u64 input=providers.start+at;
@@ -158,9 +157,9 @@ bool capture_with_providers(GraphPlan graph,CaptureSource source,u64 unit,bool s
         at+=1u64;
     }
     sort_rows<array<u64,3>>(rows,providers.count,address(),c_function(capture_provider_before));
-    source.capture(source.context,unit,shared,ProviderNames(rows,providers.count,graph.ids));
+    i32 status=source.capture(source.context,unit,shared,ProviderNames(rows,providers.count,graph.ids));
     HeapFree(heap,0,rows);
-    return true;
+    return status;
 }
 
 extern "C" i32 capture_sources(address owner,CaptureSource source) on cpu
@@ -184,9 +183,8 @@ extern "C" i32 capture_sources(address owner,CaptureSource source) on cpu
         if (source_unit<unit) {
             put_word(indices,unit,word(indices,source_unit));
         } else {
-            if (!capture_with_providers(graph,source,unit,source_unit==unit)) {
-                return i32(ERROR_NOT_ENOUGH_MEMORY);
-            }
+            i32 status=capture_with_providers(graph,source,unit,source_unit==unit);
+            if (status!=i32(0)) { return status; }
             put_word(indices,unit,count);
             count+=1u64;
         }

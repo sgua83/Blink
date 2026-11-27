@@ -68,7 +68,7 @@ struct CaptureSource {
     context: *mut c_void,
     key: unsafe extern "C" fn(*mut c_void, usize, *mut CapturePath) -> bool,
     provider: unsafe extern "C" fn(*const c_void, usize) -> ByteField,
-    capture: unsafe extern "C" fn(*mut c_void, usize, bool, ProviderNames),
+    capture: unsafe extern "C" fn(*mut c_void, usize, bool, ProviderNames) -> i32,
 }
 
 #[repr(C)]
@@ -443,7 +443,7 @@ unsafe extern "C" fn capture_provider_name(context: *const c_void, id: usize) ->
     name.as_bytes().into()
 }
 
-unsafe extern "C" fn capture_unit(context: *mut c_void, index: usize, shared: bool, names: ProviderNames) {
+unsafe extern "C" fn capture_unit(context: *mut c_void, index: usize, shared: bool, names: ProviderNames) -> i32 {
     let state = unsafe { &mut *context.cast::<GraphCapture<'_, '_>>() };
     let unit = &state.prepared[index];
     let providers = ProviderBindings { names, plan: state.dependencies, headers: state.headers };
@@ -451,7 +451,10 @@ unsafe extern "C" fn capture_unit(context: *mut c_void, index: usize, shared: bo
         UnitKind::Object(ObjectKind::Module(requests)) => requests,
         _ => &[],
     };
-    state.captured.push(state.capture.capture(&unit.path, &unit.root, providers, requests, shared));
+    match state.capture.capture(&unit.path, &unit.root, providers, requests, shared) {
+        Ok(unit) => { state.captured.push(unit); 0 }
+        Err(status) => status,
+    }
 }
 
 pub fn compile_graph(units: &[Unit<'_>]) -> Result<Vec<Output>> {

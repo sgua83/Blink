@@ -111,26 +111,3 @@ struct ExportTypeHost {
 };
 extern "C" u32 load_export_types(StorageView storage,Slice arguments,ExportTypeHost host) on cpu
     requires nonzero(host.save) requires nonzero(host.resume) requires nonzero(host.load);
-
-enum CaptureStatus:u32 { Failed=0; Ignored=1; Opened=2; };
-struct CaptureOpened { NameBytes name; CaptureStatus status; };
-struct CaptureImports { address data; usize count; };
-struct CaptureHost {
-    address context;
-    cfn<u32,address,NameBytes> known;
-    cfn<u32,address,NameBytes> enter;
-    cfn<CaptureOpened,address,NameBytes> open;
-    cfn<CaptureImports,address,NameBytes,u32> bind;
-    cfn<NameBytes,CaptureImports,usize> name;
-    cfn<void,CaptureImports> close;
-    cfn<u32,address,NameBytes> provider;
-    cfn<u32,address,usize> export;
-};
-extern "C" void capture_build_inputs(CaptureHost host, usize requests) on cpu
-    requires nonzero(host.known) requires nonzero(host.enter)
-    requires nonzero(host.open) requires nonzero(host.bind)
-    requires nonzero(host.name) requires nonzero(host.close) requires nonzero(host.export);
-extern "C" u32 capture_export_owner(CaptureHost host, NameBytes name) on cpu
-    requires nonzero(host.known) requires nonzero(host.enter)
-    requires nonzero(host.open) requires nonzero(host.bind)
-    requires nonzero(host.name) requires nonzero(host.close) requires nonzero(host.provider);

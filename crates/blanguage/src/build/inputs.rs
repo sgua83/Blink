@@ -1,7 +1,7 @@
 //! 一次构建持有的解析输入；跨次复用仍由正式对象／映像拥有。
 use super::graph::ProviderBindings;
 use crate::{CapturedExport, ExportRequest, ast::{self, Diagnostic, Source, Span}, object::{Kind, Object}, parser, syntax};
-use std::{collections::{BTreeMap, BTreeSet}, path::Path, sync::Arc};
+use std::{collections::BTreeMap, path::Path, sync::Arc};
 pub(super) enum ProviderInterface<'a> {
     Unit(&'a Arc<syntax::Module>),
     Object(&'a Object),
@@ -57,22 +57,23 @@ impl Capture {
     pub(super) fn capture(
         &mut self, path: &Path, root: &Path, providers: ProviderBindings<'_, '_>,
         requests: &[String], share_checks: bool,
-    ) -> CapturedUnit {
+    ) -> Result<CapturedUnit, i32> {
         let exports = (!providers.is_empty() && !requests.is_empty()).then(Vec::new);
         let count = if exports.is_some() { requests.len() } else { 0 };
         let mut state = CaptureState {
             capture: self, path, root, providers, requests,
-            visited: BTreeSet::new(), interfaces: Interfaces::new(), exports,
+            interfaces: Interfaces::new(), exports,
             opened: None,
         };
         let context = std::ptr::from_mut(&mut state).cast();
         // Capture can stop at a failed read. The original loader consumes that
         // result from the snapshot when it reaches this path or provider.
-        unsafe { capture_build_inputs(capture_host(context), count); }
-        CapturedUnit {
+        let status = unsafe { capture_build_inputs(capture_host(context), count) };
+        if status != 0 { return Err(status); }
+        Ok(CapturedUnit {
             interfaces: state.interfaces, exports: state.exports,
             checks: share_checks.then(crate::frontend::EntryChecks::default),
-        }
+        })
     }
 
     fn capture_interface(
@@ -124,21 +125,19 @@ impl CaptureImports {
 #[repr(C)]
 struct CaptureHost {
     context: *mut std::ffi::c_void,
-    known: unsafe extern "C" fn(*const std::ffi::c_void, CaptureName) -> u32,
-    enter: unsafe extern "C" fn(*mut std::ffi::c_void, CaptureName) -> u32,
     open: unsafe extern "C" fn(*mut std::ffi::c_void, CaptureName) -> CaptureOpened,
     bind: unsafe extern "C" fn(*mut std::ffi::c_void, CaptureName, u32) -> CaptureImports,
     name: unsafe extern "C" fn(CaptureImports, usize) -> CaptureName,
     close: unsafe extern "C" fn(CaptureImports),
     provider: unsafe extern "C" fn(*const std::ffi::c_void, CaptureName) -> u32,
-    export: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> u32,
+    export: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_void, usize) -> u32,
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.module_load::capture_build_inputs"]
-    fn capture_build_inputs(host: CaptureHost, requests: usize);
-    #[link_name = "bootstrap.module_load::capture_export_owner"]
-    fn capture_export_owner(host: CaptureHost, name: CaptureName) -> u32;
+    #[link_name = "bootstrap.capture_inputs::capture_build_inputs"]
+    fn capture_build_inputs(host: CaptureHost, requests: usize) -> i32;
+    #[link_name = "bootstrap.capture_inputs::capture_export_owner"]
+    fn capture_export_owner(host: CaptureHost, visited: *mut std::ffi::c_void, name: CaptureName) -> u32;
 }
 
 enum OpenedModule {
@@ -152,7 +151,6 @@ struct CaptureState<'a, 'provider> {
     root: &'a Path,
     providers: ProviderBindings<'a, 'provider>,
     requests: &'a [String],
-    visited: BTreeSet<String>,
     interfaces: Interfaces<ast::Result<CapturedInterface>>,
     exports: Option<Vec<ast::Result<CapturedExport>>>,
     opened: Option<OpenedModule>,
@@ -201,19 +199,11 @@ impl CaptureState<'_, '_> {
 }
 
 fn capture_host(context: *mut std::ffi::c_void) -> CaptureHost {
-    CaptureHost { context, known: capture_known, enter: capture_enter, open: capture_open,
+    CaptureHost { context, open: capture_open,
         bind: capture_bind, name: capture_name, close: capture_close, provider: capture_provider,
         export: capture_export }
 }
 
-unsafe extern "C" fn capture_known(context: *const std::ffi::c_void, name: CaptureName) -> u32 {
-    let state = unsafe { &*context.cast::<CaptureState<'_, '_>>() };
-    u32::from(state.visited.contains(unsafe { name.text() }))
-}
-unsafe extern "C" fn capture_enter(context: *mut std::ffi::c_void, name: CaptureName) -> u32 {
-    let state = unsafe { &mut *context.cast::<CaptureState<'_, '_>>() };
-    u32::from(state.visited.insert(unsafe { name.text() }.to_owned()))
-}
 unsafe extern "C" fn capture_open(context: *mut std::ffi::c_void, name: CaptureName) -> CaptureOpened {
     let state = unsafe { &mut *context.cast::<CaptureState<'_, '_>>() };
     let requested = (!name.bytes.is_null()).then(|| unsafe { name.text() });
@@ -251,7 +241,8 @@ unsafe extern "C" fn capture_provider(context: *const std::ffi::c_void, name: Ca
     let state = unsafe { &*context.cast::<CaptureState<'_, '_>>() };
     u32::from(state.providers.contains(unsafe { name.text() }))
 }
-unsafe extern "C" fn capture_export(context: *mut std::ffi::c_void, index: usize) -> u32 {
+unsafe extern "C" fn capture_export(context: *mut std::ffi::c_void, visited: *mut std::ffi::c_void, index: usize) -> u32 {
+    const OUT_OF_MEMORY: u32 = 8;
     let state = context.cast::<CaptureState<'_, '_>>();
     let requests = unsafe { (*state).requests };
     let request = match ExportRequest::parse(&requests[index]) {
@@ -262,20 +253,23 @@ unsafe extern "C" fn capture_export(context: *mut std::ffi::c_void, index: usize
         }
     };
     let mut owners = Vec::new();
-    // The type-owner walk calls the same B capture routine. Do not borrow state across that call.
+    let mut allocation_failed = false;
+    // The type-owner walk borrows the same B catalog. Do not borrow Rust state across that call.
     let complete = request.visit_type_owners(|name| {
-        match unsafe { capture_export_owner(capture_host(context), CaptureName::from_str(name)) } {
+        match unsafe { capture_export_owner(capture_host(context), visited, CaptureName::from_str(name)) } {
             0 => {
                 owners.push(name.to_owned());
                 false
             }
             1 => true,
+            OUT_OF_MEMORY => { allocation_failed = true; false }
             _ => {
                 owners.push(name.to_owned());
                 true
             }
         }
     });
+    if allocation_failed { return OUT_OF_MEMORY; }
     unsafe { (*state).exports.as_mut().unwrap().push(Ok(CapturedExport { request, owners })); }
     u32::from(complete)
 }

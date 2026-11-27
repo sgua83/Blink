@@ -36,7 +36,7 @@ struct CaptureSource {
     address context;
     cfn<bool,address,u64,address> key;
     cfn<NameBytes,address,u64> ensures memory(read) provider;
-    cfn<void,address,u64,bool,ProviderNames> capture;
+    cfn<i32,address,u64,bool,ProviderNames> capture;
 };
 
 // Final indices live in the same plan through the last unit.
