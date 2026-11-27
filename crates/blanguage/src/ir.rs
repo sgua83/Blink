@@ -1479,51 +1479,12 @@ impl Stage {
     }
 
     fn has_tile_scope_for(&self, code: &[Inst]) -> bool {
-        #[cfg(feature = "compiler")]
-        { dataflow::tile_scope(code, !self.tiles.is_empty()) }
-        #[cfg(not(feature = "compiler"))]
-        {
-            fn uses(code: &[Inst], has_tiles: bool) -> bool {
-                code.iter().any(|inst| match &inst.kind {
-                    InstKind::TileLength(_) | InstKind::TileLane(_) | InstKind::TilePublish(_)
-                    | InstKind::TileBarrier | InstKind::TileCollective(_) | InstKind::TileLoad { .. }
-                    | InstKind::Atomic(Atomic { target: IndexedSource::Tile { .. }, .. })
-                    | InstKind::LoadIndexed { source: IndexedSource::Tile { .. }, .. } => true,
-                    InstKind::Append(_) | InstKind::Subgroup { .. } => has_tiles,
-                    InstKind::Scope(body) => uses(body, has_tiles),
-                    InstKind::If { yes, no, .. } => uses(yes, has_tiles) || uses(no, has_tiles),
-                    InstKind::Loop { condition, body, .. } => uses(condition, has_tiles) || uses(body, has_tiles),
-                    _ => false,
-                })
-            }
-            uses(code, !self.tiles.is_empty())
-        }
+        tile::inspect_tile_uses(code, !self.tiles.is_empty(), None)
     }
     pub fn storage_tiles(&self) -> std::collections::BTreeSet<usize> {
-        #[cfg(feature = "compiler")]
-        { dataflow::storage_tiles(self) }
-        #[cfg(not(feature = "compiler"))]
-        {
-            fn collect(code: &[Inst], output: &mut std::collections::BTreeSet<usize>) {
-                for inst in code {
-                    match &inst.kind {
-                        InstKind::Atomic(Atomic { target: IndexedSource::Tile { tile, .. }, .. })
-                        | InstKind::LoadIndexed { source: IndexedSource::Tile { tile, .. }, .. }
-                        | InstKind::TileLoad { tile, .. } => { output.insert(*tile); }
-                        InstKind::TileCollective(value) => {
-                            if !value.results.is_empty() { output.insert(value.tile); }
-                        }
-                        InstKind::Scope(body) => collect(body, output),
-                        InstKind::If { yes, no, .. } => { collect(yes, output); collect(no, output); }
-                        InstKind::Loop { condition, body, .. } => { collect(condition, output); collect(body, output); }
-                        _ => {}
-                    }
-                }
-            }
-            let mut output = std::collections::BTreeSet::new();
-            collect(&self.code, &mut output);
-            output
-        }
+        let mut output = BTreeSet::new();
+        tile::inspect_tile_uses(&self.code, !self.tiles.is_empty(), Some(&mut output));
+        output
     }
     pub(crate) const DEFAULT_WORKGROUP_WIDTH: u32 = 64;
 
@@ -1893,15 +1854,16 @@ impl Program {
                 s.prefix,
                 s.selection
             );
-            if s.has_tile_scope() {
-                let tiles = s.storage_tiles();
-                let scratch = s.tile_scratch_bytes();
+            let mut tiles = BTreeSet::new();
+            if tile::inspect_tile_uses(&s.code, !s.tiles.is_empty(), Some(&mut tiles)) {
+                let width = s.tiles[0].width;
+                let scratch = s.tile_scratch_bytes_for(width);
                 out += &format!(
                     "    tile_width={}, shared_values={}, phases={}, tile_word_bytes={}, collective_scratch_bytes={}\n",
-                    s.workgroup_width(),
+                    width,
                     tiles.len(),
                     s.code.iter().filter(|inst| matches!(&inst.kind, InstKind::TilePublish(_) | InstKind::TileCollective(_) | InstKind::TileBarrier)).count() + 1,
-                    s.tile_data_bytes() + scratch,
+                    s.tile_data_bytes_for(width) + scratch,
                     scratch
                 );
                 for tile in tiles {

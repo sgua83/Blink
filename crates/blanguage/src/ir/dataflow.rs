@@ -616,25 +616,6 @@ pub(super) fn float_preserve(stage: &Stage, scalar: Scalar) -> bool {
     unsafe { b_float_preserve(Node::of(stage, Kind::Stage), requested, REGISTER_HOST) != 0 }
 }
 
-unsafe extern "C" {
-    #[link_name = "bootstrap.ir_dataflow::has_tile_scope"]
-    fn b_has_tile_scope(code: Span, has_tiles: u32, host: Host) -> u32;
-    #[link_name = "bootstrap.ir_dataflow::storage_tiles"]
-    fn b_storage_tiles(code: Span, host: Host, context: *mut c_void,
-        emit: unsafe extern "C" fn(*mut c_void, usize));
-}
-pub(super) fn tile_scope(code: &[Inst], has_tiles: bool) -> bool {
-    unsafe { b_has_tile_scope(Span::slice(code), u32::from(has_tiles), HOST) != 0 }
-}
-pub(super) fn storage_tiles(stage: &Stage) -> BTreeSet<usize> {
-    let mut output = BTreeSet::new();
-    unsafe { b_storage_tiles(Span::slice(&stage.code), HOST, ptr::from_mut(&mut output).cast(), emit_tile); }
-    output
-}
-unsafe extern "C" fn emit_tile(context: *mut c_void, tile: usize) {
-    unsafe { &mut *context.cast::<BTreeSet<usize>>() }.insert(tile);
-}
-
 #[repr(C)]
 struct StorageHost {
     ir: Host, stage: *const c_void,

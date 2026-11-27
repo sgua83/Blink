@@ -357,3 +357,32 @@ extern "C" ExecutionBuffers device_slots(address stages, usize count, usize buff
     usize auxiliary = scan_alias ? summary + 3u64 : summary + (prefix ? 1u64 : 0u64) + (selection ? 1u64 : 0u64);
     return ExecutionBuffers(buffers + summary, auxiliary);
 }
+
+extern "C" u32 tile_uses(TileCode code, u32 has_tiles,
+    cfn<TileInstructionFields,TileCode,usize> ensures memory(read) inspect,
+    address output, cfn<void,address,usize> include) on cpu
+    requires nonzero(inspect) requires nonzero(include) {
+    bool collect = output != address();
+    bool found = false;
+    usize index = 0u64;
+    while (index < code.count) {
+        TileInstructionFields instruction = inspect(code, index);
+        TileInstruction kind = instruction.kind;
+        bool uses = kind == TileInstruction::Stage || kind == TileInstruction::Storage
+            || kind == TileInstruction::Collective || (kind == TileInstruction::Group && has_tiles != 0);
+        if (kind == TileInstruction::Block) {
+            u32 first = tile_uses(instruction.first, has_tiles, inspect, output, include);
+            if (first != 0 && !collect) { return 1; }
+            u32 second = tile_uses(instruction.second, has_tiles, inspect, output, include);
+            uses = first != 0 || second != 0;
+        }
+        if (uses && !collect) { return 1; }
+        if (collect && (kind == TileInstruction::Storage
+            || (kind == TileInstruction::Collective && instruction.results != 0))) {
+            include(output, instruction.tile);
+        }
+        found = found || uses;
+        index += 1u64;
+    }
+    return u32(found);
+}

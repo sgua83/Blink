@@ -347,6 +347,7 @@ impl ExecutionStage {
             Operation::Compact(c) => Operation::Compact(c.clone()),
             Operation::StableSort(s) => Operation::StableSort(s.clone()),
         };
+        let tile_width = stage.tile_workgroup_width();
         Self {
             domain: stage.domain,
             prefix: stage.prefix,
@@ -358,8 +359,8 @@ impl ExecutionStage {
             prefix_guarantees: stage.prefix_guarantees.clone(),
             element_guarantees: stage.element_guarantees.clone(),
             inputs,
-            tile_scope: stage.has_tile_scope(),
-            width: stage.workgroup_width(),
+            tile_scope: tile_width.is_some(),
+            width: tile_width.unwrap_or(Stage::DEFAULT_WORKGROUP_WIDTH),
             shared_bytes: 0,
         }
     }

@@ -137,3 +137,17 @@ struct ExecutionBuffers { usize indirect; usize auxiliary; };
 
 extern "C" ExecutionBuffers device_slots(address stages, usize count, usize buffers,
     cfn<StageSlots,address,usize> ensures memory(read) stage) on cpu requires nonzero(stage);
+
+struct TileCode { address instructions; usize count; };
+enum TileInstruction : u32 { Ordinary = 0; Stage = 1; Group = 2; Storage = 3; Collective = 4; Block = 5; };
+struct TileInstructionFields {
+    TileInstruction kind;
+    u32 results;
+    usize tile;
+    TileCode first;
+    TileCode second;
+};
+extern "C" u32 tile_uses(TileCode code, u32 has_tiles,
+    cfn<TileInstructionFields,TileCode,usize> ensures memory(read) inspect,
+    address output, cfn<void,address,usize> include) on cpu
+    requires nonzero(inspect) requires nonzero(include);
