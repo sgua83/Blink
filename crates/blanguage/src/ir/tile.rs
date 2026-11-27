@@ -146,6 +146,7 @@ unsafe extern "C" fn publish_tile_word(context: *mut c_void, key: TileKey, bytes
 
 #[cfg(feature = "compiler")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u64)]
 pub(crate) enum PrivateSlot {
     Register(Reg),
     Local(usize),
@@ -154,8 +155,8 @@ pub(crate) enum PrivateSlot {
 pub(crate) struct TilePhase<'a> {
     pub code: &'a [Inst],
     pub step: Option<&'a Inst>,
-    pub live_in: BTreeSet<PrivateSlot>,
-    pub saved: BTreeSet<PrivateSlot>,
+    pub live_in: Vec<PrivateSlot>,
+    pub saved: Vec<PrivateSlot>,
 }
 #[cfg(feature = "compiler")]
 impl<'a> TilePhase<'a> {

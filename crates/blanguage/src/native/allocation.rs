@@ -130,10 +130,6 @@ pub(super) struct Graph {
 #[path = "allocation/graph.rs"]
 mod graph;
 impl Graph {
-    fn together(&mut self, live: &BTreeSet<PrivateSlot>) { graph::together(self, live); }
-}
-
-impl Graph {
     pub(super) fn function_inputs(&mut self,inputs:&[Reg]) {
         // Entry values are simultaneous definitions supplied by the native caller.
         graph::inputs(self, inputs);
@@ -151,7 +147,7 @@ impl Graph {
     pub(super) fn tile_interference(&mut self, phases: &[TilePhase<'_>]) {
         // 前一阶段的出站保存槽属于后一阶段的入口活跃集合。
         for phase in phases {
-            self.together(&phase.live_in);
+            graph::phase_interference(self, &phase.live_in);
         }
     }
 

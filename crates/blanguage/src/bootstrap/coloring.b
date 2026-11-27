@@ -518,6 +518,30 @@ extern "C" void graph_together(address graph,address live,GraphCore core) on cpu
     requires nonzero(core.visit_set) {
     core.visit_set(live,18446744073709551615u64,graph,GraphEvent(0u64,0u64,1,0));
 }
+u64 graph_phase_slot(address graph, Span live, usize index) on cpu {
+    TilePrivateKey slot = tile_private_at(live, index);
+    return graph_slot_id(graph, GraphSpace(u32(u64(slot.space))), slot.index);
+}
+
+extern "C" void graph_phase_interference(address graph, Span live) on cpu {
+    address places = unsafe_position<GraphData>(graph).places;
+    usize index = 0u64;
+    while (index < live.count) {
+        u64 id = graph_phase_slot(graph, live, index);
+        if (unsafe_position<ColorPlace>(place_at(places, id)).width != 0) {
+            usize before = 0u64;
+            while (before < index) {
+                u64 other = graph_phase_slot(graph, live, before);
+                if (unsafe_position<ColorPlace>(place_at(places, other)).width != 0) {
+                    graph_edge(graph, id, other);
+                }
+                before += 1u64;
+            }
+        }
+        index += 1u64;
+    }
+}
+
 extern "C" void graph_inputs(address graph,address inputs,u64 count) on cpu {
     u64 index=0u64;
     while(index<count){

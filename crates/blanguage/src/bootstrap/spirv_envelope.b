@@ -1,5 +1,6 @@
 module bootstrap.spirv_envelope;
 import bootstrap.ir_dataflow;
+import bootstrap.stage_fusion;
 
 const u32 CAPABILITIES = 21;
 const array<u32,CAPABILITIES> CAPABILITY_CODES = array<u32,CAPABILITIES>(
@@ -2091,14 +2092,16 @@ extern "C" void emit_tile_phases(u32 active, StructuredHost control, TilePhaseHo
     requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve)
     requires nonzero(control.labels) requires nonzero(control.reserve_words) requires nonzero(control.finish_words)
     requires nonzero(control.reserve_edges)
-    requires nonzero(host.next_phase) requires nonzero(host.next_value) {
+    requires nonzero(host.phase) requires nonzero(host.value) {
     address context = control.context;
     ScalarHost stream = emit.values.scalars;
     MemoryHost memory = MemoryHost(stream, emit.paging.finish_body);
     ReturnEdges edges = ReturnEdges(EdgeStorage(address(), 0u64), 0u64);
     ControlTargets targets = ControlTargets(0, 0, 0, 0);
-    TilePhaseView phase = host.next_phase(host.cursor);
-    while (phase.present != 0) {
+    usize index = 0u64;
+    while (index < host.phases.count) {
+        TilePhaseView phase = host.phase(host.phases.data, index);
+        index += 1u64;
         u32 before = emit.paging.current_label(stream.context);
         u32 execute = control.labels(context, 2);
         u32 end = execute + 1;
@@ -2111,25 +2114,27 @@ extern "C" void emit_tile_phases(u32 active, StructuredHost control, TilePhaseHo
         if (step.tag == OP_TILE_PUBLISH) { block_tile_publish(step, emit.values, emit.tile, memory); }
         u32 producer = emit.paging.current_label(stream.context);
         control.finish_words(context, next_control_block(end, end, 1, control.reserve_words(context, 4u64)));
-        TilePhaseValue saved = host.next_value(host.cursor, context);
-        while (saved.value_type != 0) {
+        usize saved_index = 0u64;
+        while (saved_index < phase.saved.count) {
+            TilePrivateKey slot = tile_private_at(phase.saved, saved_index);
+            saved_index += 1u64;
+            if (slot.space == TilePrivateSpace::Local) { continue; }
+            TilePhaseValue saved = host.value(context, slot.index);
             // Module constants dominate both paths. Only live SSA registers need a Phi for the inactive tail.
             if (saved.module_constant == 0) {
                 u32 result = control.labels(context, 1);
-                u32 zero = stream.constant(stream.context, emit.values.scalar(stream.context, saved.register), 0u64);
+                u32 zero = stream.constant(stream.context, emit.values.scalar(stream.context, slot.index), 0u64);
                 address body = control.reserve_words(context, 7u64);
                 u64 words = phi_two(body, 0u64, saved.value_type, result, saved.value, producer, zero, before);
                 control.finish_words(context, ControlWords(words, 0, 1));
-                put(emit.values.registers, saved.register, result);
+                put(emit.values.registers, slot.index, result);
             }
-            saved = host.next_value(host.cursor, context);
         }
         if (step.tag == OP_TILE_PUBLISH || step.tag == OP_TILE_BARRIER) {
             tile_workgroup_sync(0x148, memory);
         } else if (step.tag == OP_TILE_COLLECTIVE) {
             block_tile_collective(step, emit, memory, control);
         }
-        phase = host.next_phase(host.cursor);
     }
 }
 

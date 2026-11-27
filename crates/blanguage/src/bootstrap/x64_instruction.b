@@ -2,6 +2,7 @@ module bootstrap.x64_instruction;
 import bootstrap.unwind;
 import bootstrap.ir_dataflow;
 import bootstrap.names;
+import bootstrap.stage_fusion;
 import codec.builtin_type;
 
 struct BinaryEncoding {
@@ -5656,32 +5657,34 @@ void emit_map_tile_input(MapRangeInput input, MapRangeHost host) on cpu
     patch_relative(unsafe_address(address_bits(buffer.image) + skip), skip, buffer.end);
 }
 
-void emit_tile_private_values(MapRangeInput input, MapRangeHost host, u64 phase, bool restore) on cpu
+void emit_tile_private_values(MapRangeInput input, MapRangeHost host, Span slots, u64 phase, bool restore) on cpu
     requires nonzero(host.reserve) requires nonzero(host.commit) requires nonzero(host.observe)
-    requires nonzero(host.next_private) requires nonzero(host.observe_private) {
-    TilePrivateSlot item = host.next_private(host.context, restore);
-    if (address_bits(item.scalar_origin) == 0u64) { return; }
+    requires nonzero(host.private_place) requires nonzero(host.observe_private) {
+    if (slots.count == 0u64) { return; }
     NativeCodeBuffer buffer = host.reserve(host.context, 16u64);
     address output = unsafe_address(address_bits(buffer.image) + buffer.end);
     u64 end = buffer.end + tile_lane_pointer(input.slots + 4, output);
     host.commit(host.context, end);
     host.observe(host.context, MapRangeObservation(buffer.end, end, usize(phase), u32(restore), MapRangePart::TilePrivatePointer));
     u32 stride = input.workgroup * 4;
-    while (address_bits(item.scalar_origin) != 0u64) {
+    usize index = 0u64;
+    while (index < slots.count) {
+        TilePrivateKey slot = tile_private_at(slots, index);
+        TilePrivatePlace place = host.private_place(host.context, slot);
         buffer = host.reserve(host.context, 64u64);
         output = unsafe_address(address_bits(buffer.image) + buffer.end);
-        TilePrivateCopy copy = TilePrivateCopy(item.location, item.scalar, item.storage_offset, stride, restore);
+        TilePrivateCopy copy = TilePrivateCopy(place.location, place.scalar, place.storage_offset, stride, restore);
         end = buffer.end + tile_private_copy(copy, output);
         host.commit(host.context, end);
-        host.observe_private(host.context, buffer.end, end, phase, restore, item);
-        item = host.next_private(host.context, restore);
+        host.observe_private(host.context, buffer.end, end, phase, restore, slot, place);
+        index += 1u64;
     }
 }
 
-void advance_tile_phase(MapRangeInput input, MapRangeHost host, u64 phase, u32 base, u64 begin) on cpu
-    requires nonzero(host.next_private) requires nonzero(host.observe_private) requires nonzero(host.reserve)
+void advance_tile_phase(MapRangeInput input, MapRangeHost host, Span saved, u64 phase, u32 base, u64 begin) on cpu
+    requires nonzero(host.private_place) requires nonzero(host.observe_private) requires nonzero(host.reserve)
     requires nonzero(host.commit) requires nonzero(host.observe) {
-    emit_tile_private_values(input, host, phase, false);
+    emit_tile_private_values(input, host, saved, phase, false);
     NativeCodeBuffer buffer = host.reserve(host.context, 32u64);
     address output = unsafe_address(address_bits(buffer.image) + buffer.end);
     u64 end = buffer.end + tile_phase_advance(base, input.slots, buffer.end - begin, output);
@@ -5693,7 +5696,7 @@ bool emit_map_tile_phases(MapRangeInput input, MapRangeHost host, ControlTargets
     requires nonzero(host.reserve) requires nonzero(host.commit) requires nonzero(host.observe)
     requires nonzero(host.scalar) requires nonzero(host.next_input) requires nonzero(host.observe_input)
     requires nonzero(host.ir.inspect) requires nonzero(host.phase)
-    requires nonzero(host.next_private) requires nonzero(host.observe_private) requires nonzero(host.tile_step) {
+    requires nonzero(host.private_place) requires nonzero(host.observe_private) requires nonzero(host.tile_step) {
     u32 base = input.slots + 4;
     move_tile_base(host, base, 0u64, false);
     emit_map_tile_input(input, host);
@@ -5701,16 +5704,16 @@ bool emit_map_tile_phases(MapRangeInput input, MapRangeHost host, ControlTargets
     while (phase < input.phase_count) {
         TilePhaseView row = host.phase(host.context, phase);
         u64 begin = move_tile_base(host, base, phase, true);
-        emit_tile_private_values(input, host, phase, true);
+        emit_tile_private_values(input, host, row.live_in, phase, true);
         if (host.scalar(host.context, row.code, targets) == 0) { return false; }
         if (address_bits(row.step.data) == 0u64) {
-            advance_tile_phase(input, host, phase, base, begin);
+            advance_tile_phase(input, host, row.saved, phase, base, begin);
         } else {
             View value = host.ir.inspect(row.step);
             if (value.tag == OP_TILE_PUBLISH) {
                 host.tile_step(host.context, row.step.data, ScalarLeaf::Publish, value);
             }
-            advance_tile_phase(input, host, phase, base, begin);
+            advance_tile_phase(input, host, row.saved, phase, base, begin);
             if (value.tag == OP_TILE_COLLECTIVE) {
                 host.tile_step(host.context, row.step.data, ScalarLeaf::Collective, value);
             }
@@ -5734,7 +5737,7 @@ extern "C" u32 emit_map_range(MapRangeInput input, MapRangeHost host) on cpu
     requires nonzero(host.commit) requires nonzero(host.observe)
     requires nonzero(host.packet) requires nonzero(host.scalar) requires nonzero(host.next_input) requires nonzero(host.observe_input)
     requires nonzero(host.ir.inspect) requires nonzero(host.phase)
-    requires nonzero(host.next_private) requires nonzero(host.observe_private) requires nonzero(host.tile_step) {
+    requires nonzero(host.private_place) requires nonzero(host.observe_private) requires nonzero(host.tile_step) {
     u64 exits = 0u64;
     ControlTargets targets = ControlTargets(address_of(exits), address_of(exits), address(), 0u64);
     RangePrologue entry = range_prologue(input.frame, input.saved, host.context, host.frame);

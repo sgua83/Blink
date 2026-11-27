@@ -81,11 +81,16 @@ extern "C" address private_loop(Span condition, u64 test, Span body,
     requires nonzero(host.ir.inspect) requires nonzero(host.insert_register)
     requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change);
 // Emit borrowed code ranges and the original slot sets from the last phase to the first.
-extern "C" void private_tile_phases(Span code, address live, address saved, address empty,
-    LiveHost host, address context, cfn<void,address,u64,u64,address,address> emit) on cpu
+// The ordered phase rows borrow Rust's original PrivateSlot tag and index.
+enum TilePrivateSpace:u64 { Register=0u64; Local=1u64; };
+struct TilePrivateKey { TilePrivateSpace space; usize index; };
+TilePrivateKey tile_private_at(Span slots, usize index) on cpu;
+
+extern "C" void private_tile_phases(Span code, address live, address empty, LiveHost host,
+    address context, cfn<void,address,u64,u64,address> emit, cfn<void,address,address> save) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.insert_register)
     requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change)
-    requires nonzero(emit);
+    requires nonzero(emit) requires nonzero(save);
 
 enum DceRemovalKind:u32 { Values=0; Division=1; DirectWrite=2; IndexedWrite=3; };
 enum DceDivisionChoice:u32 { Quotient=1; Remainder=2; Both=3; };

@@ -1,4 +1,4 @@
-//! B propagates liveness; the original IR and sets keep their native ownership.
+//! B propagates liveness and snapshots ordered slots into the final phase plan.
 use super::{BTreeSet, Inst, PrivateSlot, Reg, TilePhase};
 use std::{ffi::c_void, mem, ptr};
 use crate::ir::dataflow::{self, Span};
@@ -17,8 +17,8 @@ pub(crate) struct Host {
 }
 unsafe extern "C" {
     #[link_name = "bootstrap.stage_fusion::private_tile_phases"]
-    fn native_tile_phases(code: Span, live: *mut Slots, saved: *mut Slots, empty: *const Slots,
-        host: Host, context: *mut c_void, emit: PhaseOutput);
+    fn native_tile_phases(code: Span, live: *mut Slots, empty: *const Slots, host: Host,
+        context: *mut c_void, emit: PhaseOutput, save: PhaseSave);
 }
 
 unsafe extern "C" fn insert_register(live: *mut Slots, reg: Reg) -> u32 {
@@ -44,33 +44,39 @@ unsafe extern "C" fn change(action: Action, output: *mut Slots, input: *const Sl
 }
 pub(crate) const HOST: Host = Host { ir: dataflow::HOST, insert_register, clone_set, drop_set, change };
 
-type PhaseOutput = unsafe extern "C" fn(*mut c_void, usize, usize, *const Slots, *mut Slots);
+type PhaseOutput = unsafe extern "C" fn(*mut c_void, usize, usize, *const Slots);
+type PhaseSave = unsafe extern "C" fn(*mut c_void, *const Slots);
 
 struct Phases<'a> {
     code: &'a [Inst],
     phases: Vec<TilePhase<'a>>,
+    saved: Vec<PrivateSlot>,
 }
 
 unsafe extern "C" fn append_phase(
-    context: *mut c_void, begin: usize, end: usize, live: *const Slots, saved: *mut Slots,
+    context: *mut c_void, begin: usize, end: usize, live: *const Slots,
 ) {
     let output = unsafe { &mut *context.cast::<Phases<'_>>() };
     output.phases.push(TilePhase {
         code: &output.code[begin..end],
         step: output.code.get(end),
-        live_in: unsafe { &*live }.clone(),
-        saved: mem::take(unsafe { &mut *saved }),
+        live_in: unsafe { &*live }.iter().copied().collect(),
+        saved: mem::take(&mut output.saved),
     });
 }
 
+unsafe extern "C" fn save_phase_slots(context: *mut c_void, live: *const Slots) {
+    let output = unsafe { &mut *context.cast::<Phases<'_>>() };
+    output.saved.extend(unsafe { &*live }.iter().copied());
+}
+
 pub(super) fn tile_phases(code: &[Inst]) -> Vec<TilePhase<'_>> {
-    let mut output = Phases { code, phases: Vec::new() };
+    let mut output = Phases { code, phases: Vec::new(), saved: Vec::new() };
     let empty = Slots::new();
     let mut live = Slots::new();
-    let mut saved = Slots::new();
     unsafe {
-        native_tile_phases(Span::slice(code), &mut live, &mut saved, &empty, HOST,
-            ptr::from_mut(&mut output).cast(), append_phase);
+        native_tile_phases(Span::slice(code), &mut live, &empty, HOST,
+            ptr::from_mut(&mut output).cast(), append_phase, save_phase_slots);
     }
     output.phases.reverse();
     output.phases

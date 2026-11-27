@@ -350,20 +350,18 @@ struct MapRangeObservation {
 }
 
 #[repr(C)]
-struct TilePhaseView { code: Span, step: Node }
+struct TilePhaseView { code: Span, step: Node, live_in: Span, saved: Span }
 
 #[repr(C)]
 #[derive(Default)]
 struct TileInputFragment { binding: usize, source_offset: u32, storage_base: u32, unit_bytes: u32 }
 
 #[repr(C)]
-struct TilePrivateSlot {
+struct TilePrivatePlace {
     location: operands::MoveLocation,
     scalar: ScalarEncoding,
-    index: usize,
     scalar_origin: *const Scalar,
     storage_offset: u32,
-    local: u32,
 }
 
 struct TileInputCursor<'a> {
@@ -387,8 +385,8 @@ struct MapRangeHost {
     observe_input: unsafe extern "C" fn(MapRangeSlot, usize, usize, TileInputFragment, u32),
     ir: dataflow::Host,
     phase: unsafe extern "C" fn(MapRangeSlot, usize) -> TilePhaseView,
-    next_private: unsafe extern "C" fn(MapRangeSlot, u32) -> TilePrivateSlot,
-    observe_private: unsafe extern "C" fn(MapRangeSlot, usize, usize, usize, u32, TilePrivateSlot),
+    private_place: unsafe extern "C" fn(MapRangeSlot, PrivateSlot) -> TilePrivatePlace,
+    observe_private: unsafe extern "C" fn(MapRangeSlot, usize, usize, usize, u32, PrivateSlot, TilePrivatePlace),
     tile_step: unsafe extern "C" fn(MapRangeSlot, *const Inst, ScalarLeaf, View),
     observe: unsafe extern "C" fn(MapRangeSlot, MapRangeObservation),
 }
@@ -398,8 +396,6 @@ struct MapRange<'a, 'b> {
     stage: &'b Stage,
     phases: &'a [TilePhase<'b>],
     input: TileInputCursor<'a>,
-    live_in: btree_set::Iter<'a, PrivateSlot>,
-    saved: btree_set::Iter<'a, PrivateSlot>,
     result: Result<(), &'static str>,
 }
 
@@ -475,41 +471,38 @@ unsafe extern "C" fn map_range_observe_input(
 }
 
 unsafe extern "C" fn map_range_phase(slot: MapRangeSlot, index: usize) -> TilePhaseView {
-    let range = unsafe { &mut *slot.cast::<MapRange<'_, '_>>() };
+    let range = unsafe { &*slot.cast::<MapRange<'_, '_>>() };
     let phase = &range.phases[index];
-    range.live_in = phase.live_in.iter();
-    range.saved = phase.saved.iter();
-    TilePhaseView { code: Span::slice(phase.code), step: phase.step.map_or(Node::EMPTY, Node::instruction) }
+    TilePhaseView {
+        code: Span::slice(phase.code),
+        step: phase.step.map_or(Node::EMPTY, Node::instruction),
+        live_in: Span::slice(&phase.live_in),
+        saved: Span::slice(&phase.saved),
+    }
 }
 
-unsafe extern "C" fn map_range_next_private(slot: MapRangeSlot, restore: u32) -> TilePrivateSlot {
-    let range = unsafe { &mut *slot.cast::<MapRange<'_, '_>>() };
-    let slots = if restore != 0 { &mut range.live_in } else { &mut range.saved };
-    let Some(&slot) = slots.next() else {
-        return TilePrivateSlot {
-            location: allocation::Location::Immediate(0).into(), scalar: Scalar::U32.into(),
-            index: 0, scalar_origin: std::ptr::null(), storage_offset: 0, local: 0,
-        };
-    };
-    let scalar = slot.scalar(range.emitter.registers, &range.stage.locals);
-    let (local, index) = match slot {
-        PrivateSlot::Register(index) => (0, index),
-        PrivateSlot::Local(index) => (1, index),
-    };
-    TilePrivateSlot {
-        location: range.emitter.allocation.location(slot).into(), scalar: (*scalar).into(),
-        index, scalar_origin: scalar,
-        storage_offset: range.emitter.private_stream(slot), local,
+unsafe extern "C" fn map_range_private_place(slot: MapRangeSlot, value: PrivateSlot) -> TilePrivatePlace {
+    let range = unsafe { &*slot.cast::<MapRange<'_, '_>>() };
+    let scalar = value.scalar(range.emitter.registers, &range.stage.locals);
+    TilePrivatePlace {
+        location: range.emitter.allocation.location(value).into(),
+        scalar: (*scalar).into(),
+        scalar_origin: scalar,
+        storage_offset: range.emitter.private_stream(value),
     }
 }
 
 unsafe extern "C" fn map_range_observe_private(
-    slot: MapRangeSlot, start: usize, end: usize, phase: usize, restore: u32, item: TilePrivateSlot,
+    slot: MapRangeSlot, start: usize, end: usize, phase: usize, restore: u32, value: PrivateSlot, place: TilePrivatePlace,
 ) {
     let range = unsafe { &mut *slot.cast::<MapRange<'_, '_>>() };
+    let (local, index) = match value {
+        PrivateSlot::Register(index) => (false, index),
+        PrivateSlot::Local(index) => (true, index),
+    };
     range.emitter.parallel_abi_range(start..end, super::ParallelRangePart::TilePrivate {
-        phase, restore: restore != 0, local: item.local != 0, slot: item.index,
-        storage_offset: item.storage_offset, scalar: unsafe { *item.scalar_origin },
+        phase, restore: restore != 0, local, slot: index,
+        storage_offset: place.storage_offset, scalar: unsafe { *place.scalar_origin },
     });
 }
 
@@ -618,8 +611,6 @@ fn emit_map(
         input: TileInputCursor {
             groups: inputs.iter(), fragments: btree_set::Iter::default(), binding: 0, storage_base: 0,
         },
-        live_in: btree_set::Iter::default(),
-        saved: btree_set::Iter::default(),
         result: Ok(()),
     };
     let stack_bytes = unsafe {
@@ -630,7 +621,7 @@ fn emit_map(
             packet: map_range_packet, scalar: map_range_scalar,
             next_input: map_range_next_input, observe_input: map_range_observe_input,
             ir: dataflow::HOST, phase: map_range_phase,
-            next_private: map_range_next_private, observe_private: map_range_observe_private,
+            private_place: map_range_private_place, observe_private: map_range_observe_private,
             tile_step: map_range_tile_step, observe: map_range_observe,
         })
     };

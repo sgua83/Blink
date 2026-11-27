@@ -1,6 +1,7 @@
 module bootstrap.x64_instruction;
 import bootstrap.scalar_fold;
 import bootstrap.ir_dataflow;
+import bootstrap.stage_fusion;
 import bootstrap.frame_layout;
 
 struct Encoding {
@@ -712,17 +713,14 @@ struct MapRangeInput {
     u64 saved;
 };
 struct MapRangeObservation { u64 start; u64 end; usize index; u32 value; MapRangePart part; };
-struct TilePhaseView { Span code; Node step; };
-// An exhausted input stream has zero unit bytes; an exhausted slot stream
-// carries no original scalar. The rows borrow their original placement.
+struct TilePhaseView { Span code; Node step; Span live_in; Span saved; };
+// An exhausted input stream has zero unit bytes.
 struct TileInputFragment { u64 binding; u32 source_offset; u32 storage_base; u32 unit_bytes; };
-struct TilePrivateSlot {
+struct TilePrivatePlace {
     MoveLocation location;
     ScalarEncoding scalar;
-    u64 index;
     address scalar_origin;
     u32 storage_offset;
-    u32 local;
 };
 struct MapRangeHost {
     address context;
@@ -735,8 +733,8 @@ struct MapRangeHost {
     cfn<void,address,u64,u64,TileInputFragment,u32> observe_input;
     Host ir;
     cfn<TilePhaseView,address,u64> phase;
-    cfn<TilePrivateSlot,address,bool> next_private;
-    cfn<void,address,u64,u64,u64,bool,TilePrivateSlot> observe_private;
+    cfn<TilePrivatePlace,address,TilePrivateKey> ensures memory(read) private_place;
+    cfn<void,address,u64,u64,u64,bool,TilePrivateKey,TilePrivatePlace> observe_private;
     cfn<void,address,address,ScalarLeaf,View> tile_step;
     cfn<void,address,MapRangeObservation> observe;
 };
@@ -747,7 +745,7 @@ extern "C" u32 emit_map_range(MapRangeInput input, MapRangeHost host) on cpu
     requires nonzero(host.commit) requires nonzero(host.observe)
     requires nonzero(host.packet) requires nonzero(host.scalar) requires nonzero(host.next_input) requires nonzero(host.observe_input)
     requires nonzero(host.ir.inspect) requires nonzero(host.phase)
-    requires nonzero(host.next_private) requires nonzero(host.observe_private) requires nonzero(host.tile_step);
+    requires nonzero(host.private_place) requires nonzero(host.observe_private) requires nonzero(host.tile_step);
 
 struct ScalarStorageEncoding { u64 length; u64 literal; u64 field; };
 struct ScalarStorageHost {

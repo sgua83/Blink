@@ -45,6 +45,7 @@ extern "C" GraphBuilt graph_create(address request,GraphHost host) on cpu
     requires nonzero(host.live.insert_register) requires nonzero(host.register_operand);
 extern "C" void graph_together(address graph,address live,GraphCore core) on cpu
     requires nonzero(core.visit_set);
+extern "C" void graph_phase_interference(address graph, Span live) on cpu;
 extern "C" void graph_inputs(address graph,address inputs,u64 count) on cpu;
 extern "C" void graph_live_event(address graph,address live,GraphSpace space,u64 index,u64 ordinal,GraphEvent event,GraphCore core) on cpu
     requires nonzero(core.visit_set);

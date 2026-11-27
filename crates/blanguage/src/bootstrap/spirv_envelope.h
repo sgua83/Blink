@@ -459,12 +459,12 @@ extern "C" BlockFlow emit_instruction_block(Span code, StructuredHost host, Bloc
     requires nonzero(host.labels) requires nonzero(host.reserve_words) requires nonzero(host.finish_words)
     requires nonzero(host.reserve_edges);
 
-struct TilePhaseView { Span code; Node step; u32 present; };
-struct TilePhaseValue { usize register; u32 value; u32 value_type; u32 module_constant; };
+struct TilePhaseView { Span code; Node step; Span saved; };
+struct TilePhaseValue { u32 value; u32 value_type; u32 module_constant; };
 struct TilePhaseHost {
-    address cursor;
-    cfn<TilePhaseView,address> next_phase;
-    cfn<TilePhaseValue,address,address> next_value;
+    Span phases;
+    cfn<TilePhaseView,address,usize> ensures memory(read) phase;
+    cfn<TilePhaseValue,address,usize> ensures memory(read) value;
 };
 extern "C" void emit_tile_phases(u32 active, StructuredHost control, TilePhaseHost host, BlockHost emit) on cpu
     requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
@@ -478,7 +478,7 @@ extern "C" void emit_tile_phases(u32 active, StructuredHost control, TilePhaseHo
     requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve)
     requires nonzero(control.labels) requires nonzero(control.reserve_words) requires nonzero(control.finish_words)
     requires nonzero(control.reserve_edges)
-    requires nonzero(host.next_phase) requires nonzero(host.next_value);
+    requires nonzero(host.phase) requires nonzero(host.value);
 
 struct AppendEmission {
     u32 uint_type;

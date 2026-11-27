@@ -41,8 +41,8 @@ struct Built {
 unsafe extern "C" {
     #[link_name = "bootstrap.coloring::graph_create"]
     fn graph_create(request: *const Request, host: Host) -> Built;
-    #[link_name = "bootstrap.coloring::graph_together"]
-    fn graph_together(graph: *mut c_void, live: *const Slots, core: Core);
+    #[link_name = "bootstrap.coloring::graph_phase_interference"]
+    fn graph_phase_interference(graph: *mut c_void, live: Span);
     #[link_name = "bootstrap.coloring::graph_inputs"]
     fn graph_inputs(graph: *mut c_void, inputs: *const Reg, count: usize);
     #[link_name = "bootstrap.coloring::graph_live_event"]
@@ -64,7 +64,9 @@ pub(super) fn build(code: &[Inst], registers: &[Scalar], locals: &BTreeMap<usize
     let built = unsafe { graph_create(&request, HOST) };
     (built.state, built.uses_r15 != 0)
 }
-pub(super) fn together(graph: &mut Graph, live: &Slots) { unsafe { graph_together(graph.state, live, CORE) } }
+pub(super) fn phase_interference(graph: &mut Graph, live: &[PrivateSlot]) {
+    unsafe { graph_phase_interference(graph.state, Span::slice(live)) }
+}
 pub(super) fn inputs(graph: &mut Graph, inputs: &[Reg]) { unsafe { graph_inputs(graph.state, inputs.as_ptr(), inputs.len()) } }
 
 unsafe extern "C" fn scalar(value: *const Scalar) -> ScalarEncoding {

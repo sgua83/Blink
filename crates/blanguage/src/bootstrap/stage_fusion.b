@@ -433,11 +433,15 @@ extern "C" void private_range_live(Span code, address live, address empty, LiveH
     host.drop_set(header);
 }
 
-extern "C" void private_tile_phases(Span code, address live, address saved, address empty,
-    LiveHost host, address context, cfn<void,address,u64,u64,address,address> emit) on cpu
+TilePrivateKey tile_private_at(Span slots, usize index) on cpu {
+    return unsafe_position<TilePrivateKey>(span_item_at(slots,index));
+}
+
+extern "C" void private_tile_phases(Span code, address live, address empty, LiveHost host,
+    address context, cfn<void,address,u64,u64,address> emit, cfn<void,address,address> save) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.insert_register)
     requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change)
-    requires nonzero(emit) {
+    requires nonzero(emit) requires nonzero(save) {
     u64 index = code.count;
     u64 end = code.count;
     while (index != 0u64) {
@@ -449,10 +453,10 @@ extern "C" void private_tile_phases(Span code, address live, address saved, addr
                 Span tail = Span(span_item_at(code,begin), code.count - begin, code.stride);
                 private_before(tail,live,empty,empty,empty,empty,host);
             }
-            emit(context,begin,end,live,saved);
+            emit(context,begin,end,live);
             // The step produces its own results after saving the other live slots.
             private_kill(value,live,host);
-            host.change(LiveSetAction::Copy,saved,live,0u64);
+            save(context,live);
             private_reads(value,live,host);
             end = index;
         } else if (end != code.count) {
@@ -460,7 +464,7 @@ extern "C" void private_tile_phases(Span code, address live, address saved, addr
         }
     }
     if (end != code.count) {
-        emit(context,0u64,end,live,saved);
+        emit(context,0u64,end,live);
     }
 }
 
