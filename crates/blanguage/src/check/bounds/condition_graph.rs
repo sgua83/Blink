@@ -151,13 +151,15 @@ struct Gate {
     left: usize,
     right: usize,
     kind: u32,
-    parents: Span,
+    parent_start: usize,
+    parent_count: usize,
 }
 #[repr(C)]
 struct Graph {
-    nodes: *const Gate,
+    nodes: *mut Gate,
     stride: usize,
     values: *mut u8,
+    parents: *const usize,
 }
 #[repr(C)]
 struct Assignment {
@@ -184,7 +186,6 @@ struct AlternativeView {
 struct Node<'a> {
     facts: Option<&'a Facts>,
     view: Gate,
-    parents: Vec<usize>,
 }
 enum Alternative<'a> {
     Clause(usize, bool),
@@ -193,6 +194,7 @@ enum Alternative<'a> {
 #[derive(Default)]
 struct Context<'a> {
     nodes: Vec<Node<'a>>,
+    parents: Vec<usize>,
     pending: Vec<(usize, bool)>,
     values: Vec<u8>,
     trail: Vec<usize>,
@@ -205,46 +207,34 @@ struct Context<'a> {
 }
 impl<'a> Context<'a> {
     fn new(sources: impl ExactSizeIterator<Item = EncodedClause<&'a Facts>>) -> Self {
-        let mut nodes = Vec::<Node<'a>>::with_capacity(sources.len());
-        for source in sources {
+        let count = sources.len();
+        let nodes = sources.map(|source| {
             let (kind, facts, left, right) = match source {
                 EncodedClause::Impossible => (0, None, 0, 0),
                 EncodedClause::Facts(facts) => (1, Some(facts), 0, 0),
                 EncodedClause::Both(left, right) => (2, None, left, right),
                 EncodedClause::Either(left, right) => (3, None, left, right),
             };
-            if kind >= 2 {
-                let parent = nodes.len();
-                nodes[left].parents.push(parent);
-                nodes[right].parents.push(parent);
-            }
-            nodes.push(Node {
+            Node {
                 facts,
                 view: Gate {
                     left,
                     right,
                     kind,
-                    parents: Span { data: std::ptr::null(), count: 0 },
+                    parent_start: 0,
+                    parent_count: 0,
                 },
-                parents: Vec::new(),
-            });
-        }
-        for node in &mut nodes {
-            node.view.parents = Span { data: node.parents.as_ptr(), count: node.parents.len() };
-        }
-        let values = vec![0; nodes.len()];
+            }
+        }).collect();
         let mut context = Self {
             nodes,
-            pending: Vec::new(),
-            values,
-            trail: Vec::new(),
-            alternatives: Vec::new(),
-            facts: Facts::new(),
-            additions: Vec::new(),
-            conflict_input: None,
-            required: None,
-            next_fact: None,
+            values: vec![0; count],
+            ..Self::default()
         };
+        let graph = context.graph();
+        // The B constructor writes the declared Gate fields and the single parent
+        // allocation. The source facts and all node addresses stay fixed.
+        unsafe { connect_parents(graph, count, ptr::from_mut(&mut context.parents).cast(), allocate_parents) };
         context.seed_constants();
         context
     }
@@ -261,9 +251,10 @@ impl<'a> Context<'a> {
 
     fn graph(&mut self) -> Graph {
         Graph {
-            nodes: std::ptr::addr_of!(self.nodes[0].view),
+            nodes: ptr::addr_of_mut!(self.nodes[0].view),
             stride: std::mem::size_of::<Node<'_>>(),
             values: self.values.as_mut_ptr(),
+            parents: self.parents.as_ptr(),
         }
     }
 
@@ -289,6 +280,12 @@ impl<'a> Context<'a> {
 }
 unsafe fn context<'a, 'b>(slot: Slot) -> &'a mut Context<'b> {
     unsafe { &mut *slot.cast::<Context<'b>>() }
+}
+
+unsafe extern "C" fn allocate_parents(slot: Slot, count: usize) -> *mut usize {
+    let parents = unsafe { &mut *slot.cast::<Vec<usize>>() };
+    *parents = vec![0; count];
+    parents.as_mut_ptr()
 }
 
 pub(super) fn source_node(clause: &Clause) -> SourceNode {
@@ -961,6 +958,9 @@ struct Host {
     pop_alternative: unsafe extern "C" fn(Slot) -> AlternativeView,
 }
 unsafe extern "C" {
+    #[link_name = "bootstrap.condition_graph::connect_parents"]
+    fn connect_parents(graph: Graph, count: usize, storage: Slot,
+                       allocate: unsafe extern "C" fn(Slot, usize) -> *mut usize);
     #[link_name = "bootstrap.condition_graph::overlap"]
     fn query(first: usize, second: usize, truth: u32, context: Slot, graph: Graph, host: Host) -> u32;
     #[link_name = "bootstrap.condition_graph::equivalent"]

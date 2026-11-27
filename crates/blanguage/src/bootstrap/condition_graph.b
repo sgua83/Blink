@@ -121,8 +121,52 @@ extern "C" u32 condition_inputs(address walk,address input,ConditionInputHost ho
 usize word_at(Span span,usize index) on cpu {
  return unsafe_position<usize>(unsafe_address(address_bits(span.data)+u64(index)*8u64));
 }
+address gate_address(Graph graph,usize index) on compute {
+ return unsafe_address(address_bits(graph.nodes)+u64(index)*u64(graph.stride));
+}
 Gate node_at(Graph graph,usize index) on compute {
- return unsafe_position<Gate>(unsafe_address(address_bits(graph.nodes)+u64(index)*u64(graph.stride)));
+ return unsafe_position<Gate>(gate_address(graph,index));
+}
+address parent_address(address parents,usize index) on cpu {
+ return unsafe_address(address_bits(parents)+u64(index)*size_of<usize>());
+}
+void write_parent(Graph graph,address parents,usize child,usize parent) on cpu {
+ address gate=gate_address(graph,child);
+ usize index=unsafe_position<Gate>(gate).parent_start-1u64;
+ unsafe_position<Gate>(gate).parent_start=index;
+ unsafe_position<usize>(parent_address(parents,index))=parent;
+}
+extern "C" void connect_parents(Graph graph,usize count,address storage,cfn<address,address,usize> allocate) on cpu
+ requires nonzero(allocate) {
+ usize index=0u64;
+ while(index<count){
+  Gate gate=node_at(graph,index);
+  if(gate.kind>=2){
+   address left=gate_address(graph,gate.left);
+   address right=gate_address(graph,gate.right);
+   unsafe_position<Gate>(left).parent_count+=1u64;
+   unsafe_position<Gate>(right).parent_count+=1u64;
+  }
+  index+=1u64;
+ }
+ usize end=0u64;
+ index=0u64;
+ while(index<count){
+  address gate=gate_address(graph,index);
+  end+=unsafe_position<Gate>(gate).parent_count;
+  unsafe_position<Gate>(gate).parent_start=end;
+  index+=1u64;
+ }
+ address parents=allocate(storage,end);
+ // Fill each segment backwards so propagation sees the original parent order.
+ while(index>0u64){
+  index-=1u64;
+  Gate gate=node_at(graph,index);
+  if(gate.kind>=2){
+   write_parent(graph,parents,gate.right,index);
+   write_parent(graph,parents,gate.left,index);
+  }
+ }
 }
 u32 value_at(address values,usize index) on compute {
  return u32(unsafe_position<u8>(unsafe_address(address_bits(values)+u64(index))));
@@ -145,8 +189,8 @@ u32 propagate(address context,Graph graph,Host host) on cpu
   Gate node=node_at(graph,id);
   usize own=node.kind>=2 ? 1u64 : 0u64;
   usize at=0u64;
-  while(at<own+node.parents.count){
-   usize parent=at<own ? id : word_at(node.parents,at-own);
+  while(at<own+node.parent_count){
+   usize parent=at<own ? id : unsafe_position<usize>(parent_address(graph.parents,node.parent_start+at-own));
    Gate gate=node_at(graph,parent);u32 either=gate.kind==3 ? 2 : 1;
    u32 left=value_at(values,gate.left);u32 right=value_at(values,gate.right);
    u32 result=0;

@@ -35,8 +35,10 @@ struct CallProjectionHost {
 extern "C" void project_call_graph(address context,CallProjectionHost host) on cpu
  requires nonzero(host.next) requires nonzero(host.impossible) requires nonzero(host.facts)
  requires nonzero(host.both) requires nonzero(host.either);
-struct Gate { usize left; usize right; u32 kind; Span parents; };
-struct Graph { address nodes; usize stride; address values; };
+struct Gate { usize left; usize right; u32 kind; usize parent_start; usize parent_count; };
+struct Graph { address nodes; usize stride; address values; address parents; };
+extern "C" void connect_parents(Graph graph,usize count,address storage,cfn<address,address,usize> allocate) on cpu
+ requires nonzero(allocate);
 struct Assignment { u32 present; usize node; u32 truth; };
 struct Checkpoint { usize nodes; usize facts; usize negative; usize choice; };
 struct Alternative { u32 kind; usize node; u32 truth; Checkpoint checkpoint; };
