@@ -109,8 +109,62 @@ void capture_owners(GraphPlan graph,CaptureSource source,address entries) on cpu
     }
 }
 
+struct ProviderName { NameBytes name; u64 input; };
+
+ProviderName provider_name_at(address rows,u64 index) on cpu {
+    return unsafe_position<ProviderName>(offset(rows,index*size_of<ProviderName>()));
+}
+
+extern "C" bool capture_provider_before(address left,address right,address context) on cpu {
+    ProviderName first=unsafe_position<ProviderName>(left);
+    ProviderName second=unsafe_position<ProviderName>(right);
+    i32 order=compare_name(first.name,second.name);
+    return order==i32(0) ? first.input<second.input : order<i32(0);
+}
+
+extern "C" u64 lookup_capture_provider(ProviderNames providers,NameBytes name) on cpu {
+    u64 first=0u64;
+    u64 end=providers.count;
+    while (first<end) {
+        u64 middle=first+(end-first)/2u64;
+        if (compare_name(provider_name_at(providers.rows,middle).name,name)<i32(0)) {
+            first=middle+1u64;
+        } else {
+            end=middle;
+        }
+    }
+    if (first<providers.count) {
+        ProviderName selected=provider_name_at(providers.rows,first);
+        if (compare_name(selected.name,name)==i32(0)) { return word(providers.ids,selected.input); }
+    }
+    return 18446744073709551615u64;
+}
+
+bool capture_with_providers(GraphPlan graph,CaptureSource source,u64 unit,bool shared) on cpu
+    requires nonzero(source.provider) requires nonzero(source.capture) {
+    GraphRange providers=range_at(graph.storage.providers,unit);
+    if (providers.count==0u64) {
+        source.capture(source.context,unit,shared,ProviderNames(address(),0u64,graph.ids));
+        return true;
+    }
+    handle heap=GetProcessHeap();
+    address rows=HeapAlloc(heap,0,providers.count*size_of<ProviderName>());
+    if (rows==address()) { return false; }
+    u64 at=0u64;
+    while (at<providers.count) {
+        u64 input=providers.start+at;
+        NameBytes name=source.provider(source.context,word(graph.ids,input));
+        unsafe_position<ProviderName>(offset(rows,at*size_of<ProviderName>()))=ProviderName(name,input);
+        at+=1u64;
+    }
+    sort_rows<array<u64,3>>(rows,providers.count,address(),c_function(capture_provider_before));
+    source.capture(source.context,unit,shared,ProviderNames(rows,providers.count,graph.ids));
+    HeapFree(heap,0,rows);
+    return true;
+}
+
 extern "C" i32 capture_sources(address owner,CaptureSource source) on cpu
-    requires nonzero(source.key) requires nonzero(source.capture) {
+    requires nonzero(source.key) requires nonzero(source.provider) requires nonzero(source.capture) {
     GraphPlan graph=unsafe_position<GraphPlan>(owner);
     address indices=graph.storage.captures;
     bool grouped=graph.entries>1u64;
@@ -130,7 +184,9 @@ extern "C" i32 capture_sources(address owner,CaptureSource source) on cpu
         if (source_unit<unit) {
             put_word(indices,unit,word(indices,source_unit));
         } else {
-            source.capture(source.context,unit,source_unit==unit);
+            if (!capture_with_providers(graph,source,unit,source_unit==unit)) {
+                return i32(ERROR_NOT_ENOUGH_MEMORY);
+            }
             put_word(indices,unit,count);
             count+=1u64;
         }

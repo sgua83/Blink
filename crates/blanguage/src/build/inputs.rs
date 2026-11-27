@@ -1,4 +1,5 @@
 //! 一次构建持有的解析输入；跨次复用仍由正式对象／映像拥有。
+use super::graph::ProviderBindings;
 use crate::{CapturedExport, ExportRequest, ast::{self, Diagnostic, Source, Span}, object::{Kind, Object}, parser, syntax};
 use std::{collections::{BTreeMap, BTreeSet}, path::Path, sync::Arc};
 pub(super) enum ProviderInterface<'a> {
@@ -54,7 +55,7 @@ impl Capture {
     }
 
     pub(super) fn capture(
-        &mut self, path: &Path, root: &Path, providers: &BTreeMap<&str, ProviderInterface<'_>>,
+        &mut self, path: &Path, root: &Path, providers: ProviderBindings<'_, '_>,
         requests: &[String], share_checks: bool,
     ) -> CapturedUnit {
         let exports = (!providers.is_empty() && !requests.is_empty()).then(Vec::new);
@@ -149,7 +150,7 @@ struct CaptureState<'a, 'provider> {
     capture: &'a mut Capture,
     path: &'a Path,
     root: &'a Path,
-    providers: &'a BTreeMap<&'provider str, ProviderInterface<'provider>>,
+    providers: ProviderBindings<'a, 'provider>,
     requests: &'a [String],
     visited: BTreeSet<String>,
     interfaces: Interfaces<ast::Result<CapturedInterface>>,
@@ -248,7 +249,7 @@ unsafe extern "C" fn capture_close(imports: CaptureImports) {
 }
 unsafe extern "C" fn capture_provider(context: *const std::ffi::c_void, name: CaptureName) -> u32 {
     let state = unsafe { &*context.cast::<CaptureState<'_, '_>>() };
-    u32::from(state.providers.contains_key(unsafe { name.text() }))
+    u32::from(state.providers.contains(unsafe { name.text() }))
 }
 unsafe extern "C" fn capture_export(context: *mut std::ffi::c_void, index: usize) -> u32 {
     let state = context.cast::<CaptureState<'_, '_>>();

@@ -30,12 +30,18 @@ extern "C" void release_plan(address ids,address storage) on cpu;
 
 // The host only lends the canonical paths for the current entry.
 struct CapturePath { NameBytes path; NameBytes root; };
+// Borrowed only while the original unit capture callback is running.
+struct ProviderNames { address rows; u64 count; address ids; };
 struct CaptureSource {
     address context;
     cfn<bool,address,u64,address> key;
-    cfn<void,address,u64,bool> capture;
+    cfn<NameBytes,address,u64> ensures memory(read) provider;
+    cfn<void,address,u64,bool,ProviderNames> capture;
 };
 
 // Final indices live in the same plan through the last unit.
 extern "C" i32 capture_sources(address owner,CaptureSource source) on cpu
-    requires nonzero(source.key) requires nonzero(source.capture);
+    requires nonzero(source.key) requires nonzero(source.provider) requires nonzero(source.capture);
+
+// The returned ID names the first original provider, or the maximum u64 if absent.
+extern "C" u64 lookup_capture_provider(ProviderNames providers,NameBytes name) on cpu;

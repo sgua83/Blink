@@ -56,10 +56,19 @@ impl GraphRange {
 #[repr(C)]
 struct CapturePath { path: ByteField, root: ByteField }
 #[repr(C)]
+#[derive(Clone, Copy)]
+struct ProviderNames {
+    rows: *const c_void,
+    count: usize,
+    ids: *const usize,
+}
+
+#[repr(C)]
 struct CaptureSource {
     context: *mut c_void,
     key: unsafe extern "C" fn(*mut c_void, usize, *mut CapturePath) -> bool,
-    capture: unsafe extern "C" fn(*mut c_void, usize, bool),
+    provider: unsafe extern "C" fn(*const c_void, usize) -> ByteField,
+    capture: unsafe extern "C" fn(*mut c_void, usize, bool, ProviderNames),
 }
 
 #[repr(C)]
@@ -135,6 +144,8 @@ unsafe extern "C" {
     fn release_dependency_plan(ids: *const usize, storage: *const GraphRange);
     #[link_name = "bootstrap.build_graph::capture_sources"]
     fn capture_sources(owner: *const GraphPlan<'_>, source: CaptureSource) -> i32;
+    #[link_name = "bootstrap.build_graph::lookup_capture_provider"]
+    fn lookup_capture_provider(providers: ProviderNames, name: ByteField) -> usize;
     #[link_name = "bootstrap.build_schedule::run_worker"]
     fn run_worker(context: *mut c_void, host: WorkHost);
 }
@@ -154,20 +165,22 @@ impl<'object> GraphPlan<'object> {
         }
     }
 
+    fn provider(&self, id: usize) -> Dependency<'object> {
+        if id < self.units {
+            Dependency::Unit(id)
+        } else {
+            let object = ptr::with_exposed_provenance::<Object>(self.ids()[id - self.units]);
+            // Each identity in the prefix came from a borrowed Dependency::Object.
+            Dependency::Object(unsafe { &*object })
+        }
+    }
+
     fn dependencies(&self, unit: usize) -> impl Iterator<Item = Dependency<'object>> + '_ {
         let ids = self.ids();
         // A successful B plan initializes one provider row per input unit.
         let rows = unsafe { std::slice::from_raw_parts(self.storage.providers, self.units) };
         let row = rows[unit];
-        row.slice(ids).iter().copied().map(move |id| {
-            if id < self.units {
-                Dependency::Unit(id)
-            } else {
-                let object = ptr::with_exposed_provenance::<Object>(ids[id - self.units]);
-                // Each identity in the prefix came from a borrowed Dependency::Object.
-                Dependency::Object(unsafe { &*object })
-            }
-        })
+        row.slice(ids).iter().copied().map(move |id| self.provider(id))
     }
 
     fn capture_index(&self, unit: usize) -> usize {
@@ -384,6 +397,32 @@ struct GraphCapture<'graph, 'source> {
     captured: Vec<CapturedUnit>,
 }
 
+pub(super) struct ProviderBindings<'graph, 'source> {
+    names: ProviderNames,
+    plan: &'graph GraphPlan<'source>,
+    headers: &'graph [Arc<crate::syntax::Module>],
+}
+
+impl ProviderBindings<'_, '_> {
+    pub(super) fn is_empty(&self) -> bool { self.names.count == 0 }
+
+    fn lookup(&self, name: &str) -> usize {
+        // The B rows and their borrowed names stay live through this capture.
+        unsafe { lookup_capture_provider(self.names, name.as_bytes().into()) }
+    }
+
+    pub(super) fn contains(&self, name: &str) -> bool { self.lookup(name) != usize::MAX }
+
+    pub(super) fn get(&self, name: &str) -> Option<ProviderInterface<'_>> {
+        let id = self.lookup(name);
+        if id == usize::MAX { return None; }
+        Some(match self.plan.provider(id) {
+            Dependency::Unit(index) => ProviderInterface::Unit(&self.headers[index]),
+            Dependency::Object(object) => ProviderInterface::Object(object),
+        })
+    }
+}
+
 unsafe extern "C" fn capture_key(context: *mut c_void, index: usize, key: *mut CapturePath) -> bool {
     let state = unsafe { &*context.cast::<GraphCapture<'_, '_>>() };
     let unit = &state.prepared[index];
@@ -395,25 +434,24 @@ unsafe extern "C" fn capture_key(context: *mut c_void, index: usize, key: *mut C
     true
 }
 
-unsafe extern "C" fn capture_unit(context: *mut c_void, index: usize, shared: bool) {
+unsafe extern "C" fn capture_provider_name(context: *const c_void, id: usize) -> ByteField {
+    let state = unsafe { &*context.cast::<GraphCapture<'_, '_>>() };
+    let name = match state.dependencies.provider(id) {
+        Dependency::Unit(index) => state.headers[index].name(),
+        Dependency::Object(object) => object.name(),
+    };
+    name.as_bytes().into()
+}
+
+unsafe extern "C" fn capture_unit(context: *mut c_void, index: usize, shared: bool, names: ProviderNames) {
     let state = unsafe { &mut *context.cast::<GraphCapture<'_, '_>>() };
     let unit = &state.prepared[index];
-    let mut providers = BTreeMap::new();
-    for dependency in state.dependencies.dependencies(index) {
-        let (name, interface) = match dependency {
-            Dependency::Unit(id) => {
-                let header = &state.headers[id];
-                (header.name(), ProviderInterface::Unit(header))
-            }
-            Dependency::Object(object) => (object.name(), ProviderInterface::Object(object)),
-        };
-        providers.entry(name).or_insert(interface);
-    }
+    let providers = ProviderBindings { names, plan: state.dependencies, headers: state.headers };
     let requests = match unit.kind {
         UnitKind::Object(ObjectKind::Module(requests)) => requests,
         _ => &[],
     };
-    state.captured.push(state.capture.capture(&unit.path, &unit.root, &providers, requests, shared));
+    state.captured.push(state.capture.capture(&unit.path, &unit.root, providers, requests, shared));
 }
 
 pub fn compile_graph(units: &[Unit<'_>]) -> Result<Vec<Output>> {
@@ -459,7 +497,7 @@ impl Compiler {
         // callback the unit's original position.
         let status = unsafe { capture_sources(ptr::from_ref(&dependency_plan), CaptureSource {
             context: ptr::from_mut(&mut state).cast(),
-            key: capture_key, capture: capture_unit,
+            key: capture_key, provider: capture_provider_name, capture: capture_unit,
         }) };
         if status != 0 { return Err(std::io::Error::from_raw_os_error(status).into()); }
         let inputs = state.capture.finish(state.captured);
