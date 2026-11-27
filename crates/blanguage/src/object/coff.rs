@@ -212,8 +212,6 @@ unsafe extern "C" {
     fn read_symbols(input: ReadBytes) -> ReadSymbols;
     #[link_name = "blink.windows.coff::symbol"]
     fn read_symbol(input: ReadBytes, table: ReadSymbols, index: usize) -> ReadSymbol;
-    #[link_name = "blink.windows.coff::next_export"]
-    fn next_export(input: ReadBytes, table: ReadSymbols, index: &mut usize) -> ReadRange;
     #[link_name = "blink.windows.coff::relocations"]
     fn read_relocations(input: ReadBytes, offset: usize, count: usize, flags: u64) -> ReadRelocations;
     #[link_name = "blink.windows.coff::relocation"]
@@ -352,6 +350,9 @@ unsafe extern "C" {
     #[link_name = "bootstrap.object_read::object_metadata_sections"]
     fn object_metadata_sections(input: ReadBytes, headers: ReadBytes, include_runtime: u32,
         parts: &mut ObjectParts, table: &mut ReadSymbols, context: *mut c_void, validate: ValidateObjectName) -> ObjectScanStatus;
+    #[link_name = "bootstrap.object_read::object_definitions"]
+    fn object_definitions(input: ReadBytes, table: ReadSymbols, context: *mut c_void,
+        consume: ValidateObjectName) -> ObjectScanStatus;
     #[link_name = "bootstrap.object_read::object_symbols"]
     fn object_symbols<'a>(input: ReadBytes, table: ReadSymbols, rows: *mut ObjectSymbol<'a>,
         definitions: *mut SectionDefinition, definition_count: usize, context: *mut c_void,
@@ -504,8 +505,6 @@ unsafe extern "C" {
     ) -> MetadataReadPrefix;
     #[link_name = "bootstrap.metadata_read::project_names"]
     fn metadata_project_names(prefix: MetadataReadPrefix, sink: MetadataNameSink) -> MetadataReadError;
-    #[link_name = "bootstrap.metadata_read::binding"]
-    fn metadata_read_binding(cursor: *mut MetadataReadCursor) -> MetadataReadBinding;
     #[link_name = "bootstrap.metadata_read::restore_kind"]
     fn metadata_restore_kind(header: MetadataReadHeader, output: MetadataReceiver) -> u32;
     #[link_name = "bootstrap.metadata_read::restore_bindings"]
@@ -1257,7 +1256,7 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         output.check()?;
         let bindings = output.bindings;
         let mut exports = BTreeSet::new();
-        self.for_each_definition(table, |symbol| {
+        self.for_each_definition(self.symbol_table(table)?, |symbol| {
             if !bindings.contains_key(symbol) || !exports.insert(symbol) {
                 return Err("导出符号缺少模块接口合同".into());
             }
@@ -1266,18 +1265,34 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         Ok((name, kind, bindings))
     }
 
-    fn for_each_definition(&self, table: ReadSymbols, mut consume: impl FnMut(&'a str) -> Result<()>) -> Result<()> {
-        let input = ReadBytes::new(self.bytes.as_ref());
-        let table = self.symbol_table(table)?;
-        let mut index = 0;
-        loop {
-            let row = unsafe { next_export(input, table, &mut index) };
-            row.error.check()?;
-            if row.bytes.bytes.is_null() { return Ok(()); }
-            consume(std::str::from_utf8(unsafe { row.bytes.borrowed() })?)?;
+    fn for_each_definition<F: FnMut(&'a str) -> Result<()>>(&self, table: ReadSymbols, mut consume: F) -> Result<()> {
+        unsafe extern "C" fn visit<'a, F: FnMut(&'a str) -> Result<()>>(context: *mut c_void, name: ReadBytes) -> u32 {
+            let (consume, result) = unsafe { &mut *context.cast::<(&mut F, &mut Result<()>)>() };
+            **result = std::str::from_utf8(unsafe { name.borrowed() })
+                .map_err(Into::into)
+                .and_then(consume);
+            u32::from(result.is_ok())
         }
+
+        let mut result = Ok(());
+        let mut context = (&mut consume, &mut result);
+        let status = unsafe {
+            object_definitions(ReadBytes::new(self.bytes.as_ref()), table, std::ptr::from_mut(&mut context).cast(), visit::<F>)
+        };
+        status.error.check()?;
+        result
     }
 }
+unsafe extern "C" fn collect_binding_name(context: *mut c_void, item: MetadataReadBinding, _: u32) -> u32 {
+    let (names, invalid) = unsafe {
+        &mut *context.cast::<(&mut BTreeSet<&str>, &mut Option<std::str::Utf8Error>)>()
+    };
+    match std::str::from_utf8(unsafe { item.name.borrowed() }) {
+        Ok(name) => { names.insert(name); 1 }
+        Err(error) => { **invalid = Some(error); 0 }
+    }
+}
+
 impl<'a> Reader<'a, super::ObjectBytes> {
     /// 借用判等所需的名称，等采用后再恢复完整对象。
     pub(crate) fn reuse_inputs(self) -> Result<ReuseInputs<'a>> {
@@ -1285,20 +1300,19 @@ impl<'a> Reader<'a, super::ObjectBytes> {
         let metadata = Metadata::read(self.metadata(parts.metadata)?, MetadataNames::default().sink(0))?;
         let mut cursor = metadata.bindings_cursor();
         let mut names = BTreeSet::new();
-        for _ in 0..metadata.prefix.binding_count {
-            let value = unsafe { metadata_read_binding(&mut cursor) };
-            value.error.check()?;
-            names.insert(std::str::from_utf8(unsafe { value.name.borrowed() })?);
-        }
-        let input = ReadBytes::new(self.bytes.as_ref());
+        let mut invalid = None::<std::str::Utf8Error>;
+        let mut context = (&mut names, &mut invalid);
+        let bindings = unsafe {
+            metadata_restore_bindings(&mut cursor, metadata.prefix.binding_count, 0,
+                std::ptr::from_mut(&mut context).cast(), collect_binding_name)
+        };
+        bindings.error.check()?;
+        if let Some(error) = invalid { return Err(error.into()); }
         let table = self.symbol_table(table)?;
-        let mut index = 0;
-        loop {
-            let row = unsafe { next_export(input, table, &mut index) };
-            row.error.check()?;
-            if row.bytes.bytes.is_null() { break; }
-            names.remove(std::str::from_utf8(unsafe { row.bytes.borrowed() })?);
-        }
+        self.for_each_definition(table, |name| {
+            names.remove(name);
+            Ok(())
+        })?;
         Ok(ReuseInputs {
             imports: names,
             reader: self,

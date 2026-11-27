@@ -31,6 +31,8 @@ extern "C" ObjectScanStatus object_sections(ReadBytes input, ReadBytes headers, 
 extern "C" ObjectScanStatus object_metadata_sections(ReadBytes input, ReadBytes headers, u32 include_runtime,
     inout ObjectParts parts, inout ReadSymbols table, address context, cfn<u32,address,ReadBytes> validate) on cpu
     requires nonzero(validate);
+extern "C" ObjectScanStatus object_definitions(ReadBytes input, ReadSymbols table, address context,
+    cfn<u32,address,ReadBytes> consume) on cpu requires nonzero(consume);
 // The callback receives every primary name and the one-based section of a
 // defined external symbol. Full object consumers also request physical rows
 // and section definitions for relocation and association lookup.

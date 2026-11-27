@@ -121,6 +121,16 @@ extern "C" ObjectScanStatus object_metadata_sections(ReadBytes input, ReadBytes 
     return ObjectScanStatus(0, 1);
 }
 
+extern "C" ObjectScanStatus object_definitions(ReadBytes input, ReadSymbols table, address context,
+    cfn<u32,address,ReadBytes> consume) on cpu requires nonzero(consume) {
+    u64 index = 0u64;
+    while (true) {
+        let row = next_export(input, table, index);
+        if (row.error != 0) { return ObjectScanStatus(row.error, 0); }
+        if (row.bytes.bytes == address()) { return ObjectScanStatus(0, 1); }
+        if (consume(context, row.bytes) == 0) { return ObjectScanStatus(0, 0); }
+    }
+}
 extern "C" ObjectScanStatus object_symbols(ReadBytes input, ReadSymbols table, address rows,
     address definitions, u64 definition_count, address context,
     cfn<u32,address,ReadBytes,u64> consume) on cpu requires nonzero(consume) {
