@@ -1,5 +1,20 @@
 module codec.type_layout;
 
+extern "C" u32 mip_level_count(MipExtent base) on cpu {
+    u32 side = max(base.width, max(base.height, base.depth));
+    u32 levels = 0;
+    while (side != 0) {
+        side = side >> 1;
+        levels += 1;
+    }
+    return levels;
+}
+
+extern "C" MipExtent mip_extent(MipExtent base, u32 level) on cpu {
+    return MipExtent(max(base.width >> level, 1), max(base.height >> level, 1),
+        max(base.depth >> level, 1));
+}
+
 extern "C" VectorLayout vector(u32 scalar_size, u32 scalar_alignment, u64 count) on cpu {
     u32 lanes = count == 2 ? 2 : 4;
     return VectorLayout(u64(scalar_size) * count, scalar_alignment * lanes);

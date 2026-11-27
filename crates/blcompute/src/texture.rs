@@ -172,9 +172,28 @@ impl<'a> CpuTextures<'a> {
             CpuTextureBinding { dimension: input.dimension(), descriptor }).collect()
     }
 }
+#[repr(C)]
+struct MipExtent([u32; 3]);
+
+unsafe extern "C" {
+    #[link_name = "codec.type_layout::mip_level_count"]
+    fn native_mip_level_count(base: MipExtent) -> u32;
+
+    #[link_name = "codec.type_layout::mip_extent"]
+    fn native_mip_extent(base: MipExtent, level: u32) -> MipExtent;
+}
+
+pub(crate) fn mip_level_count(base: [u32; 3]) -> usize {
+    unsafe { native_mip_level_count(MipExtent(base)) as usize }
+}
+
+pub(crate) fn mip_extent(base: [u32; 3], level: u32) -> [u32; 3] {
+    unsafe { native_mip_extent(MipExtent(base), level).0 }
+}
+
 struct MipLayout<const D: usize> {
     levels: usize,
-    next: Option<[u32; D]>,
+    next: Option<[u32; 3]>,
 }
 impl<const D: usize> MipLayout<D> {
     fn new(levels: usize) -> Result<Self> {
@@ -189,7 +208,7 @@ impl<const D: usize> MipLayout<D> {
         else { "三维纹理尺寸、格式或负载不满足原生图像布局" }
     }
 
-    fn accept(&mut self, dimensions: [u32; D], format: TextureFormat) -> Result<usize> {
+    fn accept(&mut self, dimensions: [u32; 3], format: TextureFormat) -> Result<usize> {
         if dimensions.contains(&0) {
             return Err(error(Self::layout_error()));
         }
@@ -200,17 +219,14 @@ impl<const D: usize> MipLayout<D> {
                 return Err(error(if D == 2 { "mip尺寸必须逐级减半并至少保留一个texel" }
                     else { "mip尺寸必须逐轴减半并至少保留一个texel" }));
             }
-        } else {
-            let maximum = u32::BITS - dimensions.into_iter().max().unwrap().leading_zeros();
-            if self.levels > maximum as usize {
-                return Err(error("mip层数超过基础尺寸的完整链"));
-            }
+        } else if self.levels > mip_level_count(dimensions) {
+            return Err(error("mip层数超过基础尺寸的完整链"));
         }
-        self.next = Some(dimensions.map(|extent| (extent / 2).max(1)));
+        self.next = Some(mip_extent(dimensions, 1));
         Ok(bytes)
     }
 
-    fn check(&mut self, dimensions: [u32; D], format: TextureFormat, pixels: &TextureTexels) -> Result<()> {
+    fn check(&mut self, dimensions: [u32; 3], format: TextureFormat, pixels: &TextureTexels) -> Result<()> {
         if pixels.format() != format || pixels.as_bytes().len() != self.accept(dimensions, format)? {
             return Err(error(Self::layout_error()));
         }
@@ -219,10 +235,10 @@ impl<const D: usize> MipLayout<D> {
 }
 impl Texture2D {
     pub fn new(levels: Vec<TextureMip>) -> Result<Self> {
-        let mut layout = MipLayout::new(levels.len())?;
+        let mut layout = MipLayout::<2>::new(levels.len())?;
         let format = levels[0].pixels.format();
         for level in &levels {
-            layout.check([level.width, level.height], format, &level.pixels)?;
+            layout.check([level.width, level.height, 1], format, &level.pixels)?;
         }
         Ok(Self {
             levels: levels.into(),
@@ -274,11 +290,11 @@ impl Texture2D {
             _ => return Err(error("不支持的BLTEX版本")),
         };
         let [count] = input.words()?;
-        let mut layout = MipLayout::new(count as usize)?;
+        let mut layout = MipLayout::<2>::new(count as usize)?;
         let mut levels = Vec::new();
         for _ in 0..count {
             let [width, height] = input.words()?;
-            let bytes = layout.accept([width, height], format)?;
+            let bytes = layout.accept([width, height, 1], format)?;
             levels.push(TextureMip {
                 width,
                 height,
@@ -392,7 +408,7 @@ pub struct Texture3D {
 }
 impl Texture3D {
     pub fn new(levels: Vec<TextureMip3D>) -> Result<Self> {
-        let mut layout = MipLayout::new(levels.len())?;
+        let mut layout = MipLayout::<3>::new(levels.len())?;
         let format = levels[0].pixels.format();
         for level in &levels {
             layout.check([level.width, level.height, level.depth], format, &level.pixels)?;
@@ -439,7 +455,7 @@ impl Texture3D {
         let [format] = input.words()?;
         let format = read_format(format)?;
         let [count] = input.words()?;
-        let mut layout = MipLayout::new(count as usize)?;
+        let mut layout = MipLayout::<3>::new(count as usize)?;
         let mut levels = Vec::new();
         for _ in 0..count {
             let [width, height, depth] = input.words()?;

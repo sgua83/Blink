@@ -2,6 +2,10 @@ module codec.type_layout;
 import codec.builtin_type;
 import codec.number_text;
 
+struct MipExtent { u32 width; u32 height; u32 depth; };
+extern "C" u32 mip_level_count(MipExtent base) on cpu;
+extern "C" MipExtent mip_extent(MipExtent base, u32 level) on cpu;
+
 struct VectorLayout {
     u64 size;
     u32 alignment;

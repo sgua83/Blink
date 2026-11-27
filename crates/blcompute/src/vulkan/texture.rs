@@ -1,5 +1,6 @@
 //! 不可变 sampled image；实际命令持有纹理直到原生完成。
 use super::*;
+use crate::texture::{mip_extent, mip_level_count};
 #[repr(C)]
 pub(super) struct IndexingFeatures {
     pub(super) kind: u32,
@@ -24,10 +25,10 @@ pub(super) struct BufferImageCopy {
     pub(super) extent: VkExtent3D,
 }
 fn mip_copies(dimensions: [u32; 3], levels: u32, texel_bytes: u64) -> (Vec<BufferImageCopy>, u64) {
-    let [mut width, mut height, mut depth] = dimensions;
     let mut offset = 0u64;
     let mut copies = Vec::with_capacity(levels as usize);
     for mip in 0..levels {
+        let [width, height, depth] = mip_extent(dimensions, mip);
         offset = (offset + 3) & !3;
         copies.push(BufferImageCopy {
             offset,
@@ -47,9 +48,6 @@ fn mip_copies(dimensions: [u32; 3], levels: u32, texel_bytes: u64) -> (Vec<Buffe
             },
         });
         offset += width as u64 * height as u64 * depth as u64 * texel_bytes;
-        width = (width / 2).max(1);
-        height = (height / 2).max(1);
-        depth = (depth / 2).max(1);
     }
     (copies, offset)
 }
@@ -376,14 +374,14 @@ impl Device {
     pub fn copy_texture(&self, sources: &mut [GpuDataset], dimensions: [u32; 2],
         format: crate::TextureFormat, address: [crate::TextureAddress; 2],
         levels: &[TextureCopyLevel]) -> Result<Texture> {
-        if dimensions.contains(&0) || levels.is_empty()
-            || levels.len() > (32 - dimensions[0].max(dimensions[1]).leading_zeros()) as usize {
+        let base = [dimensions[0], dimensions[1], 1];
+        if dimensions.contains(&0) || levels.is_empty() || levels.len() > mip_level_count(base) {
             return Err(error("纹理尺寸和mip链必须是非空的合法二维链"));
         }
-        let mut size = dimensions;
         // Each selected slot has its own last-use point, even when two slots borrow the same storage.
         let mut used_sources = Vec::new();
-        for level in levels {
+        for (mip, level) in levels.iter().enumerate() {
+            let [width, height, _] = mip_extent(base, mip as u32);
             let source = sources.get(level.source).ok_or_else(|| error("纹理mip的GPU源下标越界"))?;
             if !used_sources.contains(&level.source) {
                 if !Rc::ptr_eq(&source.allocation.inner, &self.inner) {
@@ -394,14 +392,13 @@ impl Device {
                 }
                 used_sources.push(level.source);
             }
-            if level.row_stride < size[0] {
+            if level.row_stride < width {
                 return Err(error("纹理GPU源行步长小于本级宽度"));
             }
-            let length = u64::from(size[1] - 1) * u64::from(level.row_stride) + u64::from(size[0]);
+            let length = u64::from(height - 1) * u64::from(level.row_stride) + u64::from(width);
             if level.offset.checked_add(length).is_none_or(|end| end > u64::from(source.count)) {
                 return Err(error("纹理mip超过原GPU源记录范围"));
             }
-            size = size.map(|n| (n / 2).max(1));
         }
         let mut source_stage = 0;
         let mut source_access = 0;
@@ -415,16 +412,16 @@ impl Device {
             }
         }
         let dependencies = dependencies.prepare()?;
-        let texture = self.create_image::<2>([dimensions[0], dimensions[1], 1],
+        let texture = self.create_image::<2>(base,
             [address[0], address[1], crate::TextureAddress::Clamp], format, levels.len() as u32)?;
         let texture = self.write_image(texture, None, dependencies, |commands, texture, source_pages| {
             commands.barrier(source_stage, 0x1000, source_access, 0x800);
-            let mut size = dimensions;
             for (mip, level) in levels.iter().enumerate() {
+                let [width, height, _] = mip_extent(base, mip as u32);
                 commands.copy_dataset_to_image(
-                    &sources[level.source], texture.image, mip as u32, size, level.offset, level.row_stride, source_pages,
+                    &sources[level.source], texture.image, mip as u32, [width, height],
+                    level.offset, level.row_stride, source_pages,
                 );
-                size = size.map(|n| (n / 2).max(1));
             }
             // 原producer仍表示最后写；本次真实Transfer读必须先于后继源写。
             commands.barrier(0x1000, 0x1800, 0x800, 0x1040);
