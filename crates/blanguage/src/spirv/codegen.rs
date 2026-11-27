@@ -336,17 +336,14 @@ struct ScalarStreams {
 struct ScalarHost {
     context: *mut std::ffi::c_void,
     constant: unsafe extern "C" fn(*mut std::ffi::c_void, ScalarCode, Bits) -> u32,
-    type_id: unsafe extern "C" fn(*mut std::ffi::c_void, ScalarCode) -> u32,
+    types: *const u32,
+    physical_pointers: *const u32,
     ids: unsafe extern "C" fn(*mut std::ffi::c_void, u32) -> u32,
     reserve: unsafe extern "C" fn(*mut std::ffi::c_void, usize, usize) -> ScalarStreams,
 }
 
 unsafe extern "C" fn scalar_constant(context: *mut std::ffi::c_void, scalar: ScalarCode, bits: Bits) -> u32 {
     unsafe { &mut *context.cast::<Emitter<'_>>() }.constant_code(scalar, bits)
-}
-
-unsafe extern "C" fn scalar_type_id(context: *mut std::ffi::c_void, scalar: ScalarCode) -> u32 {
-    unsafe { &*context.cast::<Emitter<'_>>() }.types.0[scalar as usize]
 }
 
 unsafe extern "C" fn scalar_ids(context: *mut std::ffi::c_void, count: u32) -> u32 {
@@ -396,12 +393,7 @@ struct PhysicalAccess {
 #[repr(C)]
 struct MemoryHost {
     scalars: ScalarHost,
-    pointer_type: unsafe extern "C" fn(*mut std::ffi::c_void, ScalarCode) -> u32,
     finish_body: unsafe extern "C" fn(*mut std::ffi::c_void, u64),
-}
-
-unsafe extern "C" fn memory_pointer_type(context: *mut std::ffi::c_void, scalar: ScalarCode) -> u32 {
-    unsafe { &*context.cast::<Emitter<'_>>() }.physical_pointers.0[scalar as usize]
 }
 
 unsafe extern "C" fn memory_finish_body(context: *mut std::ffi::c_void, words: u64) {
@@ -676,7 +668,6 @@ unsafe extern "C" fn finish_value(context: *mut std::ffi::c_void, words: ScalarW
 struct BlockPaging {
     base: PageInputs,
     descriptors: *const u32,
-    pointer_type: unsafe extern "C" fn(*mut std::ffi::c_void, ScalarCode) -> u32,
     finish_body: unsafe extern "C" fn(*mut std::ffi::c_void, u64),
     current_label: unsafe extern "C" fn(*mut std::ffi::c_void) -> u32,
 }
@@ -751,7 +742,6 @@ fn block_host(emitter: &mut Emitter<'_>) -> BlockHost {
         paging: BlockPaging {
             base: emitter.page_inputs(0, 0, None, 0),
             descriptors: emitter.buffers.as_ptr(),
-            pointer_type: memory_pointer_type,
             finish_body: memory_finish_body,
             current_label: block_current_label,
         },
@@ -1352,10 +1342,15 @@ impl<'ir> Emitter<'ir> {
         self.types[&self.registers[r]]
     }
     fn scalar_host(&mut self) -> ScalarHost {
+        let emitter = std::ptr::from_mut(self);
+        // Both tables stay fixed after declarations and share the callback context's borrow.
+        let types = unsafe { (&raw const (*emitter).types.0).cast::<u32>() };
+        let physical_pointers = unsafe { (&raw const (*emitter).physical_pointers.0).cast::<u32>() };
         ScalarHost {
-            context: std::ptr::from_mut(self).cast(),
+            context: emitter.cast(),
             constant: scalar_constant,
-            type_id: scalar_type_id,
+            types,
+            physical_pointers,
             ids: scalar_ids,
             reserve: scalar_reserve,
         }
@@ -1364,7 +1359,6 @@ impl<'ir> Emitter<'ir> {
     fn memory_host(&mut self) -> MemoryHost {
         MemoryHost {
             scalars: self.scalar_host(),
-            pointer_type: memory_pointer_type,
             finish_body: memory_finish_body,
         }
     }

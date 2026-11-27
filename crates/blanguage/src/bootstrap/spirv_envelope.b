@@ -826,7 +826,7 @@ BuiltinScalar unsigned_scalar(u32 width) on cpu {
 
 // Zero operand ID selects an immediate divisor or an absent output.
 ScalarWords scalar_division(ScalarDivision input, ScalarHost host) on cpu
-    requires nonzero(host.constant) requires nonzero(host.type_id)
+    requires nonzero(host.constant)
     requires nonzero(host.ids) requires nonzero(host.reserve) {
     address context = host.context;
     ScalarDefinition type = scalar_definition(input.scalar);
@@ -834,8 +834,8 @@ ScalarWords scalar_division(ScalarDivision input, ScalarHost host) on cpu
     if (denominator == 0) { denominator = host.constant(context, input.scalar, input.immediate); }
     u32 sign_shift = 0;
     if (type.signed != 0) { sign_shift = host.constant(context, input.scalar, u64(type.width - 1)); }
-    u32 integer_type = host.type_id(context, input.scalar);
-    u32 magnitude_type = host.type_id(context, unsigned_scalar(type.width));
+    u32 integer_type = scalar_id(host.types, input.scalar);
+    u32 magnitude_type = scalar_id(host.types, unsigned_scalar(type.width));
     u32 next = host.ids(context, 0);
     address body = host.reserve(context, sign_shift == 0 ? 10u64 : 81u64, 0u64).body;
     DivisionEmission lowered = DivisionEmission(integer_type, magnitude_type, input.numerator,
@@ -846,13 +846,13 @@ ScalarWords scalar_division(ScalarDivision input, ScalarHost host) on cpu
 }
 
 ScalarWords float_sign(BuiltinScalar scalar, u32 type, u32 result, u32 value, bool negate, ScalarHost host) on cpu
-    requires nonzero(host.constant) requires nonzero(host.type_id)
+    requires nonzero(host.constant)
     requires nonzero(host.ids) requires nonzero(host.reserve) {
     address context = host.context;
     u32 width = scalar_definition(scalar).width;
     u64 sign = 1u64 << u64(width - 1);
     BuiltinScalar raw = unsigned_scalar(width);
-    u32 raw_type = host.type_id(context, raw);
+    u32 raw_type = scalar_id(host.types, raw);
     u32 mask = host.constant(context, raw, negate ? sign : sign - 1u64);
     u32 bits = host.ids(context, 2);
     u32 changed = bits + 1;
@@ -863,7 +863,7 @@ ScalarWords float_sign(BuiltinScalar scalar, u32 type, u32 result, u32 value, bo
 }
 
 ScalarWords scalar_unary(UnaryEmission input, ScalarHost host) on cpu
-    requires nonzero(host.constant) requires nonzero(host.type_id)
+    requires nonzero(host.constant)
     requires nonzero(host.ids) requires nonzero(host.reserve) {
     if (input.operation == UnaryOperation::FloatNegate) {
         return float_sign(input.scalar, input.result_type, input.result, input.value, true, host);
@@ -896,7 +896,7 @@ u32 math_opcode(MathOperation operation) on cpu {
 }
 // A zero right operand denotes unary math. Zero body words report unsupported f64 math.
 ScalarWords scalar_math(MathEmission input, ScalarHost host) on cpu
-    requires nonzero(host.constant) requires nonzero(host.type_id)
+    requires nonzero(host.constant)
     requires nonzero(host.ids) requires nonzero(host.reserve) {
     MathOperation op = input.operation;
     if (input.scalar == BuiltinScalar::F64 && (
@@ -934,7 +934,7 @@ u64 select_words(address body, u64 at, u32 result_type, u32 result,
 }
 
 extern "C" PageAddress prepare_page(PageInputs input, u32 result_pointer, ScalarHost host) on cpu
-    requires nonzero(host.constant) requires nonzero(host.type_id) requires nonzero(host.ids) {
+    requires nonzero(host.constant) requires nonzero(host.ids) {
     address context = host.context;
     u32 zero = 0;
     u32 one = 0;
@@ -946,7 +946,7 @@ extern "C" PageAddress prepare_page(PageInputs input, u32 result_pointer, Scalar
     u32 page_shift = host.constant(context, BuiltinScalar::U32, 3u64);
     u32 page_bytes = host.constant(context, BuiltinScalar::U32, u64(input.page_bytes));
     u32 word = input.has_word == 0 ? 0 : host.constant(context, BuiltinScalar::U32, u64(input.word));
-    return PageAddress(host.type_id(context, BuiltinScalar::U32), host.type_id(context, BuiltinScalar::U64),
+    return PageAddress(scalar_id(host.types, BuiltinScalar::U32), scalar_id(host.types, BuiltinScalar::U64),
         input.descriptor_pointer, input.page_pointer, result_pointer, input.descriptor, input.low,
         input.high, input.stride, input.index, word, input.extra, zero, one, high_shift, page_shift,
         page_bytes, host.ids(context, 0));
@@ -1091,6 +1091,10 @@ void copy_record(inout StageCursor out, address layout, u32 source_index, u32 ta
 
 u32 read_word(address words, u32 part) on cpu {
     return unsafe_position<u32>(word_at(words, u64(part)));
+}
+
+u32 scalar_id(address ids, BuiltinScalar scalar) on cpu {
+    return read_word(ids, u32(scalar));
 }
 
 u64 copy_shader_value(address body, u64 at, u32 type_id, u32 result, u32 value) on cpu {
@@ -1248,19 +1252,19 @@ PayloadWrite payload_write(PayloadEmission input, u32 value, address pointers, a
 }
 
 PayloadEmission prepare_payload(PayloadShape shape, inout array<u32,8> shifts, ScalarHost host) on cpu
-    requires nonzero(host.constant) requires nonzero(host.type_id) requires nonzero(host.ids) {
+    requires nonzero(host.constant) requires nonzero(host.ids) {
     address context = host.context;
     u32 width = scalar_definition(shape.unit).width;
     for (part in 1..shape.count) {
         put(address_of(shifts[0]), u64(part), host.constant(context, BuiltinScalar::U32, u64(part * width)));
     }
     BuiltinScalar raw = unsigned_scalar(scalar_definition(shape.scalar).width);
-    return PayloadEmission(shape.access, host.type_id(context, raw), host.type_id(context, shape.unit),
+    return PayloadEmission(shape.access, scalar_id(host.types, raw), scalar_id(host.types, shape.unit),
         width / 8, shape.count, host.ids(context, 0));
 }
 
 extern "C" u32 emit_payload_load(PayloadShape shape, address operands, u32 result, MemoryHost host) on cpu
-    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.constant)
     requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.finish_body) {
     ScalarHost scalars = host.scalars;
     address context = scalars.context;
@@ -1270,7 +1274,7 @@ extern "C" u32 emit_payload_load(PayloadShape shape, address operands, u32 resul
     if (result != 0) {
         u32 zero = shape.scalar == BuiltinScalar::Bool ? scalars.constant(context, BuiltinScalar::U32, 0u64) : 0;
         input.next = scalars.ids(context, 0);
-        PayloadResult target = PayloadResult(scalars.type_id(context, shape.scalar), result, zero);
+        PayloadResult target = PayloadResult(scalar_id(scalars.types, shape.scalar), result, zero);
         address body = scalars.reserve(context, capacity + 5u64, 0u64).body;
         PayloadWrite read = typed_payload_read(input, target, operands, address_of(shifts[0]), body);
         host.finish_body(context, read.words);
@@ -1285,7 +1289,7 @@ extern "C" u32 emit_payload_load(PayloadShape shape, address operands, u32 resul
 }
 
 extern "C" void emit_payload_store(PayloadShape shape, u32 value, address pointers, address output, MemoryHost host) on cpu
-    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.constant)
     requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.finish_body) {
     ScalarHost scalars = host.scalars;
     address context = scalars.context;
@@ -1298,14 +1302,14 @@ extern "C" void emit_payload_store(PayloadShape shape, u32 value, address pointe
 }
 
 extern "C" u32 encode_raw_bits(BuiltinScalar scalar, u32 value, MemoryHost host) on cpu
-    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.constant)
     requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve)
     requires nonzero(host.finish_body) {
     BuiltinScalar raw = unsigned_scalar(scalar_definition(scalar).width);
     if (scalar == raw) { return value; }
     address context = host.scalars.context;
     u32 bits = host.scalars.ids(context, 1);
-    u32 type_id = host.scalars.type_id(context, raw);
+    u32 type_id = scalar_id(host.scalars.types, raw);
     u64 words = 0u64;
     if (scalar == BuiltinScalar::Bool) {
         u32 one = host.scalars.constant(context, BuiltinScalar::U32, 1u64);
@@ -1329,12 +1333,12 @@ PhysicalShape physical_shape(BuiltinScalar scalar) on cpu {
 }
 
 PageAddressResult locate_scalar(PageInputs input, PhysicalShape shape, MemoryHost host) on cpu
-    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.constant)
     requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve)
-    requires nonzero(host.pointer_type) requires nonzero(host.finish_body) {
+    requires nonzero(host.finish_body) {
     address context = host.scalars.context;
     u32 step = shape.count == 2 ? host.scalars.constant(context, BuiltinScalar::U64, u64(shape.bytes)) : 0;
-    PageAddress page = prepare_page(input, host.pointer_type(context, shape.unit), host.scalars);
+    PageAddress page = prepare_page(input, scalar_id(host.scalars.physical_pointers, shape.unit), host.scalars);
     address body = host.scalars.reserve(context, shape.count == 2 ? 118u64 : 109u64, 0u64).body;
     PageAddressResult range = page_address(page, step, body);
     host.finish_body(context, range.words);
@@ -1343,15 +1347,15 @@ PageAddressResult locate_scalar(PageInputs input, PhysicalShape shape, MemoryHos
 }
 
 PayloadEmission scalar_payload(PhysicalShape shape, ScalarHost host) on cpu
-    requires nonzero(host.type_id) requires nonzero(host.ids) {
-    return PayloadEmission(PayloadAccess::Physical, host.type_id(host.context, shape.raw),
-        host.type_id(host.context, shape.unit), shape.bytes, shape.count, host.ids(host.context, 0));
+    requires nonzero(host.ids) {
+    return PayloadEmission(PayloadAccess::Physical, scalar_id(host.types, shape.raw),
+        scalar_id(host.types, shape.unit), shape.bytes, shape.count, host.ids(host.context, 0));
 }
 
 extern "C" u32 physical_scalar_read(PhysicalAccess input, MemoryHost host) on cpu
-    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.constant)
     requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve)
-    requires nonzero(host.pointer_type) requires nonzero(host.finish_body) {
+    requires nonzero(host.finish_body) {
     address context = host.scalars.context;
     PhysicalShape shape = physical_shape(input.scalar);
     PageAddressResult range = locate_scalar(input.page, shape, host);
@@ -1379,9 +1383,9 @@ extern "C" u32 physical_scalar_read(PhysicalAccess input, MemoryHost host) on cp
 }
 
 extern "C" void physical_scalar_write(PhysicalAccess input, MemoryHost host) on cpu
-    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.constant)
     requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve)
-    requires nonzero(host.pointer_type) requires nonzero(host.finish_body) {
+    requires nonzero(host.finish_body) {
     address context = host.scalars.context;
     PhysicalShape shape = physical_shape(input.scalar);
     // Keep the existing value and address emission order for direct and indexed stores.
@@ -1538,11 +1542,11 @@ extern "C" void emit_tile_phases(u32 active, StructuredHost control, TilePhaseHo
     requires nonzero(emit.ir.inspect) requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
     requires nonzero(emit.tile.identity) requires nonzero(emit.tile.components) requires nonzero(emit.values.finish)
     requires nonzero(emit.paging.current_label) requires nonzero(emit.paging.finish_body) requires nonzero(emit.values.scalar)
-    requires nonzero(emit.values.scalars.constant) requires nonzero(emit.values.scalars.type_id)
+    requires nonzero(emit.values.scalars.constant)
     requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve) {
     address context = control.context;
     ScalarHost stream = emit.values.scalars;
-    MemoryHost memory = MemoryHost(stream, emit.paging.pointer_type, emit.paging.finish_body);
+    MemoryHost memory = MemoryHost(stream, emit.paging.finish_body);
     TilePhaseView phase = host.next_phase(host.cursor);
     while (phase.present != 0) {
         u32 before = emit.paging.current_label(stream.context);
@@ -1698,7 +1702,7 @@ u32 block_register(address registers, usize reg) on cpu {
 
 void block_float_constant(View instruction, BlockValues values, MemoryHost memory) on cpu
     requires nonzero(values.scalar)
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
     ScalarHost host = memory.scalars;
     address context = host.context;
@@ -1712,7 +1716,7 @@ void block_float_constant(View instruction, BlockValues values, MemoryHost memor
 
 void block_uniform(View instruction, BlockValues values) on cpu
     requires nonzero(values.scalar) requires nonzero(values.finish)
-    requires nonzero(values.scalars.constant) requires nonzero(values.scalars.type_id)
+    requires nonzero(values.scalars.constant)
     requires nonzero(values.scalars.ids) requires nonzero(values.scalars.reserve) {
     ScalarHost host = values.scalars;
     address context = host.context;
@@ -1731,10 +1735,10 @@ void block_uniform(View instruction, BlockValues values) on cpu
         high_shift = host.constant(context, BuiltinScalar::U32, 32u64);
     }
     u32 next = host.ids(context, 0);
-    PayloadResult result = PayloadResult(host.type_id(context, scalar), block_register(values.registers, instruction.a),
+    PayloadResult result = PayloadResult(scalar_id(host.types, scalar), block_register(values.registers, instruction.a),
         scalar == BuiltinScalar::Bool ? zero : 0);
     UniformRead input = UniformRead(next, values.push_pointer, values.push_block,
-        host.type_id(context, BuiltinScalar::U32), host.type_id(context, unsigned_scalar(width)),
+        scalar_id(host.types, BuiltinScalar::U32), scalar_id(host.types, unsigned_scalar(width)),
         result, zero, low_word, high_word, byte_shift, high_shift);
     PayloadWrite emitted = read_uniform(input, host.reserve(context, 57u64, 0u64).body);
     values.finish(context, ScalarWords(emitted.words, 0u64));
@@ -1743,7 +1747,7 @@ void block_uniform(View instruction, BlockValues values) on cpu
 
 ScalarWords block_calculation(View instruction, BlockValues values, Host ir) on cpu
     requires nonzero(ir.inspect) requires nonzero(values.scalar) requires nonzero(values.binary)
-    requires nonzero(values.scalars.constant) requires nonzero(values.scalars.type_id)
+    requires nonzero(values.scalars.constant)
     requires nonzero(values.scalars.ids) requires nonzero(values.scalars.reserve) {
     ScalarHost host = values.scalars;
     address context = host.context;
@@ -1760,7 +1764,7 @@ ScalarWords block_calculation(View instruction, BlockValues values, Host ir) on 
         return scalar_division(input, host);
     }
     BuiltinScalar dest = values.scalar(context, instruction.a);
-    u32 type_id = host.type_id(context, dest);
+    u32 type_id = scalar_id(host.types, dest);
     u32 result = block_register(registers, instruction.a);
     if (instruction.tag == OP_MATH) {
         usize first = unsafe_position<usize>(instruction.first.data);
@@ -1810,11 +1814,11 @@ PageInputs block_view_page(PageInputs base, address registers, Span table, View 
 
 void block_physical_access(PageInputs page, usize reg, bool write, BlockValues values, MemoryHost memory) on cpu
     requires nonzero(values.scalar)
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve)
-    requires nonzero(memory.pointer_type) requires nonzero(memory.finish_body) {
+    requires nonzero(memory.finish_body) {
     BuiltinScalar scalar = values.scalar(memory.scalars.context, reg);
-    u32 type_id = write ? 0 : memory.scalars.type_id(memory.scalars.context, scalar);
+    u32 type_id = write ? 0 : scalar_id(memory.scalars.types, scalar);
     PhysicalAccess access = PhysicalAccess(page, scalar, block_register(values.registers, reg), type_id);
     if (write) {
         physical_scalar_write(access, memory);
@@ -1827,9 +1831,9 @@ void block_append(View instruction, BlockValues values, BlockPaging paging, u32 
     MemoryHost memory, StructuredHost control) on cpu
     requires nonzero(values.scalar) requires nonzero(paging.current_label)
     requires nonzero(control.reserve_words) requires nonzero(control.finish_words)
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve)
-    requires nonzero(memory.pointer_type) requires nonzero(memory.finish_body) {
+    requires nonzero(memory.finish_body) {
     ScalarHost scalars = memory.scalars;
     address context = scalars.context;
     u32 relaxed = scalars.constant(context, BuiltinScalar::U32, 0u64);
@@ -1844,8 +1848,8 @@ void block_append(View instruction, BlockValues values, BlockPaging paging, u32 
     u32 capacity = scalars.constant(context, BuiltinScalar::U32, u64(2 + u32(instruction.c)));
     u32 outer = paging.current_label(context);
     u32 next = scalars.ids(context, 0);
-    AppendEmission input = AppendEmission(scalars.type_id(context, BuiltinScalar::U32),
-        scalars.type_id(context, BuiltinScalar::Bool), ballot_type,
+    AppendEmission input = AppendEmission(scalar_id(scalars.types, BuiltinScalar::U32),
+        scalar_id(scalars.types, BuiltinScalar::Bool), ballot_type,
         device, relaxed, subgroup, active, counter, values.push_pointer, values.push_block,
         capacity, outer, block_register(values.registers, instruction.a), next);
     AppendWords result = encode_append_reservation(input, scalars.reserve(context, 173u64, 0u64).body);
@@ -1881,13 +1885,13 @@ PrivateField private_array_field(BlockLocals locals, usize base, Host ir) on cpu
     PrivateArray array = unsafe_position<PrivateArray>(private_array_at(locals.arrays.data, low));
     usize start = array.end - array.components.count;
     View component = function_component(array.components, base - start, ir);
-    u32 pointer = unsafe_position<u32>(word_at(locals.pointers, u64(u32(array.unit))));
+    u32 pointer = scalar_id(locals.pointers, array.unit);
     return PrivateField(array.variable, pointer, array.unit, u32(component.a));
 }
 
 void block_private_storage(View instruction, BlockValues values, BlockLocals locals, MemoryHost memory, Host ir) on cpu
     requires nonzero(values.scalar) requires nonzero(ir.inspect)
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
     ScalarHost scalars = memory.scalars;
     address context = scalars.context;
@@ -1902,7 +1906,7 @@ void block_private_storage(View instruction, BlockValues values, BlockLocals loc
         if (pointer != 0) {
             address body = scalars.reserve(context, 4u64, 0u64).body;
             u64 words = write ? plain_store(body, 0u64, pointer, value) :
-                plain_load(body, 0u64, scalars.type_id(context, scalar), value, pointer);
+                plain_load(body, 0u64, scalar_id(scalars.types, scalar), value, pointer);
             memory.finish_body(context, words);
             return;
         }
@@ -1932,7 +1936,7 @@ void block_private_storage(View instruction, BlockValues values, BlockLocals loc
         }
     }
     u32 next = scalars.ids(context, 0);
-    PrivateAddress input = PrivateAddress(scalars.type_id(context, BuiltinScalar::U32), field.pointer_type,
+    PrivateAddress input = PrivateAddress(scalar_id(scalars.types, BuiltinScalar::U32), field.pointer_type,
         field.variable, index, offset, width, count, next);
     address body = scalars.reserve(context, 10u64 * u64(count) + 5u64, 0u64).body;
     // Each address replaces its part index after that index has been consumed.
@@ -1958,10 +1962,10 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     requires nonzero(emit.textures.declaration) requires nonzero(emit.rays.declare_type)
     requires nonzero(emit.tile.identity) requires nonzero(emit.tile.components)
     requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
-    requires nonzero(emit.paging.pointer_type) requires nonzero(emit.paging.finish_body)
+    requires nonzero(emit.paging.finish_body)
     requires nonzero(emit.paging.current_label)
     requires nonzero(emit.values.scalar) requires nonzero(emit.values.binary) requires nonzero(emit.values.finish)
-    requires nonzero(emit.values.scalars.constant) requires nonzero(emit.values.scalars.type_id)
+    requires nonzero(emit.values.scalars.constant)
     requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve)
     requires nonzero(host.labels) requires nonzero(host.reserve_words) requires nonzero(host.finish_words)
     requires nonzero(host.block) requires nonzero(host.value) requires nonzero(host.begin_return)
@@ -1969,7 +1973,7 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     requires nonzero(host.constant) requires nonzero(host.open_function) requires nonzero(host.close_function)
     requires nonzero(host.exit_targets) requires nonzero(host.record_return) {
     address context = host.context;
-    MemoryHost memory = MemoryHost(emit.values.scalars, emit.paging.pointer_type, emit.paging.finish_body);
+    MemoryHost memory = MemoryHost(emit.values.scalars, emit.paging.finish_body);
     usize i = 0u64;
     while (i < code.count) {
         address instruction = unsafe_address(address_bits(code.data) + i * code.stride);
@@ -2003,7 +2007,7 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
             block_tile_collective(value, emit, memory, host);
         } else if (kind == OP_TILE_LENGTH || kind == OP_TILE_LANE) {
             ScalarHost stream = memory.scalars;
-            u32 type_id = stream.type_id(stream.context, emit.values.scalar(stream.context, value.a));
+            u32 type_id = scalar_id(stream.types, emit.values.scalar(stream.context, value.a));
             u32 result = block_register(emit.values.registers, value.a);
             u32 id = kind == OP_TILE_LANE ? emit.tile.lane : emit.tile.length;
             address body = stream.reserve(stream.context, 4u64, 0u64).body;
@@ -2067,7 +2071,7 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
             }
         } else if (kind == OP_INDEX_VALUE) {
             ScalarHost stream = emit.values.scalars;
-            u32 type_id = stream.type_id(stream.context, emit.values.scalar(stream.context, value.a));
+            u32 type_id = scalar_id(stream.types, emit.values.scalar(stream.context, value.a));
             u32 result = block_register(emit.values.registers, value.a);
             address body = stream.reserve(stream.context, 4u64, 0u64).body;
             u64 length = copy_shader_value(body, 0u64, type_id, result, emit.values.index);
@@ -2151,12 +2155,12 @@ SubgroupArithmetic subgroup_arithmetic(SubgroupOperation operation, BuiltinScala
 
 void block_subgroup(View instruction, BlockValues values, BlockSubgroup group, MemoryHost memory) on cpu
     requires nonzero(values.scalar)
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
     ScalarHost stream = memory.scalars;
     address context = stream.context;
     BuiltinScalar scalar = values.scalar(context, instruction.a);
-    u32 type = stream.type_id(context, scalar);
+    u32 type = scalar_id(stream.types, scalar);
     u32 result = block_register(values.registers, instruction.a);
     u32 code = u32(instruction.c);
     if (code < 3) {
@@ -2203,7 +2207,7 @@ u32 block_span_register(address registers, Span values, usize index) on cpu {
 
 void block_texture_sample(View sample, View texture, BlockValues values, TextureSampling bindings) on cpu
     requires nonzero(bindings.declaration) requires nonzero(values.finish)
-    requires nonzero(values.scalars.type_id) requires nonzero(values.scalars.ids) requires nonzero(values.scalars.reserve) {
+    requires nonzero(values.scalars.ids) requires nonzero(values.scalars.reserve) {
     ScalarHost stream = values.scalars;
     address context = stream.context;
     address registers = values.registers;
@@ -2222,7 +2226,7 @@ void block_texture_sample(View sample, View texture, BlockValues values, Texture
         u32 index = sampled;
         pointer = sampled + 1;
         sampled += 2;
-        u32 index_type = stream.type_id(context, BuiltinScalar::U32);
+        u32 index_type = scalar_id(stream.types, BuiltinScalar::U32);
         at = words_three(words.body, at, 83, index_type, index, element);
         at = words_four(words.body, at, 65, type.pointer, pointer, variable, index);
         annotated = flag_decoration(words.decorations, annotated, FlagDecoration::NonUniform, index);
@@ -2248,7 +2252,7 @@ void block_texture_sample(View sample, View texture, BlockValues values, Texture
     put(words.body, at + 5u64, 2);
     put(words.body, at + 6u64, block_register(registers, sample.a));
     at += 7u64;
-    u32 component_type = stream.type_id(context, BuiltinScalar::F32);
+    u32 component_type = scalar_id(stream.types, BuiltinScalar::F32);
     for (component in 0..4) {
         u32 dst = block_span_register(registers, sample.first, u64(component));
         at = words_four(words.body, at, 81, component_type, dst, result, component);
@@ -2320,7 +2324,7 @@ u32 atomic_memory_semantics(u32 order, u32 storage) on cpu {
 
 u32 atomic_operand(BlockValues values, usize reg, MemoryHost memory) on cpu
     requires nonzero(values.scalar)
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
     BuiltinScalar scalar = values.scalar(memory.scalars.context, reg);
     return encode_raw_bits(scalar, block_register(values.registers, reg), memory);
@@ -2328,9 +2332,9 @@ u32 atomic_operand(BlockValues values, usize reg, MemoryHost memory) on cpu
 
 void block_atomic(View instruction, View target, View op, BlockHost emit, MemoryHost memory) on cpu
     requires nonzero(emit.values.scalar) requires nonzero(emit.tile.word) requires nonzero(emit.tile.cell)
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve)
-    requires nonzero(memory.pointer_type) requires nonzero(memory.finish_body) {
+    requires nonzero(memory.finish_body) {
     ScalarHost stream = memory.scalars;
     address context = stream.context;
     address registers = emit.values.registers;
@@ -2356,7 +2360,7 @@ void block_atomic(View instruction, View target, View op, BlockHost emit, Memory
     }
 
     AtomicOperation operation = AtomicOperation(op.tag);
-    u32 result_type = stream.type_id(context, unit);
+    u32 result_type = scalar_id(stream.types, unit);
     u32 scope = stream.constant(context, BuiltinScalar::U32, workgroup ? 2u64 : 1u64);
     u32 storage = workgroup ? 0x100 : 0x40;
     u32 semantics = stream.constant(context, BuiltinScalar::U32, u64(atomic_memory_semantics(u32(instruction.d), storage)));
@@ -2718,10 +2722,10 @@ struct DispatchGrid {
 
 DispatchGrid prepare_dispatch_grid(DispatchLayout layout, u32 max_x, u32 max_y,
     u32 capacity, bool collective, u32 first_byte, u32 histogram_byte, ScalarHost host) on cpu
-    requires nonzero(host.constant) requires nonzero(host.type_id) {
+    requires nonzero(host.constant) {
     address context = host.context;
-    DispatchScalars types = DispatchScalars(host.type_id(context, BuiltinScalar::U32),
-        host.type_id(context, BuiltinScalar::Bool), host.constant(context, BuiltinScalar::U32, 0u64),
+    DispatchScalars types = DispatchScalars(scalar_id(host.types, BuiltinScalar::U32),
+        scalar_id(host.types, BuiltinScalar::Bool), host.constant(context, BuiltinScalar::U32, 0u64),
         host.constant(context, BuiltinScalar::U32, 1u64));
     u32 width = host.constant(context, BuiltinScalar::U32, u64(layout.width));
     u32 bins = histogram_byte == 0 ? 0 : host.constant(context, BuiltinScalar::U32, 16u64);
@@ -2729,7 +2733,7 @@ DispatchGrid prepare_dispatch_grid(DispatchLayout layout, u32 max_x, u32 max_y,
     u32 stride = host.constant(context, BuiltinScalar::U64, u64(layout.record_bytes));
     array<u32,3> fields = array<u32,3>(host.constant(context, BuiltinScalar::U64, 4u64),
         host.constant(context, BuiltinScalar::U64, 8u64), host.constant(context, BuiltinScalar::U64, 12u64));
-    return DispatchGrid(types, host.type_id(context, BuiltinScalar::U64),
+    return DispatchGrid(types, scalar_id(host.types, BuiltinScalar::U64),
         layout.table_pointer, layout.page_pointer, layout.word_pointer, layout.descriptor,
         width, max_x, max_y, capacity, u32(collective), bins, first_byte, histogram_byte, shift, stride, fields);
 }
@@ -2862,18 +2866,18 @@ DispatchValue encode_dispatch_grid(DispatchGrid input, u32 count, u32 next, addr
 }
 
 extern "C" u32 sort_initialize(SortKeyInput input, MemoryHost host) on cpu
-    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.constant)
     requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve)
-    requires nonzero(host.pointer_type) requires nonzero(host.finish_body) {
+    requires nonzero(host.finish_body) {
     address context = host.scalars.context;
     ScalarDefinition definition = scalar_definition(input.scalar);
     PhysicalShape shape = physical_shape(input.scalar);
     bool wide_float = input.scalar == BuiltinScalar::F64;
     bool floating = input.scalar == BuiltinScalar::F32 || wide_float;
     u32 step = host.scalars.constant(context, BuiltinScalar::U64, 4u64);
-    PageAddress target = prepare_page(input.target, host.pointer_type(context, BuiltinScalar::U32), host.scalars);
-    PageAddress source = prepare_page(input.source, host.pointer_type(context, shape.unit), host.scalars);
-    u32 unit_type = host.scalars.type_id(context, shape.unit);
+    PageAddress target = prepare_page(input.target, scalar_id(host.scalars.physical_pointers, BuiltinScalar::U32), host.scalars);
+    PageAddress source = prepare_page(input.source, scalar_id(host.scalars.physical_pointers, shape.unit), host.scalars);
+    u32 unit_type = scalar_id(host.scalars.types, shape.unit);
     u32 shift = floating ? host.scalars.constant(context, BuiltinScalar::U32, 31u64) : 0;
     u32 bias_bits = input.scalar == BuiltinScalar::F32 ? 0x80000000
         : definition.signed == 0 ? 0 : u32(1u64 << u64(definition.width - 1));
@@ -3001,7 +3005,7 @@ extern "C" StageWords encode_record_scatter(ScatterInput input, address record_c
 
 extern "C" u32 encode_index_scatter(ScatterInput input, u32 target_descriptor,
     DispatchLayout layout, u32 max_x, u32 max_y, u32 first_byte, usize scatter_words, MemoryHost host) on cpu
-    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.constant)
     requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve)
     requires nonzero(host.finish_body) {
     address context = host.scalars.context;
@@ -3043,16 +3047,16 @@ extern "C" PayloadRead dispatch_count_index(DispatchPush push, u32 word, u32 fie
 }
 
 extern "C" DispatchArgumentResult emit_dispatch_arguments(DispatchArgumentInput input, MemoryHost host) on cpu
-    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.constant)
     requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve)
-    requires nonzero(host.pointer_type) requires nonzero(host.finish_body) {
+    requires nonzero(host.finish_body) {
     address context = host.scalars.context;
     bool prefixed = input.prefix.descriptor != 0;
     bool collective = input.operation != ENTRY_MAP || input.selected != 0;
     bool levels = collective && (input.has_fixed == 0 || input.scan_count > input.scan_width);
     bool read_domain = levels && input.has_fixed == 0 && prefixed;
     u32 zero = input.push.zero;
-    u32 bool_type = host.scalars.type_id(context, BuiltinScalar::Bool);
+    u32 bool_type = scalar_id(host.scalars.types, BuiltinScalar::Bool);
     u32 first = host.scalars.ids(context, 3);
     u32 end = first + 2;
     address head = host.scalars.reserve(context, 14u64, 0u64).body;
@@ -3480,7 +3484,7 @@ RayQuery ray_declaration(Span queries, usize result) on cpu {
 void block_ray_query(View source, Span direction_values, BlockValues values, RayBindings bindings, StructuredHost host) on cpu
     requires nonzero(bindings.declare_type)
     requires nonzero(host.reserve_words) requires nonzero(host.finish_words)
-    requires nonzero(values.scalars.constant) requires nonzero(values.scalars.type_id) requires nonzero(values.scalars.ids) {
+    requires nonzero(values.scalars.constant) requires nonzero(values.scalars.ids) {
     Span results = source.first;
     RayQuery declared = ray_declaration(bindings.queries, unsafe_position<usize>(results.data));
     u32 used = declared.used;
@@ -3520,8 +3524,8 @@ void block_ray_query(View source, Span direction_values, BlockValues values, Ray
     u32 committed = stream.constant(context, BuiltinScalar::U32, 1u64);
     u32 zero = stream.constant(context, BuiltinScalar::U32, 0u64);
     u32 float_zero = closest ? stream.constant(context, BuiltinScalar::F32, 0u64) : 0;
-    u32 u32_type = stream.type_id(context, BuiltinScalar::U32);
-    u32 bool_type = stream.type_id(context, BuiltinScalar::Bool);
+    u32 u32_type = scalar_id(stream.types, BuiltinScalar::U32);
+    u32 bool_type = scalar_id(stream.types, BuiltinScalar::Bool);
     u32 first = stream.ids(context, 9);
     address body = host.reserve_words(host.context, (closest ? 587u64 : 61u64) + (culling ? 6u64 : 0u64));
     u64 at = 0u64;
@@ -3569,7 +3573,7 @@ void block_ray_query(View source, Span direction_values, BlockValues values, Ray
     at = words_four(body, at, 4479, u32_type, kind, query, committed);
     at = words_four(body, at, 171, bool_type, block_span_register(registers, results, 0u64), kind, zero);
     if (closest) {
-        u32 f32_type = stream.type_id(context, BuiltinScalar::F32);
+        u32 f32_type = scalar_id(stream.types, BuiltinScalar::F32);
         RayIntersection intersection = RayIntersection(query, u32_type, f32_type, bindings.vec2, maximum, committed,
             zero, float_zero, position_type, (used & RAY_OBJECT_TO_WORLD) != 0 ? transform_type : 0,
             (used & RAY_WORLD_TO_OBJECT) != 0 ? transform_type : 0);
@@ -3582,7 +3586,7 @@ void block_ray_query(View source, Span direction_values, BlockValues values, Ray
 struct TileLocation { u32 pointer; u32 byte; };
 
 TileLocation tile_cell_address(TileCell cell, u32 index, u32 offset, u32 width, MemoryHost memory) on cpu
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
     ScalarHost stream = memory.scalars;
     address context = stream.context;
@@ -3597,7 +3601,7 @@ TileLocation tile_cell_address(TileCell cell, u32 index, u32 offset, u32 width, 
     u32 base = cell.slot == 0 ? 0 : stream.constant(context, BuiltinScalar::U32, u64(cell.slot * width));
     u32 next = stream.ids(context, 0);
     StageCursor out = StageCursor(stream.reserve(context, 30u64, 0u64).body, 0u64, next);
-    u32 ty = stream.type_id(context, BuiltinScalar::U32);
+    u32 ty = scalar_id(stream.types, BuiltinScalar::U32);
     u32 at = index;
     u32 byte = cell.byte;
     if (offset != 0) {
@@ -3615,7 +3619,7 @@ TileLocation tile_cell_address(TileCell cell, u32 index, u32 offset, u32 width, 
 
 u32 tile_storage_pointer(TileStorage storage, TileKey key, u32 index, u32 offset, MemoryHost memory) on cpu
     requires nonzero(storage.cell)
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
     TileCell cell = storage.cell(memory.scalars.context, key);
     return tile_cell_address(cell, index, offset, storage.width, memory).pointer;
@@ -3624,7 +3628,7 @@ u32 tile_storage_pointer(TileStorage storage, TileKey key, u32 index, u32 offset
 u32 tile_storage_read(TileStorage storage, TileKey key, u32 index, u32 offset,
     BuiltinScalar scalar, MemoryHost memory) on cpu
     requires nonzero(storage.cell)
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
     ScalarHost stream = memory.scalars;
     address context = stream.context;
@@ -3634,8 +3638,8 @@ u32 tile_storage_read(TileStorage storage, TileKey key, u32 index, u32 offset,
     u32 cell_width = scalar_definition(cell.unit).width;
     if (width < cell_width) {
         u32 bytes = cell_width / 8;
-        u32 ty = stream.type_id(context, BuiltinScalar::U32);
-        u32 cell_type = stream.type_id(context, cell.unit);
+        u32 ty = scalar_id(stream.types, BuiltinScalar::U32);
+        u32 cell_type = scalar_id(stream.types, cell.unit);
         u32 shift = 0;
         u32 cell_bytes = 0;
         u32 bits_per_byte = 0;
@@ -3671,7 +3675,7 @@ u32 tile_storage_read(TileStorage storage, TileKey key, u32 index, u32 offset,
 void block_tile_read(BlockValues values, TileStorage storage, TileKey key, u32 index, u32 offset,
     usize dst, MemoryHost memory) on cpu
     requires nonzero(values.scalar) requires nonzero(storage.cell)
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
     BuiltinScalar scalar = values.scalar(memory.scalars.context, dst);
     u32 raw = tile_storage_read(storage, key, index, offset, scalar, memory);
@@ -3682,7 +3686,7 @@ void block_tile_read(BlockValues values, TileStorage storage, TileKey key, u32 i
 void block_tile_write(BlockValues values, TileStorage storage, TileKey key, u32 index, u32 offset,
     usize src, MemoryHost memory) on cpu
     requires nonzero(values.scalar) requires nonzero(storage.cell)
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
     BuiltinScalar scalar = values.scalar(memory.scalars.context, src);
     PhysicalShape shape = physical_shape(scalar);
@@ -3697,7 +3701,7 @@ void block_tile_write(BlockValues values, TileStorage storage, TileKey key, u32 
 }
 
 void emit_shared_store(TileCell cell, u32 index, u32 width, u32 value, MemoryHost memory) on cpu
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
     u32 pointer = tile_cell_address(cell, index, 0, width, memory).pointer;
     ScalarHost stream = memory.scalars;
@@ -3706,7 +3710,7 @@ void emit_shared_store(TileCell cell, u32 index, u32 width, u32 value, MemoryHos
 }
 
 void pack_tile_fragment(PackedField field, u32 word_type, u32 zero, address packed, MemoryHost memory) on cpu
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
     ScalarHost stream = memory.scalars;
     address context = stream.context;
@@ -3732,14 +3736,14 @@ TileInputRow next_tile_snapshot(TileInputSource source, address context) on cpu
 }
 
 extern "C" TileInputRange emit_tile_input(TileInputLayout input, TileInputSource source, MemoryHost memory) on cpu
-    requires nonzero(source.row) requires nonzero(source.fragment) requires nonzero(memory.pointer_type)
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(source.row) requires nonzero(source.fragment)
+    requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
     ScalarHost stream = memory.scalars;
     address context = stream.context;
     u32 width = stream.constant(context, BuiltinScalar::U32, u64(input.width));
-    u32 uint_type = stream.type_id(context, BuiltinScalar::U32);
-    u32 bool_type = stream.type_id(context, BuiltinScalar::Bool);
+    u32 uint_type = scalar_id(stream.types, BuiltinScalar::U32);
+    u32 bool_type = scalar_id(stream.types, BuiltinScalar::Bool);
     u32 next = stream.ids(context, 0);
     address range_body = stream.reserve(context, 26u64, 0u64).body;
     TileRangeWords range = tile_range(range_body, uint_type, bool_type, input.page.index, input.count, width, next);
@@ -3770,7 +3774,7 @@ extern "C" TileInputRange emit_tile_input(TileInputLayout input, TileInputSource
                 TileInputFragment fragment = source.fragment(source.cursor);
                 page.word = fragment.byte;
                 u32 raw = physical_scalar_read(PhysicalAccess(page, fragment.unit, 0, 0), memory);
-                u32 ty = stream.type_id(context, fragment.unit);
+                u32 ty = scalar_id(stream.types, fragment.unit);
                 u32 bytes = scalar_definition(fragment.unit).width / 8;
                 address slot = unsafe_address(address_bits(scratch) + part * size_of<PackedField>());
                 unsafe_position<PackedField>(slot) = PackedField(raw, fragment.byte % 4, ty, bytes);
@@ -3808,13 +3812,13 @@ void tile_workgroup_sync(u32 semantics_value, MemoryHost memory) on cpu
 
 void block_tile_publish(View publication, BlockValues values, TileStorage storage, MemoryHost memory) on cpu
     requires nonzero(storage.cell) requires nonzero(values.scalar)
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
     ScalarHost stream = memory.scalars;
     address context = stream.context;
     Span registers = publication.first;
     Span offsets = publication.second;
-    u32 word_type = stream.type_id(context, BuiltinScalar::U32);
+    u32 word_type = scalar_id(stream.types, BuiltinScalar::U32);
     u32 packed_word = 0;
     u32 packed = 0;
     // Publication fields follow the value layout. Pruning keeps their relative order.
@@ -3838,7 +3842,7 @@ void block_tile_publish(View publication, BlockValues values, TileStorage storag
             TileCell cell = storage.cell(context, key);
             if (cell.variable != 0) { emit_shared_store(cell, storage.lane, storage.width, raw, memory); }
         } else {
-            u32 raw_type = stream.type_id(context, unsigned_scalar(width));
+            u32 raw_type = scalar_id(stream.types, unsigned_scalar(width));
             packed_word = word;
             pack_tile_fragment(PackedField(raw, offset % 4, raw_type, width / 8), word_type, 0, address_of(packed), memory);
         }
@@ -3864,7 +3868,7 @@ array<u32,2> tile_tree_pointers(TreeComponent component, u32 node, u32 uint_type
 }
 
 void tile_tree_store(TreeComponent component, u32 node, u32 value, u32 uint_type, MemoryHost memory) on cpu
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
     array<u32,2> pointers = tile_tree_pointers(component, node, uint_type, memory);
     emit_payload_store(PayloadShape(PayloadAccess::Local, component.scalar, BuiltinScalar::U32, component.count),
@@ -3873,7 +3877,7 @@ void tile_tree_store(TreeComponent component, u32 node, u32 value, u32 uint_type
 
 void collective_tree(CollectiveLayout layout, CollectiveTree tree, ScalarHost host,
     address components) on cpu
-    requires nonzero(layout.component) requires nonzero(host.constant) requires nonzero(host.type_id) {
+    requires nonzero(layout.component) requires nonzero(host.constant) {
     usize index = 0u64;
     while (index < layout.count) {
         CollectiveComponent field = layout.component(layout.source, index);
@@ -3891,7 +3895,7 @@ void collective_tree(CollectiveLayout layout, CollectiveTree tree, ScalarHost ho
         address at = unsafe_address(address_bits(components) + index * size_of<TreeComponent>());
         unsafe_position<TreeComponent>(at) = TreeComponent(tree.shared, tree.pointer, low, high,
             scale, shift, (width + 31) / 32, tree.operation, field.scalar,
-            host.type_id(host.context, unsigned_scalar(width)), host.type_id(host.context, field.scalar));
+            scalar_id(host.types, unsigned_scalar(width)), scalar_id(host.types, field.scalar));
         index += 1u64;
     }
 }
@@ -3899,7 +3903,7 @@ void collective_tree(CollectiveLayout layout, CollectiveTree tree, ScalarHost ho
 void collective_fields(CollectiveLayout layout, u32 source_word, u32 has_source,
     MemoryHost host, address fields) on cpu
     requires nonzero(layout.component) requires nonzero(host.scalars.constant)
-    requires nonzero(host.scalars.type_id) requires nonzero(host.pointer_type) {
+    {
     ScalarHost stream = host.scalars;
     address context = stream.context;
     usize index = 0u64;
@@ -3917,8 +3921,8 @@ void collective_fields(CollectiveLayout layout, u32 source_word, u32 has_source,
         u32 byte = field.offset % 4;
         u32 shift = shape.bytes < 4 && byte != 0 ? stream.constant(context, BuiltinScalar::U32, u64(byte * 8)) : 0;
         address at = unsafe_address(address_bits(fields) + index * size_of<CollectiveField>());
-        unsafe_position<CollectiveField>(at) = CollectiveField(source, target, stream.type_id(context, shape.unit),
-            shape.bytes, host.pointer_type(context, shape.unit), step, shift, slot);
+        unsafe_position<CollectiveField>(at) = CollectiveField(source, target, scalar_id(stream.types, shape.unit),
+            shape.bytes, scalar_id(host.scalars.physical_pointers, shape.unit), step, shift, slot);
         index += 1u64;
     }
 }
@@ -3937,9 +3941,8 @@ u32 high_word_shift(ScalarHost host, PhysicalShape shape) on cpu requires nonzer
 
 void physical_fields(CollectiveLayout layout, u32 first, MemoryHost host, address output) on cpu
     requires nonzero(layout.component) requires nonzero(host.scalars.constant)
-    requires nonzero(host.scalars.type_id) requires nonzero(host.pointer_type) {
+    {
     ScalarHost stream = host.scalars;
-    address context = stream.context;
     usize index = 0u64;
     while (index < layout.count) {
         CollectiveComponent component = layout.component(layout.source, index);
@@ -3948,16 +3951,16 @@ void physical_fields(CollectiveLayout layout, u32 first, MemoryHost host, addres
         u32 shift = high_word_shift(stream, shape);
         u32 offset = field_byte_id(stream, first + component.offset);
         address at = unsafe_address(address_bits(output) + index * size_of<PhysicalField>());
-        unsafe_position<PhysicalField>(at) = PhysicalField(component.scalar, stream.type_id(context, shape.raw),
-            stream.type_id(context, component.scalar), stream.type_id(context, shape.unit), shape.bytes,
-            host.pointer_type(context, shape.unit), offset, step, shift);
+        unsafe_position<PhysicalField>(at) = PhysicalField(component.scalar, scalar_id(stream.types, shape.raw),
+            scalar_id(stream.types, component.scalar), scalar_id(stream.types, shape.unit), shape.bytes,
+            scalar_id(host.scalars.physical_pointers, shape.unit), offset, step, shift);
         index += 1u64;
     }
 }
 
 void tile_collective_layer(u32 stride, u32 padded, u32 down, address components, u32 count,
     BlockHost emit, MemoryHost memory, StructuredHost control) on cpu
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve)
     requires nonzero(emit.values.finish) requires nonzero(control.finish_words) {
     ScalarHost stream = memory.scalars;
@@ -3969,7 +3972,7 @@ void tile_collective_layer(u32 stride, u32 padded, u32 down, address components,
     u32 scope = stream.constant(context, BuiltinScalar::U32, 2u64);
     u32 semantics = stream.constant(context, BuiltinScalar::U32, 0x108u64);
     u32 start = stream.ids(context, 0);
-    TreeLayer input = TreeLayer(stream.type_id(context, BuiltinScalar::U32), stream.type_id(context, BuiltinScalar::Bool),
+    TreeLayer input = TreeLayer(scalar_id(stream.types, BuiltinScalar::U32), scalar_id(stream.types, BuiltinScalar::Bool),
         emit.tile.lane, distance, selector, capacity, emit.tile.length, one, scope, semantics, down, start);
     ScalarStreams words = stream.reserve(context, 42u64 + 176u64 * u64(count), 3u64 * u64(count));
     StageCursor out = StageCursor(words.body, 0u64, start);
@@ -3983,7 +3986,7 @@ void block_tile_collective(View operation, BlockHost emit, MemoryHost memory, St
     requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
     requires nonzero(emit.tile.identity) requires nonzero(emit.tile.components)
     requires nonzero(emit.values.scalar) requires nonzero(emit.values.finish) requires nonzero(emit.paging.current_label)
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body)
     requires nonzero(control.labels) requires nonzero(control.reserve_words) requires nonzero(control.finish_words) {
     if (operation.first.count == 0u64) {
@@ -3995,8 +3998,8 @@ void block_tile_collective(View operation, BlockHost emit, MemoryHost memory, St
     address context = stream.context;
     address control_context = control.context;
     CollectiveOperation opcode = CollectiveOperation(u32(operation.b));
-    u32 uint_type = stream.type_id(context, BuiltinScalar::U32);
-    u32 bool_type = stream.type_id(context, BuiltinScalar::Bool);
+    u32 uint_type = scalar_id(stream.types, BuiltinScalar::U32);
+    u32 bool_type = scalar_id(stream.types, BuiltinScalar::Bool);
     u32 zero = stream.constant(context, BuiltinScalar::U32, 0u64);
     u64 padded_width = 1u64;
     while (padded_width < u64(storage.width)) { padded_width *= 2u64; }
@@ -4019,7 +4022,7 @@ void block_tile_collective(View operation, BlockHost emit, MemoryHost memory, St
             u32 high = parts == 2 ? stream.constant(context, BuiltinScalar::U32, u64(word + 1)) : 0;
             u32 shift = parts == 2 ? stream.constant(context, BuiltinScalar::U32, 32u64) : 0;
             TreeComponent component = TreeComponent(storage.shared, storage.pointer, low, high, scale, shift, parts,
-                opcode, scalar, stream.type_id(context, raw), stream.type_id(context, scalar));
+                opcode, scalar, scalar_id(stream.types, raw), scalar_id(stream.types, scalar));
             address component_at = unsafe_address(address_bits(components) + u64(slot) * size_of<TreeComponent>());
             unsafe_position<TreeComponent>(component_at) = component;
             word += padded * parts;
@@ -4481,7 +4484,7 @@ StageWords close_custom_segment(CustomSegmentJoin input, address left, address r
 
 u32 emit_custom_merge(CustomMerge input, address left, address right, address result,
     MemoryHost memory, CustomCollectiveHost host) on cpu
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve)
     requires nonzero(memory.finish_body) requires nonzero(host.combine) {
     u32 count = input.value_words;
@@ -4489,8 +4492,8 @@ u32 emit_custom_merge(CustomMerge input, address left, address right, address re
         return host.combine(host.context, left, right, result, count, input.label);
     }
     address context = memory.scalars.context;
-    u32 uint_type = memory.scalars.type_id(context, BuiltinScalar::U32);
-    u32 bool_type = memory.scalars.type_id(context, BuiltinScalar::Bool);
+    u32 uint_type = scalar_id(memory.scalars.types, BuiltinScalar::U32);
+    u32 bool_type = scalar_id(memory.scalars.types, BuiltinScalar::Bool);
     u32 zero = memory.scalars.constant(context, BuiltinScalar::U32, 0u64);
     u32 next = memory.scalars.ids(context, 0);
     address body = memory.scalars.reserve(context, 14u64, 0u64).body;
@@ -4667,12 +4670,12 @@ void custom_plane_offsets(u32 words, address offsets, ScalarHost stream) on cpu
 
 u32 emit_custom_tree(CustomTree tree, address own, address workspace,
     MemoryHost memory, CustomCollectiveHost host) on cpu
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve)
     requires nonzero(memory.finish_body) requires nonzero(host.combine) {
     address context = memory.scalars.context;
-    u32 uint_type = memory.scalars.type_id(context, BuiltinScalar::U32);
-    u32 bool_type = memory.scalars.type_id(context, BuiltinScalar::Bool);
+    u32 uint_type = scalar_id(memory.scalars.types, BuiltinScalar::U32);
+    u32 bool_type = scalar_id(memory.scalars.types, BuiltinScalar::Bool);
     u32 one = memory.scalars.constant(context, BuiltinScalar::U32, 1u64);
     u32 scope = memory.scalars.constant(context, BuiltinScalar::U32, 2u64);
     u32 semantics = memory.scalars.constant(context, BuiltinScalar::U32, 0x108u64);
@@ -4845,7 +4848,7 @@ StageWords close_custom_prefix(read CustomPrefix input, CustomPrefixOpen opened,
 }
 
 void segment_fields(CollectiveLayout layout, ScalarHost host, address output) on cpu
-    requires nonzero(layout.component) requires nonzero(host.constant) requires nonzero(host.type_id) {
+    requires nonzero(layout.component) requires nonzero(host.constant) {
     usize index = 0u64;
     while (index < layout.count) {
         CollectiveComponent component = layout.component(layout.source, index);
@@ -4853,16 +4856,15 @@ void segment_fields(CollectiveLayout layout, ScalarHost host, address output) on
         u32 shift = high_word_shift(host, shape);
         address at = unsafe_address(address_bits(output) + index * size_of<SegmentField>());
         unsafe_position<SegmentField>(at) = SegmentField(component.scalar, component.offset / 4,
-            host.type_id(host.context, shape.raw), host.type_id(host.context, component.scalar), shift);
+            scalar_id(host.types, shape.raw), scalar_id(host.types, component.scalar), shift);
         index += 1u64;
     }
 }
 
 void segment_storage_fields(CollectiveLayout layout, u32 first, MemoryHost host, address output) on cpu
     requires nonzero(layout.component) requires nonzero(host.scalars.constant)
-    requires nonzero(host.scalars.type_id) requires nonzero(host.pointer_type) {
+    {
     ScalarHost stream = host.scalars;
-    address context = stream.context;
     usize index = 0u64;
     while (index < layout.count) {
         CollectiveComponent component = layout.component(layout.source, index);
@@ -4871,7 +4873,7 @@ void segment_storage_fields(CollectiveLayout layout, u32 first, MemoryHost host,
         u32 step = high_word_step(stream, shape);
         address at = unsafe_address(address_bits(output) + index * size_of<SegmentStorageField>());
         unsafe_position<SegmentStorageField>(at) = SegmentStorageField(component.offset / 4, offset,
-            stream.type_id(context, shape.unit), shape.bytes, host.pointer_type(context, shape.unit), step);
+            scalar_id(stream.types, shape.unit), shape.bytes, scalar_id(host.scalars.physical_pointers, shape.unit), step);
         index += 1u64;
     }
 }
@@ -5026,9 +5028,9 @@ StageWords custom_collective_join(CustomCollectiveJoin input, address values,
 
 u32 emit_custom_input(CustomInput input, address own, address identity,
     address values, address fields, MemoryHost memory, CustomCollectiveHost host) on cpu
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve)
-    requires nonzero(memory.pointer_type) requires nonzero(memory.finish_body)
+    requires nonzero(memory.finish_body)
     requires nonzero(input.layout.component) requires nonzero(host.identity) requires nonzero(host.project) {
     u32 inactive = host.identity(host.context, identity, input.value_words);
     if (inactive == 0) { return 0; }
@@ -5037,7 +5039,7 @@ u32 emit_custom_input(CustomInput input, address own, address identity,
     u32 words = input.value_words + input.tag_words;
     for (part in input.value_words..words) { put(identity, u64(part), zero); }
     custom_plane_offsets(words, own, memory.scalars);
-    u32 uint_type = memory.scalars.type_id(context, BuiltinScalar::U32);
+    u32 uint_type = scalar_id(memory.scalars.types, BuiltinScalar::U32);
     u32 next = memory.scalars.ids(context, 0);
     address body = memory.scalars.reserve(context, 5u64 + 10u64 * u64(words), 0u64).body;
     SharedAddress shared = SharedAddress(uint_type, input.pointer, input.shared, input.lane, 0, words, next);
@@ -5053,8 +5055,8 @@ u32 emit_custom_input(CustomInput input, address own, address identity,
     u32 step = tail && words > 1 ? memory.scalars.constant(context, BuiltinScalar::U64, 4u64) : 0;
     PageInputs raw = input.source;
     if (tail) { raw.descriptor = input.summary_descriptor; }
-    PageAddress source = prepare_page(raw, memory.pointer_type(context, BuiltinScalar::U32), memory.scalars);
-    u32 bool_type = memory.scalars.type_id(context, BuiltinScalar::Bool);
+    PageAddress source = prepare_page(raw, scalar_id(memory.scalars.physical_pointers, BuiltinScalar::U32), memory.scalars);
+    u32 bool_type = scalar_id(memory.scalars.types, BuiltinScalar::Bool);
     CustomCollectiveSource read = CustomCollectiveSource(source, input.active, input.lane, bool_type,
         input.value_words, input.tag_words, head_offset, step, input.tail);
     body = memory.scalars.reserve(context, 155u64 + 74u64 * count + 14u64 * u64(words), 0u64).body;
@@ -5471,11 +5473,11 @@ u32 segment_descriptor(SegmentBindings bindings, usize index) on cpu {
 }
 
 SegmentMerge segment_merge(SegmentLayout layout, u32 value_words, ScalarHost host) on cpu
-    requires nonzero(host.constant) requires nonzero(host.type_id) {
+    requires nonzero(host.constant) {
     address context = host.context;
     u32 zero = host.constant(context, BuiltinScalar::U32, 0u64);
-    return SegmentMerge(layout.operation, host.type_id(context, BuiltinScalar::U32),
-        host.type_id(context, BuiltinScalar::Bool), zero, value_words, layout.counted);
+    return SegmentMerge(layout.operation, scalar_id(host.types, BuiltinScalar::U32),
+        scalar_id(host.types, BuiltinScalar::Bool), zero, value_words, layout.counted);
 }
 
 void clear_workspace(address workspace, u64 words) on cpu {
@@ -5489,8 +5491,8 @@ void clear_workspace(address workspace, u64 words) on cpu {
 TreeWords emit_segment_add(SegmentLayout layout, SegmentBindings bindings, SegmentDispatch dispatch,
     PageInputs raw_page, SegmentScratch scratch, MemoryHost host, u32 value_words, u64 field_words, u64 span) on cpu
     requires nonzero(layout.fields.component) requires nonzero(scratch.words.reserve)
-    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
-    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.pointer_type) {
+    requires nonzero(host.scalars.constant)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) {
     ScalarHost stream = host.scalars;
     address context = stream.context;
     u64 count = layout.fields.count;
@@ -5504,7 +5506,7 @@ TreeWords emit_segment_add(SegmentLayout layout, SegmentBindings bindings, Segme
     PageInputs page = raw_page;
     page.descriptor = segment_descriptor(bindings, bindings.target);
     page.has_word = 1;
-    PageAddress target = prepare_page(page, host.pointer_type(context, BuiltinScalar::U32), stream);
+    PageAddress target = prepare_page(page, scalar_id(host.scalars.physical_pointers, BuiltinScalar::U32), stream);
     SegmentAdd input = SegmentAdd(merge, target, segment_descriptor(bindings, bindings.prefix), width, step,
         dispatch.active, dispatch.run, dispatch.end);
     ScalarStreams output = stream.reserve(context, 243u64 + 41u64 * span + 74u64 * count, 3u64 * count);
@@ -5514,8 +5516,8 @@ TreeWords emit_segment_add(SegmentLayout layout, SegmentBindings bindings, Segme
 extern "C" TreeWords emit_segmented(EntryPass pass, u32 single_group, SegmentLayout layout,
     SegmentBindings bindings, SegmentDispatch dispatch, PageInputs raw_page, SegmentScratch scratch, MemoryHost host) on cpu
     requires nonzero(layout.fields.component) requires nonzero(scratch.words.reserve) requires nonzero(scratch.identity)
-    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
-    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.pointer_type) {
+    requires nonzero(host.scalars.constant)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) {
     u32 value_words = layout.value_bytes / 4 + u32(layout.value_bytes % 4 != 0);
     u64 span = u64(value_words + 1 + layout.counted);
     u64 count = layout.fields.count;
@@ -5575,7 +5577,7 @@ extern "C" TreeWords emit_segmented(EntryPass pass, u32 single_group, SegmentLay
     u32 step = stream.constant(context, BuiltinScalar::U64, 4u64);
     PageInputs page = raw_page;
     page.descriptor = segment_descriptor(bindings, tail ? bindings.prefix : bindings.source);
-    PageAddress source = prepare_page(page, host.pointer_type(context, BuiltinScalar::U32), stream);
+    PageAddress source = prepare_page(page, scalar_id(host.scalars.physical_pointers, BuiltinScalar::U32), stream);
     SegmentPass phase = tail ? SegmentPass::Tail : (finish ? SegmentPass::Finish : SegmentPass::Main);
     SegmentGroup input = SegmentGroup(merge, source, phase, segment_descriptor(bindings, bindings.target),
         summary, head_offset, head_word, marker_word, count_target, count_word, dispatch.active, dispatch.count,
@@ -5596,7 +5598,7 @@ struct NumericWorkspace {
 NumericWorkspace numeric_workspace(NumericGroupInput input, u64 level_words, WordScratch temporary,
     MemoryHost host) on cpu
     requires nonzero(input.fields.component) requires nonzero(temporary.reserve)
-    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id) requires nonzero(host.pointer_type) {
+    requires nonzero(host.scalars.constant) {
     ScalarHost stream = host.scalars;
     address context = stream.context;
     u64 count = input.fields.count;
@@ -5632,8 +5634,8 @@ u32 collective_descriptor(CollectiveBindings bindings, usize index) on cpu {
 extern "C" TreeWords emit_numeric_scan(NumericGroupInput input, CollectiveBindings bindings, NumericScanOptions options,
     PageInputs raw_page, WordScratch temporary, MemoryHost host) on cpu
     requires nonzero(input.fields.component) requires nonzero(temporary.reserve)
-    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
-    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.pointer_type) {
+    requires nonzero(host.scalars.constant)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) {
     ScalarHost stream = host.scalars;
     address context = stream.context;
     u64 count = input.fields.count;
@@ -5648,32 +5650,32 @@ extern "C" TreeWords emit_numeric_scan(NumericGroupInput input, CollectiveBindin
     page.descriptor = collective_descriptor(bindings, bindings.target);
     page.word = options.target_word;
     page.has_word = u32(!tail && options.root_operation != 0 && options.target_word != 0);
-    PageAddress target = prepare_page(page, host.pointer_type(context, BuiltinScalar::U32), stream);
+    PageAddress target = prepare_page(page, scalar_id(host.scalars.physical_pointers, BuiltinScalar::U32), stream);
     ScanGroup group = ScanGroup(target, lanes, collective_descriptor(bindings, bindings.summary), width,
-        last, stream.type_id(context, BuiltinScalar::Bool), u32(!tail && options.normalized_input != 0));
+        last, scalar_id(stream.types, BuiltinScalar::Bool), u32(!tail && options.normalized_input != 0));
     ScalarStreams words = stream.reserve(context, 12u64 * (42u64 + 176u64 * count) + 430u64 + 128u64 * count,
         36u64 * count);
     return scan_group(group, work.levels, work.components, work.fields, u32(count), work.values, words.body, words.decorations);
 }
 
 ReductionWriteback numeric_writeback(NumericOutput output, PageInputs page, MemoryHost host) on cpu
-    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
-    requires nonzero(host.scalars.ids) requires nonzero(host.pointer_type) {
+    requires nonzero(host.scalars.constant)
+    requires nonzero(host.scalars.ids) {
     ScalarHost stream = host.scalars;
     address context = stream.context;
     u32 width = stream.constant(context, BuiltinScalar::U32, 64u64);
     u32 length_word = stream.constant(context, BuiltinScalar::U32, u64(2 + u32(output.binding)));
     u32 bias = output.word == 0 ? 0 : stream.constant(context, BuiltinScalar::U32, u64(output.word));
-    PageAddress target = prepare_page(page, host.pointer_type(context, BuiltinScalar::U32), stream);
-    return ReductionWriteback(target, stream.type_id(context, BuiltinScalar::Bool), output.push_pointer,
+    PageAddress target = prepare_page(page, scalar_id(host.scalars.physical_pointers, BuiltinScalar::U32), stream);
+    return ReductionWriteback(target, scalar_id(stream.types, BuiltinScalar::Bool), output.push_pointer,
         output.push, width, length_word, bias);
 }
 
 extern "C" TreeWords emit_numeric_reduction(NumericGroupInput input, u32 source, NumericOutput output,
     PageInputs raw_page, WordScratch temporary, MemoryHost host) on cpu
     requires nonzero(input.fields.component) requires nonzero(temporary.reserve)
-    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
-    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.pointer_type) {
+    requires nonzero(host.scalars.constant)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) {
     ScalarHost stream = host.scalars;
     address context = stream.context;
     u64 count = input.fields.count;
@@ -5693,8 +5695,8 @@ extern "C" TreeWords emit_numeric_reduction(NumericGroupInput input, u32 source,
 extern "C" TreeWords emit_numeric_prefix(NumericPrefix input, CollectiveBindings bindings,
     PageInputs raw_page, WordScratch temporary, MemoryHost host) on cpu
     requires nonzero(input.fields.component) requires nonzero(temporary.reserve)
-    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
-    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.pointer_type) {
+    requires nonzero(host.scalars.constant)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) {
     ScalarHost stream = host.scalars;
     address context = stream.context;
     u64 count = input.fields.count;
@@ -5712,9 +5714,9 @@ extern "C" TreeWords emit_numeric_prefix(NumericPrefix input, CollectiveBindings
     page.descriptor = collective_descriptor(bindings, bindings.target);
     page.word = input.target_word;
     page.has_word = u32(input.root != 0 && input.target_word != 0);
-    PageAddress target = prepare_page(page, host.pointer_type(context, BuiltinScalar::U32), stream);
+    PageAddress target = prepare_page(page, scalar_id(host.scalars.physical_pointers, BuiltinScalar::U32), stream);
     ScanPrefix prefix = ScanPrefix(target, collective_descriptor(bindings, bindings.prefix), head_descriptor,
-        head_word, width, stream.type_id(context, BuiltinScalar::Bool), input.operation, input.label);
+        head_word, width, scalar_id(stream.types, BuiltinScalar::Bool), input.operation, input.label);
     ScalarStreams words = stream.reserve(context, 233u64 + 148u64 * u64(input.segmented) + 144u64 * count, 3u64 * count);
     return add_scan_prefix(prefix, fields, u32(count), words.body, words.decorations);
 }
@@ -5723,14 +5725,14 @@ extern "C" TreeWords emit_numeric_prefix(NumericPrefix input, CollectiveBindings
 struct CustomWorkspace { address fields; address own; address identity; address item; address work; };
 
 PageAddress custom_page(PageInputs raw, u32 descriptor, u32 index, u32 word, u32 has_word, MemoryHost memory) on cpu
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
-    requires nonzero(memory.scalars.ids) requires nonzero(memory.pointer_type) {
+    requires nonzero(memory.scalars.constant)
+    requires nonzero(memory.scalars.ids) {
     PageInputs page = raw;
     page.descriptor = descriptor;
     page.index = index;
     page.word = word;
     page.has_word = has_word;
-    u32 pointer = memory.pointer_type(memory.scalars.context, BuiltinScalar::U32);
+    u32 pointer = scalar_id(memory.scalars.physical_pointers, BuiltinScalar::U32);
     return prepare_page(page, pointer, memory.scalars);
 }
 
@@ -5742,22 +5744,22 @@ void custom_finish(MemoryHost memory, u64 words, u32 first, u32 next) on cpu
 }
 
 u32 custom_group_remaining(NumericDispatch dispatch, u32 index, MemoryHost memory) on cpu
-    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids)
     requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
     ScalarHost stream = memory.scalars;
     address context = stream.context;
     u32 first = stream.ids(context, 0);
     address body = stream.reserve(context, 10u64, 0u64).body;
-    group_remaining(body, stream.type_id(context, BuiltinScalar::U32), index, dispatch.lane, dispatch.count, first);
+    group_remaining(body, scalar_id(stream.types, BuiltinScalar::U32), index, dispatch.lane, dispatch.count, first);
     custom_finish(memory, 10u64, first, first + 2);
     return first + 1;
 }
 
 SummaryRootWords emit_custom_root(PageInputs page, u32 descriptor, u32 word, SummaryRootMode mode,
     NumericDispatch dispatch, u32 words, CustomWorkspace slots, MemoryHost memory) on cpu
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve)
-    requires nonzero(memory.pointer_type) requires nonzero(memory.finish_body) {
+    requires nonzero(memory.finish_body) {
     ScalarHost stream = memory.scalars;
     address context = stream.context;
     custom_plane_offsets(words, slots.work, stream);
@@ -5768,7 +5770,7 @@ SummaryRootWords emit_custom_root(PageInputs page, u32 descriptor, u32 word, Sum
     u32 semantics = stream.constant(context, BuiltinScalar::U32, 0x108u64);
     u32 zero = stream.constant(context, BuiltinScalar::U32, 0u64);
     PageAddress target = custom_page(page, descriptor, page.index, word, 1, memory);
-    u32 bool_type = stream.type_id(context, BuiltinScalar::Bool);
+    u32 bool_type = scalar_id(stream.types, BuiltinScalar::Bool);
     CustomSummaryRoot input = CustomSummaryRoot(target, mode, bool_type, zero, dispatch.lane,
         dispatch.active, dispatch.count, width, last, dispatch.shared, dispatch.pointer, step, scope, semantics);
     address body = stream.reserve(context, 169u64 + 36u64 * u64(words), 0u64).body;
@@ -5780,9 +5782,9 @@ SummaryRootWords emit_custom_root(PageInputs page, u32 descriptor, u32 word, Sum
 u32 emit_custom_prefix_stage(CustomCollective input, CollectiveBindings bindings, NumericDispatch dispatch,
     PageInputs page, u32 value_words, WordScratch temporary, MemoryHost memory, CustomCollectiveHost host) on cpu
     requires nonzero(input.value_layout.component) requires nonzero(temporary.reserve)
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve)
-    requires nonzero(memory.pointer_type) requires nonzero(memory.finish_body) requires nonzero(host.combine) {
+    requires nonzero(memory.finish_body) requires nonzero(host.combine) {
     ScalarHost stream = memory.scalars;
     address context = stream.context;
     bool root = input.pass == EntryPass::ScanRootAdd;
@@ -5814,7 +5816,7 @@ u32 emit_custom_prefix_stage(CustomCollective input, CollectiveBindings bindings
     }
 
     CustomPrefix request = CustomPrefix(target, collective_descriptor(bindings, bindings.prefix),
-        head_descriptor, head_word, width, stream.type_id(context, BuiltinScalar::Bool),
+        head_descriptor, head_word, width, scalar_id(stream.types, BuiltinScalar::Bool),
         dispatch.active, step, u32(!root), words, u32(field_count));
     address body = stream.reserve(context, 375u64 + 30u64 * span + 60u64 * field_count, 0u64).body;
     CustomPrefixOpen opened = open_custom_prefix(request, fields, prefix, body);
@@ -5831,14 +5833,14 @@ u32 emit_custom_prefix_stage(CustomCollective input, CollectiveBindings bindings
 u32 emit_custom_finish_stage(CustomCollective input, CollectiveBindings bindings, NumericDispatch dispatch,
     PageInputs page, u32 group, u32 value_words, CustomWorkspace slots, MemoryHost memory, CustomCollectiveHost host) on cpu
     requires nonzero(input.value_layout.component) requires nonzero(memory.scalars.constant)
-    requires nonzero(memory.scalars.type_id) requires nonzero(memory.scalars.ids)
-    requires nonzero(memory.scalars.reserve) requires nonzero(memory.pointer_type)
+    requires nonzero(memory.scalars.ids)
+    requires nonzero(memory.scalars.reserve)
     requires nonzero(memory.finish_body) requires nonzero(host.combine) {
     ScalarHost stream = memory.scalars;
     address context = stream.context;
     u32 words = value_words + input.tags;
     u64 span = u64(words);
-    u32 bool_type = stream.type_id(context, BuiltinScalar::Bool);
+    u32 bool_type = scalar_id(stream.types, BuiltinScalar::Bool);
     u32 step = stream.constant(context, BuiltinScalar::U64, 4u64);
     u32 summary = input.single_group != 0 ? 0 : collective_descriptor(bindings, bindings.summary);
     PageAddress parent = custom_page(page, summary, group, 0, 1, memory);
@@ -5870,16 +5872,16 @@ u32 emit_custom_finish_stage(CustomCollective input, CollectiveBindings bindings
 
 u32 emit_custom_counted_tail(PageInputs page, u32 descriptor, u32 active, u32 words, CustomWorkspace slots,
     MemoryHost memory) on cpu
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve)
-    requires nonzero(memory.pointer_type) requires nonzero(memory.finish_body) {
+    requires nonzero(memory.finish_body) {
     ScalarHost stream = memory.scalars;
     address context = stream.context;
     u64 span = u64(words);
     u32 first = stream.ids(context, 0);
     address body = stream.reserve(context, 6u64 * span + 9u64, 0u64).body;
     StageCursor out = StageCursor(body, 0u64, first);
-    read_segment_values(out, stream.type_id(context, BuiltinScalar::U32), words, slots.own, slots.work);
+    read_segment_values(out, scalar_id(stream.types, BuiltinScalar::U32), words, slots.own, slots.work);
     StageBranch run = stage_open(out, active);
     custom_finish(memory, out.words, first, out.next);
 
@@ -5899,8 +5901,8 @@ extern "C" u32 emit_custom_collective(CustomCollective input, CollectiveBindings
     NumericDispatch dispatch, PageInputs page, WordScratch temporary, MemoryHost memory, CustomCollectiveHost host) on cpu
     requires nonzero(input.source_layout.component) requires nonzero(input.value_layout.component)
     requires nonzero(temporary.reserve) requires nonzero(memory.scalars.constant)
-    requires nonzero(memory.scalars.type_id) requires nonzero(memory.scalars.ids)
-    requires nonzero(memory.scalars.reserve) requires nonzero(memory.pointer_type)
+    requires nonzero(memory.scalars.ids)
+    requires nonzero(memory.scalars.reserve)
     requires nonzero(memory.finish_body) requires nonzero(host.identity)
     requires nonzero(host.project) requires nonzero(host.combine) {
     u32 value_words = input.value_bytes / 4 + u32(input.value_bytes % 4 != 0);
@@ -5976,7 +5978,7 @@ extern "C" u32 emit_custom_collective(CustomCollective input, CollectiveBindings
     u32 target_word = tail ? 0 : input.target_word;
     PageAddress target = custom_page(page, descriptor, page.index, target_word, u32(tail || target_word != 0), memory);
     u32 head = !tail && input.tags != 0 ? read_word(item, value_words) : 0;
-    CustomScanWrite write = CustomScanWrite(target, dispatch.active, stream.type_id(context, BuiltinScalar::Bool), head, step, u32(tail));
+    CustomScanWrite write = CustomScanWrite(target, dispatch.active, scalar_id(stream.types, BuiltinScalar::Bool), head, step, u32(tail));
     address body = stream.reserve(context, 128u64 + 20u64 * span + 44u64 * target_count, 0u64).body;
     StageWords emitted = custom_scan_write(write, own, identity, words, fields, u32(target_count), work, body);
     custom_finish(memory, emitted.words, target.next, emitted.next);

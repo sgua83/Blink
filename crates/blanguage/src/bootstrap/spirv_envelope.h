@@ -161,7 +161,8 @@ struct ScalarStreams { address body; address decorations; };
 struct ScalarHost {
     address context;
     cfn<u32,address,BuiltinScalar,u64> constant;
-    cfn<u32,address,BuiltinScalar> type_id;
+    address types;
+    address physical_pointers;
     cfn<u32,address,u32> ids;
     cfn<ScalarStreams,address,usize,usize> reserve;
 };
@@ -259,7 +260,7 @@ struct PageInputs {
     u32 page_bytes;
 };
 extern "C" PageAddress prepare_page(PageInputs input, u32 result_pointer, ScalarHost host) on cpu
-    requires nonzero(host.constant) requires nonzero(host.type_id) requires nonzero(host.ids);
+    requires nonzero(host.constant) requires nonzero(host.ids);
 // A descriptor ID selects the dataset header. Otherwise the input contains the
 // view page table and stride IDs. The extra byte offset is an optional ID.
 // A nonzero step ID adds a second pointer from the same physical address.
@@ -294,20 +295,19 @@ struct PhysicalAccess {
 };
 struct MemoryHost {
     ScalarHost scalars;
-    cfn<u32,address,BuiltinScalar> pointer_type;
     cfn<void,address,u64> finish_body;
 };
 // An absent result ID returns a raw payload to the existing shared-word consumer.
 extern "C" u32 physical_scalar_read(PhysicalAccess input, MemoryHost host) on cpu
-    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.constant)
     requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve)
-    requires nonzero(host.pointer_type) requires nonzero(host.finish_body);
+    requires nonzero(host.finish_body);
 extern "C" void physical_scalar_write(PhysicalAccess input, MemoryHost host) on cpu
-    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.constant)
     requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve)
-    requires nonzero(host.pointer_type) requires nonzero(host.finish_body);
+    requires nonzero(host.finish_body);
 extern "C" u32 encode_raw_bits(BuiltinScalar scalar, u32 value, MemoryHost host) on cpu
-    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.constant)
     requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve)
     requires nonzero(host.finish_body);
 struct UniformRead {
@@ -345,10 +345,10 @@ extern "C" PayloadWrite pack_record(PackingHost host, u32 word_type, u32 zero, u
 // Summary cells are consecutive u32 result IDs or borrowed u32 value IDs.
 struct PayloadShape { PayloadAccess access; BuiltinScalar scalar; BuiltinScalar unit; u32 count; };
 extern "C" u32 emit_payload_load(PayloadShape shape, address operands, u32 result, MemoryHost host) on cpu
-    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.constant)
     requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.finish_body);
 extern "C" void emit_payload_store(PayloadShape shape, u32 value, address pointers, address output, MemoryHost host) on cpu
-    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.constant)
     requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.finish_body);
 
 extern "C" u64 plain_load(address body, u64 at, u32 type_id, u32 result, u32 pointer) on cpu;
@@ -401,7 +401,6 @@ struct BlockValues {
 struct BlockPaging {
     PageInputs base;
     address descriptors;
-    cfn<u32,address,BuiltinScalar> pointer_type;
     cfn<void,address,u64> finish_body;
     cfn<u32,address> current_label;
 };
@@ -428,8 +427,8 @@ struct TileInputSource {
 };
 // Borrow the placed input cells and the fragments belonging to the current cell.
 extern "C" TileInputRange emit_tile_input(TileInputLayout input, TileInputSource source, MemoryHost memory) on cpu
-    requires nonzero(source.row) requires nonzero(source.fragment) requires nonzero(memory.pointer_type)
-    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(source.row) requires nonzero(source.fragment)
+    requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body);
 
 struct TileStorage {
@@ -484,10 +483,10 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     requires nonzero(emit.textures.declaration) requires nonzero(emit.rays.declare_type)
     requires nonzero(emit.tile.identity) requires nonzero(emit.tile.components)
     requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
-    requires nonzero(emit.paging.pointer_type) requires nonzero(emit.paging.finish_body)
+    requires nonzero(emit.paging.finish_body)
     requires nonzero(emit.paging.current_label)
     requires nonzero(emit.values.scalar) requires nonzero(emit.values.binary) requires nonzero(emit.values.finish)
-    requires nonzero(emit.values.scalars.constant) requires nonzero(emit.values.scalars.type_id)
+    requires nonzero(emit.values.scalars.constant)
     requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve)
     requires nonzero(host.labels) requires nonzero(host.reserve_words) requires nonzero(host.finish_words)
     requires nonzero(host.block) requires nonzero(host.value) requires nonzero(host.begin_return)
@@ -509,7 +508,7 @@ extern "C" void emit_tile_phases(u32 active, StructuredHost control, TilePhaseHo
     requires nonzero(emit.ir.inspect) requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
     requires nonzero(emit.tile.identity) requires nonzero(emit.tile.components) requires nonzero(emit.values.finish)
     requires nonzero(emit.paging.current_label) requires nonzero(emit.paging.finish_body) requires nonzero(emit.values.scalar)
-    requires nonzero(emit.values.scalars.constant) requires nonzero(emit.values.scalars.type_id)
+    requires nonzero(emit.values.scalars.constant)
     requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve);
 
 extern "C" void lower_return_loop(address edges, u32 count, u32 bool_type, StructuredHost host) on cpu
@@ -684,13 +683,13 @@ struct NumericOutput { usize binding; u32 word; u32 push_pointer; u32 push; };
 extern "C" TreeWords emit_numeric_scan(NumericGroupInput input, CollectiveBindings bindings, NumericScanOptions options,
     PageInputs raw_page, WordScratch temporary, MemoryHost host) on cpu
     requires nonzero(input.fields.component) requires nonzero(temporary.reserve)
-    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
-    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.pointer_type);
+    requires nonzero(host.scalars.constant)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve);
 extern "C" TreeWords emit_numeric_reduction(NumericGroupInput input, u32 source, NumericOutput output,
     PageInputs raw_page, WordScratch temporary, MemoryHost host) on cpu
     requires nonzero(input.fields.component) requires nonzero(temporary.reserve)
-    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
-    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.pointer_type);
+    requires nonzero(host.scalars.constant)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve);
 
 struct ScanPrefix {
     PageAddress target;
@@ -723,8 +722,8 @@ struct NumericPrefix {
 extern "C" TreeWords emit_numeric_prefix(NumericPrefix input, CollectiveBindings bindings,
     PageInputs raw_page, WordScratch temporary, MemoryHost host) on cpu
     requires nonzero(input.fields.component) requires nonzero(temporary.reserve)
-    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
-    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.pointer_type);
+    requires nonzero(host.scalars.constant)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve);
 
 struct CustomInput {
     PageInputs source;
@@ -877,7 +876,7 @@ extern "C" StageWords encode_record_scatter(ScatterInput input, address record_c
     u32 count_descriptor, u32 count_word, address body) on cpu;
 extern "C" u32 encode_index_scatter(ScatterInput input, u32 target_descriptor,
     DispatchLayout layout, u32 max_x, u32 max_y, u32 first_byte, usize scatter_words, MemoryHost host) on cpu
-    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.constant)
     requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve)
     requires nonzero(host.finish_body);
 
@@ -921,9 +920,9 @@ struct SortKeyInput {
 };
 
 extern "C" u32 sort_initialize(SortKeyInput input, MemoryHost host) on cpu
-    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.constant)
     requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve)
-    requires nonzero(host.pointer_type) requires nonzero(host.finish_body);
+    requires nonzero(host.finish_body);
 
 extern "C" StageWords encode_sort_gather(PageAddress indices, address layout, u32 active, address body) on cpu;
 
@@ -972,9 +971,9 @@ struct DispatchArgumentInput {
 };
 struct DispatchArgumentResult { u32 label; u32 collective; };
 extern "C" DispatchArgumentResult emit_dispatch_arguments(DispatchArgumentInput input, MemoryHost host) on cpu
-    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.constant)
     requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve)
-    requires nonzero(host.pointer_type) requires nonzero(host.finish_body);
+    requires nonzero(host.finish_body);
 extern "C" void declare_dispatch_continuation(u32 type_id, u32 result, u32 spec_id, u32 bytes,
     address definitions, address decorations) on cpu;
 extern "C" PayloadRead dispatch_count_index(DispatchPush push, u32 word, u32 field, u32 first, address body) on cpu;
@@ -1025,8 +1024,8 @@ struct SegmentDispatch {
 extern "C" TreeWords emit_segmented(EntryPass pass, u32 single_group, SegmentLayout layout,
     SegmentBindings bindings, SegmentDispatch dispatch, PageInputs raw_page, SegmentScratch scratch, MemoryHost host) on cpu
     requires nonzero(layout.fields.component) requires nonzero(scratch.words.reserve) requires nonzero(scratch.identity)
-    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
-    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) requires nonzero(host.pointer_type);
+    requires nonzero(host.scalars.constant)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve);
 
 enum EntryOutput:u32 {
     Main=0; Tail=1; ScanAdd=2; Scatter=3; SegmentedFinish=4; RootAdd=5;
@@ -1088,8 +1087,8 @@ extern "C" u32 emit_custom_collective(CustomCollective input, CollectiveBindings
     NumericDispatch dispatch, PageInputs page, WordScratch temporary, MemoryHost memory, CustomCollectiveHost host) on cpu
     requires nonzero(input.source_layout.component) requires nonzero(input.value_layout.component)
     requires nonzero(temporary.reserve) requires nonzero(memory.scalars.constant)
-    requires nonzero(memory.scalars.type_id) requires nonzero(memory.scalars.ids)
-    requires nonzero(memory.scalars.reserve) requires nonzero(memory.pointer_type)
+    requires nonzero(memory.scalars.ids)
+    requires nonzero(memory.scalars.reserve)
     requires nonzero(memory.finish_body) requires nonzero(host.identity)
     requires nonzero(host.project) requires nonzero(host.combine);
 
