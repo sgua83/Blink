@@ -2,6 +2,7 @@
 //! The model selects roles and order; these views neither enumerate query
 //! results nor own, copy, retain, or rewrite the IR containers.
 use super::*;
+use crate::builtin_types::ScalarCode;
 use std::{ffi::c_void, marker::PhantomData, mem::size_of, ptr};
 
 #[derive(Clone, Copy)]
@@ -665,7 +666,15 @@ unsafe extern "C" fn emit_word(context: *mut c_void, _: StorageEvent, tile: usiz
     output.words.insert(output.stage.shared_word(tile, byte));
 }
 
-pub(crate) type TileLayout = BTreeMap<SharedWord, (Scalar, usize, u32)>;
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct TilePlacedWord {
+    pub(crate) key: TileKey,
+    pub(crate) slot: usize,
+    pub(crate) part: u32,
+    pub(crate) unit: ScalarCode,
+}
+pub(crate) type TileLayout = Vec<TilePlacedWord>;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -736,8 +745,20 @@ unsafe extern "C" fn emit_layout(context: *mut c_void, event: StorageEvent, tile
     }
 }
 
-type TileInputWord = unsafe extern "C" fn(*mut c_void, usize, u32, u32, u32);
-pub(crate) type InputFragments = BTreeMap<(usize, u32), BTreeSet<(u32, Scalar)>>;
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct TileInputFragment { binding: usize, byte: u32, unit: ScalarCode }
+
+impl TileInputFragment {
+    fn order(&self) -> (usize, u32, u32) { (self.binding, self.byte, self.unit as u32) }
+}
+
+type TileInputWord = unsafe extern "C" fn(*mut c_void, TileInputFragment);
+pub(crate) type InputFragments = Vec<TileInputFragment>;
+
+pub(crate) fn input_snapshot_words(fragments: &[TileInputFragment]) -> BTreeSet<(usize, u32)> {
+    fragments.iter().map(|fragment| (fragment.binding, fragment.byte & !3)).collect()
+}
 
 unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::tile_input_words"]
@@ -749,7 +770,7 @@ unsafe extern "C" {
 }
 
 pub(crate) fn input_fragments(stage: &Stage, used: &BTreeSet<SharedWord>) -> InputFragments {
-    let mut output = BTreeMap::new();
+    let mut output = Vec::new();
     if used.is_empty() {
         return output;
     }
@@ -759,6 +780,8 @@ pub(crate) fn input_fragments(stage: &Stage, used: &BTreeSet<SharedWord>) -> Inp
             contains_input_word, ptr::from_mut(&mut output).cast(), emit_input_fragment,
         );
     }
+    output.sort_unstable_by_key(TileInputFragment::order);
+    output.dedup_by_key(|fragment| fragment.order());
     output
 }
 
@@ -767,16 +790,8 @@ unsafe extern "C" fn contains_input_word(used: *const c_void, binding: usize, wo
     u32::from(used.contains(&SharedWord::Input { binding, word }))
 }
 
-unsafe extern "C" fn emit_input_fragment(
-    output: *mut c_void, binding: usize, word: u32, byte: u32, bytes: u32,
-) {
-    let output = unsafe { &mut *output.cast::<InputFragments>() };
-    let unit = match bytes {
-        1 => Scalar::U8,
-        2 => Scalar::U16,
-        _ => Scalar::U32,
-    };
-    output.entry((binding, word)).or_default().insert((byte, unit));
+unsafe extern "C" fn emit_input_fragment(output: *mut c_void, fragment: TileInputFragment) {
+    unsafe { &mut *output.cast::<InputFragments>() }.push(fragment);
 }
 
 #[derive(Default)]

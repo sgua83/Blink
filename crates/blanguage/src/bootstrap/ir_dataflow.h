@@ -1,5 +1,6 @@
 module bootstrap.ir_dataflow;
 import codec.type_layout;
+import codec.builtin_type;
 // One original instruction vocabulary, shared by the actual IR consumers.
 // Operation identities follow the original IR SubgroupOp.
 enum SubgroupOperation:u32 {
@@ -48,6 +49,9 @@ struct View {
 struct Host { cfn<View,Node> ensures memory(read) inspect; };
 
 struct TileKey { u64 storage; u64 owner; u32 byte; };
+struct TilePlacedWord { TileKey key; usize slot; u32 part; BuiltinScalar unit; };
+struct TileInputFragment { usize binding; u32 byte; BuiltinScalar unit; };
+TileInputFragment tile_input_fragment(Span fragments, usize index) on cpu;
 TileKey tile_key_for_view(View tile, usize index, u32 byte) on cpu;
 TileKey tile_key(Span tiles, usize index, u32 byte, Host ir) on cpu requires nonzero(ir.inspect);
 
@@ -521,7 +525,7 @@ extern "C" u32 storage_facts(Span code,Span tiles,StorageHost host,i64 phase,Sto
 // Borrow the Stage tiles and used words for this call and deliver only matching input fragments.
 extern "C" void tile_input_words(Span tiles,Host host,address used,
  cfn<u32,address,usize,u32> ensures memory(read) contains,address output,
- cfn<void,address,usize,u32,u32,u32> emit) on cpu
+ cfn<void,address,TileInputFragment> emit) on cpu
  requires nonzero(host.inspect) requires nonzero(contains) requires nonzero(emit);
 
 // The bits select the stored low word and, for a wide value, the stored high word.

@@ -99,7 +99,7 @@ pub(crate) fn compile_stage(
     let stage = &program.stages()[i];
     let (tile_layout, inputs) = shader_stage_inputs(stage);
     // Stage metadata describes the logical input words; the shader loads each placed wide cell once.
-    let mut layout = ExecutionStage::from_stage(stage, inputs.keys().copied().collect());
+    let mut layout = ExecutionStage::from_stage(stage, crate::ir::dataflow::input_snapshot_words(&inputs));
     let can_use_single_group = program.buffers[stage.domain].count
         .is_none_or(|count| count <= layout.workgroup_width());
     let features = ProgramShaderFeatures::new(requirements, buffers);

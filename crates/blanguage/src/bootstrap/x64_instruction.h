@@ -699,6 +699,7 @@ enum MapRangePart:u32 {
 };
 struct MapRangeInput {
     Span code;
+    Span inputs;
     address packet;
     u64 phase_count;
     usize binding;
@@ -714,8 +715,6 @@ struct MapRangeInput {
 };
 struct MapRangeObservation { u64 start; u64 end; usize index; u32 value; MapRangePart part; };
 struct TilePhaseView { Span code; Node step; Span live_in; Span saved; };
-// An exhausted input stream has zero unit bytes.
-struct TileInputFragment { u64 binding; u32 source_offset; u32 storage_base; u32 unit_bytes; };
 struct TilePrivatePlace {
     MoveLocation location;
     ScalarEncoding scalar;
@@ -729,8 +728,8 @@ struct MapRangeHost {
     cfn<void,address,u64> commit;
     cfn<void,address,address,ControlTargets> packet;
     cfn<u32,address,Span,ControlTargets> scalar;
-    cfn<TileInputFragment,address> next_input;
-    cfn<void,address,u64,u64,TileInputFragment,u32> observe_input;
+    cfn<u32,address,TileKey> ensures memory(read) input_slot;
+    cfn<void,address,u64,u64,usize,u32,u32,u32> observe_input;
     Host ir;
     cfn<TilePhaseView,address,u64> phase;
     cfn<TilePrivatePlace,address,TilePrivateKey> ensures memory(read) private_place;
@@ -743,7 +742,7 @@ struct MapRangeHost {
 extern "C" u32 emit_map_range(MapRangeInput input, MapRangeHost host) on cpu
     requires nonzero(host.frame.reserve) requires nonzero(host.frame.publish) requires nonzero(host.reserve)
     requires nonzero(host.commit) requires nonzero(host.observe)
-    requires nonzero(host.packet) requires nonzero(host.scalar) requires nonzero(host.next_input) requires nonzero(host.observe_input)
+    requires nonzero(host.packet) requires nonzero(host.scalar) requires nonzero(host.input_slot) requires nonzero(host.observe_input)
     requires nonzero(host.ir.inspect) requires nonzero(host.phase)
     requires nonzero(host.private_place) requires nonzero(host.observe_private) requires nonzero(host.tile_step);
 

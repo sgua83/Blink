@@ -1,7 +1,6 @@
 //! 输入与中间发布共用共享布局；阶段屏障覆盖所有 workgroup invocations。
 use super::*;
 use crate::ir::{TileKey, dataflow::InputFragments};
-use std::collections::{btree_map, btree_set};
 use std::ffi::c_void;
 
 #[repr(C)]
@@ -76,8 +75,10 @@ pub(super) struct TileStorage {
 
 unsafe extern "C" fn tile_cell(context: *mut c_void, key: TileKey) -> TileCell {
     let emitter = unsafe { &*context.cast::<Emitter<'_>>() };
-    emitter.tile_layout.get(&key.word()).map_or(TileCell::ABSENT, |&(unit, slot, byte)| {
-        TileCell { unit: unit.into(), slot: slot as u32, byte, present: 1 }
+    let layout = emitter.tile_layout;
+    layout.binary_search_by_key(&key, |placed| placed.key).map_or(TileCell::ABSENT, |index| {
+        let placed = layout[index];
+        TileCell { unit: placed.unit, slot: placed.slot as u32, byte: placed.part, present: 1 }
     })
 }
 
@@ -111,49 +112,9 @@ struct TileInputRange {
 }
 
 #[repr(C)]
-struct TileInputRow {
-    binding: usize,
-    word: u32,
-    fragments: usize,
-    cell: TileCell,
-}
-
-#[repr(C)]
-struct TileInputFragment {
-    byte: u32,
-    unit: ScalarCode,
-}
-
-struct TileInputCursor<'a> {
-    cells: btree_map::Range<'a, SharedWord, (Scalar, usize, u32)>,
-    inputs: &'a InputFragments,
-    fragments: btree_set::Iter<'a, (u32, Scalar)>,
-}
-
-#[repr(C)]
 struct TileInputSource {
-    cursor: *mut c_void,
-    row: unsafe extern "C" fn(*mut c_void) -> TileInputRow,
-    fragment: unsafe extern "C" fn(*mut c_void) -> TileInputFragment,
-}
-
-unsafe extern "C" fn tile_input_row(cursor: *mut c_void) -> TileInputRow {
-    let cursor = unsafe { &mut *cursor.cast::<TileInputCursor<'_>>() };
-    let Some((&SharedWord::Input { binding, word }, &(unit, slot, byte))) = cursor.cells.next() else {
-        return TileInputRow { binding: 0, word: 0, fragments: 0, cell: TileCell::ABSENT };
-    };
-    let fragments = cursor.inputs.get(&(binding, word)).map_or(0, |fragments| {
-        cursor.fragments = fragments.iter();
-        fragments.len()
-    });
-    let cell = TileCell { unit: unit.into(), slot: slot as u32, byte, present: 1 };
-    TileInputRow { binding, word, fragments, cell }
-}
-
-unsafe extern "C" fn tile_input_fragment(cursor: *mut c_void) -> TileInputFragment {
-    let cursor = unsafe { &mut *cursor.cast::<TileInputCursor<'_>>() };
-    let &(byte, unit) = cursor.fragments.next().unwrap();
-    TileInputFragment { byte, unit: unit.into() }
+    cells: Span,
+    fragments: Span,
 }
 
 unsafe extern "C" {
@@ -163,18 +124,13 @@ unsafe extern "C" {
 
 impl Emitter<'_> {
     pub(super) fn tile_input(&mut self, count: u32, active: u32, inputs: &InputFragments) {
-        let end = SharedWord::Published { tile: 0, word: 0 };
-        let empty = std::collections::BTreeSet::new();
-        let mut cursor = TileInputCursor {
-            cells: self.tile_layout.range(..end), inputs, fragments: empty.iter(),
-        };
         let input = TileInputLayout {
             page: self.page_inputs(0, self.index, Some(0), 0), descriptors: self.buffers.as_ptr(),
             planes: self.tile_planes(), count, active, width: self.workgroup_width, label: self.current_label,
         };
         let source = TileInputSource {
-            cursor: std::ptr::from_mut(&mut cursor).cast(),
-            row: tile_input_row, fragment: tile_input_fragment,
+            cells: Span::slice(self.tile_layout),
+            fragments: Span::slice(inputs),
         };
         let range = unsafe { emit_tile_input(input, source, self.memory_host()) };
         self.tile_lane = range.lane;

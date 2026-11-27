@@ -3741,20 +3741,7 @@ void pack_record_field(PackedField field, u32 word_type, u32 zero, address packe
     stream.ids(context, out.next - next);
 }
 
-TileInputRow next_tile_snapshot(TileInputSource source) on cpu
-    requires nonzero(source.row) {
-    TileInputRow row = source.row(source.cursor);
-    while (row.cell.present != 0) {
-        if (row.cell.unit == BuiltinScalar::U64 ? row.cell.byte == 0 : row.fragments != 0u64) {
-            break;
-        }
-        row = source.row(source.cursor);
-    }
-    return row;
-}
-
 extern "C" TileInputRange emit_tile_input(TileInputLayout input, TileInputSource source, MemoryHost memory) on cpu
-    requires nonzero(source.row) requires nonzero(source.fragment)
     requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
     ScalarHost stream = memory.scalars;
@@ -3768,48 +3755,78 @@ extern "C" TileInputRange emit_tile_input(TileInputLayout input, TileInputSource
     memory.finish_body(context, range.words);
     stream.ids(context, range.next - next);
 
-    TileInputRow row = next_tile_snapshot(source);
-    if (row.cell.present == 0) { return TileInputRange(range.lane, range.length, input.label); }
-
-    u32 load = stream.ids(context, 2);
-    u32 end = load + 1;
-    address selection = stream.reserve(context, 9u64, 0u64).body;
-    memory.finish_body(context, open_selection(end, input.active, load, end, selection).words);
+    bool loading = false;
+    u32 end = input.label;
     // Each aligned word has four positions and three fragment widths (1, 2, 4 bytes).
     // The ordered input set has unique (position, width) pairs.
     array<PackedField,12> fields = array<PackedField,12>(PackedField(0, 0, 0, 0));
     address scratch = address_of(fields[0]);
-    while (row.cell.present != 0) {
+    usize cell_index = 0u64;
+    usize fragment_index = 0u64;
+    while (cell_index < source.cells.count) {
+        address row_address = unsafe_address(address_bits(source.cells.data) + cell_index * source.cells.stride);
+        TilePlacedWord row = unsafe_position<TilePlacedWord>(row_address);
+        cell_index += 1u64;
+        if (row.key.storage != 0u64) { break; }
+
+        bool wide = row.unit == BuiltinScalar::U64;
+        if (wide && row.part != 0) { continue; }
+        usize first = fragment_index;
+        if (!wide) {
+            while (fragment_index < source.fragments.count) {
+                TileInputFragment fragment = tile_input_fragment(source.fragments, fragment_index);
+                if (fragment.binding > row.key.owner ||
+                    (fragment.binding == row.key.owner && fragment.byte >= row.key.byte)) { break; }
+                fragment_index += 1u64;
+            }
+            first = fragment_index;
+            while (fragment_index < source.fragments.count) {
+                TileInputFragment fragment = tile_input_fragment(source.fragments, fragment_index);
+                if (fragment.binding != row.key.owner || (fragment.byte & 0xfffffffc) != row.key.byte) { break; }
+                fragment_index += 1u64;
+            }
+            if (first == fragment_index) { continue; }
+        }
+        if (!loading) {
+            u32 load = stream.ids(context, 2);
+            end = load + 1;
+            address selection = stream.reserve(context, 9u64, 0u64).body;
+            memory.finish_body(context, open_selection(end, input.active, load, end, selection).words);
+            loading = true;
+        }
+
         PageInputs page = input.page;
-        page.descriptor = block_register(input.descriptors, row.binding);
-        page.word = row.word;
+        page.descriptor = block_register(input.descriptors, row.key.owner);
+        page.word = row.key.byte;
         u32 value;
-        if (row.cell.unit == BuiltinScalar::U64) {
+        if (wide) {
             value = physical_scalar_read(PhysicalAccess(page, BuiltinScalar::U64, 0, 0), memory);
         } else {
-            usize part = 0u64;
-            while (part < row.fragments) {
-                TileInputFragment fragment = source.fragment(source.cursor);
+            usize part = first;
+            while (part < fragment_index) {
+                TileInputFragment fragment = tile_input_fragment(source.fragments, part);
                 page.word = fragment.byte;
                 u32 raw = physical_scalar_read(PhysicalAccess(page, fragment.unit, 0, 0), memory);
                 u32 ty = scalar_id(stream.types, fragment.unit);
                 u32 bytes = scalar_definition(fragment.unit).width / 8;
-                address slot = unsafe_address(address_bits(scratch) + part * size_of<PackedField>());
+                address slot = unsafe_address(address_bits(scratch) + (part - first) * size_of<PackedField>());
                 unsafe_position<PackedField>(slot) = PackedField(raw, fragment.byte % 4, ty, bytes);
                 part += 1u64;
             }
             u32 zero = stream.constant(context, BuiltinScalar::U32, 0u64);
             value = zero;
+            usize count = fragment_index - first;
             part = 0u64;
-            while (part < row.fragments) {
+            while (part < count) {
                 address slot = unsafe_address(address_bits(scratch) + part * size_of<PackedField>());
                 pack_record_field(unsafe_position<PackedField>(slot), uint_type, zero, address_of(value), memory);
                 part += 1u64;
             }
         }
-        emit_shared_store(row.cell, input.planes, range.lane, input.width, value, memory);
-        row = next_tile_snapshot(source);
+        TileCell cell = TileCell(row.unit, u32(row.slot), row.part, 1);
+        emit_shared_store(cell, input.planes, range.lane, input.width, value, memory);
     }
+    if (!loading) { return TileInputRange(range.lane, range.length, input.label); }
 
     address merge = stream.reserve(context, 4u64, 0u64).body;
     memory.finish_body(context, next_control_block(end, end, 1, merge).words);

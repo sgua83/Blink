@@ -266,7 +266,7 @@ impl<'a> RangeEmission<'a> {
     fn finish(self, product: RangeProduct) -> (ExecutionStage, StageCode) {
         let [main, tail, apply, histogram, scatter, gather] = self.code;
         let stage = &self.input.program.stages()[self.input.index];
-        let layout = ExecutionStage::from_stage(stage, self.inputs.into_keys().collect());
+        let layout = ExecutionStage::from_stage(stage, crate::ir::dataflow::input_snapshot_words(&self.inputs));
         let continuation = match product.shape {
             RangeShape::Element => None,
             RangeShape::ReduceTail => Some(ContinuationCode::ReductionTail(tail.unwrap())),

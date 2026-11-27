@@ -69,7 +69,7 @@ struct TileFrameHost {
 }
 
 struct TileFrameCursor<'a> {
-    shared: btree_map::Iter<'a, SharedWord, (Scalar, usize, u32)>,
+    shared: std::slice::Iter<'a, crate::ir::dataflow::TilePlacedWord>,
     private: btree_set::Iter<'a, PrivateSlot>,
     registers: &'a [Scalar],
     locals: &'a BTreeMap<usize, Ty>,
@@ -81,9 +81,9 @@ unsafe extern "C" fn next_tile_frame_slot(
 ) -> TileFrameSlot {
     let cursor = unsafe { &mut *context.cast::<TileFrameCursor<'_>>() };
     let slot = match bank {
-        TileFrameBank::Shared => cursor.shared.next().map(|(key, &(_, slot, _))| TileFrameSlot {
-            key: ptr::from_ref(key).cast(),
-            value: slot as u64,
+        TileFrameBank::Shared => cursor.shared.next().map(|placed| TileFrameSlot {
+            key: ptr::from_ref(&placed.key).cast(),
+            value: placed.slot as u64,
         }),
         TileFrameBank::Private => cursor.private.next().map(|key| TileFrameSlot {
             key: ptr::from_ref(key).cast(),
@@ -100,7 +100,7 @@ unsafe extern "C" fn place_tile_frame_slot(
     // Both key collections outlive the synchronous layout.
     match bank {
         TileFrameBank::Shared => {
-            cursor.frame.tile_shared.insert(unsafe { *key.cast::<SharedWord>() }, offset);
+            cursor.frame.tile_shared.insert(unsafe { (*key.cast::<TileKey>()).word() }, offset);
         }
         TileFrameBank::Private => {
             cursor.frame.tile_private.insert(unsafe { *key.cast::<PrivateSlot>() }, offset);

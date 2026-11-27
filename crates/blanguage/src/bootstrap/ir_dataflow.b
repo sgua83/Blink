@@ -2020,9 +2020,13 @@ extern "C" u64 coalesce_tile_groups(address groups,u64 count) on cpu {
  return used;
 }
 
+TileInputFragment tile_input_fragment(Span fragments, usize index) on cpu {
+ return unsafe_position<TileInputFragment>(node_at(fragments,index,0).data);
+}
+
 extern "C" void tile_input_words(Span tiles,Host host,address used,
  cfn<u32,address,usize,u32> ensures memory(read) contains,address output,
- cfn<void,address,usize,u32,u32,u32> emit) on cpu
+ cfn<void,address,TileInputFragment> emit) on cpu
  requires nonzero(host.inspect) requires nonzero(contains) requires nonzero(emit) {
  usize index=0u64;
  while(index<tiles.count) {
@@ -2036,7 +2040,9 @@ extern "C" void tile_input_words(Span tiles,Host host,address used,
     while(part<(bytes+3)/4) {
      u32 byte=u32(tile.b)+u32(field.a)+part*4;
      if(contains(used,tile.a,byte)!=0) {
-      emit(output,tile.a,byte&0xfffffffcu,byte,bytes>4?4:bytes);
+      BuiltinScalar unit = bytes == 1 ? BuiltinScalar::U8 :
+          (bytes == 2 ? BuiltinScalar::U16 : BuiltinScalar::U32);
+      emit(output,TileInputFragment(tile.a,byte,unit));
      }
      part+=1;
     }

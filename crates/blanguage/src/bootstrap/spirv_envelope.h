@@ -389,16 +389,9 @@ struct TileInputLayout {
     u32 label;
 };
 struct TileInputRange { u32 lane; u32 length; u32 label; };
-struct TileInputRow { usize binding; u32 word; usize fragments; TileCell cell; };
-struct TileInputFragment { u32 byte; BuiltinScalar unit; };
-struct TileInputSource {
-    address cursor;
-    cfn<TileInputRow,address> row;
-    cfn<TileInputFragment,address> fragment;
-};
-// Borrow the placed input cells and the fragments belonging to the current cell.
+struct TileInputSource { Span cells; Span fragments; };
+// Borrow the original ordered placement and source fragments.
 extern "C" TileInputRange emit_tile_input(TileInputLayout input, TileInputSource source, MemoryHost memory) on cpu
-    requires nonzero(source.row) requires nonzero(source.fragment)
     requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body);
 

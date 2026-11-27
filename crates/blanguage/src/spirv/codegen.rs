@@ -1679,7 +1679,7 @@ fn emit_shader(
     let (code, registers, locals, tile_layout, tile_width, facts, custom_kernel) = match reduction {
         Some(prepared) => {
             empty_tiles = PlacedTiles {
-                words: BTreeMap::new(),
+                words: Vec::new(),
                 extents: Default::default(),
             };
             let body = &prepared.kernel.stage;

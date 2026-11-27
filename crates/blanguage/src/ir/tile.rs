@@ -4,6 +4,8 @@ use std::ffi::c_void;
 #[cfg(feature = "compiler")]
 use std::{collections::{BTreeMap, BTreeSet}, mem::MaybeUninit};
 #[cfg(feature = "compiler")]
+use crate::builtin_types::ScalarCode;
+#[cfg(feature = "compiler")]
 mod private_live;
 #[cfg(feature = "compiler")]
 pub(crate) use private_live::{HOST as PRIVATE_LIVE_HOST, Host as PrivateLiveHost};
@@ -22,7 +24,7 @@ impl SharedWord {
     }
 }
 #[cfg(feature = "compiler")]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(C)]
 pub(crate) struct TileKey { storage: u64, owner: usize, byte: u32 }
 
@@ -99,11 +101,14 @@ struct TileLayoutHost {
 }
 
 #[cfg(feature = "compiler")]
+type PlacementOutput = BTreeMap<SharedWord, (ScalarCode, usize, u32)>;
+
+#[cfg(feature = "compiler")]
 struct TileStorage<'a> {
     births: &'a BTreeMap<usize, i64>,
     cells: BTreeMap<SharedWord, TileCell>,
     scratch: [Vec<MaybeUninit<u64>>; 4],
-    layout: Option<&'a mut dataflow::TileLayout>,
+    layout: Option<&'a mut PlacementOutput>,
 }
 
 #[cfg(feature = "compiler")]
@@ -138,7 +143,7 @@ unsafe extern "C" fn tile_birth(context: *const c_void, tile: usize) -> i64 {
 #[cfg(feature = "compiler")]
 unsafe extern "C" fn publish_tile_word(context: *mut c_void, key: TileKey, bytes: u32, slot: usize, part: u32) {
     let storage = unsafe { &mut *context.cast::<TileStorage<'_>>() };
-    let unit = if bytes == 8 { Scalar::U64 } else { Scalar::U32 };
+    let unit = if bytes == 8 { ScalarCode::U64 } else { ScalarCode::U32 };
     // The B planner publishes only when the caller supplies the final layout.
     unsafe { storage.layout.as_deref_mut().unwrap_unchecked() }.insert(key.word(), (unit, slot, part));
 }
@@ -207,15 +212,18 @@ impl Stage {
     pub(crate) fn tile_layout(
         &self, wide: bool, used: Option<&mut BTreeSet<SharedWord>>,
     ) -> PlacedTiles {
-        let mut words = BTreeMap::new();
-        let extents = self.place_tile_layout(wide, used, Some(&mut words));
+        let mut placed = PlacementOutput::new();
+        let extents = self.place_tile_layout(wide, used, Some(&mut placed));
+        let words = placed.into_iter().map(|(key, (unit, slot, part))| {
+            dataflow::TilePlacedWord { key: key.into(), slot, part, unit }
+        }).collect();
         PlacedTiles { words, extents }
     }
 
     #[cfg(feature = "compiler")]
     fn place_tile_layout(
         &self, wide: bool, used: Option<&mut BTreeSet<SharedWord>>,
-        layout: Option<&mut dataflow::TileLayout>,
+        layout: Option<&mut PlacementOutput>,
     ) -> TileExtents {
         if self.tiles.is_empty() {
             return TileExtents::default();

@@ -5632,7 +5632,7 @@ u64 move_tile_base(MapRangeHost host, u32 offset, u64 phase, bool restore) on cp
 
 void emit_map_tile_input(MapRangeInput input, MapRangeHost host) on cpu
     requires nonzero(host.reserve) requires nonzero(host.commit) requires nonzero(host.observe)
-    requires nonzero(host.next_input) requires nonzero(host.observe_input) {
+    requires nonzero(host.input_slot) requires nonzero(host.observe_input) {
     NativeCodeBuffer buffer = host.reserve(host.context, 48u64);
     address output = unsafe_address(address_bits(buffer.image) + buffer.end);
     TileInputBoundaryCode boundary = tile_input_boundary(input.workgroup, input.slots, output);
@@ -5640,18 +5640,28 @@ void emit_map_tile_input(MapRangeInput input, MapRangeHost host) on cpu
     u64 skip = buffer.end + boundary.skip_field;
     host.commit(host.context, end);
     host.observe(host.context, MapRangeObservation(buffer.end, end, usize(0), input.workgroup, MapRangePart::TileInputBoundary));
-    TileInputFragment item = host.next_input(host.context);
-    while (item.unit_bytes != 0) {
-        u32 data = u32(item.binding) * input.buffer_bytes;
-        u32 storage = item.storage_base + item.source_offset % 4;
-        TileInputCopy copy = TileInputCopy(data, data + input.stride_field,
-            item.source_offset, storage, input.slots, item.unit_bytes);
+    usize index = 0u64;
+    usize binding = 0u64;
+    u32 word = 0;
+    u32 storage_base = 0;
+    while (index < input.inputs.count) {
+        TileInputFragment item = tile_input_fragment(input.inputs, index);
+        u32 aligned = item.byte & 0xfffffffc;
+        if (index == 0u64 || item.binding != binding || aligned != word) {
+            binding = item.binding;
+            word = aligned;
+            storage_base = host.input_slot(host.context, TileKey(0u64, binding, word));
+        }
+        u32 data = u32(binding) * input.buffer_bytes;
+        u32 storage = storage_base + item.byte % 4;
+        u32 bytes = item.unit == BuiltinScalar::U8 ? 1 : (item.unit == BuiltinScalar::U16 ? 2 : 4);
+        TileInputCopy copy = TileInputCopy(data, data + input.stride_field, item.byte, storage, input.slots, bytes);
         buffer = host.reserve(host.context, 80u64);
         output = unsafe_address(address_bits(buffer.image) + buffer.end);
         end = buffer.end + tile_input_copy(copy, output);
         host.commit(host.context, end);
-        host.observe_input(host.context, buffer.end, end, item, storage);
-        item = host.next_input(host.context);
+        host.observe_input(host.context, buffer.end, end, binding, item.byte, storage, bytes);
+        index += 1u64;
     }
     buffer = host.reserve(host.context, 0u64);
     patch_relative(unsafe_address(address_bits(buffer.image) + skip), skip, buffer.end);
@@ -5694,7 +5704,7 @@ void advance_tile_phase(MapRangeInput input, MapRangeHost host, Span saved, u64 
 
 bool emit_map_tile_phases(MapRangeInput input, MapRangeHost host, ControlTargets targets) on cpu
     requires nonzero(host.reserve) requires nonzero(host.commit) requires nonzero(host.observe)
-    requires nonzero(host.scalar) requires nonzero(host.next_input) requires nonzero(host.observe_input)
+    requires nonzero(host.scalar) requires nonzero(host.input_slot) requires nonzero(host.observe_input)
     requires nonzero(host.ir.inspect) requires nonzero(host.phase)
     requires nonzero(host.private_place) requires nonzero(host.observe_private) requires nonzero(host.tile_step) {
     u32 base = input.slots + 4;
@@ -5735,7 +5745,7 @@ u64 finish_range_frame(u32 frame, RangePrologue entry, u64 exits, address contex
 extern "C" u32 emit_map_range(MapRangeInput input, MapRangeHost host) on cpu
     requires nonzero(host.frame.reserve) requires nonzero(host.frame.publish) requires nonzero(host.reserve)
     requires nonzero(host.commit) requires nonzero(host.observe)
-    requires nonzero(host.packet) requires nonzero(host.scalar) requires nonzero(host.next_input) requires nonzero(host.observe_input)
+    requires nonzero(host.packet) requires nonzero(host.scalar) requires nonzero(host.input_slot) requires nonzero(host.observe_input)
     requires nonzero(host.ir.inspect) requires nonzero(host.phase)
     requires nonzero(host.private_place) requires nonzero(host.observe_private) requires nonzero(host.tile_step) {
     u64 exits = 0u64;
