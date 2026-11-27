@@ -514,46 +514,82 @@ u32 function_variable(inout ResourceCursor out, address body, inout u64 words, u
     return id;
 }
 
+struct FunctionArrayMarks { address locals; u64 count; };
+
+extern "C" void mark_function_array(address context, usize begin, usize end) on cpu {
+    address slot = word_at(unsafe_position<FunctionArrayMarks>(context).locals, end - 1u64);
+    if (unsafe_position<u32>(slot) == 0) {
+        unsafe_position<u32>(slot) = 1;
+        unsafe_position<FunctionArrayMarks>(context).count += 1u64;
+    }
+}
+
+View function_component(Span components, usize index, Host ir) on cpu requires nonzero(ir.inspect) {
+    address value = unsafe_address(address_bits(components.data) + index * u64(components.stride));
+    return ir.inspect(Node(value, N_COMPONENT));
+}
+
 extern "C" FunctionStorageWords function_storage(FunctionStorageInput input, FunctionStorageHost host,
-    ShaderConstants constants, address locals, address definitions, address body) on cpu
-    requires nonzero(host.array) requires nonzero(host.scalar_group) requires nonzero(host.width)
-    requires nonzero(host.pointer) requires nonzero(host.retain_array) requires nonzero(constants.intern) {
-    ResourceCursor out = ResourceCursor(definitions, address(), 0u64, 0u64, input.next);
+    ShaderConstants constants) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.reserve) requires nonzero(host.local_type)
+    requires nonzero(host.next_local) requires nonzero(host.retain_array) requires nonzero(constants.intern) {
+    address locals = input.locals.data;
+    FunctionArrayMarks marks = FunctionArrayMarks(locals, 0u64);
+    // Each complete declaration marks its final local slot. Duplicate uses share that slot.
+    private_spans(input.code, host.ir, address_of(marks), c_function(mark_function_array));
+    FunctionStorageStreams streams = host.reserve(host.context, 12u64 * marks.count,
+        4u64 * (input.rays + input.locals.count));
+    ResourceCursor out = ResourceCursor(streams.definitions, address(), 0u64, 0u64, input.next);
     u64 words = 0u64;
     usize ray = 0u64;
     while (ray < input.rays) {
-        function_variable(out, body, words, input.ray_pointer);
+        function_variable(out, streams.body, words, input.ray_pointer);
         ray += 1u64;
     }
 
-    FunctionArray array = host.array(host.context);
-    while (array.shape != address()) {
-        u32 unit = 4;
-        usize field = 0u64;
-        while (field < array.fields) {
-            unit = min(unit, host.width(array.shape, field));
-            field += 1u64;
+    // Array declarations precede scalar variables, both in original local order.
+    usize slot = 0u64;
+    while (slot < input.locals.count) {
+        if (unsafe_position<u32>(word_at(locals, slot)) != 0) {
+            usize end = slot + 1u64;
+            Node shape = host.local_type(host.context, end);
+            View ty = host.ir.inspect(shape);
+            Span components = ty.second;
+            u32 unit = 4;
+            usize field = 0u64;
+            while (field < components.count) {
+                unit = min(unit, u32(function_component(components, field, host.ir).b));
+                field += 1u64;
+            }
+            u32 element = unit == 1 ? input.byte_type : (unit == 2 ? input.short_type : input.word_type);
+            u32 shift = unit == 1 ? 0 : (unit == 2 ? 1 : 2);
+            u32 length = define_word(out, constants, input.word_type, u32(ty.a) >> shift);
+            u32 array_type = define_type(out, TypeShape::Array, element, length);
+            u32 pointer = define_pointer(out, StorageClass::Function, array_type);
+            u32 variable = function_variable(out, streams.body, words, pointer);
+            host.retain_array(host.context, end - components.count, end, shape.data, unit, variable);
         }
-        u32 element = unit == 1 ? input.byte_type : (unit == 2 ? input.short_type : input.word_type);
-        u32 shift = unit == 1 ? 0 : (unit == 2 ? 1 : 2);
-        u32 length = define_word(out, constants, input.word_type, array.bytes >> shift);
-        u32 ty = define_type(out, TypeShape::Array, element, length);
-        u32 pointer = define_pointer(out, StorageClass::Function, ty);
-        u32 variable = function_variable(out, body, words, pointer);
-        host.retain_array(host.context, array, unit, variable);
-        array = host.array(host.context);
+        slot += 1u64;
     }
 
-    FunctionLocals group = host.scalar_group(host.context);
-    while (group.shape != address()) {
-        usize field = 0u64;
-        while (field < group.fields) {
-            u32 pointer = host.pointer(host.context, group.shape, field);
-            u32 variable = function_variable(out, body, words, pointer);
-            put(locals, group.start + field, variable);
-            field += 1u64;
+    FunctionLocal group = host.next_local(host.context);
+    while (group.ty.data != address()) {
+        usize last = group.end - 1u64;
+        if (unsafe_position<u32>(word_at(locals, last)) != 0) {
+            put(locals, last, 0);
+        } else {
+            Span components = host.ir.inspect(group.ty).second;
+            usize start = group.end - components.count;
+            usize field = 0u64;
+            while (field < components.count) {
+                View component = function_component(components, field, host.ir);
+                u32 pointer = unsafe_position<u32>(word_at(input.pointers, component.c));
+                u32 variable = function_variable(out, streams.body, words, pointer);
+                put(locals, start + field, variable);
+                field += 1u64;
+            }
         }
-        group = host.scalar_group(host.context);
+        group = host.next_local(host.context);
     }
 
     return FunctionStorageWords(out.words, words, out.next);

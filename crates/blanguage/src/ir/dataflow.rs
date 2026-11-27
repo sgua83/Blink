@@ -113,9 +113,6 @@ unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::operands"]
     fn b_operands(source: Node, host: Host, context: *mut c_void,
         visit: unsafe extern "C" fn(*mut c_void, usize) -> u32) -> u32;
-    #[link_name = "bootstrap.ir_dataflow::private_spans"]
-    fn b_private_spans(code: Span, host: Host, context: *mut c_void,
-        emit: unsafe extern "C" fn(*mut c_void, usize, usize));
     #[link_name = "bootstrap.ir_dataflow::locals"]
     fn b_locals(source: Node, writing: u32, host: Host) -> Locals;
     #[link_name = "bootstrap.ir_dataflow::next_local"]
@@ -137,14 +134,6 @@ impl Iterator for LocalIter<'_> {
         let value = unsafe { b_next_local(&mut self.state, HOST) };
         (value.present != 0).then_some(value.value)
     }
-}
-pub(crate) fn private_spans(code: &[Inst]) -> BTreeSet<(usize, usize)> {
-    unsafe extern "C" fn insert(context: *mut c_void, begin: usize, end: usize) {
-        unsafe { &mut *context.cast::<BTreeSet<(usize, usize)>>() }.insert((begin, end));
-    }
-    let mut spans = BTreeSet::new();
-    unsafe { b_private_spans(Span::slice(code), HOST, ptr::from_mut(&mut spans).cast(), insert) };
-    spans
 }
 
 pub(crate) fn result_origins<F: FnMut(Reg, ResultRole)>(value: &Inst, mut visit: F) {

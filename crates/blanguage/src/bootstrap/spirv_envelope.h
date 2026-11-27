@@ -119,25 +119,28 @@ enum StorageClass:u32 {
 };
 enum VariableAnnotation:u32 { Descriptor=0; PageTable=1; BuiltIn=2; };
 
-struct FunctionArray { usize start; usize end; usize fields; address shape; u32 bytes; };
-struct FunctionLocals { usize start; usize fields; address shape; };
+struct FunctionLocal { usize end; Node ty; };
 struct FunctionStorageInput {
+    Span code;
+    Span locals;
+    address pointers;
     usize rays; u32 next; u32 ray_pointer; u32 word_type; u32 byte_type; u32 short_type;
 };
 struct FunctionStorageWords { u64 definitions; u64 body; u32 next; };
+struct FunctionStorageStreams { address definitions; address body; };
 struct FunctionStorageHost {
     address context;
-    cfn<FunctionArray,address> array;
-    cfn<FunctionLocals,address> scalar_group;
-    cfn<u32,address,usize> width;
-    cfn<u32,address,address,usize> pointer;
-    cfn<void,address,FunctionArray,u32,u32> retain_array;
+    Host ir;
+    cfn<FunctionStorageStreams,address,u64,u64> reserve;
+    cfn<Node,address,usize> ensures memory(read) local_type;
+    cfn<FunctionLocal,address> next_local;
+    cfn<void,address,usize,usize,address,u32,u32> retain_array;
 };
-// The locals, definitions and body are the original emitter buffers.
+// The original locals buffer is zeroed before function storage is assigned.
 extern "C" FunctionStorageWords function_storage(FunctionStorageInput input, FunctionStorageHost host,
-    ShaderConstants constants, address locals, address definitions, address body) on cpu
-    requires nonzero(host.array) requires nonzero(host.scalar_group) requires nonzero(host.width)
-    requires nonzero(host.pointer) requires nonzero(host.retain_array) requires nonzero(constants.intern);
+    ShaderConstants constants) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.reserve) requires nonzero(host.local_type)
+    requires nonzero(host.next_local) requires nonzero(host.retain_array) requires nonzero(constants.intern);
 // Output has room for four definition words and eleven decoration words.
 
 enum FlagDecoration:u32 { NoContraction=42; NonUniform=5300; };

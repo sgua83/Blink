@@ -1926,7 +1926,7 @@ extern "C" u32 has_tile_scope(Span code,u32 has_tiles,Host host) on cpu
  }
  return 0;
 }
-extern "C" void private_spans(Span code,Host host,address context,
+void private_spans(Span code,Host host,address context,
                               cfn<void,address,usize,usize> emit) on cpu
  requires nonzero(host.inspect) requires nonzero(emit) {
  usize index=0u64;

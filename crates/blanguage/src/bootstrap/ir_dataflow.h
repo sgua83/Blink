@@ -498,7 +498,7 @@ struct TileGroup { u64 storage; u64 owner; u32 first; u32 end; };
 extern "C" u64 coalesce_tile_groups(address groups,u64 count) on cpu;
 extern "C" u32 has_tile_scope(Span code,u32 has_tiles,Host host) on cpu
  requires nonzero(host.inspect);
-extern "C" void private_spans(Span code,Host host,address context,
+void private_spans(Span code,Host host,address context,
                               cfn<void,address,usize,usize> emit) on cpu
  requires nonzero(host.inspect) requires nonzero(emit);
 extern "C" void storage_tiles(Span code,Host host,address context,

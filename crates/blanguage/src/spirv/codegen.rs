@@ -1,6 +1,6 @@
 //! 按 SPIR-V 1.4 标准直接编码；不调用 HLSL/GLSL 或第三方编译器。
 use crate::ir::*;
-use crate::ir::dataflow::{self, Span};
+use crate::ir::dataflow::{self, Node, Span};
 use super::image::{EntryOperation, entry_operation};
 use crate::builtin_types::{ScalarBinaryOp, ScalarCode};
 use super::{PAGE_BYTES, PREFIX_LEVELS, SCAN_WIDTH, ProgramImage, ShaderCode, StageCode};
@@ -964,8 +964,8 @@ unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::shader_resources"]
     fn shader_resources(input: ShaderResourceInput, host: ShaderResourceHost, streams: ResourceStreams) -> ShaderResourceIds;
     #[link_name = "bootstrap.spirv_envelope::function_storage"]
-    fn function_storage(input: FunctionStorageInput, host: FunctionStorageHost, constants: ShaderConstants,
-        locals: *mut u32, definitions: *mut u32, body: *mut u32) -> FunctionStorageWords;
+    fn function_storage(input: FunctionStorageInput, host: FunctionStorageHost,
+        constants: ShaderConstants) -> FunctionStorageWords;
     #[link_name = "bootstrap.spirv_envelope::prepare_page"]
     fn prepare_page(input: PageInputs, result_pointer: u32, host: ScalarHost) -> PageAddress;
     #[link_name = "bootstrap.spirv_envelope::physical_scalar_read"]
@@ -1027,23 +1027,16 @@ struct PrivateArray<'a> {
 }
 
 #[repr(C)]
-struct FunctionArray {
-    start: usize,
+struct FunctionLocal {
     end: usize,
-    fields: usize,
-    shape: *const std::ffi::c_void,
-    bytes: u32,
-}
-
-#[repr(C)]
-struct FunctionLocals {
-    start: usize,
-    fields: usize,
-    shape: *const std::ffi::c_void,
+    ty: Node,
 }
 
 #[repr(C)]
 struct FunctionStorageInput {
+    code: Span,
+    locals: Span,
+    pointers: *const u32,
     rays: usize,
     next: u32,
     ray_pointer: u32,
@@ -1059,65 +1052,63 @@ struct FunctionStorageWords {
     next: u32,
 }
 
+#[repr(C)]
+struct FunctionStorageStreams {
+    definitions: *mut u32,
+    body: *mut u32,
+}
+
 type FunctionStorageContext = *mut std::ffi::c_void;
 
 #[repr(C)]
 struct FunctionStorageHost {
     context: FunctionStorageContext,
-    array: unsafe extern "C" fn(FunctionStorageContext) -> FunctionArray,
-    scalar_group: unsafe extern "C" fn(FunctionStorageContext) -> FunctionLocals,
-    width: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> u32,
-    pointer: unsafe extern "C" fn(FunctionStorageContext, *const std::ffi::c_void, usize) -> u32,
-    retain_array: unsafe extern "C" fn(FunctionStorageContext, FunctionArray, u32, u32),
+    ir: dataflow::Host,
+    reserve: unsafe extern "C" fn(FunctionStorageContext, usize, usize) -> FunctionStorageStreams,
+    local_type: unsafe extern "C" fn(FunctionStorageContext, usize) -> Node,
+    next_local: unsafe extern "C" fn(FunctionStorageContext) -> FunctionLocal,
+    retain_array: unsafe extern "C" fn(FunctionStorageContext, usize, usize, *const Ty, u32, u32),
 }
 
 struct FunctionStorage<'a, 'emit> {
     declarations: &'a BTreeMap<usize, Ty>,
-    pending: std::collections::btree_set::IntoIter<(usize, usize)>,
     locals: std::collections::btree_map::Iter<'a, usize, Ty>,
-    pointers: &'emit ScalarIds,
     arrays: &'emit mut BTreeMap<usize, PrivateArray<'a>>,
+    definitions: &'emit mut Vec<u32>,
+    body: &'emit mut Vec<u32>,
 }
 
-unsafe extern "C" fn next_function_array(context: FunctionStorageContext) -> FunctionArray {
+unsafe extern "C" fn reserve_function_storage(
+    context: FunctionStorageContext, definitions: usize, body: usize,
+) -> FunctionStorageStreams {
     let source = unsafe { &mut *context.cast::<FunctionStorage<'_, '_>>() };
-    let Some((start, end)) = source.pending.next() else {
-        return FunctionArray { start: 0, end: 0, fields: 0, shape: std::ptr::null(), bytes: 0 };
-    };
-    let shape = &source.declarations[&end];
-    FunctionArray { start, end, fields: shape.components.len(), shape: std::ptr::from_ref(shape).cast(), bytes: shape.size }
+    source.definitions.reserve(definitions);
+    source.body.reserve(body);
+    FunctionStorageStreams {
+        definitions: unsafe { source.definitions.as_mut_ptr().add(source.definitions.len()) },
+        body: unsafe { source.body.as_mut_ptr().add(source.body.len()) },
+    }
 }
 
-unsafe extern "C" fn next_function_locals(context: FunctionStorageContext) -> FunctionLocals {
-    let source = unsafe { &mut *context.cast::<FunctionStorage<'_, '_>>() };
-    let arrays = &*source.arrays;
-    let Some((&end, shape)) = source.locals.by_ref().find(|(end, _)| !arrays.contains_key(*end)) else {
-        return FunctionLocals { start: 0, fields: 0, shape: std::ptr::null() };
-    };
-    let fields = shape.components.len();
-    FunctionLocals { start: end - fields, fields, shape: std::ptr::from_ref(shape).cast() }
-}
-
-unsafe extern "C" fn function_component_width(shape: *const std::ffi::c_void, field: usize) -> u32 {
-    unsafe { &*shape.cast::<Ty>() }.components[field].0.size()
-}
-
-unsafe extern "C" fn function_component_pointer(
-    context: FunctionStorageContext, shape: *const std::ffi::c_void, field: usize,
-) -> u32 {
+unsafe extern "C" fn function_local_type(context: FunctionStorageContext, end: usize) -> Node {
     let source = unsafe { &*context.cast::<FunctionStorage<'_, '_>>() };
-    let shape = unsafe { &*shape.cast::<Ty>() };
-    source.pointers[&shape.components[field].0]
+    Node::ty(&source.declarations[&end])
+}
+
+unsafe extern "C" fn next_function_local(context: FunctionStorageContext) -> FunctionLocal {
+    let source = unsafe { &mut *context.cast::<FunctionStorage<'_, '_>>() };
+    source.locals.next().map_or(FunctionLocal { end: 0, ty: Node::EMPTY },
+        |(&end, ty)| FunctionLocal { end, ty: Node::ty(ty) })
 }
 
 unsafe extern "C" fn retain_function_array(
-    context: FunctionStorageContext, array: FunctionArray, bytes: u32, variable: u32,
+    context: FunctionStorageContext, start: usize, end: usize, shape: *const Ty, bytes: u32, variable: u32,
 ) {
     let source = unsafe { &mut *context.cast::<FunctionStorage<'_, '_>>() };
-    // The array's shape was borrowed from this stage by next_function_array.
-    let shape = unsafe { &*array.shape.cast::<Ty>() };
+    // The shape borrows this stage's original local declaration.
+    let shape = unsafe { &*shape };
     let unit = match bytes { 1 => Scalar::U8, 2 => Scalar::U16, _ => Scalar::U32 };
-    source.arrays.insert(array.end, PrivateArray { start: array.start, unit, variable, shape });
+    source.arrays.insert(end, PrivateArray { start, unit, variable, shape });
 }
 
 struct Emitter<'a> {
@@ -1217,37 +1208,36 @@ impl<'ir> Emitter<'ir> {
         &mut self, ray_pointer: u32, facts: &ShaderStageFacts, code: &[Inst],
         declarations: &'ir BTreeMap<usize, Ty>,
     ) {
-        let spans = private_spans(code);
         let slots = declarations.last_key_value().map_or(0, |(end, _)| *end);
         let definitions = self.defs.len();
         let body = self.body.len();
         let rays = &facts.ray_queries;
         let first_ray = self.next;
-        self.defs.reserve(12 * spans.len());
-        self.body.reserve(4 * (rays.len() + slots + spans.len()));
         self.locals.resize(slots, 0);
         let result = {
             let mut storage = FunctionStorage {
-                declarations, pending: spans.into_iter(), locals: declarations.iter(),
-                pointers: &self.pointers, arrays: &mut self.private_arrays,
+                declarations, locals: declarations.iter(), arrays: &mut self.private_arrays,
+                definitions: &mut self.defs, body: &mut self.body,
             };
             let host = FunctionStorageHost {
                 context: std::ptr::from_mut(&mut storage).cast(),
-                array: next_function_array,
-                scalar_group: next_function_locals,
-                width: function_component_width,
-                pointer: function_component_pointer,
+                ir: dataflow::HOST,
+                reserve: reserve_function_storage,
+                local_type: function_local_type,
+                next_local: next_function_local,
                 retain_array: retain_function_array,
             };
             let input = FunctionStorageInput {
+                code: Span::slice(code),
+                locals: Span::mutable(&mut self.locals),
+                pointers: self.pointers.0.as_ptr(),
                 rays: rays.len(), next: self.next, ray_pointer,
                 word_type: self.types[&Scalar::U32],
                 byte_type: self.types[&Scalar::U8],
                 short_type: self.types[&Scalar::U16],
             };
             unsafe {
-                function_storage(input, host, ShaderConstants::new(&mut self.constants), self.locals.as_mut_ptr(),
-                    self.defs.as_mut_ptr().add(definitions), self.body.as_mut_ptr().add(body))
+                function_storage(input, host, ShaderConstants::new(&mut self.constants))
             }
         };
         unsafe {
