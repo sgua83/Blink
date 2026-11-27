@@ -4233,28 +4233,39 @@ TilePublishCode tile_publish_value(TilePublishInput input, address output) on cp
     return TilePublishCode(cursor - start, value_end - start, high_start - start, high_store - start);
 }
 
-extern "C" void emit_tile_publish(address context, u32 base_offset, TilePublishHost host) on cpu
+u32 tile_publication_offset(address context, usize tile, u32 word, TilePublishHost host) on cpu
+    requires nonzero(host.slot) {
+    u32 slot = host.slot(context, TileKey(1u64, tile, word));
+    return slot == 0xffffffff ? slot : slot + word % 4;
+}
+
+extern "C" void emit_tile_publish(address context, View publication, u32 base_offset, TilePublishHost host) on cpu
     requires nonzero(host.reserve) requires nonzero(host.commit)
-    requires nonzero(host.next) requires nonzero(host.observe) {
-    TilePublishField field = host.next(context);
-    if (address_bits(field.scalar_origin) == 0u64) { return; }
+    requires nonzero(host.scalar) requires nonzero(host.location)
+    requires nonzero(host.slot) requires nonzero(host.observe) {
+    bool first = true;
+    Span words = publication.second;
+    usize index = 0u64;
+    while (index < publication.first.count) {
+        u32 word = unsafe_position<u32>(unsafe_address(address_bits(words.data) + u64(index) * u64(words.stride)));
+        usize value = indexed_pair_word(publication.first, index);
+        index += 1u64;
+        ScalarEncoding scalar = host.scalar(context, value);
+        u32 low = tile_publication_offset(context, publication.a, word, host);
+        u32 high = scalar.width == 64 ? tile_publication_offset(context, publication.a, word + 4, host) : 0xffffffff;
+        if (low == 0xffffffff && high == 0xffffffff) { continue; }
 
-    NativeCodeBuffer buffer = host.reserve(context, 64u64);
-    u64 start = buffer.end;
-    address output = unsafe_address(address_bits(buffer.image) + start);
-    u64 value_start = start + tile_lane_pointer(base_offset, output);
-
-    while (true) {
-        output = unsafe_address(address_bits(buffer.image) + value_start);
-        TilePublishCode encoding = tile_publish_value(field.input, output);
+        NativeCodeBuffer buffer = host.reserve(context, first ? 64u64 : 48u64);
+        u64 start = buffer.end;
+        u64 value_start = start;
+        if (first) {
+            value_start += tile_lane_pointer(base_offset, unsafe_address(address_bits(buffer.image) + start));
+            first = false;
+        }
+        TilePublishInput input = TilePublishInput(host.location(context, value), scalar, low, high);
+        TilePublishCode encoding = tile_publish_value(input, unsafe_address(address_bits(buffer.image) + value_start));
         host.commit(context, value_start + encoding.length);
-        host.observe(context, start, value_start, encoding, field);
-        field = host.next(context);
-        if (address_bits(field.scalar_origin) == 0u64) { return; }
-
-        buffer = host.reserve(context, 48u64);
-        start = buffer.end;
-        value_start = start;
+        host.observe(context, publication.a, start, value_start, encoding, TilePublishField(word, value, low, high));
     }
 }
 

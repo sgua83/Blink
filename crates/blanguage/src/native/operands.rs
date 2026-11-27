@@ -199,11 +199,11 @@ pub(super) unsafe extern "C" fn scalar_body_local(context: *const std::ffi::c_vo
     ScalarLocations::from_emitter(unsafe { &*context.cast::<Emitter<'_>>() }).location(PrivateSlot::Local(local))
 }
 
-unsafe extern "C" fn body_value_location(context: *const std::ffi::c_void, reg: Reg) -> MoveLocation {
+pub(super) unsafe extern "C" fn body_value_location(context: *const std::ffi::c_void, reg: Reg) -> MoveLocation {
     ScalarLocations::from_emitter(unsafe { &*context.cast::<Emitter<'_>>() }).location(PrivateSlot::Register(reg))
 }
 
-unsafe extern "C" fn body_value_scalar(context: *const std::ffi::c_void, reg: Reg) -> ScalarEncoding {
+pub(super) unsafe extern "C" fn body_value_scalar(context: *const std::ffi::c_void, reg: Reg) -> ScalarEncoding {
     ScalarLocations::from_emitter(unsafe { &*context.cast::<Emitter<'_>>() }).scalar(reg)
 }
 

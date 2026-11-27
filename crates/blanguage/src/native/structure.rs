@@ -137,7 +137,7 @@ pub(super) unsafe extern "C" fn emit_scalar(slot: Slot, leaf: ScalarLeaf, value:
         ScalarLeaf::Call => e.native_call(unsafe { value.left_as() }),
         ScalarLeaf::Print => e.print_call(value.a, value.b),
         ScalarLeaf::Texture => e.texture_access(value),
-        ScalarLeaf::Publish => e.publish_values(unsafe { value.left_as() }),
+        ScalarLeaf::Publish => e.publish_values(value),
         ScalarLeaf::Collective => e.tile_collective(unsafe { value.left_as() }),
         ScalarLeaf::TileLength => e.tile_length(value.a),
         ScalarLeaf::TileLane => e.tile_lane(value.a),

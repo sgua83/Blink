@@ -515,23 +515,26 @@ extern "C" u64 tile_field_address(u32 width, u32 byte_offset, address output) on
 extern "C" u64 tile_read_split(MoveLocation dst, MoveLocation low, MoveLocation high, address output) on cpu;
 // R10 holds the lane base. Absent plane offsets are u32::MAX. The caller owns 48 bytes.
 struct TilePublishField {
-    TilePublishInput input;
     u32 word;
     usize value;
-    address scalar_origin;
+    u32 low_offset;
+    u32 high_offset;
 };
 
 struct TilePublishHost {
     cfn<NativeCodeBuffer,address,u64> reserve;
     cfn<void,address,u64> commit;
-    cfn<TilePublishField,address> next;
-    cfn<void,address,u64,u64,TilePublishCode,TilePublishField> observe;
+    cfn<ScalarEncoding,address,usize> ensures memory(read) scalar;
+    cfn<MoveLocation,address,usize> ensures memory(read) location;
+    cfn<u32,address,TileKey> ensures memory(read) slot;
+    cfn<void,address,usize,u64,u64,TilePublishCode,TilePublishField> observe;
 };
 
-// Borrows the actual placed publication fields from the stack layout and emits in order.
-extern "C" void emit_tile_publish(address context, u32 base_offset, TilePublishHost host) on cpu
+// Borrows the original IR fields and the Frame slots of their live words.
+extern "C" void emit_tile_publish(address context, View publication, u32 base_offset, TilePublishHost host) on cpu
     requires nonzero(host.reserve) requires nonzero(host.commit)
-    requires nonzero(host.next) requires nonzero(host.observe);
+    requires nonzero(host.scalar) requires nonzero(host.location)
+    requires nonzero(host.slot) requires nonzero(host.observe);
 
 struct TileSlots {
     Span tiles;
