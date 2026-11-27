@@ -1,4 +1,5 @@
 module codec.value_format;
+import codec.builtin_type;
 // Borrowed typed projections and construction slots for the shared value format.
 // Callers retain original inputs, containers and the sole Reader position.
 
@@ -101,11 +102,7 @@ extern "C" SourceMath source_math(Bytes name) on cpu;
 
 enum SourceBasicKind:u32 { Other=0; Never=1; Acceleration=2; };
 enum SourceTextureKind:u32 { Missing=0; D2=2; D3=3; };
-enum SourceTexelFormat:u32 {
-    Rgba32Float=0; Rgba8Unorm=1; Rgba8Srgb=2; R8Unorm=3;
-    Rg16Unorm=4; Rgb10A2Unorm=5; R11G11B10Float=6; R16Float=7;
-};
-struct SourceFormat { u32 present; SourceTexelFormat value; };
+struct SourceFormat { u32 present; TexelFormat value; };
 struct SourceTexture { SourceTextureKind kind; SourceFormat format; address length; };
 
 extern "C" SourceBasicKind source_basic_kind(address source,Host host) on cpu requires nonzero(host.type_name);
@@ -147,7 +144,6 @@ extern "C" ViewWalkFailure visit_view_fields(address source,u32 base,Host host,a
 
 enum ReadStatus:u32 { Success=0; Overflow=1; Truncated=2; Boolean=3; Scalar=4; Access=5; Target=6; Shape=7; Argument=8; Expression=9; Predicate=10; Condition=11; RustError=12; Identity=13; Operand=14; IntegerOperation=15; IntegerExpression=16; Comparison=17; FloatingForm=18; IndexDomain=19; Fact=20; ConditionVersion=21; ConditionNode=22; ContractAddressRoot=23; ContractInitializationSource=24; ContractElementFacts=25; ContractDataLayout=26; ContractReturned=27; ContractTaskProjection=28; ContractExclusion=29; ContractViewAccess=30; ContractResidencyPart=31; ContractResidencyOrigin=32; ContractResidency=33; ContractResidencyOutputKind=34; ContractTextureDimension=35; ContractTextureFormat=36; ContractElementFact=37; ContractCallParameterKind=38; ContractContractKind=39; ContractRelationOp=40; ContractOwnership=41; ContractAddressIdentity=42; ContractBorrowSource=43; ResourceSortOrder=44; ResourceCollectiveOperator=45; ResourceOperation=46; ResourceImage=47; ResourceLinkedImage=48; ResourceModuleTarget=49; ResourceNativeSymbol=50; ResourceRangeResult=51; ResourceContinuationCode=52; ResourceCpuStageCode=53;  };
 
-enum ScalarTag:u32 { F32=0; U32=1; I32=2; Bool=3; U64=4; I64=5; F64=6; U8=7; I8=8; U16=9; I16=10; };
 
 enum AccessTag:u32 { Value=0; Read=1; Write=2; InOut=3; Atomic=4; };
 
@@ -189,7 +185,7 @@ struct ReadHost {
  cfn<ReadStatus,address,address,Bytes> string_option;
  cfn<void,address,u32> push_u32;
  cfn<void,address,u64> push_u64;
- cfn<void,address,ScalarTag,u32> push_component;
+ cfn<void,address,BuiltinScalar,u32> push_component;
  cfn<ReadStatus,address,address> push_type;
  cfn<ReadStatus,address,address> push_field;
  cfn<ReadStatus,address,address> push_variant;
@@ -1137,7 +1133,7 @@ extern "C" void resource_write_gpu_image(address output,ResourceGpuImageFields f
 extern "C" ReadStatus resource_read_gpu_image(address context,ResourceGpuImageFields fields,ResourceGpuImageReader host) on cpu requires nonzero(host.plan) requires nonzero(host.stages);
 
 struct ReadValue { u64 value;ReadStatus status; };
-struct ReadScalar { ScalarTag value;ReadStatus status; };
+struct ReadScalar { BuiltinScalar value;ReadStatus status; };
 void byte(u8 value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
 ReadValue fixed_value(Bytes input,inout u64 position,u32 bytes) on cpu requires range(bytes,1,8);
 address item(Span values,u64 index) on cpu;

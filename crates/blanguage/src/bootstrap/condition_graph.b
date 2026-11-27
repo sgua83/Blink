@@ -1,6 +1,6 @@
 module bootstrap.condition_graph;
 import codec.scalar_ranges;
-import codec.value_format;
+import codec.builtin_type;
 import bootstrap.proof_facts;
 
 extern "C" handle GetProcessHeap() on cpu from "KERNEL32.dll";
@@ -690,7 +690,7 @@ extern "C" u32 cross_conflict(address left,address right,u32 may_share) on cpu {
  address side=left_smaller ? left : right;
  address other=left_smaller ? right : left;
  FactCursor cursor=fact_tree_cursor(side);
- array<u8,4> integers=array<u8,4>(u8(u32(ScalarTag::U32)),u8(u32(ScalarTag::I32)),u8(u32(ScalarTag::U64)),u8(u32(ScalarTag::I64)));
+ array<u8,4> integers=array<u8,4>(u8(u32(BuiltinScalar::U32)),u8(u32(BuiltinScalar::I32)),u8(u32(BuiltinScalar::U64)),u8(u32(BuiltinScalar::I64)));
  while(true){
   address original=fact_tree_next(side,address_of(cursor),0);
   if(original==address()){return 0;}

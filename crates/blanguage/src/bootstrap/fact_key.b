@@ -236,20 +236,20 @@ extern "C" i32 order_fact<const VIEW:u32>(address left,address right) on cpu {
 
 extern "C" void RtlMoveMemory(address output, address input, u64 bytes) on cpu from "KERNEL32.dll";
 
-extern "C" ScalarTag fact_scalar_tag(address scalar) on cpu {
+extern "C" BuiltinScalar fact_scalar_tag(address scalar) on cpu {
     u32 code = u32(unsafe_position<u8>(scalar));
-    return unsafe_position<ScalarTag>(address_of(code));
+    return unsafe_position<BuiltinScalar>(address_of(code));
 }
 
 extern "C" FactScalarView inspect_fact_scalar(address scalar) on cpu {
-    ScalarTag tag = fact_scalar_tag(scalar);
-    bool signed = tag == ScalarTag::I8 || tag == ScalarTag::I16 || tag == ScalarTag::I32 || tag == ScalarTag::I64;
-    bool floating = tag == ScalarTag::F32 || tag == ScalarTag::F64;
-    u32 kind = floating ? 2 : signed ? 1 : tag == ScalarTag::Bool ? 3 : 0;
+    BuiltinScalar tag = fact_scalar_tag(scalar);
+    bool signed = tag == BuiltinScalar::I8 || tag == BuiltinScalar::I16 || tag == BuiltinScalar::I32 || tag == BuiltinScalar::I64;
+    bool floating = tag == BuiltinScalar::F32 || tag == BuiltinScalar::F64;
+    u32 kind = floating ? 2 : signed ? 1 : tag == BuiltinScalar::Bool ? 3 : 0;
     u32 width = 32;
-    if (tag == ScalarTag::U8 || tag == ScalarTag::I8) { width = 8; }
-    else if (tag == ScalarTag::U16 || tag == ScalarTag::I16) { width = 16; }
-    else if (tag == ScalarTag::U64 || tag == ScalarTag::I64 || tag == ScalarTag::F64) { width = 64; }
+    if (tag == BuiltinScalar::U8 || tag == BuiltinScalar::I8) { width = 8; }
+    else if (tag == BuiltinScalar::U16 || tag == BuiltinScalar::I16) { width = 16; }
+    else if (tag == BuiltinScalar::U64 || tag == BuiltinScalar::I64 || tag == BuiltinScalar::F64) { width = 64; }
     u64 mask = 18446744073709551615u64 >> u64(64 - width);
     u64 bias = signed ? 1u64 << u64(width - 1) : 0u64;
     return FactScalarView(kind,width,mask,bias);
@@ -352,7 +352,7 @@ IdentityKey make_key_identity(NumericIdentity source) on cpu {
 extern "C" NumericOperand capture_key_operand(address source) on cpu {
     OperandKind kind = unsafe_position<OperandKind>(source);
     if (kind == OperandKind::Value) {
-        return NumericOperand(kind,capture_key_identity(field(source,8u64)),ScalarTag::F32,0u64);
+        return NumericOperand(kind,capture_key_identity(field(source,8u64)),BuiltinScalar::F32,0u64);
     }
     return NumericOperand(kind,NumericIdentity(IdentityKind::Register,0u64,0u64,0u64),
         fact_scalar_tag(field(source,4u64)),unsafe_position<u64>(field(source,8u64)));

@@ -1,7 +1,6 @@
 module bootstrap.scalar_fold;
 import bootstrap.fact_key;
 import codec.scalar_ranges;
-import codec.value_format;
 
 extern "C" handle GetProcessHeap() on cpu from "KERNEL32.dll";
 extern "C" address HeapAlloc(handle heap, u32 flags, u64 bytes) on cpu from "KERNEL32.dll";
@@ -302,11 +301,11 @@ address cast_path_scalar(address path, u64 index) on cpu {
 }
 
 u8 unsigned_cast_scalar(address scalar) on cpu {
-    ScalarTag tag = fact_scalar_tag(scalar);
-    if (tag == ScalarTag::I8) { return u8(u32(ScalarTag::U8)); }
-    if (tag == ScalarTag::I16) { return u8(u32(ScalarTag::U16)); }
-    if (tag == ScalarTag::I32) { return u8(u32(ScalarTag::U32)); }
-    if (tag == ScalarTag::I64) { return u8(u32(ScalarTag::U64)); }
+    BuiltinScalar tag = fact_scalar_tag(scalar);
+    if (tag == BuiltinScalar::I8) { return u8(u32(BuiltinScalar::U8)); }
+    if (tag == BuiltinScalar::I16) { return u8(u32(BuiltinScalar::U16)); }
+    if (tag == BuiltinScalar::I32) { return u8(u32(BuiltinScalar::U32)); }
+    if (tag == BuiltinScalar::I64) { return u8(u32(BuiltinScalar::U64)); }
     return unsafe_position<u8>(scalar);
 }
 
@@ -689,10 +688,10 @@ bool texture_coordinates_bounded(BitRange range) on cpu {
     return coordinates.present != 0 && coordinates.lower >= -1.0f64 && coordinates.upper <= 1.0f64;
 }
 
-extern "C" FloatRange texture_sample_range(SourceTexelFormat format, TextureSampleBounds input) on cpu {
-    if (format != SourceTexelFormat::Rgba8Unorm && format != SourceTexelFormat::Rgba8Srgb
-        && format != SourceTexelFormat::R8Unorm && format != SourceTexelFormat::Rg16Unorm
-        && format != SourceTexelFormat::Rgb10A2Unorm) {
+extern "C" FloatRange texture_sample_range(TexelFormat format, TextureSampleBounds input) on cpu {
+    if (format != TexelFormat::Rgba8Unorm && format != TexelFormat::Rgba8Srgb
+        && format != TexelFormat::R8Unorm && format != TexelFormat::Rg16Unorm
+        && format != TexelFormat::Rgb10A2Unorm) {
         return fp_unknown();
     }
     if (!texture_coordinates_bounded(input.x) || !texture_coordinates_bounded(input.y)
@@ -706,7 +705,7 @@ extern "C" FloatRange texture_sample_range(SourceTexelFormat format, TextureSamp
     // 3D plus mip has four linear dimensions. Each nonnegative contribution
     // includes at most 25 rounding factors with allowance 1e-4 per factor.
     // 0x3f805205 is the outward f32 endpoint of the original directed (1+1e-4)^25.
-    u64 upper = format == SourceTexelFormat::Rgba8Srgb ? 0x40000000u64 : 0x3f805205u64;
+    u64 upper = format == TexelFormat::Rgba8Srgb ? 0x40000000u64 : 0x3f805205u64;
     return FloatRange(float_order(32, 0x80000000u64), float_order(32, upper), 1);
 }
 

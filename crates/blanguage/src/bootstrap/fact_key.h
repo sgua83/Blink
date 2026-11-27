@@ -1,5 +1,5 @@
 module bootstrap.fact_key;
-import codec.value_format;
+import codec.builtin_type;
 
 enum IdentityKind:u32 { Register=0; DataLength=1; TileLength=2; ParameterContent=3; ResourceParameter=4; ParameterStorage=5; ElementComponent=6; ElementParent=7; ElementIndex=8; DatasetContent=9; MemoryValue=10; LoopValue=11; TaskResult=12; TaskCompletion=13; TaskWorkCompletion=14; TaskControl=15; TaskReturnSource=16; };
 enum OperandKind:u32 { Value=0; Constant=1; };
@@ -7,8 +7,8 @@ enum ComparisonKind:u32 { Equal=0; NotEqual=1; Less=2; Greater=3; LessEqual=4; G
 enum DomainKind:u32 { Data=0; Fixed=1; Tile=2; DataLength=3; TileLength=4; View=5; ViewLength=6; ApplicationData=7; ApplicationLength=8; Upper=9; Lower=10; Room=11; Sum=12; Offset=13; Shifted=14; Computed=15; CommonRange=16; KnownBits=17; Floating=18; };
 enum FactKind:u32 { Equal=0; Index=1; Minimum=2; Maximum=3; NonZero=4; Boolean=5; Below=6; Outside=7; Zero=8; NotEqual=9; Predicate=10; };
 struct NumericIdentity { IdentityKind kind; u64 first; u64 second; u64 third; };
-struct NumericOperand { OperandKind kind; NumericIdentity identity; ScalarTag scalar; u64 bits; };
-struct NumericPredicate { ComparisonKind operation; ScalarTag scalar; NumericOperand left; NumericOperand right; };
+struct NumericOperand { OperandKind kind; NumericIdentity identity; BuiltinScalar scalar; u64 bits; };
+struct NumericPredicate { ComparisonKind operation; BuiltinScalar scalar; NumericOperand left; NumericOperand right; };
 struct FactView { u32 present; FactKind kind; address first; address second; address payload; address scalar; u64 value; u64 mask; u32 flag; u32 fixed; };
 
 struct FactKey { array<u64,18> words; };
@@ -37,7 +37,7 @@ extern "C" void write_common_range_cast(address domain, u8 low, u8 extended, u8 
 extern "C" void write_known_bits_cast(address domain, u8 target, u64 mask, u64 value) on cpu;
 
 struct FactScalarView { u32 kind; u32 width; u64 mask; u64 bias; };
-extern "C" ScalarTag fact_scalar_tag(address scalar) on cpu;
+extern "C" BuiltinScalar fact_scalar_tag(address scalar) on cpu;
 extern "C" FactScalarView inspect_fact_scalar(address scalar) on cpu;
 extern "C" FactView read_fact_fields(address source) on cpu;
 extern "C" FactView inspect_fact(address source) on cpu;

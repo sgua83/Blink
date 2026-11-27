@@ -1,20 +1,11 @@
 module bootstrap.contract_codec;
+import codec.builtin_type;
 
-void numeric_write_scalar(ScalarTag value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
-if(value==ScalarTag::F32){word(0,output,append);}
-else if(value==ScalarTag::U32){word(1,output,append);}
-else if(value==ScalarTag::I32){word(2,output,append);}
-else if(value==ScalarTag::Bool){word(3,output,append);}
-else if(value==ScalarTag::U64){word(4,output,append);}
-else if(value==ScalarTag::I64){word(5,output,append);}
-else if(value==ScalarTag::F64){word(6,output,append);}
-else if(value==ScalarTag::U8){word(7,output,append);}
-else if(value==ScalarTag::I8){word(8,output,append);}
-else if(value==ScalarTag::U16){word(9,output,append);}
-else if(value==ScalarTag::I16){word(10,output,append);}
+void numeric_write_scalar(BuiltinScalar value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
+    word(u32(value),output,append);
 }
 
-ReadStatus numeric_read_scalar(Bytes input,inout u64 position,inout ScalarTag output) on cpu {ReadScalar value=read_scalar(input,position);if(value.status!=ReadStatus::Success){return value.status;}output=value.value;return ReadStatus::Success;}
+ReadStatus numeric_read_scalar(Bytes input,inout u64 position,inout BuiltinScalar output) on cpu {ReadScalar value=read_scalar(input,position);if(value.status!=ReadStatus::Success){return value.status;}output=value.value;return ReadStatus::Success;}
 
 void numeric_write_identity(NumericIdentity value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
 if(value.kind==IdentityKind::Register){word(0,output,append);
@@ -195,7 +186,7 @@ struct SelectionExpression { u32 form; array<u64,10> selection; };
 struct FloatingKey { IdentityKey source; array<u64,5> bounds; u8 scalar; u8 form; };
 
 NumericOperand empty_operand() on cpu {
-    return NumericOperand(OperandKind::Value,empty_key_identity(),ScalarTag::F32,0u64);
+    return NumericOperand(OperandKind::Value,empty_key_identity(),BuiltinScalar::F32,0u64);
 }
 
 ReadValue read_numeric_tag(Bytes input,inout u64 position,u64 limit,ReadStatus invalid) on cpu {
@@ -277,7 +268,7 @@ extern "C" ReadStatus numeric_read_selection_key(Bytes input,inout u64 position,
         NumericOperand value = empty_operand();
         if (terms[0] == 0u64 && terms[1] == 0u64) {
             value.kind = OperandKind::Constant;
-            value.scalar = ScalarTag::U32;
+            value.scalar = BuiltinScalar::U32;
             value.bits = terms[2];
         } else {
             value.identity = base;
@@ -330,7 +321,7 @@ extern "C" ReadStatus numeric_read_expression_key(Bytes input,inout u64 position
     }
     ReadValue operation = read_numeric_tag(input,position,9u64,ReadStatus::IntegerOperation);
     if (operation.status != ReadStatus::Success) { return operation.status; }
-    ScalarTag scalar = ScalarTag::F32;
+    BuiltinScalar scalar = BuiltinScalar::F32;
     ReadStatus status = numeric_read_scalar(input,position,scalar);
     if (status != ReadStatus::Success) { return status; }
     NumericOperand left = empty_operand();
@@ -383,7 +374,7 @@ extern "C" ReadStatus numeric_read_floating_key(Bytes input,inout u64 position,a
         bounds[index] = bits.value;
         index += 1;
     }
-    ScalarTag scalar = ScalarTag::F32;
+    BuiltinScalar scalar = BuiltinScalar::F32;
     status = numeric_read_scalar(input,position,scalar);
     if (status != ReadStatus::Success) { return status; }
     ReadValue form = read_numeric_tag(input,position,1u64,ReadStatus::FloatingForm);
@@ -513,7 +504,7 @@ ReadStatus read_domain_key(Bytes input,inout u64 position,inout DomainKey output
         return numeric_read_floating_key(input,position,address_of(output.payload[0]));
     }
     if (kind == DomainKind::KnownBits) {
-        ScalarTag scalar = ScalarTag::F32;
+        BuiltinScalar scalar = BuiltinScalar::F32;
         ReadStatus status = numeric_read_scalar(input,position,scalar);
         if (status != ReadStatus::Success) { return status; }
         ReadValue mask = fixed_value(input,position,8);
@@ -549,7 +540,7 @@ ReadStatus read_domain_key(Bytes input,inout u64 position,inout DomainKey output
         u64 scalars = 0u64;
         u64 shift = 0u64;
         while (shift < 32u64) {
-            ScalarTag scalar = ScalarTag::F32;
+            BuiltinScalar scalar = BuiltinScalar::F32;
             status = numeric_read_scalar(input,position,scalar);
             if (status != ReadStatus::Success) { return status; }
             scalars |= u64(u32(scalar)) << shift;
@@ -591,7 +582,7 @@ extern "C" void numeric_write_predicate_key(address source,address output,cfn<vo
 
 extern "C" ReadStatus numeric_read_predicate_key(Bytes input,inout u64 position,address output) on cpu {
     NumericOperand operand = empty_operand();
-    NumericPredicate value = NumericPredicate(ComparisonKind::Equal,ScalarTag::F32,operand,operand);
+    NumericPredicate value = NumericPredicate(ComparisonKind::Equal,BuiltinScalar::F32,operand,operand);
     ReadStatus status = numeric_read_predicate(input,position,value);
     if (status == ReadStatus::Success) {
         PredicateKey key = make_key_predicate(value);
@@ -628,8 +619,8 @@ extern "C" void numeric_write_fact(address source,address output,cfn<void,addres
 }
 
 ReadStatus read_fact_predicate(Bytes input, inout u64 position, address output) on cpu {
-    NumericOperand empty = NumericOperand(OperandKind::Value,empty_key_identity(),ScalarTag::F32,0u64);
-    NumericPredicate predicate = NumericPredicate(ComparisonKind::Equal,ScalarTag::F32,empty,empty);
+    NumericOperand empty = NumericOperand(OperandKind::Value,empty_key_identity(),BuiltinScalar::F32,0u64);
+    NumericPredicate predicate = NumericPredicate(ComparisonKind::Equal,BuiltinScalar::F32,empty,empty);
     ReadStatus status = numeric_read_predicate(input,position,predicate);
     if (status != ReadStatus::Success) { return status; }
     ReadValue truth = read_boolean(input,position);
@@ -666,7 +657,7 @@ extern "C" ReadStatus numeric_read_fact(Bytes input,inout u64 position,address o
         return ReadStatus::Success;
     }
 
-    ScalarTag scalar = ScalarTag::F32;
+    BuiltinScalar scalar = BuiltinScalar::F32;
     u8 scalar_code = u8(0);
     if (kind == FactKind::Equal || kind == FactKind::NotEqual || kind == FactKind::Below) {
         NumericIdentity second = empty_key_identity();

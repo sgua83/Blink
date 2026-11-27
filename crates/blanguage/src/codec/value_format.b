@@ -55,7 +55,7 @@ extern "C" BltexHeader decode_bltex_header(u32 dimensions, address input,
         return BltexHeader(BltexStatus::Version, 0);
     }
 
-    u32 format = u32(SourceTexelFormat::Rgba32Float);
+    u32 format = u32(TexelFormat::Rgba32Float);
     if (version != 1) {
         BltexPiece format_word = next(input, 4);
         if (format_word.read == 0) { return BltexHeader(BltexStatus::Input, 0); }
@@ -509,15 +509,15 @@ extern "C" u32 source_mentions(address source, Bytes name, Host host) on cpu req
 }
 
 extern "C" SourceFormat source_format_name(Bytes name) on cpu {
-    if (source_token(name, "rgba32_float")) { return SourceFormat(1, SourceTexelFormat::Rgba32Float); }
-    if (source_token(name, "rgba8_unorm")) { return SourceFormat(1, SourceTexelFormat::Rgba8Unorm); }
-    if (source_token(name, "rgba8_srgb")) { return SourceFormat(1, SourceTexelFormat::Rgba8Srgb); }
-    if (source_token(name, "r8_unorm")) { return SourceFormat(1, SourceTexelFormat::R8Unorm); }
-    if (source_token(name, "rg16_unorm")) { return SourceFormat(1, SourceTexelFormat::Rg16Unorm); }
-    if (source_token(name, "rgb10a2_unorm")) { return SourceFormat(1, SourceTexelFormat::Rgb10A2Unorm); }
-    if (source_token(name, "r11g11b10_float")) { return SourceFormat(1, SourceTexelFormat::R11G11B10Float); }
-    if (source_token(name, "r16_float")) { return SourceFormat(1, SourceTexelFormat::R16Float); }
-    return SourceFormat(0, SourceTexelFormat::Rgba32Float);
+    if (source_token(name, "rgba32_float")) { return SourceFormat(1, TexelFormat::Rgba32Float); }
+    if (source_token(name, "rgba8_unorm")) { return SourceFormat(1, TexelFormat::Rgba8Unorm); }
+    if (source_token(name, "rgba8_srgb")) { return SourceFormat(1, TexelFormat::Rgba8Srgb); }
+    if (source_token(name, "r8_unorm")) { return SourceFormat(1, TexelFormat::R8Unorm); }
+    if (source_token(name, "rg16_unorm")) { return SourceFormat(1, TexelFormat::Rg16Unorm); }
+    if (source_token(name, "rgb10a2_unorm")) { return SourceFormat(1, TexelFormat::Rgb10A2Unorm); }
+    if (source_token(name, "r11g11b10_float")) { return SourceFormat(1, TexelFormat::R11G11B10Float); }
+    if (source_token(name, "r16_float")) { return SourceFormat(1, TexelFormat::R16Float); }
+    return SourceFormat(0, TexelFormat::Rgba32Float);
 }
 
 extern "C" u32 source_argument_shape(address source, Host host) on cpu requires nonzero(host.type_name) requires nonzero(host.argument) {
@@ -528,7 +528,7 @@ extern "C" u32 source_argument_shape(address source, Host host) on cpu requires 
 }
 
 SourceFormat source_format_argument(TypeName value, Host host) on cpu requires nonzero(host.type_name) requires nonzero(host.argument) {
-    SourceFormat missing = SourceFormat(0, SourceTexelFormat::Rgba32Float);
+    SourceFormat missing = SourceFormat(0, TexelFormat::Rgba32Float);
     if (value.arguments.count != 1u64) { return missing; }
     Argument argument = host.argument(item(value.arguments, 0u64));
     if (argument.kind != 0) { return missing; }
@@ -539,7 +539,7 @@ SourceFormat source_format_argument(TypeName value, Host host) on cpu requires n
 }
 
 SourceTexture classify_source_texture(TypeName value, u32 arrays, Host host) on cpu requires nonzero(host.type_name) requires nonzero(host.argument) {
-    SourceFormat no_format = SourceFormat(0, SourceTexelFormat::Rgba32Float);
+    SourceFormat no_format = SourceFormat(0, TexelFormat::Rgba32Float);
     SourceTexture missing = SourceTexture(SourceTextureKind::Missing, no_format, address());
     if (source_wrapped(value)) { return missing; }
     if (arrays != 0 && source_token(value.name, "array")) {
@@ -796,19 +796,19 @@ ReadTarget read_target(Bytes input,inout u64 position) on cpu {
 
 ReadScalar read_scalar(Bytes input,inout u64 position) on cpu {
  ReadValue value=fixed_value(input,position,4);
- if(value.status!=ReadStatus::Success){return ReadScalar(ScalarTag::F32,value.status);}
- if(value.value==0u64){return ReadScalar(ScalarTag::F32,ReadStatus::Success);}
- if(value.value==1u64){return ReadScalar(ScalarTag::U32,ReadStatus::Success);}
- if(value.value==2u64){return ReadScalar(ScalarTag::I32,ReadStatus::Success);}
- if(value.value==3u64){return ReadScalar(ScalarTag::Bool,ReadStatus::Success);}
- if(value.value==4u64){return ReadScalar(ScalarTag::U64,ReadStatus::Success);}
- if(value.value==5u64){return ReadScalar(ScalarTag::I64,ReadStatus::Success);}
- if(value.value==6u64){return ReadScalar(ScalarTag::F64,ReadStatus::Success);}
- if(value.value==7u64){return ReadScalar(ScalarTag::U8,ReadStatus::Success);}
- if(value.value==8u64){return ReadScalar(ScalarTag::I8,ReadStatus::Success);}
- if(value.value==9u64){return ReadScalar(ScalarTag::U16,ReadStatus::Success);}
- if(value.value==10u64){return ReadScalar(ScalarTag::I16,ReadStatus::Success);}
- return ReadScalar(ScalarTag::F32,ReadStatus::Scalar);
+ if(value.status!=ReadStatus::Success){return ReadScalar(BuiltinScalar::F32,value.status);}
+ if(value.value==0u64){return ReadScalar(BuiltinScalar::F32,ReadStatus::Success);}
+ if(value.value==1u64){return ReadScalar(BuiltinScalar::U32,ReadStatus::Success);}
+ if(value.value==2u64){return ReadScalar(BuiltinScalar::I32,ReadStatus::Success);}
+ if(value.value==3u64){return ReadScalar(BuiltinScalar::Bool,ReadStatus::Success);}
+ if(value.value==4u64){return ReadScalar(BuiltinScalar::U64,ReadStatus::Success);}
+ if(value.value==5u64){return ReadScalar(BuiltinScalar::I64,ReadStatus::Success);}
+ if(value.value==6u64){return ReadScalar(BuiltinScalar::F64,ReadStatus::Success);}
+ if(value.value==7u64){return ReadScalar(BuiltinScalar::U8,ReadStatus::Success);}
+ if(value.value==8u64){return ReadScalar(BuiltinScalar::I8,ReadStatus::Success);}
+ if(value.value==9u64){return ReadScalar(BuiltinScalar::U16,ReadStatus::Success);}
+ if(value.value==10u64){return ReadScalar(BuiltinScalar::I16,ReadStatus::Success);}
+ return ReadScalar(BuiltinScalar::F32,ReadStatus::Scalar);
 }
 
 ReadStatus read_text_field(Bytes input,inout u64 position,address output,address context,cfn<ReadStatus,address,address,Bytes> text) on cpu requires nonzero(text){

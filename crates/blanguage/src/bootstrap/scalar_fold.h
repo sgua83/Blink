@@ -1,6 +1,6 @@
 module bootstrap.scalar_fold;
+import codec.builtin_type;
 import codec.scalar_ranges;
-import codec.value_format;
 
 enum UnaryOperation : u32 {
     Negate = 0; LogicalNot = 1; BitNot = 2; FloatNegate = 3;
@@ -66,7 +66,7 @@ extern "C" CastEffect proof_cast_component(ScalarEncoding source, ScalarEncoding
 extern "C" FloatRange float_math(u32 operation,u32 width,BitRange left,BitRange right) on cpu;
 extern "C" FloatRange float_sum_range(u32 width,BitRange range,u64 maximum) on cpu;
 struct TextureSampleBounds { BitRange x; BitRange y; BitRange z; BitRange lod; u32 has_z; };
-extern "C" FloatRange texture_sample_range(SourceTexelFormat format, TextureSampleBounds input) on cpu;
+extern "C" FloatRange texture_sample_range(TexelFormat format, TextureSampleBounds input) on cpu;
 extern "C" FloatRange float_negate(u32 width,BitRange range) on cpu;
 struct FloatBoundProjection { BitRange source; FloatRange range; };
 extern "C" FloatBoundProjection float_bound_at_call(RangeInput input, u64 maximum, BitRange source,
