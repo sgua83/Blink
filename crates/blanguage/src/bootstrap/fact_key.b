@@ -69,7 +69,11 @@ extern "C" i32 order_identity(address left, address right) on cpu {
         i32 first = word32(left,right,4u64);
         return first != 0 ? first : word32(left,right,8u64);
     }
-    return words(field(left,8u64),field(right,8u64),identity_words(a));
+    i32 first = unsigned_order(unsafe_position<u64>(field(left,8u64)),
+        unsafe_position<u64>(field(right,8u64)));
+    if (first != 0) { return first; }
+    u64 tail = identity_words(a) - 1u64;
+    return tail == 0u64 ? i32(0) : words(field(left,16u64),field(right,16u64),tail);
 }
 
 i32 identities(address left, address right, u64 count) on cpu {
