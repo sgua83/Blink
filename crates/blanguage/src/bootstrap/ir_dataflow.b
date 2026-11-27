@@ -1,5 +1,6 @@
 module bootstrap.ir_dataflow;
 import codec.builtin_type;
+import codec.type_layout;
 
 // These tags describe the existing borrowed Rust IR fields at this one
 // private native handoff. They do not name a public IR format or registry.
@@ -2060,19 +2061,6 @@ u32 collective_presence(Span code,Host host,bool include_subgroups) on cpu requi
 extern "C" u32 has_subgroups(Span code,Host host) on cpu requires nonzero(host.inspect) {
  return collective_presence(code,host,true);
 }
-// Operation bits follow the existing SubgroupOp discriminants. The two
-// following bits describe use of Append and non-32-bit subgroup results.
-const u32 SUBGROUP_OPERATIONS=8388607;
-const u32 SUBGROUP_APPEND=8388608;
-const u32 SUBGROUP_EXTENDED=16777216;
-const u32 SUBGROUP_BUILTINS=7;
-const u32 SUBGROUP_VOTE=48;
-const u32 SUBGROUP_BALLOT=448;
-const u32 SUBGROUP_SHUFFLE=1536;
-const u32 SUBGROUP_RELATIVE=6144;
-const u32 SUBGROUP_ARITHMETIC=8380416;
-const u32 APPEND_OPERATIONS=456; // Elect, Count, PrefixCount, BroadcastFirst.
-
 const u32 CODE_SUBGROUPS=1;
 const u32 CODE_SUBGROUP_WIDTHS=2;
 const u32 CODE_ATOMICS=4;
@@ -2112,21 +2100,6 @@ CodeRequirements code_requirements<const Queries:u32>(Span code,Span registers,R
  return facts;
 }
 
-SubgroupFlags subgroup_flags(u32 used) on cpu {
- return SubgroupFlags(
-  u32((used&SUBGROUP_OPERATIONS)!=0),u32((used&SUBGROUP_VOTE)!=0),
-  u32((used&SUBGROUP_ARITHMETIC)!=0),u32((used&SUBGROUP_BALLOT)!=0),
-  u32((used&SUBGROUP_SHUFFLE)!=0),u32((used&SUBGROUP_RELATIVE)!=0),
-  u32((used&SUBGROUP_EXTENDED)!=0));
-}
-u32 shader_subgroup_uses(Span code,RegisterHost host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
- return code_requirements<1>(code,empty_span(),host,CodeRequirements(0,0,0)).subgroup;
-}
-extern "C" u32 subgroup_operations(Span code,RegisterHost host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
- return shader_subgroup_uses(code,host)&SUBGROUP_OPERATIONS;
-}
 extern "C" ShaderCodeRequirements shader_code_requirements(
  Node operation,Span code,Span registers,u32 requested,bool subgroups,RegisterHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
@@ -2139,27 +2112,6 @@ extern "C" ShaderCodeRequirements shader_code_requirements(
   u32((used&SUBGROUP_APPEND)!=0));
  return ShaderCodeRequirements(uses,facts.atomic64,requested^facts.remaining_floats);
 }
-extern "C" SubgroupFlags subgroup_from_operations(address context,cfn<Word,address> next) on cpu
- requires nonzero(next) {
- u32 used=0;
- while(true) {
-  Word operation=next(context);
-  if(operation.present==0){return subgroup_flags(used);}
-  used|=1<<u32(operation.value);
- }
-}
-extern "C" SubgroupFlags subgroup_capabilities(Span stages,RegisterHost host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
- CodeRequirements facts=CodeRequirements(0,0,0);
- usize index=0u64;
- while(index<stages.count) {
-  View stage=host.ir.inspect(node_at(stages,index,N_STAGE));
-  facts=code_requirements<3>(stage.first,stage.second,host,facts);
-  index+=1u64;
- }
- return subgroup_flags(facts.subgroup);
-}
-
 extern "C" ProgramCodeRequirements program_code_requirements(Span stages,u32 requested,RegisterHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
  CodeRequirements facts=CodeRequirements(0,0,requested);

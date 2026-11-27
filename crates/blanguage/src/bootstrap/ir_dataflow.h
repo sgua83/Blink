@@ -1,4 +1,5 @@
 module bootstrap.ir_dataflow;
+import codec.type_layout;
 // One original instruction vocabulary, shared by the actual IR consumers.
 // Operation identities follow the original IR SubgroupOp.
 enum SubgroupOperation:u32 {
@@ -520,10 +521,6 @@ extern "C" void tile_input_words(Span tiles,Host host,address used,
  requires nonzero(host.inspect) requires nonzero(contains) requires nonzero(emit);
 
 // The bits select the stored low word and, for a wide value, the stored high word.
-struct SubgroupFlags {
- u32 basic; u32 vote; u32 arithmetic; u32 ballot;
- u32 shuffle; u32 shuffle_relative; u32 extended_types;
-};
 struct ShaderSubgroups {
  SubgroupFlags capabilities; u32 builtins; u32 maximal_reconvergence;
 };
@@ -531,17 +528,11 @@ struct ProgramCodeRequirements {
  SubgroupFlags subgroup; u32 atomic64; u32 float_preserve; u32 maximal_reconvergence;
 };
 extern "C" u32 has_subgroups(Span code,Host host) on cpu requires nonzero(host.inspect);
-extern "C" u32 subgroup_operations(Span code,RegisterHost host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.scalar);
 struct ShaderCodeRequirements {
  ShaderSubgroups subgroups; u32 atomic64; u32 float_preserve;
 };
 extern "C" ShaderCodeRequirements shader_code_requirements(
  Node operation,Span code,Span registers,u32 requested,bool subgroups,RegisterHost host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.scalar);
-extern "C" SubgroupFlags subgroup_from_operations(address context,cfn<Word,address> next) on cpu
- requires nonzero(next);
-extern "C" SubgroupFlags subgroup_capabilities(Span stages,RegisterHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar);
 extern "C" ProgramCodeRequirements program_code_requirements(Span stages,u32 requested,RegisterHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar);

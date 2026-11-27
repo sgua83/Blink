@@ -261,79 +261,17 @@ impl Stage {
     }
 }
 
-#[derive(Clone, Copy)]
-#[repr(C)]
-struct TileCode {
-    instructions: *const c_void,
-    count: usize,
-}
-
-impl TileCode {
-    fn borrow(code: &[Inst]) -> Self {
-        Self { instructions: code.as_ptr().cast(), count: code.len() }
-    }
-}
-
-#[repr(u32)]
-enum TileInstruction {
-    Ordinary, Stage, Group, Storage, Collective, Block,
-}
-
-#[repr(C)]
-struct TileInstructionFields {
-    kind: TileInstruction,
-    results: u32,
-    tile: usize,
-    first: TileCode,
-    second: TileCode,
-}
-
 pub(super) fn inspect_tile_uses(code: &[Inst], has_tiles: bool, output: Option<&mut BTreeSet<usize>>) -> bool {
     let output = output.map_or(std::ptr::null_mut(), |set| std::ptr::from_mut(set).cast());
     // Both the original code and the optional set are lent through this synchronous query.
-    unsafe { b_tile_uses(TileCode::borrow(code), u32::from(has_tiles), tile_instruction, output, include_tile) != 0 }
+    unsafe { b_tile_uses(StageCode::borrow(code), u32::from(has_tiles), stage_instruction, output, include_tile) != 0 }
 }
 
 unsafe extern "C" {
     #[link_name = "codec.type_layout::tile_uses"]
-    fn b_tile_uses(code: TileCode, has_tiles: u32,
-        inspect: unsafe extern "C" fn(TileCode, usize) -> TileInstructionFields, output: *mut c_void,
+    fn b_tile_uses(code: StageCode, has_tiles: u32,
+        inspect: unsafe extern "C" fn(StageCode, usize) -> StageInstructionFields, output: *mut c_void,
         include: unsafe extern "C" fn(*mut c_void, usize)) -> u32;
-}
-
-unsafe extern "C" fn tile_instruction(code: TileCode, index: usize) -> TileInstructionFields {
-    let inst = unsafe { &*code.instructions.cast::<Inst>().add(index) };
-    let mut fields = TileInstructionFields {
-        kind: TileInstruction::Ordinary, results: 0, tile: 0,
-        first: TileCode::borrow(&[]), second: TileCode::borrow(&[]),
-    };
-    match &inst.kind {
-        InstKind::TileLength(_) | InstKind::TileLane(_) | InstKind::TilePublish(_) | InstKind::TileBarrier =>
-            fields.kind = TileInstruction::Stage,
-        InstKind::Append(_) | InstKind::Subgroup { .. } => fields.kind = TileInstruction::Group,
-        InstKind::TileLoad { tile, .. }
-        | InstKind::Atomic(Atomic { target: IndexedSource::Tile { tile, .. }, .. })
-        | InstKind::LoadIndexed { source: IndexedSource::Tile { tile, .. }, .. } => {
-            fields.kind = TileInstruction::Storage;
-            fields.tile = *tile;
-        }
-        InstKind::TileCollective(collective) => {
-            fields.kind = TileInstruction::Collective;
-            fields.tile = collective.tile;
-            fields.results = u32::from(!collective.results.is_empty());
-        }
-        InstKind::Scope(body) => {
-            fields.kind = TileInstruction::Block;
-            fields.first = TileCode::borrow(body);
-        }
-        InstKind::If { yes, no, .. } | InstKind::Loop { condition: yes, body: no, .. } => {
-            fields.kind = TileInstruction::Block;
-            fields.first = TileCode::borrow(yes);
-            fields.second = TileCode::borrow(no);
-        }
-        _ => {}
-    }
-    fields
 }
 
 unsafe extern "C" fn include_tile(output: *mut c_void, tile: usize) {

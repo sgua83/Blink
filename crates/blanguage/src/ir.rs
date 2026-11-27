@@ -1,6 +1,6 @@
 pub(crate) mod scalar_ranges;
 use crate::ast::{Access, Target, TextureDimension};
-use std::{collections::{BTreeMap, BTreeSet}, num::NonZeroU64};
+use std::{collections::{BTreeMap, BTreeSet}, ffi::c_void, num::NonZeroU64};
 #[cfg(feature = "compiler")]
 mod origin;
 #[cfg(feature = "compiler")]
@@ -1341,10 +1341,98 @@ pub enum SubgroupOp {
     ExclusiveBitOr,
     ExclusiveBitXor,
 }
-#[cfg(not(feature = "compiler"))]
-const APPEND_SUBGROUP_OPERATIONS: [SubgroupOp; 4] = [
-    SubgroupOp::Count, SubgroupOp::PrefixCount, SubgroupOp::Elect, SubgroupOp::BroadcastFirst,
+// Decode the paired private instruction discriminants into the original enum;
+// its Rust representation and the public query result remain unchanged.
+const SUBGROUP_OPERATIONS: [SubgroupOp; 23] = [
+    SubgroupOp::Lane, SubgroupOp::Size, SubgroupOp::Id, SubgroupOp::Elect,
+    SubgroupOp::Any, SubgroupOp::All, SubgroupOp::Count, SubgroupOp::PrefixCount,
+    SubgroupOp::BroadcastFirst, SubgroupOp::Shuffle, SubgroupOp::ShuffleXor,
+    SubgroupOp::ShuffleUp, SubgroupOp::ShuffleDown, SubgroupOp::Sum, SubgroupOp::ExclusiveSum,
+    SubgroupOp::Min, SubgroupOp::Max, SubgroupOp::BitAnd, SubgroupOp::BitOr, SubgroupOp::BitXor,
+    SubgroupOp::ExclusiveBitAnd, SubgroupOp::ExclusiveBitOr, SubgroupOp::ExclusiveBitXor,
 ];
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct StageCode {
+    instructions: *const c_void,
+    count: usize,
+}
+
+impl StageCode {
+    fn borrow(code: &[Inst]) -> Self {
+        Self { instructions: code.as_ptr().cast(), count: code.len() }
+    }
+}
+
+#[repr(u32)]
+enum StageInstruction {
+    Ordinary, Tile, Append, Storage, Collective, Block, Subgroup,
+}
+
+// The kind selects the original fields: collective result presence or subgroup opcode,
+// and the referenced tile or subgroup result register.
+#[repr(C)]
+struct StageInstructionFields {
+    kind: StageInstruction,
+    operand: u32,
+    index: usize,
+    first: StageCode,
+    second: StageCode,
+}
+
+unsafe extern "C" fn stage_instruction(code: StageCode, index: usize) -> StageInstructionFields {
+    let inst = unsafe { &*code.instructions.cast::<Inst>().add(index) };
+    let mut fields = StageInstructionFields {
+        kind: StageInstruction::Ordinary, operand: 0, index: 0,
+        first: StageCode::borrow(&[]), second: StageCode::borrow(&[]),
+    };
+    match &inst.kind {
+        InstKind::TileLength(_) | InstKind::TileLane(_) | InstKind::TilePublish(_) | InstKind::TileBarrier =>
+            fields.kind = StageInstruction::Tile,
+        InstKind::Append(_) => fields.kind = StageInstruction::Append,
+        InstKind::Subgroup { dst, op, .. } => {
+            fields.kind = StageInstruction::Subgroup;
+            fields.operand = *op as u32;
+            fields.index = *dst;
+        }
+        InstKind::TileLoad { tile, .. }
+        | InstKind::Atomic(Atomic { target: IndexedSource::Tile { tile, .. }, .. })
+        | InstKind::LoadIndexed { source: IndexedSource::Tile { tile, .. }, .. } => {
+            fields.kind = StageInstruction::Storage;
+            fields.index = *tile;
+        }
+        InstKind::TileCollective(collective) => {
+            fields.kind = StageInstruction::Collective;
+            fields.index = collective.tile;
+            fields.operand = u32::from(!collective.results.is_empty());
+        }
+        InstKind::Scope(body) => {
+            fields.kind = StageInstruction::Block;
+            fields.first = StageCode::borrow(body);
+        }
+        InstKind::If { yes, no, .. } | InstKind::Loop { condition: yes, body: no, .. } => {
+            fields.kind = StageInstruction::Block;
+            fields.first = StageCode::borrow(yes);
+            fields.second = StageCode::borrow(no);
+        }
+        _ => {}
+    }
+    fields
+}
+
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+struct SubgroupFlags {
+    basic: u32, vote: u32, arithmetic: u32, ballot: u32,
+    shuffle: u32, shuffle_relative: u32, extended_types: u32,
+}
+impl From<SubgroupFlags> for SubgroupCapabilities {
+    fn from(value: SubgroupFlags) -> Self {
+        Self { basic: value.basic != 0, vote: value.vote != 0, arithmetic: value.arithmetic != 0,
+            ballot: value.ballot != 0, shuffle: value.shuffle != 0,
+            shuffle_relative: value.shuffle_relative != 0, extended_types: value.extended_types != 0 }
+    }
+}
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SubgroupCapabilities {
     pub basic: bool,
@@ -1562,78 +1650,43 @@ impl Stage {
         words
         }
     }
-    pub fn subgroup_operations(&self) -> std::collections::BTreeSet<SubgroupOp> {
-        #[cfg(feature = "compiler")]
-        { dataflow::subgroup_operations(self) }
-        #[cfg(not(feature = "compiler"))]
-        {
-        fn visit(code: &[Inst], ops: &mut std::collections::BTreeSet<SubgroupOp>) {
-            for inst in code {
-                match &(inst).kind {
-                    InstKind::Append(_) => {
-                        ops.extend(APPEND_SUBGROUP_OPERATIONS);
-                    }
-                    InstKind::Subgroup { op, .. } => {
-                        ops.insert(*op);
-                    }
-                    InstKind::Scope(body) => visit(body, ops),
-                    InstKind::If { yes, no, .. } => {
-                        visit(yes, ops);
-                        visit(no, ops);
-                    }
-                    InstKind::Loop {
-                        condition, body, ..
-                    } => {
-                        visit(condition, ops);
-                        visit(body, ops);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        let mut ops = std::collections::BTreeSet::new();
-        visit(&self.code, &mut ops);
-        ops
-        }
+    pub fn subgroup_operations(&self) -> BTreeSet<SubgroupOp> {
+        let used = subgroup_uses(&self.code, None, 0);
+        SUBGROUP_OPERATIONS.into_iter()
+            .filter(|operation| (used & (1 << *operation as u32)) != 0)
+            .collect()
     }
 }
 impl SubgroupCapabilities {
     pub fn from_operations(ops: impl IntoIterator<Item = SubgroupOp>) -> Self {
-        #[cfg(feature = "compiler")]
-        { dataflow::subgroup_from_operations(ops) }
-        #[cfg(not(feature = "compiler"))]
-        {
-        let mut caps = Self::default();
-        for op in ops {
-            caps.include_operation(op);
-        }
-        caps
-        }
-    }
-    #[cfg(not(feature = "compiler"))]
-    fn include_operation(&mut self, op: SubgroupOp) {
-            self.basic = true;
-            match op {
-                SubgroupOp::Any | SubgroupOp::All => self.vote = true,
-                SubgroupOp::Count | SubgroupOp::PrefixCount | SubgroupOp::BroadcastFirst => {
-                    self.ballot = true
-                }
-                SubgroupOp::Shuffle | SubgroupOp::ShuffleXor => self.shuffle = true,
-                SubgroupOp::ShuffleUp | SubgroupOp::ShuffleDown => self.shuffle_relative = true,
-                SubgroupOp::Sum
-                | SubgroupOp::ExclusiveSum
-                | SubgroupOp::Min
-                | SubgroupOp::Max
-                | SubgroupOp::BitAnd
-                | SubgroupOp::BitOr
-                | SubgroupOp::BitXor
-                | SubgroupOp::ExclusiveBitAnd
-                | SubgroupOp::ExclusiveBitOr
-                | SubgroupOp::ExclusiveBitXor => self.arithmetic = true,
-                SubgroupOp::Lane | SubgroupOp::Size | SubgroupOp::Id | SubgroupOp::Elect => {}
-            }
+        let used = ops.into_iter().fold(0, |used, operation| used | (1 << operation as u32));
+        subgroup_flags(used)
     }
 }
+
+fn subgroup_uses(code: &[Inst], registers: Option<&[Scalar]>, used: u32) -> u32 {
+    let registers = registers.map_or(std::ptr::null(), |values| values.as_ptr().cast());
+    // The stage and its register layout remain borrowed through the call.
+    unsafe { b_subgroup_uses(StageCode::borrow(code), registers, used, stage_instruction, subgroup_scalar_bytes) }
+}
+
+fn subgroup_flags(used: u32) -> SubgroupCapabilities {
+    unsafe { b_subgroup_flags(used).into() }
+}
+
+unsafe extern "C" fn subgroup_scalar_bytes(registers: *const c_void, result: usize) -> u32 {
+    unsafe { &*registers.cast::<Scalar>().add(result) }.size()
+}
+
+unsafe extern "C" {
+    #[link_name = "codec.type_layout::subgroup_uses"]
+    fn b_subgroup_uses(code: StageCode, registers: *const c_void, used: u32,
+        inspect: unsafe extern "C" fn(StageCode, usize) -> StageInstructionFields,
+        scalar_bytes: unsafe extern "C" fn(*const c_void, usize) -> u32) -> u32;
+    #[link_name = "codec.type_layout::subgroup_flags"]
+    fn b_subgroup_flags(used: u32) -> SubgroupFlags;
+}
+
 #[derive(Clone, Debug)]
 pub struct Program {
     pub(crate) name: String,
@@ -1717,31 +1770,10 @@ impl Program {
         }
     }
     pub fn subgroup_capabilities(&self) -> SubgroupCapabilities {
-        #[cfg(feature = "compiler")]
-        { dataflow::subgroup_capabilities(self) }
-        #[cfg(not(feature = "compiler"))]
-        {
-            fn visit(code: &[Inst], registers: &[Scalar], caps: &mut SubgroupCapabilities) {
-                for inst in code {
-                    match &inst.kind {
-                        InstKind::Append(_) => {
-                            for operation in APPEND_SUBGROUP_OPERATIONS { caps.include_operation(operation); }
-                        }
-                        InstKind::Subgroup { dst, op, .. } => {
-                            caps.include_operation(*op);
-                            caps.extended_types |= registers[*dst].size() != 4;
-                        }
-                        InstKind::Scope(body) => visit(body, registers, caps),
-                        InstKind::If { yes, no, .. } => { visit(yes, registers, caps); visit(no, registers, caps); }
-                        InstKind::Loop { condition, body, .. } => { visit(condition, registers, caps); visit(body, registers, caps); }
-                        _ => {}
-                    }
-                }
-            }
-            let mut caps = SubgroupCapabilities::default();
-            for stage in &self.stages { visit(&stage.code, &stage.registers, &mut caps); }
-            caps
-        }
+        let used = self.stages.iter().fold(0, |used, stage| {
+            subgroup_uses(&stage.code, Some(&stage.registers), used)
+        });
+        subgroup_flags(used)
     }
     /// 内部设备绑定：集合中间量与间接域参数各有一个必要槽，不占源码参数。
     pub fn indirect_buffer(&self) -> usize { self.execution_buffers().indirect }

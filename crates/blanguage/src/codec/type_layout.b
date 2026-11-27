@@ -358,31 +358,71 @@ extern "C" ExecutionBuffers device_slots(address stages, usize count, usize buff
     return ExecutionBuffers(buffers + summary, auxiliary);
 }
 
-extern "C" u32 tile_uses(TileCode code, u32 has_tiles,
-    cfn<TileInstructionFields,TileCode,usize> ensures memory(read) inspect,
+extern "C" u32 tile_uses(StageCode code, u32 has_tiles,
+    cfn<StageInstructionFields,StageCode,usize> ensures memory(read) inspect,
     address output, cfn<void,address,usize> include) on cpu
     requires nonzero(inspect) requires nonzero(include) {
     bool collect = output != address();
     bool found = false;
     usize index = 0u64;
     while (index < code.count) {
-        TileInstructionFields instruction = inspect(code, index);
-        TileInstruction kind = instruction.kind;
-        bool uses = kind == TileInstruction::Stage || kind == TileInstruction::Storage
-            || kind == TileInstruction::Collective || (kind == TileInstruction::Group && has_tiles != 0);
-        if (kind == TileInstruction::Block) {
+        StageInstructionFields instruction = inspect(code, index);
+        StageInstruction kind = instruction.kind;
+        bool uses = kind == StageInstruction::Tile || kind == StageInstruction::Storage
+            || kind == StageInstruction::Collective || ((kind == StageInstruction::Append || kind == StageInstruction::Subgroup) && has_tiles != 0);
+        if (kind == StageInstruction::Block) {
             u32 first = tile_uses(instruction.first, has_tiles, inspect, output, include);
             if (first != 0 && !collect) { return 1; }
             u32 second = tile_uses(instruction.second, has_tiles, inspect, output, include);
             uses = first != 0 || second != 0;
         }
         if (uses && !collect) { return 1; }
-        if (collect && (kind == TileInstruction::Storage
-            || (kind == TileInstruction::Collective && instruction.results != 0))) {
-            include(output, instruction.tile);
+        if (collect && (kind == StageInstruction::Storage
+            || (kind == StageInstruction::Collective && instruction.operand != 0))) {
+            include(output, instruction.index);
         }
         found = found || uses;
         index += 1u64;
     }
     return u32(found);
+}
+
+const u32 SUBGROUP_OPERATIONS=8388607;
+const u32 SUBGROUP_VOTE=48;
+const u32 SUBGROUP_BALLOT=448;
+const u32 SUBGROUP_SHUFFLE=1536;
+const u32 SUBGROUP_RELATIVE=6144;
+const u32 SUBGROUP_ARITHMETIC=8380416;
+
+extern "C" SubgroupFlags subgroup_flags(u32 used) on cpu {
+ return SubgroupFlags(
+  u32((used&SUBGROUP_OPERATIONS)!=0),u32((used&SUBGROUP_VOTE)!=0),
+  u32((used&SUBGROUP_ARITHMETIC)!=0),u32((used&SUBGROUP_BALLOT)!=0),
+  u32((used&SUBGROUP_SHUFFLE)!=0),u32((used&SUBGROUP_RELATIVE)!=0),
+  u32((used&SUBGROUP_EXTENDED)!=0));
+}
+
+extern "C" u32 subgroup_uses(StageCode code, address registers, u32 initial,
+    cfn<StageInstructionFields,StageCode,usize> ensures memory(read) inspect,
+    cfn<u32,address,usize> ensures memory(read) scalar_bytes) on cpu
+    requires nonzero(inspect) requires nonzero(scalar_bytes) {
+    u32 used = initial;
+    usize index = 0u64;
+    while (index < code.count) {
+        StageInstructionFields instruction = inspect(code, index);
+        if (instruction.kind == StageInstruction::Subgroup) {
+            used |= 1 << instruction.operand;
+            if (registers != address() && (used & SUBGROUP_EXTENDED) == 0
+                && scalar_bytes(registers, instruction.index) != 4) {
+                used |= SUBGROUP_EXTENDED;
+            }
+        } else if (instruction.kind == StageInstruction::Append) {
+            used |= APPEND_OPERATIONS;
+        } else if (instruction.kind == StageInstruction::Block) {
+            used = subgroup_uses(instruction.first, registers, used, inspect, scalar_bytes);
+            used = subgroup_uses(instruction.second, registers, used, inspect, scalar_bytes);
+        }
+        index += 1u64;
+    }
+    return used;
 }

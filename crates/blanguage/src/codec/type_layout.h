@@ -138,16 +138,33 @@ struct ExecutionBuffers { usize indirect; usize auxiliary; };
 extern "C" ExecutionBuffers device_slots(address stages, usize count, usize buffers,
     cfn<StageSlots,address,usize> ensures memory(read) stage) on cpu requires nonzero(stage);
 
-struct TileCode { address instructions; usize count; };
-enum TileInstruction : u32 { Ordinary = 0; Stage = 1; Group = 2; Storage = 3; Collective = 4; Block = 5; };
-struct TileInstructionFields {
-    TileInstruction kind;
-    u32 results;
-    usize tile;
-    TileCode first;
-    TileCode second;
+struct StageCode { address instructions; usize count; };
+enum StageInstruction : u32 { Ordinary = 0; Tile = 1; Append = 2; Storage = 3; Collective = 4; Block = 5; Subgroup = 6; };
+struct StageInstructionFields {
+    StageInstruction kind;
+    u32 operand;
+    usize index;
+    StageCode first;
+    StageCode second;
 };
-extern "C" u32 tile_uses(TileCode code, u32 has_tiles,
-    cfn<TileInstructionFields,TileCode,usize> ensures memory(read) inspect,
+extern "C" u32 tile_uses(StageCode code, u32 has_tiles,
+    cfn<StageInstructionFields,StageCode,usize> ensures memory(read) inspect,
     address output, cfn<void,address,usize> include) on cpu
     requires nonzero(inspect) requires nonzero(include);
+
+// Operation bits follow the existing SubgroupOp discriminants. The two
+// following bits describe use of Append and non-32-bit subgroup results.
+const u32 SUBGROUP_APPEND=8388608;
+const u32 SUBGROUP_EXTENDED=16777216;
+const u32 SUBGROUP_BUILTINS=7;
+const u32 APPEND_OPERATIONS=456; // Elect, Count, PrefixCount, BroadcastFirst.
+
+struct SubgroupFlags {
+ u32 basic; u32 vote; u32 arithmetic; u32 ballot;
+ u32 shuffle; u32 shuffle_relative; u32 extended_types;
+};
+extern "C" SubgroupFlags subgroup_flags(u32 used) on cpu;
+extern "C" u32 subgroup_uses(StageCode code, address registers, u32 initial,
+    cfn<StageInstructionFields,StageCode,usize> ensures memory(read) inspect,
+    cfn<u32,address,usize> ensures memory(read) scalar_bytes) on cpu
+    requires nonzero(inspect) requires nonzero(scalar_bytes);

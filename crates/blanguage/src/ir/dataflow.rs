@@ -779,19 +779,6 @@ unsafe extern "C" fn emit_input_fragment(
     output.entry((binding, word)).or_default().insert((byte, unit));
 }
 
-#[derive(Clone, Copy, Default)]
-#[repr(C)]
-struct SubgroupFlags {
-    basic: u32, vote: u32, arithmetic: u32, ballot: u32,
-    shuffle: u32, shuffle_relative: u32, extended_types: u32,
-}
-impl From<SubgroupFlags> for SubgroupCapabilities {
-    fn from(value: SubgroupFlags) -> Self {
-        Self { basic: value.basic != 0, vote: value.vote != 0, arithmetic: value.arithmetic != 0,
-            ballot: value.ballot != 0, shuffle: value.shuffle != 0,
-            shuffle_relative: value.shuffle_relative != 0, extended_types: value.extended_types != 0 }
-    }
-}
 #[derive(Default)]
 #[repr(C)]
 pub(crate) struct ShaderSubgroups {
@@ -829,37 +816,14 @@ struct ProgramCodeRequirements {
 unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::has_subgroups"]
     fn b_has_subgroups(code: Span, host: Host) -> u32;
-    #[link_name = "bootstrap.ir_dataflow::subgroup_operations"]
-    fn b_subgroup_operations(code: Span, host: RegisterHost) -> u32;
     #[link_name = "bootstrap.ir_dataflow::shader_code_requirements"]
     fn b_shader_code_requirements(operation: Node, code: Span, registers: Span, requested: u32,
         subgroups: bool, host: RegisterHost) -> ShaderCodeRequirements;
-    #[link_name = "bootstrap.ir_dataflow::subgroup_from_operations"]
-    fn b_subgroup_from_operations(context: *mut c_void,
-        next: unsafe extern "C" fn(*mut c_void) -> Word) -> SubgroupFlags;
-    #[link_name = "bootstrap.ir_dataflow::subgroup_capabilities"]
-    fn b_subgroup_capabilities(stages: Span, host: RegisterHost) -> SubgroupFlags;
     #[link_name = "bootstrap.ir_dataflow::program_code_requirements"]
     fn b_program_code_requirements(stages: Span, requested: u32, host: RegisterHost) -> ProgramCodeRequirements;
 }
-// Decode the paired private instruction discriminants into the original enum;
-// its Rust representation and the public query result remain unchanged.
-const SUBGROUP_OPERATIONS: [SubgroupOp; 23] = [
-    SubgroupOp::Lane, SubgroupOp::Size, SubgroupOp::Id, SubgroupOp::Elect,
-    SubgroupOp::Any, SubgroupOp::All, SubgroupOp::Count, SubgroupOp::PrefixCount,
-    SubgroupOp::BroadcastFirst, SubgroupOp::Shuffle, SubgroupOp::ShuffleXor,
-    SubgroupOp::ShuffleUp, SubgroupOp::ShuffleDown, SubgroupOp::Sum, SubgroupOp::ExclusiveSum,
-    SubgroupOp::Min, SubgroupOp::Max, SubgroupOp::BitAnd, SubgroupOp::BitOr, SubgroupOp::BitXor,
-    SubgroupOp::ExclusiveBitAnd, SubgroupOp::ExclusiveBitOr, SubgroupOp::ExclusiveBitXor,
-];
 pub(crate) fn has_subgroups(stage: &Stage) -> bool {
     unsafe { b_has_subgroups(Span::slice(&stage.code), HOST) != 0 }
-}
-pub(super) fn subgroup_operations(stage: &Stage) -> BTreeSet<SubgroupOp> {
-    let used = unsafe { b_subgroup_operations(Span::slice(&stage.code), REGISTER_HOST) };
-    SUBGROUP_OPERATIONS.into_iter().enumerate()
-        .filter_map(|(bit, operation)| (used & (1 << bit) != 0).then_some(operation))
-        .collect()
 }
 pub(crate) fn shader_code_requirements(
     operation: &Operation, code: &[Inst], registers: &[Scalar], float_preserve: bool, subgroups: bool,
@@ -870,20 +834,6 @@ pub(crate) fn shader_code_requirements(
             requested, subgroups, REGISTER_HOST)
     }
 }
-pub(super) fn subgroup_from_operations<I: IntoIterator<Item = SubgroupOp>>(operations: I) -> SubgroupCapabilities {
-    let mut operations = operations.into_iter();
-    unsafe { b_subgroup_from_operations(ptr::from_mut(&mut operations).cast(), next_subgroup::<I::IntoIter>).into() }
-}
-unsafe extern "C" fn next_subgroup<I: Iterator<Item = SubgroupOp>>(context: *mut c_void) -> Word {
-    match unsafe { &mut *context.cast::<I>() }.next() {
-        Some(value) => Word { present: 1, value: value as usize },
-        None => Word { present: 0, value: 0 },
-    }
-}
-pub(super) fn subgroup_capabilities(program: &Program) -> SubgroupCapabilities {
-    unsafe { b_subgroup_capabilities(Span::slice(program.stages()), REGISTER_HOST).into() }
-}
-
 pub(super) fn program_code_requirements(program: &Program) -> DeviceRequirements {
     let facts = unsafe {
         b_program_code_requirements(Span::slice(program.stages()), PRESERVE_FLOATS, REGISTER_HOST)
