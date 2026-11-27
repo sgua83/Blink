@@ -2013,7 +2013,11 @@ fn converge_access(
     }
 
     let components = {
-        let calls = groups.iter().filter(|(_, members)| members.len() > 1).map(|(&name, members)| {
+        // A recursive call without content-read feedback transfers access at its
+        // entry, just as a call within a mutually recursive group does.
+        let calls = groups.iter().filter(|(name, members)| {
+            members.len() > 1 || known[**name].entries.is_none()
+        }).map(|(&name, members)| {
             let sites: Vec<_> = functions[name].calls.iter().filter_map(|call| {
                 let callee = members.iter().copied().find(|member| *member == call.function.as_str())?;
                 Some((callee, call))
@@ -2169,7 +2173,14 @@ fn converge_access(
                     }
                 }
             }
-            let normalize = groups.contains_key(name.as_str());
+            let normalize = groups.get(name.as_str()).is_some_and(|members| {
+                // A finite self entry with no internal task projection consumes
+                // stable local and external contributions, with no access feedback.
+                members.len() > 1 || !components.contains_key(name.as_str()) ||
+                    call_accesses[name.as_str()].keys().any(|&index| {
+                        functions[name].calls[index].function == *name
+                    })
+            });
             let next = access.into_iter().map(|(value, when)| {
                 let when = if normalize { normalized_condition(when) } else { when };
                 value.replace_when(when).0
