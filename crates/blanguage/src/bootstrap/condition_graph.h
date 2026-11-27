@@ -130,17 +130,7 @@ extern "C" void required_evaluate(RequiredGraph graph,inout TraversalStack pendi
  requires nonzero(host.valid_additions) requires nonzero(host.discard);
 
 struct CrossScalars { array<address,4> values; };
-struct CrossHost {
- cfn<usize,address,u32> ensures memory(read) count;
- cfn<void,address,u32> begin;
- cfn<FactView,address> next;
- cfn<u32,address,u32,FactView> ensures memory(read) contains;
- cfn<u32,address,u32,FactView,FactView,u32,u32> ensures memory(read) range;
- cfn<i32,address,address> ensures memory(read) compare;
-};
-extern "C" u32 cross_conflict(address context,CrossScalars scalars,CrossHost host,u32 may_share) on cpu
- requires nonzero(host.count) requires nonzero(host.begin) requires nonzero(host.next)
- requires nonzero(host.contains) requires nonzero(host.range) requires nonzero(host.compare);
+extern "C" u32 cross_conflict(address left,address right,u32 may_share) on cpu;
 
 struct FactHost {
  address unsigned32;

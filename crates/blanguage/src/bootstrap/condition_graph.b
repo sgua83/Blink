@@ -1,5 +1,7 @@
 module bootstrap.condition_graph;
 import codec.scalar_ranges;
+import codec.value_format;
+import bootstrap.proof_facts;
 
 extern "C" handle GetProcessHeap() on cpu from "KERNEL32.dll";
 extern "C" address HeapAlloc(handle heap,u32 flags,u64 bytes) on cpu from "KERNEL32.dll";
@@ -677,48 +679,57 @@ FactView fact_equal(FactView value,i32 order) on cpu {
  if(order>i32(0)){address first=key.first;key.first=key.second;key.second=first;}
  return key;
 }
-extern "C" u32 cross_conflict(address context,CrossScalars scalars,CrossHost host,u32 may_share) on cpu
- requires nonzero(host.count) requires nonzero(host.begin) requires nonzero(host.next)
- requires nonzero(host.contains) requires nonzero(host.range) requires nonzero(host.compare) {
- u32 side=host.count(context,0)<host.count(context,1) ? 0 : 1;
- u32 other=1-side;host.begin(context,side);
+u32 cross_contains(address tree,FactView view) on cpu {
+ return fact_tree_contains_view(tree,address_of(view));
+}
+bool cross_range(address tree,FactView first,FactView last,u32 exclude_first,u32 exclude_last) on cpu {
+ return fact_tree_range_contains_view(tree,FactBound(address_of(first),exclude_first),FactBound(address_of(last),exclude_last));
+}
+extern "C" u32 cross_conflict(address left,address right,u32 may_share) on cpu {
+ bool left_smaller=unsafe_position<OrderedTree>(left).count<unsafe_position<OrderedTree>(right).count;
+ address side=left_smaller ? left : right;
+ address other=left_smaller ? right : left;
+ FactCursor cursor=fact_tree_cursor(side);
+ array<u8,4> integers=array<u8,4>(u8(u32(ScalarTag::U32)),u8(u32(ScalarTag::I32)),u8(u32(ScalarTag::U64)),u8(u32(ScalarTag::I64)));
  while(true){
-  FactView fact=host.next(context);if(fact.present==0){return 0;}
-  if(may_share!=0&&host.contains(context,other,fact)!=0){continue;}
+  address original=fact_tree_next(side,address_of(cursor),0);
+  if(original==address()){return 0;}
+  if(may_share!=0&&fact_tree_contains(other,original)!=0){continue;}
+  FactView fact=inspect_fact(original);
   FactView key=fact;
   if(fact.kind==FactKind::Boolean||fact.kind==FactKind::Predicate){
-   key.flag=1-fact.flag;if(host.contains(context,other,key)!=0){return 1;}
+   key.flag=1-fact.flag;if(cross_contains(other,key)!=0){return 1;}
   }else if(fact.kind==FactKind::NonZero||fact.kind==FactKind::Zero){
    key.kind=fact.kind==FactKind::NonZero ? FactKind::Zero : FactKind::NonZero;
-   if(host.contains(context,other,key)!=0){return 1;}
+   if(cross_contains(other,key)!=0){return 1;}
   }else if(fact.kind==FactKind::Index||fact.kind==FactKind::Outside){
    key.kind=fact.kind==FactKind::Index ? FactKind::Outside : FactKind::Index;
-   if(host.contains(context,other,key)!=0){return 1;}
+   if(cross_contains(other,key)!=0){return 1;}
   }else if(fact.kind==FactKind::Below){
    key.first=fact.second;key.second=fact.first;key.flag=1;
-   if(host.contains(context,other,key)!=0){return 1;}
+   if(cross_contains(other,key)!=0){return 1;}
    if(fact.flag!=0){
-    key.flag=0;if(host.contains(context,other,key)!=0){return 1;}
-    if(host.contains(context,other,fact_equal(fact,host.compare(fact.first,fact.second)))!=0){return 1;}
+    key.flag=0;if(cross_contains(other,key)!=0){return 1;}
+    if(cross_contains(other,fact_equal(fact,order_identity(fact.first,fact.second)))!=0){return 1;}
    }
   }else if(fact.kind==FactKind::Equal){
-   key.kind=FactKind::NotEqual;if(host.contains(context,other,key)!=0){return 1;}
-   if(host.compare(fact.first,fact.second)<=i32(0)){
+   key.kind=FactKind::NotEqual;if(cross_contains(other,key)!=0){return 1;}
+   if(order_identity(fact.first,fact.second)<=i32(0)){
     for(i in 0..4){
-     key=fact;key.kind=FactKind::Below;key.flag=1;key.scalar=scalars.values[i];
-     if(host.contains(context,other,key)!=0){return 1;}
+     key=fact;key.kind=FactKind::Below;key.flag=1;key.scalar=address_of(integers[i]);
+     if(cross_contains(other,key)!=0){return 1;}
      key.first=fact.second;key.second=fact.first;
-     if(host.contains(context,other,key)!=0){return 1;}
+     if(cross_contains(other,key)!=0){return 1;}
     }
    }
   }else if(fact.kind==FactKind::NotEqual){
-   if(host.contains(context,other,fact_equal(fact,host.compare(fact.first,fact.second)))!=0){return 1;}
+   if(cross_contains(other,fact_equal(fact,order_identity(fact.first,fact.second)))!=0){return 1;}
   }else if(fact.kind==FactKind::Minimum){
    key.kind=FactKind::Maximum;FactView lower=key;lower.value=0u64;
-   if(host.range(context,other,lower,key,0,0)!=0){return 1;}
+   if(cross_range(other,lower,key,0,1)){return 1;}
   }else if(fact.kind==FactKind::Maximum){
    key.kind=FactKind::Minimum;FactView upper=key;upper.value=fact.mask;
-   if(host.range(context,other,key,upper,1,1)!=0){return 1;}
+   if(cross_range(other,key,upper,1,0)){return 1;}
   }
  }
 }

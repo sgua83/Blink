@@ -31,7 +31,7 @@ unsafe extern "C" {
     fn order_expression(left: Key, right: Key) -> i32;
     #[link_name = "bootstrap.fact_key::order_floating"]
     fn order_floating(left: Key, right: Key) -> i32;
-    #[link_name = "bootstrap.fact_key::order_fact"]
+    #[link_name = "bootstrap.fact_key::order_fact<0>"]
     fn order_fact(left: Key, right: Key) -> i32;
 }
 

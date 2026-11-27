@@ -161,6 +161,11 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
                     })?;
                 job.inputs.push(index);
             }
+            if name == "fact_key" {
+                job.arguments.extend(
+                    ["--instance", "order_fact<0>", "--instance", "order_fact<1>"].map(OsString::from),
+                );
+            }
             if name == "names" {
                 job.arguments.extend(
                     [

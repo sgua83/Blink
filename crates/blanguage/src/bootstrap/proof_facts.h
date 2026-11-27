@@ -13,6 +13,8 @@ address fact_tree_prepare_key(address owner) on cpu;
 extern "C" u32 fact_tree_insert(address owner, address key) on cpu;
 extern "C" u32 fact_tree_remove(address owner, address key) on cpu;
 extern "C" u32 fact_tree_contains(address owner, address key) on cpu;
+u32 fact_tree_contains_view(address owner,address key) on cpu;
+bool fact_tree_range_contains_view(address owner,FactBound start,FactBound end) on cpu;
 extern "C" void fact_tree_retain(address owner, address context, cfn<u32,address,address> keep) on cpu
     requires nonzero(keep);
 

@@ -195,32 +195,43 @@ extern "C" i32 order_domain(address left, address right) on cpu {
     return i32(0);
 }
 
-extern "C" i32 order_fact(address left, address right) on cpu {
-    u32 a = unsafe_position<u32>(left);
+extern "C" i32 order_fact<const VIEW:u32>(address left,address right) on cpu {
+    u32 a = VIEW == 0 ? unsafe_position<u32>(left) : u32(unsafe_position<FactView>(left).kind);
     u32 b = unsafe_position<u32>(right);
     if (a != b) { return tag_order(a,b); }
-    address first = field(left,8u64);
     address other = field(right,8u64);
     if (a == u32(FactKind::Predicate)) {
+        address first = VIEW == 0 ? field(left,8u64) : unsafe_position<FactView>(left).payload;
         i32 predicate = order_predicate(first,other);
-        return predicate != 0 ? predicate : bytes(field(left,96u64),field(right,96u64),1u64);
+        u32 flag = VIEW == 0 ? u32(unsafe_position<u8>(field(left,96u64))) : unsafe_position<FactView>(left).flag;
+        return predicate != 0 ? predicate : tag_order(flag,u32(unsafe_position<u8>(field(right,96u64))));
     }
+    address first = VIEW == 0 ? field(left,8u64) : unsafe_position<FactView>(left).first;
     i32 identity = order_identity(first,other);
     if (identity != 0) { return identity; }
     if (a == u32(FactKind::NonZero) || a == u32(FactKind::Zero)) { return i32(0); }
-    address payload = field(left,40u64);
     address payload_other = field(right,40u64);
     if (a == u32(FactKind::Index) || a == u32(FactKind::Outside)) {
+        address payload = VIEW == 0 ? field(left,40u64) : unsafe_position<FactView>(left).payload;
         return order_domain(payload,payload_other);
     }
     if (a == u32(FactKind::Minimum) || a == u32(FactKind::Maximum)) {
-        i32 scalar = bytes(payload,payload_other,1u64);
-        return scalar != 0 ? scalar : words(field(left,48u64),field(right,48u64),1u64);
+        address scalar_key = VIEW == 0 ? field(left,40u64) : unsafe_position<FactView>(left).scalar;
+        i32 scalar = bytes(scalar_key,payload_other,1u64);
+        u64 value = VIEW == 0 ? unsafe_position<u64>(field(left,48u64)) : unsafe_position<FactView>(left).value;
+        return scalar != 0 ? scalar : unsigned_order(value,unsafe_position<u64>(field(right,48u64)));
     }
-    if (a == u32(FactKind::Boolean)) { return bytes(payload,payload_other,1u64); }
+    if (a == u32(FactKind::Boolean)) {
+        u32 flag = VIEW == 0 ? u32(unsafe_position<u8>(field(left,40u64))) : unsafe_position<FactView>(left).flag;
+        return tag_order(flag,u32(unsafe_position<u8>(payload_other)));
+    }
+    address payload = VIEW == 0 ? field(left,40u64) : unsafe_position<FactView>(left).second;
     i32 value = order_identity(payload,payload_other);
     if (value != 0 || a != u32(FactKind::Below)) { return value; }
-    return bytes(field(left,72u64),field(right,72u64),2u64);
+    u32 flag = VIEW == 0 ? u32(unsafe_position<u8>(field(left,72u64))) : unsafe_position<FactView>(left).flag;
+    i32 direction = tag_order(flag,u32(unsafe_position<u8>(field(right,72u64))));
+    address scalar = VIEW == 0 ? field(left,73u64) : unsafe_position<FactView>(left).scalar;
+    return direction != 0 ? direction : bytes(scalar,field(right,73u64),1u64);
 }
 
 extern "C" void RtlMoveMemory(address output, address input, u64 bytes) on cpu from "KERNEL32.dll";

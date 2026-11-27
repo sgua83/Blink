@@ -132,11 +132,11 @@ u64 neighbor(address records, u64 start, bool reverse) on cpu {
 
 struct Search { u64 exact; u64 parent; i32 order; };
 
-Search locate(address records, u64 root, address key) on cpu {
+Search locate<const VIEW:u32>(address records, u64 root, address key) on cpu {
     Search result = Search(0u64,0u64,i32(0));
     u64 current = root;
     while (current != 0u64) {
-        result.order = order_fact(key,payload(records,current));
+        result.order = order_fact<VIEW>(key,payload(records,current));
         if (result.order == 0) {
             result.exact = current;
             break;
@@ -208,7 +208,7 @@ address fact_tree_prepare_key(address owner) on cpu {
 
 extern "C" u32 fact_tree_insert(address owner,address key) on cpu {
     OrderedTree tree=unsafe_position<OrderedTree>(owner);
-    Search place=locate(tree.records,tree.root,key);
+    Search place=locate<0>(tree.records,tree.root,key);
     if(place.exact!=0u64){return 0;}
     address destination=fact_tree_prepare_key(owner);
     if(destination!=key){RtlMoveMemory(destination,key,size_of<FactKey>());}
@@ -248,7 +248,7 @@ u64 erase(address owner, address records, u64 count, u64 erased) on cpu {
 
 extern "C" u32 fact_tree_remove(address owner, address key) on cpu {
     OrderedTree tree = unsafe_position<OrderedTree>(owner);
-    u64 index = locate(tree.records,tree.root,key).exact;
+    u64 index = locate<0>(tree.records,tree.root,key).exact;
     if (index == 0u64) { return 0; }
     erase(owner,tree.records,tree.count,index);
     return 1;
@@ -256,7 +256,12 @@ extern "C" u32 fact_tree_remove(address owner, address key) on cpu {
 
 extern "C" u32 fact_tree_contains(address owner, address key) on cpu {
     OrderedTree tree = unsafe_position<OrderedTree>(owner);
-    return u32(locate(tree.records,tree.root,key).exact != 0u64);
+    return u32(locate<0>(tree.records,tree.root,key).exact != 0u64);
+}
+
+u32 fact_tree_contains_view(address owner,address key) on cpu {
+    OrderedTree tree=unsafe_position<OrderedTree>(owner);
+    return u32(locate<1>(tree.records,tree.root,key).exact!=0u64);
 }
 
 extern "C" void fact_tree_retain(address owner, address context, cfn<u32,address,address> keep) on cpu
@@ -278,15 +283,15 @@ extern "C" FactCursor fact_tree_cursor(address owner) on cpu {
     return FactCursor(extreme(tree.records,tree.root,false),extreme(tree.records,tree.root,true));
 }
 
-u64 bound(address records, u64 root, FactBound limit, bool reverse) on cpu {
+u64 bound<const VIEW:u32>(address records, u64 root, FactBound limit, bool reverse) on cpu {
     if (limit.key == address()) { return extreme(records,root,reverse); }
     u64 result = 0u64;
     u64 current = root;
     while (current != 0u64) {
-        i32 order = order_fact(payload(records,current),limit.key);
+        i32 order = order_fact<VIEW>(limit.key,payload(records,current));
         if (order == 0 && limit.exclusive == 0) { return current; }
         OrderedNode value = unsafe_position<OrderedNode>(node(records,current));
-        if (reverse ? order < 0 : order > 0) {
+        if (reverse ? order > 0 : order < 0) {
             result = current;
             current = reverse ? value.right : value.left;
         } else {
@@ -298,12 +303,20 @@ u64 bound(address records, u64 root, FactBound limit, bool reverse) on cpu {
 
 extern "C" FactCursor fact_tree_range(address owner, FactBound start, FactBound end) on cpu {
     OrderedTree tree = unsafe_position<OrderedTree>(owner);
-    u64 first = bound(tree.records,tree.root,start,false);
-    u64 last = bound(tree.records,tree.root,end,true);
-    if (first == 0u64 || last == 0u64 || order_fact(payload(tree.records,first),payload(tree.records,last)) > 0) {
+    u64 first = bound<0>(tree.records,tree.root,start,false);
+    u64 last = bound<0>(tree.records,tree.root,end,true);
+    if (first == 0u64 || last == 0u64 || order_fact<0>(payload(tree.records,first),payload(tree.records,last)) > 0) {
         return FactCursor(0u64,0u64);
     }
     return FactCursor(first,last);
+}
+
+bool fact_tree_range_contains_view(address owner,FactBound start,FactBound end) on cpu {
+    OrderedTree tree=unsafe_position<OrderedTree>(owner);
+    u64 first=bound<1>(tree.records,tree.root,start,false);
+    if(first==0u64){return false;}
+    i32 order=order_fact<1>(end.key,payload(tree.records,first));
+    return order>0 || (order==0 && end.exclusive==0);
 }
 
 address head(address records, FactCursor cursor) on cpu {
@@ -352,7 +365,7 @@ extern "C" address fact_tree_merge(address left, address right, address cursors,
             unsafe_position<FactCursor>(left_cursor) = advance(a.records,x,false);
             return first;
         }
-        i32 order = order_fact(first,second);
+        i32 order = order_fact<0>(first,second);
         if (order <= 0) { unsafe_position<FactCursor>(left_cursor) = advance(a.records,x,false); }
         if (order >= 0) { unsafe_position<FactCursor>(right_cursor) = advance(b.records,y,false); }
         if (order == 0 ? operation != 2 : order < 0 ? operation != 1 : operation == 0) {
@@ -394,7 +407,7 @@ extern "C" i32 fact_tree_compare(address left, address right) on cpu {
     u64 x = extreme(a.records,a.root,false);
     u64 y = extreme(b.records,b.root,false);
     while (x != 0u64 && y != 0u64) {
-        i32 order = order_fact(payload(a.records,x),payload(b.records,y));
+        i32 order = order_fact<0>(payload(a.records,x),payload(b.records,y));
         if (order != 0) { return order; }
         x = neighbor(a.records,x,false);
         y = neighbor(b.records,y,false);
@@ -417,7 +430,7 @@ extern "C" u32 fact_tree_relation(address left, address right, u32 subset) on cp
     // A sparse operand can probe the other root without walking its full order.
     if (a.count <= b.count / max(1u64,unsafe_position<OrderedNode>(node(b.records,b.root)).height)) {
         while (x != 0u64) {
-            bool found = locate(b.records,b.root,payload(a.records,x)).exact != 0u64;
+            bool found = locate<0>(b.records,b.root,payload(a.records,x)).exact != 0u64;
             if (found != (subset != 0)) { return 0; }
             x = neighbor(a.records,x,false);
         }
@@ -425,7 +438,7 @@ extern "C" u32 fact_tree_relation(address left, address right, u32 subset) on cp
     }
     u64 y = extreme(b.records,b.root,false);
     while (x != 0u64 && y != 0u64) {
-        i32 order = order_fact(payload(a.records,x),payload(b.records,y));
+        i32 order = order_fact<0>(payload(a.records,x),payload(b.records,y));
         if (order == 0 && subset == 0 || order < 0 && subset != 0) { return 0; }
         if (order <= 0) { x = neighbor(a.records,x,false); }
         if (order >= 0) { y = neighbor(b.records,y,false); }

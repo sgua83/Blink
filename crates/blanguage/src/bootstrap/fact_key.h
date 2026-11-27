@@ -20,7 +20,7 @@ extern "C" i32 order_selector(address left, address right) on cpu;
 extern "C" i32 order_predicate(address left, address right) on cpu;
 extern "C" i32 order_expression(address left, address right) on cpu;
 extern "C" i32 order_floating(address left, address right) on cpu;
-extern "C" i32 order_fact(address left, address right) on cpu;
+extern "C" i32 order_fact<const VIEW:u32>(address left,address right) on cpu;
 
 // C layouts of the physical keys used at the Rust ABI.
 struct IdentityKey { IdentityKind kind; u32 packed; u64 first; u64 second; u64 third; };
