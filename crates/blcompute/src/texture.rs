@@ -1,15 +1,13 @@
 //! 不可变有类型纹理与独立资产；CPU描述只借用实际texel存储，不生成解码镜像。
 use crate::{Result, error};
 use std::{
+    ffi::c_void,
     fs::File,
     io::{ErrorKind, Read, Write},
     path::Path,
     sync::Arc,
 };
 pub use blanguage::ast::TextureFormat;
-fn read_format(value: u32) -> Result<TextureFormat> {
-    TextureFormat::from_code(value).ok_or_else(|| error("未知BLTEX texel格式"))
-}
 pub enum TextureTexels {
     Rgba32Float(Vec<[f32; 4]>),
     Rgba8Unorm(Vec<[u8; 4]>),
@@ -266,10 +264,7 @@ impl Texture2D {
     }
     pub fn write(&self, path: &Path) -> Result<()> {
         let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
-        f.write_all(b"BLTEX\0\0\0")?;
-        f.write_all(&2u32.to_le_bytes())?;
-        f.write_all(&(self.format() as u32).to_le_bytes())?;
-        f.write_all(&self.mip_count().to_le_bytes())?;
+        write_bltex_header(&mut f, 2, self.format(), self.mip_count())?;
         for mip in self.levels.iter() {
             f.write_all(&mip.width.to_le_bytes())?;
             f.write_all(&mip.height.to_le_bytes())?;
@@ -280,16 +275,7 @@ impl Texture2D {
     }
     pub fn read(path: &Path) -> Result<Self> {
         let mut input = TextureFile::open(path)?;
-        let [version] = input.words()?;
-        let format = match version {
-            1 => TextureFormat::Rgba32Float,
-            2 => {
-                let [format] = input.words()?;
-                read_format(format)?
-            }
-            _ => return Err(error("不支持的BLTEX版本")),
-        };
-        let [count] = input.words()?;
+        let (format, count) = input.header(2)?;
         let mut layout = MipLayout::<2>::new(count as usize)?;
         let mut levels = Vec::new();
         for _ in 0..count {
@@ -306,6 +292,74 @@ impl Texture2D {
     }
 }
 
+const BLTEX_MAX_HEADER: usize = 24;
+
+#[repr(C)]
+struct BltexPiece {
+    bytes: [u8; 8],
+    read: u32,
+}
+
+#[allow(dead_code)] // Produced by the B header decoder.
+#[repr(u32)]
+enum BltexStatus { Valid, Input, Magic, Version, Dimension }
+
+#[repr(C)]
+struct BltexHeader {
+    status: BltexStatus,
+    count: u32,
+}
+
+struct BltexInput<'a> {
+    reader: &'a mut TextureFile,
+    format: Option<TextureFormat>,
+    error: Option<Box<dyn std::error::Error + Send + Sync>>,
+}
+
+unsafe extern "C" {
+    #[link_name = "codec.value_format::decode_bltex_header"]
+    fn decode_bltex_header(
+        dimensions: u32, input: *mut c_void,
+        next: unsafe extern "C" fn(*mut c_void, u32) -> BltexPiece,
+        select_format: unsafe extern "C" fn(*mut c_void, u32) -> u32,
+    ) -> BltexHeader;
+
+    #[link_name = "codec.value_format::encode_bltex_header"]
+    fn encode_bltex_header(
+        bytes: *mut [u8; BLTEX_MAX_HEADER], dimensions: u32, format: u32, count: u32,
+    ) -> usize;
+}
+
+unsafe extern "C" fn read_bltex_piece(input: *mut c_void, length: u32) -> BltexPiece {
+    let input = unsafe { &mut *input.cast::<BltexInput<'_>>() };
+    let mut bytes = [0; 8];
+    match input.reader.read_exact(&mut bytes[..length as usize]) {
+        Ok(()) => BltexPiece { bytes, read: 1 },
+        Err(error) => {
+            input.error = Some(error);
+            BltexPiece { bytes, read: 0 }
+        }
+    }
+}
+
+unsafe extern "C" fn select_bltex_format(input: *mut c_void, code: u32) -> u32 {
+    let input = unsafe { &mut *input.cast::<BltexInput<'_>>() };
+    input.format = TextureFormat::from_code(code);
+    if input.format.is_some() {
+        return 1;
+    }
+    input.error = Some(error("未知BLTEX texel格式"));
+    0
+}
+
+fn write_bltex_header(
+    writer: &mut impl Write, dimensions: u32, format: TextureFormat, count: u32,
+) -> std::io::Result<()> {
+    let mut bytes = std::mem::MaybeUninit::<[u8; BLTEX_MAX_HEADER]>::uninit();
+    let length = unsafe { encode_bltex_header(bytes.as_mut_ptr(), dimensions, format as u32, count) };
+    writer.write_all(&unsafe { bytes.assume_init() }[..length])
+}
+
 struct TextureFile {
     file: File,
     remaining: Option<u64>,
@@ -315,13 +369,23 @@ impl TextureFile {
     fn open(path: &Path) -> Result<Self> {
         let file = File::open(path)?;
         let remaining = crate::disk_file_length(&file)?;
-        let mut input = Self { file, remaining };
-        let mut magic = [0; 8];
-        input.read_exact(&mut magic)?;
-        if &magic != b"BLTEX\0\0\0" {
-            return Err(error("不是BLTEX资产"));
+        Ok(Self { file, remaining })
+    }
+
+    fn header(&mut self, dimensions: u32) -> Result<(TextureFormat, u32)> {
+        let mut input = BltexInput { reader: self, format: None, error: None };
+        let header = unsafe {
+            decode_bltex_header(dimensions, std::ptr::from_mut(&mut input).cast(),
+                read_bltex_piece, select_bltex_format)
+        };
+        match header.status {
+            BltexStatus::Valid => Ok((input.format.unwrap(), header.count)),
+            BltexStatus::Input => Err(input.error.unwrap()),
+            BltexStatus::Magic => Err(error("不是BLTEX资产")),
+            BltexStatus::Version if dimensions == 3 => Err(error("不支持的三维BLTEX版本")),
+            BltexStatus::Version => Err(error("不支持的BLTEX版本")),
+            BltexStatus::Dimension => Err(error("BLTEX体资产需要三维图像")),
         }
-        Ok(input)
     }
 
     fn read_exact(&mut self, output: &mut [u8]) -> Result<()> {
@@ -429,10 +493,7 @@ impl Texture3D {
     /// BLTEX3交接三维mip与原通道位；寻址配置属于使用方，不写入资产。
     pub fn write(&self, path: &Path) -> Result<()> {
         let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
-        f.write_all(b"BLTEX\0\0\0")?;
-        for word in [3u32, 3, self.format() as u32, self.mip_count()] {
-            f.write_all(&word.to_le_bytes())?;
-        }
+        write_bltex_header(&mut f, 3, self.format(), self.mip_count())?;
         for level in self.levels.iter() {
             for extent in [level.width, level.height, level.depth] {
                 f.write_all(&extent.to_le_bytes())?;
@@ -444,17 +505,7 @@ impl Texture3D {
     }
     pub fn read(path: &Path) -> Result<Self> {
         let mut input = TextureFile::open(path)?;
-        let [version] = input.words()?;
-        if version != 3 {
-            return Err(error("不支持的三维BLTEX版本"));
-        }
-        let [dimension] = input.words()?;
-        if dimension != 3 {
-            return Err(error("BLTEX体资产需要三维图像"));
-        }
-        let [format] = input.words()?;
-        let format = read_format(format)?;
-        let [count] = input.words()?;
+        let (format, count) = input.header(3)?;
         let mut layout = MipLayout::<3>::new(count as usize)?;
         let mut levels = Vec::new();
         for _ in 0..count {

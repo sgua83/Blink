@@ -2,16 +2,29 @@ module codec.value_format;
 // Borrowed typed projections and construction slots for the shared value format.
 // Callers retain original inputs, containers and the sole Reader position.
 
+struct LittleEndianWord { u8 b0; u8 b1; u8 b2; u8 b3; };
+
 // BLDATA v1 is a fixed little-endian header at the start of the file.
-struct BldataWord { u8 b0; u8 b1; u8 b2; u8 b3; };
 struct BldataWire {
-    BldataWord magic_low; BldataWord magic_high; BldataWord version;
-    BldataWord count; BldataWord stride; BldataWord steps;
+    LittleEndianWord magic_low; LittleEndianWord magic_high; LittleEndianWord version;
+    LittleEndianWord count; LittleEndianWord stride; LittleEndianWord steps;
 };
 enum BldataStatus : u32 { Valid = 0; Magic = 1; Version = 2; };
 struct BldataHeader { BldataStatus status; u32 count; u32 stride; };
 extern "C" BldataHeader decode_bldata_header(read BldataWire bytes) on cpu;
 extern "C" void encode_bldata_header(write BldataWire bytes, u32 count, u32 stride, u32 steps) on cpu;
+
+struct BltexPiece { LittleEndianWord low; LittleEndianWord high; u32 read; };
+enum BltexStatus : u32 { Valid = 0; Input = 1; Magic = 2; Version = 3; Dimension = 4; };
+struct BltexHeader { BltexStatus status; u32 count; };
+struct BltexWire {
+    LittleEndianWord magic_low; LittleEndianWord magic_high; LittleEndianWord version;
+    LittleEndianWord first; LittleEndianWord second; LittleEndianWord third;
+};
+extern "C" BltexHeader decode_bltex_header(u32 dimensions, address input,
+    cfn<BltexPiece,address,u32> next, cfn<u32,address,u32> select_format) on cpu
+    requires nonzero(next) requires nonzero(select_format);
+extern "C" u64 encode_bltex_header(write BltexWire bytes, u32 dimensions, u32 format, u32 count) on cpu;
 
 struct Bytes { address data; u64 count; };
 
