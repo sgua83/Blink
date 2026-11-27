@@ -207,7 +207,7 @@ pub(super) unsafe extern "C" fn body_value_scalar(context: *const std::ffi::c_vo
     ScalarLocations::from_emitter(unsafe { &*context.cast::<Emitter<'_>>() }).scalar(reg)
 }
 
-unsafe extern "C" fn body_tile_slot(context: *const std::ffi::c_void, key: TileKey) -> u32 {
+pub(super) unsafe extern "C" fn body_tile_slot(context: *const std::ffi::c_void, key: TileKey) -> u32 {
     let emitter = unsafe { &*context.cast::<Emitter<'_>>() };
     emitter.frame.tile_shared[&key.word()]
 }

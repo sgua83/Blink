@@ -1290,11 +1290,10 @@ impl CollectiveOperator {
         unsafe extern "C" {
             #[link_name = "codec.builtin_type::collective_identity"]
             fn identity(
-                operator: CollectiveOperator, scalar: crate::builtin_types::ScalarCode,
-                width: u32, signed: u32,
+                operator: CollectiveOperator, width: u32, signed: u32, floating: u32,
             ) -> Bits;
         }
-        unsafe { identity(self, scalar.into(), scalar.bit_width(), u32::from(scalar.is_signed())) }
+        unsafe { identity(self, scalar.bit_width(), u32::from(scalar.is_signed()), u32::from(scalar.is_float())) }
     }
 }
 #[derive(Clone, Debug)]

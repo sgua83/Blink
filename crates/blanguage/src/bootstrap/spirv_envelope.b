@@ -4030,7 +4030,7 @@ void block_tile_collective(View operation, BlockHost emit, MemoryHost memory, St
             ScalarDefinition type = scalar_definition(scalar);
             BuiltinScalar raw = unsigned_scalar(type.width);
             u32 parts = (type.width + 31) / 32;
-            u64 bits = collective_identity(opcode, scalar, type.width, type.signed);
+            u64 bits = collective_identity(opcode, type.width, type.signed, u32(type.opcode == 22));
             u32 identity = stream.constant(context, raw, bits);
             u32 scale = parts == 2 ? stream.constant(context, BuiltinScalar::U32, 2u64) : 0;
             u32 low = word != 0 ? stream.constant(context, BuiltinScalar::U32, u64(word)) : 0;
@@ -4087,7 +4087,7 @@ void block_tile_collective(View operation, BlockHost emit, MemoryHost memory, St
                     unsafe_address(address_bits(components) + u64(slot) * size_of<TreeComponent>()));
                 ScalarDefinition type = scalar_definition(component.scalar);
                 BuiltinScalar raw = unsigned_scalar(type.width);
-                u64 bits = collective_identity(opcode, component.scalar, type.width, type.signed);
+                u64 bits = collective_identity(opcode, type.width, type.signed, u32(type.opcode == 22));
                 u32 identity = stream.constant(context, raw, bits);
                 tile_tree_store(component, root, identity, uint_type, memory);
             }
@@ -4996,7 +4996,7 @@ void segment_identity(ScalarHost host, SegmentMerge merge, address fields, u32 c
         address at = unsafe_address(address_bits(fields) + u64(index) * size_of<SegmentField>());
         SegmentField component = unsafe_position<SegmentField>(at);
         ScalarDefinition type = scalar_definition(component.scalar);
-        u64 bits = collective_identity(merge.operation, component.scalar, type.width, type.signed);
+        u64 bits = collective_identity(merge.operation, type.width, type.signed, u32(type.opcode == 22));
         u64 word = u64(component.word);
         put(output, word, host.constant(host.context, BuiltinScalar::U32, u64(u32(bits))));
         if (type.width == 64) {
@@ -5723,7 +5723,7 @@ NumericWorkspace numeric_workspace(NumericGroupInput input, u64 level_words, Wor
     address levels = word_at(values, 4u64 * count);
     BuiltinScalar scalar = input.fields.component(input.fields.source, 0u64).scalar;
     ScalarDefinition type = scalar_definition(scalar);
-    u64 identity = collective_identity(input.operation, scalar, type.width, type.signed);
+    u64 identity = collective_identity(input.operation, type.width, type.signed, u32(type.opcode == 22));
     u32 low = stream.constant(context, BuiltinScalar::U32, u64(u32(identity)));
     u32 high = type.width == 64
         ? stream.constant(context, BuiltinScalar::U32, identity >> 32u64) : 0;

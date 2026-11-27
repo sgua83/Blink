@@ -58,15 +58,17 @@ extern "C" BuiltinType recognize(address name, u64 length) on cpu {
     return BuiltinType(BuiltinKind::Missing, BuiltinScalar::F32, 0, 0);
 }
 
-extern "C" u64 collective_identity(CollectiveOperation operation, BuiltinScalar scalar,
-    u32 width, u32 signed) on cpu {
+extern "C" u64 collective_identity(CollectiveOperation operation, u32 width,
+    u32 signed, u32 floating) on cpu {
     if (operation == CollectiveOperation::Sum || operation == CollectiveOperation::BitOr
         || operation == CollectiveOperation::BitXor) { return 0u64; }
     u64 mask = ~0u64 >> (64u64 - u64(width));
     if (operation == CollectiveOperation::BitAnd) { return mask; }
     bool minimum = operation == CollectiveOperation::Min;
-    if (scalar == BuiltinScalar::F32) { return minimum ? 0x7f800000u64 : 0xff800000u64; }
-    if (scalar == BuiltinScalar::F64) { return minimum ? 0x7ff0000000000000u64 : 0xfff0000000000000u64; }
+    if (floating != 0) {
+        if (width == 32) { return minimum ? 0x7f800000u64 : 0xff800000u64; }
+        return minimum ? 0x7ff0000000000000u64 : 0xfff0000000000000u64;
+    }
     if (signed != 0) {
         u64 sign = 1u64 << u64(width - 1);
         return minimum ? sign - 1u64 : sign;

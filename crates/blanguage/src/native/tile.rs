@@ -8,9 +8,6 @@ use crate::ir::{TileKey, dataflow::{HOST, Host, View}};
 
 #[repr(C)]
 struct TileCollectiveLayout {
-    tile: usize,
-    operation: CollectiveOperator,
-    exclusive: u32,
     length_offset: u32,
     plane_stride: u32,
 }
@@ -22,7 +19,6 @@ struct TileCollectiveField {
     output_offset: u32,
     word: u32,
     result: Reg,
-    scalar_origin: *const Scalar,
 }
 
 #[repr(C)]
@@ -72,15 +68,10 @@ struct TileCollectiveHost {
     slots: operands::TileSlots,
     reserve: unsafe extern "C" fn(TileSlot, usize) -> NativeCodeBuffer,
     commit: unsafe extern "C" fn(TileSlot, usize),
-    next: unsafe extern "C" fn(TileSlot, CollectiveOperator) -> TileCollectiveField,
-    observe: unsafe extern "C" fn(TileSlot, usize, TileCollectiveLayout, TileCollectiveCode, TileCollectiveField, TileCollectiveInput),
-}
-
-struct TileFields<'a, 'stage> {
-    emitter: &'a mut Emitter<'stage>,
-    values: std::slice::Iter<'a, (u32, Reg)>,
-    tile: usize,
-    operation: TileOp,
+    scalar: unsafe extern "C" fn(*const c_void, Reg) -> ScalarEncoding,
+    destination: unsafe extern "C" fn(*const c_void, Reg) -> u32,
+    observe: unsafe extern "C" fn(TileSlot, *const TileCollective, usize, TileCollectiveLayout, TileCollectiveCode,
+        TileCollectiveField, TileCollectiveInput),
 }
 
 unsafe extern "C" {
@@ -89,7 +80,7 @@ unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::tile_lane"]
     fn encode_tile_lane(width: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::emit_tile_collective"]
-    fn emit_tile_collective(context: TileSlot, layout: TileCollectiveLayout, host: TileCollectiveHost);
+    fn emit_tile_collective(context: TileSlot, collective: View, layout: TileCollectiveLayout, host: TileCollectiveHost);
 }
 
 impl Emitter<'_> {
@@ -125,42 +116,24 @@ impl Emitter<'_> {
         }
     }
 
-    pub(super) fn tile_collective(&mut self, collective: &TileCollective) {
+    pub(super) fn tile_collective(&mut self, collective: View) {
         let layout = TileCollectiveLayout {
-            tile: collective.tile,
-            operation: collective.op.operator(),
-            exclusive: u32::from(collective.op.exclusive()),
             length_offset: self.tile_length_slot(),
             plane_stride: self.workgroup * 4,
         };
-        let slots = operands::TileSlots { tiles: Span::slice(self.tiles), slot: collective_tile_slot };
-        let mut state = TileFields {
-            emitter: self,
-            values: collective.results.iter(),
-            tile: collective.tile,
-            operation: collective.op,
-        };
+        let slots = operands::TileSlots { tiles: Span::slice(self.tiles), slot: operands::body_tile_slot };
         unsafe {
-            emit_tile_collective(std::ptr::from_mut(&mut state).cast(), layout, TileCollectiveHost {
+            emit_tile_collective(std::ptr::from_mut(self).cast(), collective, layout, TileCollectiveHost {
                 ir: HOST,
                 slots,
-                reserve: reserve_tile,
-                commit: commit_tile,
-                next: next_collective,
+                reserve: structure::reserve_scalar,
+                commit: structure::commit_scalar,
+                scalar: operands::body_value_scalar,
+                destination: collective_destination,
                 observe: observe_collective,
             });
         }
     }
-}
-
-unsafe extern "C" fn reserve_tile(slot: TileSlot, count: usize) -> NativeCodeBuffer {
-    let state = unsafe { &mut *slot.cast::<TileFields<'_, '_>>() };
-    state.emitter.reserve_native_code(count)
-}
-
-unsafe extern "C" fn commit_tile(slot: TileSlot, end: usize) {
-    let state = unsafe { &mut *slot.cast::<TileFields<'_, '_>>() };
-    unsafe { state.emitter.commit_native_code(end) };
 }
 
 unsafe extern "C" fn publication_slot(slot: *const c_void, key: TileKey) -> u32 {
@@ -204,46 +177,20 @@ unsafe extern "C" fn observe_publish(
     }
 }
 
-unsafe extern "C" fn next_collective(slot: TileSlot, operator: CollectiveOperator) -> TileCollectiveField {
-    let state = unsafe { &mut *slot.cast::<TileFields<'_, '_>>() };
-    let Some(&(word, result)) = state.values.next() else {
-        return TileCollectiveField {
-            identity: 0,
-            scalar: Scalar::U32.into(),
-            output_offset: 0,
-            word: 0,
-            result: 0,
-            scalar_origin: std::ptr::null(),
-        };
-    };
-    let emitter = &*state.emitter;
-    let scalar = &emitter.registers[result];
-    TileCollectiveField {
-        identity: operator.identity(*scalar),
-        scalar: (*scalar).into(),
-        output_offset: emitter.private_stream(PrivateSlot::Register(result)),
-        word,
-        result,
-        scalar_origin: scalar,
-    }
-}
-
-unsafe extern "C" fn collective_tile_slot(slot: *const c_void, key: TileKey) -> u32 {
-    let state = unsafe { &*slot.cast::<TileFields<'_, '_>>() };
-    state.emitter.frame.tile_shared[&key.word()]
+unsafe extern "C" fn collective_destination(slot: *const c_void, result: Reg) -> u32 {
+    let emitter = unsafe { &*slot.cast::<Emitter<'_>>() };
+    emitter.private_stream(PrivateSlot::Register(result))
 }
 
 unsafe extern "C" fn observe_collective(
-    slot: TileSlot, start: usize, layout: TileCollectiveLayout, code: TileCollectiveCode, field: TileCollectiveField,
-    input: TileCollectiveInput,
+    slot: TileSlot, collective: *const TileCollective, start: usize, layout: TileCollectiveLayout,
+    code: TileCollectiveCode, field: TileCollectiveField, input: TileCollectiveInput,
 ) {
-    let state = unsafe { &mut *slot.cast::<TileFields<'_, '_>>() };
-    let emitter = &mut *state.emitter;
-    let tile = state.tile;
-    let operation = state.operation;
-    let scalar = unsafe { *field.scalar_origin };
+    let emitter = unsafe { &mut *slot.cast::<Emitter<'_>>() };
+    let collective = unsafe { &*collective };
+    let scalar = emitter.registers[field.result];
     let range = |part| ParallelRangePart::TileCollective {
-        tile, word: field.word, result: field.result, scalar, operation, part,
+        tile: collective.tile, word: field.word, result: field.result, scalar, operation: collective.op, part,
     };
     let identity_start = start + code.identity_start as usize;
     let loop_start = start + code.loop_start as usize;

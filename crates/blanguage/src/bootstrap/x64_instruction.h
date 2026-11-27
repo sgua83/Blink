@@ -542,9 +542,6 @@ struct TileSlots {
 };
 
 struct TileCollectiveLayout {
-    usize tile;
-    ReductionOperator operation;
-    bool exclusive;
     u32 length_offset;
     u32 plane_stride;
 };
@@ -555,7 +552,6 @@ struct TileCollectiveField {
     u32 output_offset;
     u32 word;
     usize result;
-    address scalar_origin;
 };
 
 struct TileCollectiveInput { u32 offset; u32 high_delta; };
@@ -574,14 +570,16 @@ struct TileCollectiveHost {
     TileSlots slots;
     cfn<NativeCodeBuffer,address,u64> reserve;
     cfn<void,address,u64> commit;
-    cfn<TileCollectiveField,address,ReductionOperator> next;
-    cfn<void,address,u64,TileCollectiveLayout,TileCollectiveCode,TileCollectiveField,TileCollectiveInput> observe;
+    cfn<ScalarEncoding,address,usize> ensures memory(read) scalar;
+    cfn<u32,address,usize> ensures memory(read) destination;
+    cfn<void,address,address,u64,TileCollectiveLayout,TileCollectiveCode,TileCollectiveField,TileCollectiveInput> observe;
 };
 
-extern "C" void emit_tile_collective(address context, TileCollectiveLayout layout, TileCollectiveHost host) on cpu
+extern "C" void emit_tile_collective(address context, View collective, TileCollectiveLayout layout,
+    TileCollectiveHost host) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.slots.slot)
     requires nonzero(host.reserve) requires nonzero(host.commit)
-    requires nonzero(host.next) requires nonzero(host.observe);
+    requires nonzero(host.scalar) requires nonzero(host.destination) requires nonzero(host.observe);
 
 // Reduction body capacity is 256 bytes.
 extern "C" CollectiveLeaf reduce_range(ReductionRange input, CollectiveLeafOutput output) on cpu;

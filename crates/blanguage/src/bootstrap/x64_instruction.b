@@ -2,6 +2,7 @@ module bootstrap.x64_instruction;
 import bootstrap.unwind;
 import bootstrap.ir_dataflow;
 import bootstrap.names;
+import codec.builtin_type;
 
 struct BinaryEncoding {
     u64 length;
@@ -4375,7 +4376,8 @@ u32 tile_slot(TileSlots slots, address context, TileKey key) on cpu requires non
     return slots.slot(context, TileKey(key.storage, key.owner, key.byte & 0xfffffffc));
 }
 
-TileCollectiveCode tile_collective(TileCollectiveLayout layout, TileCollectiveField field,
+TileCollectiveCode tile_collective(ReductionOperator operation, bool exclusive,
+    TileCollectiveLayout layout, TileCollectiveField field,
     TileCollectiveInput input, address output) on cpu {
     u64 start = address_bits(output);
     MoveLocation source = MoveLocation(u64(input.offset), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
@@ -4398,7 +4400,7 @@ TileCollectiveCode tile_collective(TileCollectiveLayout layout, TileCollectiveFi
     }
 
     u64 begin = cursor;
-    if (layout.exclusive) {
+    if (exclusive) {
         cursor = tile_collective_store(cursor, field.scalar, layout.plane_stride);
         cursor = tile_stream_advance(cursor, u8(11));
     }
@@ -4417,12 +4419,12 @@ TileCollectiveCode tile_collective(TileCollectiveLayout layout, TileCollectiveFi
             operand = packet_register(u8(1));
         }
     }
-    cursor = collective_accumulate(cursor, layout.operation, field.scalar, u8(0), operand);
+    cursor = collective_accumulate(cursor, operation, field.scalar, u8(0), operand);
     cursor = tile_stream_advance(cursor, u8(10));
     u64 fill = tile_counted_back_edge(cursor, begin);
     u64 fill_loop = fill;
     cursor = fill;
-    if (!layout.exclusive) {
+    if (!exclusive) {
         fill_loop = load_bits(cursor, u8(1), length, false);
         cursor = tile_collective_store(fill_loop, field.scalar, layout.plane_stride);
         cursor = tile_stream_advance(cursor, u8(11));
@@ -4432,23 +4434,35 @@ TileCollectiveCode tile_collective(TileCollectiveLayout layout, TileCollectiveFi
         accumulate - start, fill - start, fill_loop - start);
 }
 
-extern "C" void emit_tile_collective(address context, TileCollectiveLayout layout, TileCollectiveHost host) on cpu
+extern "C" void emit_tile_collective(address context, View collective, TileCollectiveLayout layout,
+    TileCollectiveHost host) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.slots.slot)
     requires nonzero(host.reserve) requires nonzero(host.commit)
-    requires nonzero(host.next) requires nonzero(host.observe) {
-    TileCollectiveField field = host.next(context, layout.operation);
-    while (address_bits(field.scalar_origin) != 0u64) {
-        TileKey key = tile_key(host.slots.tiles, layout.tile, field.word, host.ir);
+    requires nonzero(host.scalar) requires nonzero(host.destination) requires nonzero(host.observe) {
+    ReductionOperator operation = ReductionOperator(u32(collective.b));
+    bool exclusive = collective.c != 0u64;
+    Span words = collective.second;
+    usize index = 0u64;
+    while (index < collective.first.count) {
+        u32 word = unsafe_position<u32>(unsafe_address(address_bits(words.data) + index * words.stride));
+        usize result = indexed_pair_word(collective.first, index);
+        index += 1u64;
+
+        ScalarEncoding scalar = host.scalar(context, result);
+        u64 identity = collective_identity(CollectiveOperation(u32(operation)), scalar.width,
+            u32(scalar.kind == ScalarKind::Signed), u32(scalar.kind == ScalarKind::Float));
+        TileCollectiveField field = TileCollectiveField(identity, scalar, host.destination(context, result), word, result);
+        TileKey key = tile_key(host.slots.tiles, collective.a, word, host.ir);
         u32 low = tile_slot(host.slots, context, key);
-        u32 high_delta = field.scalar.width == 64
+        u32 high_delta = scalar.width == 64
             ? tile_slot(host.slots, context, TileKey(key.storage, key.owner, key.byte + 4)) - low : 0;
         TileCollectiveInput input = TileCollectiveInput(low + key.byte % 4, high_delta);
+
         NativeCodeBuffer buffer = host.reserve(context, 128u64);
         address output = unsafe_address(address_bits(buffer.image) + buffer.end);
-        TileCollectiveCode encoding = tile_collective(layout, field, input, output);
+        TileCollectiveCode encoding = tile_collective(operation, exclusive, layout, field, input, output);
         host.commit(context, buffer.end + encoding.length);
-        host.observe(context, buffer.end, layout, encoding, field, input);
-        field = host.next(context, layout.operation);
+        host.observe(context, collective.left.data, buffer.end, layout, encoding, field, input);
     }
 }
 
