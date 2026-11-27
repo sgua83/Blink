@@ -20,6 +20,8 @@ struct CoffBindingSource {
     address module_name;u64 module_name_length;address sections;address nodes;u64 names_root;u64 imports_root;
     cfn<BindingRelocation,address,u64> read_relocation;
 };
+struct BindingDefinition {BindingBytes name;u64 section;u64 value;u64 function;};
+struct BindingStorage {address symbols;address nodes;};
 struct CoffSource {
     BindingBytes name;address sections;u64 section_count;u64 bound_count;u64 definition_count;
     cfn<CoffSection,address> next_section;
@@ -37,8 +39,8 @@ struct CoffWork {
 extern "C" u32 with_output(CoffSource source,CoffWork work) on cpu
     requires nonzero(source.next_definition) requires nonzero(work.reserve)
     requires nonzero(work.name) requires nonzero(work.consume);
-CoffSection section_at(address sections,u64 index) on cpu;
-void section_put(address sections,u64 index,CoffSection value) on cpu;
+extern "C" u64 relocation_symbol(read CoffBindingSource binding,u64 index,u64 relocation) on cpu;
+extern "C" void write_generated_name(read CoffBindingSource binding,u64 kind,u64 source,address output) on cpu;
 extern "C" u32 needs_body(u64 flags,u64 relocation_count) on cpu;
 extern "C" void write(read CoffPlan plan,address output,MetadataStackHost stack) on cpu
     requires nonzero(stack.frame) requires nonzero(stack.call);

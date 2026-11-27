@@ -75,9 +75,9 @@ unsafe extern "C" {
     fn coff_with_output(source: CoffSource, work: CoffWork<'_>) -> CoffError;
     #[link_name = "bootstrap.coff::write"]
     fn coff_write(plan: &CoffOutput<'_>, output: *mut u8, stack: MetadataStackHost);
-    #[link_name = "bootstrap.bindings::relocation_symbol"]
+    #[link_name = "bootstrap.coff::relocation_symbol"]
     fn relocation_symbol(binding: &CoffBindingSource, section: usize, relocation: usize) -> usize;
-    #[link_name = "bootstrap.bindings::write_generated_name"]
+    #[link_name = "bootstrap.coff::write_generated_name"]
     fn write_generated_name(binding: &CoffBindingSource, kind: u64, source: u64, output: *mut u8);
 }
 
