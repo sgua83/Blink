@@ -1254,13 +1254,14 @@ impl AddressCaptures<'_, '_> {
     unsafe extern "C" fn accept(context: Slot, at: usize) {
         let read = unsafe { &mut *context.cast::<Self>() };
         let snapshot = &read.snapshots[at];
-        let mut bindings = BTreeMap::new();
-        if let Some(bounds::Operand::Value(id @ ValueIdentity::ElementIndex(_))) = snapshot.index {
+        let value = read.evaluation.evaluate(&snapshot.proof.view_borrow(0));
+        let value = if let Some(bounds::Operand::Value(id @ ValueIdentity::ElementIndex(_))) = snapshot.index {
             let proof = read.index.map_or_else(bounds::Proof::default,
                 |index| bounds::Proof::element_operand(index, (0, u32::MAX)));
-            bindings.insert(id, proof);
-        }
-        let value = read.evaluation.evaluate(&snapshot.proof.view_borrow(0)).substitute_values(&bindings);
+            value.substitute_values(&BTreeMap::from([(id, proof)]))
+        } else {
+            value
+        };
         if let Some(captured) = &mut read.value {
             captured.union(&value);
         } else {
