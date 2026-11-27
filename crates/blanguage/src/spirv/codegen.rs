@@ -15,8 +15,6 @@ pub(crate) mod program;
 pub use program::compile_program;
 #[path = "reduce.rs"]
 mod reduce;
-#[path = "returns.rs"]
-mod returns;
 #[path = "scan.rs"]
 mod scan;
 #[path = "segmented.rs"]
@@ -466,39 +464,23 @@ struct ControlWords {
 enum BlockFlow { Error, #[allow(dead_code)] Stop, Next }
 
 #[repr(C)]
-struct ControlTargets { end: u32, next: u32 }
-#[allow(dead_code)] // B requests these two constants.
-#[repr(u32)]
-enum ControlConstant { Selector, Flag }
-
-#[repr(C)]
-struct ReturnTargets {
-    function_merge: u32,
-    loop_merge: u32,
-    loop_edges: *mut std::ffi::c_void,
-    label: u32,
+struct EdgeStorage {
+    words: *mut u32,
+    capacity: usize,
 }
 
 #[repr(C)]
 struct StructuredHost {
-    context: *mut std::ffi::c_void,
-    labels: unsafe extern "C" fn(*mut std::ffi::c_void, u32) -> u32,
-    reserve_words: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> *mut u32,
-    finish_words: unsafe extern "C" fn(*mut std::ffi::c_void, ControlWords),
-    block: unsafe extern "C" fn(*mut std::ffi::c_void, Span, ControlTargets) -> BlockFlow,
-    value: unsafe extern "C" fn(*mut std::ffi::c_void, Reg) -> u32,
-    begin_return: unsafe extern "C" fn(*mut std::ffi::c_void, Span, u32) -> u32,
-    normal_exit: unsafe extern "C" fn(*mut std::ffi::c_void, u32),
-    finish_return: unsafe extern "C" fn(*mut std::ffi::c_void),
-    constant: unsafe extern "C" fn(StructuredContext, ControlConstant, u32) -> u32,
-    open_function: unsafe extern "C" fn(StructuredContext, u32),
-    close_function: unsafe extern "C" fn(StructuredContext),
-    exit_targets: unsafe extern "C" fn(StructuredContext) -> ReturnTargets,
-    record_return: unsafe extern "C" fn(*mut std::ffi::c_void, u32),
+    context: StructuredContext,
+    labels: unsafe extern "C" fn(StructuredContext, u32) -> u32,
+    reserve_words: unsafe extern "C" fn(StructuredContext, usize) -> *mut u32,
+    finish_words: unsafe extern "C" fn(StructuredContext, ControlWords),
+    reserve_edges: unsafe extern "C" fn(StructuredContext, usize, usize) -> EdgeStorage,
 }
 
 struct StructuredEmission<'a, 'program> {
     emitter: &'a mut Emitter<'program>,
+    edges: Vec<u32>,
     error: Option<&'static str>,
 }
 
@@ -509,16 +491,7 @@ impl StructuredEmission<'_, '_> {
             labels: structured_labels,
             reserve_words: structured_reserve,
             finish_words: structured_finish,
-            block: structured_block,
-            value: structured_value,
-            begin_return: structured_begin_return,
-            normal_exit: structured_normal_exit,
-            finish_return: structured_finish_return,
-            constant: returns::structured_constant,
-            open_function: returns::structured_open_function,
-            close_function: returns::structured_close_function,
-            exit_targets: returns::structured_exit_targets,
-            record_return: returns::structured_record_return,
+            reserve_edges: structured_reserve_edges,
         }
     }
 }
@@ -536,28 +509,12 @@ unsafe extern "C" fn structured_reserve(context: StructuredContext, capacity: us
 unsafe extern "C" fn structured_finish(context: StructuredContext, emitted: ControlWords) {
     unsafe { (&mut *context.cast::<StructuredEmission<'_, '_>>()).emitter.finish_control(emitted); }
 }
-unsafe extern "C" fn structured_block(
-    context: StructuredContext, code: Span, targets: ControlTargets,
-) -> BlockFlow {
-    let emission = unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() };
-    let host = emission.host();
-    let block = block_host(emission.emitter);
-    unsafe { emit_instruction_block(code, targets, host, block) }
-}
-
-unsafe extern "C" fn structured_value(context: StructuredContext, register: Reg) -> u32 {
-    unsafe { &*context.cast::<StructuredEmission<'_, '_>>() }.emitter.value(register)
-}
-unsafe extern "C" fn structured_begin_return(context: StructuredContext, body: Span, merge: u32) -> u32 {
-    let emitter = &mut unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() }.emitter;
-    u32::from(emitter.begin_return_loop(unsafe { body.as_slice() }, merge))
-}
-unsafe extern "C" fn structured_normal_exit(context: StructuredContext, end: u32) {
-    let emitter = &mut unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() }.emitter;
-    emitter.loop_exit_edge(end, emitter.current_label);
-}
-unsafe extern "C" fn structured_finish_return(context: StructuredContext) {
-    unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() }.emitter.finish_return_loop();
+unsafe extern "C" fn structured_reserve_edges(context: StructuredContext, initialized: usize, needed: usize) -> EdgeStorage {
+    let edges = &mut unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() }.edges;
+    // The B emitter has written the current live prefix before requesting growth.
+    unsafe { edges.set_len(initialized); }
+    edges.reserve(needed - initialized);
+    EdgeStorage { words: edges.as_mut_ptr(), capacity: edges.capacity() }
 }
 
 // The B block emitter selects each operation. These callbacks borrow the corresponding
@@ -883,9 +840,7 @@ unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::dispatch_count_index"]
     fn dispatch_count_index(push: DispatchPush, word: u32, field: u32, first: u32, body: *mut u32) -> PayloadRead;
     #[link_name = "bootstrap.spirv_envelope::emit_instruction_block"]
-    fn emit_instruction_block(code: Span, targets: ControlTargets, host: StructuredHost, emit: BlockHost) -> BlockFlow;
-    #[link_name = "bootstrap.spirv_envelope::lower_return_loop"]
-    fn lower_return_loop(edges: *const returns::ReturnEdge, count: u32, bool_type: u32, host: StructuredHost);
+    fn emit_instruction_block(code: Span, host: StructuredHost, emit: BlockHost) -> BlockFlow;
     #[link_name = "bootstrap.spirv_envelope::shader_scalars"]
     fn shader_scalars(next: u32, float64: u32, integer8: u32, integer16: u32,
         definitions: *mut u32, types: *mut u32, pointers: *mut u32) -> ScalarDeclarations;
@@ -1028,7 +983,6 @@ struct Emitter<'a> {
     tile_length: u32,
     tile_lane: u32,
     current_label: u32,
-    return_scopes: Vec<returns::ReturnScope>,
 }
 impl<'ir> Emitter<'ir> {
     fn id(&mut self) -> u32 {
@@ -1384,9 +1338,10 @@ impl<'ir> Emitter<'ir> {
     }
 
     fn block(&mut self, code: &[Inst]) -> Result<bool, &'static str> {
-        let mut emission = StructuredEmission { emitter: self, error: None };
-        let context = std::ptr::from_mut(&mut emission).cast();
-        let flow = unsafe { structured_block(context, Span::slice(code), ControlTargets { end: 0, next: 0 }) };
+        let mut emission = StructuredEmission { emitter: self, edges: Vec::new(), error: None };
+        let host = emission.host();
+        let block = block_host(emission.emitter);
+        let flow = unsafe { emit_instruction_block(Span::slice(code), host, block) };
         emission.error.map_or(Ok(matches!(flow, BlockFlow::Next)), Err)
     }
 
@@ -1789,7 +1744,6 @@ fn emit_shader(
         tile_length: 0,
         tile_lane: 0,
         current_label: 0,
-        return_scopes: Vec::new(),
     };
     let ProgramShaderFeatures { float64, integer8, integer16, acceleration, descriptor_indexing, .. } = program_features;
     let (float32_preserve, float64_preserve) = if numeric_pass {

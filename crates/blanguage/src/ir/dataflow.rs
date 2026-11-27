@@ -846,8 +846,6 @@ struct ProgramCodeRequirements {
     maximal_reconvergence: u32,
 }
 unsafe extern "C" {
-    #[link_name = "bootstrap.ir_dataflow::has_function_exit"]
-    fn b_has_function_exit(code: Span, host: Host) -> u32;
     #[link_name = "bootstrap.ir_dataflow::has_subgroups"]
     fn b_has_subgroups(code: Span, host: Host) -> u32;
     #[link_name = "bootstrap.ir_dataflow::subgroup_operations"]
@@ -873,10 +871,6 @@ const SUBGROUP_OPERATIONS: [SubgroupOp; 23] = [
     SubgroupOp::Min, SubgroupOp::Max, SubgroupOp::BitAnd, SubgroupOp::BitOr, SubgroupOp::BitXor,
     SubgroupOp::ExclusiveBitAnd, SubgroupOp::ExclusiveBitOr, SubgroupOp::ExclusiveBitXor,
 ];
-pub(crate) fn has_function_exit(code: &[Inst]) -> bool {
-    unsafe { b_has_function_exit(Span::slice(code), HOST) != 0 }
-}
-
 pub(crate) fn has_subgroups(stage: &Stage) -> bool {
     unsafe { b_has_subgroups(Span::slice(&stage.code), HOST) != 0 }
 }

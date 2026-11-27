@@ -348,24 +348,14 @@ extern "C" ControlWords open_selection(u32 merge, u32 condition, u32 yes, u32 no
 extern "C" ControlWords next_control_block(u32 target, u32 label, u32 reaches, address body) on cpu;
 // Borrowed original blocks. The host owns instruction storage and word buffers.
 enum BlockFlow:u32 { Error=0; Stop=1; Next=2; };
-struct ControlTargets { u32 end; u32 next; };
-enum ControlConstant:u32 { Selector=0; Flag=1; };
-struct ReturnTargets { u32 function_merge; u32 loop_merge; address loop_edges; u32 label; };
+struct EdgeStorage { address words; usize capacity; };
 struct StructuredHost {
     address context;
     cfn<u32,address,u32> labels;
     cfn<address,address,usize> reserve_words;
     cfn<void,address,ControlWords> finish_words;
-    cfn<BlockFlow,address,Span,ControlTargets> block;
-    cfn<u32,address,usize> value;
-    cfn<u32,address,Span,u32> begin_return;
-    cfn<void,address,u32> normal_exit;
-    cfn<void,address> finish_return;
-    cfn<u32,address,ControlConstant,u32> constant;
-    cfn<void,address,u32> open_function;
-    cfn<void,address> close_function;
-    cfn<ReturnTargets,address> exit_targets;
-    cfn<void,address,u32> record_return;
+    // Preserve only the initialized prefix when the B edge buffer grows.
+    cfn<EdgeStorage,address,usize,usize> reserve_edges;
 };
 enum BlockRejection:u32 { Print=0; CpuCall=1; CpuTexture=2; CpuAddress=3; CpuFunction=4; FloatMath=5; AtomicAddress=6; };
 struct BlockValues {
@@ -457,8 +447,7 @@ struct BlockHost {
     RayBindings rays;
     cfn<BlockFlow,address,BlockRejection> reject;
 };
-extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
-    StructuredHost host, BlockHost emit) on cpu
+extern "C" BlockFlow emit_instruction_block(Span code, StructuredHost host, BlockHost emit) on cpu
     requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
     requires nonzero(emit.textures.declaration) requires nonzero(emit.rays.declare_type)
     requires nonzero(emit.tile.components)
@@ -469,10 +458,7 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     requires nonzero(emit.values.scalars.constant)
     requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve)
     requires nonzero(host.labels) requires nonzero(host.reserve_words) requires nonzero(host.finish_words)
-    requires nonzero(host.block) requires nonzero(host.value) requires nonzero(host.begin_return)
-    requires nonzero(host.normal_exit) requires nonzero(host.finish_return)
-    requires nonzero(host.constant) requires nonzero(host.open_function) requires nonzero(host.close_function)
-    requires nonzero(host.exit_targets) requires nonzero(host.record_return);
+    requires nonzero(host.reserve_edges);
 
 struct TilePhaseView { Span code; Node step; u32 present; };
 struct TilePhaseValue { usize register; u32 value; u32 value_type; u32 module_constant; };
@@ -482,20 +468,18 @@ struct TilePhaseHost {
     cfn<TilePhaseValue,address,address> next_value;
 };
 extern "C" void emit_tile_phases(u32 active, StructuredHost control, TilePhaseHost host, BlockHost emit) on cpu
-    requires nonzero(control.labels) requires nonzero(control.reserve_words)
-    requires nonzero(control.finish_words) requires nonzero(control.block)
-    requires nonzero(host.next_phase) requires nonzero(host.next_value)
-    requires nonzero(emit.ir.inspect) requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
-    requires nonzero(emit.tile.components) requires nonzero(emit.values.finish)
-    requires nonzero(emit.paging.current_label) requires nonzero(emit.paging.finish_body) requires nonzero(emit.values.scalar)
+    requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
+    requires nonzero(emit.textures.declaration) requires nonzero(emit.rays.declare_type)
+    requires nonzero(emit.tile.components)
+    requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
+    requires nonzero(emit.paging.finish_body)
+    requires nonzero(emit.paging.current_label)
+    requires nonzero(emit.values.scalar) requires nonzero(emit.values.binary) requires nonzero(emit.values.finish)
     requires nonzero(emit.values.scalars.constant)
-    requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve);
-
-extern "C" void lower_return_loop(address edges, u32 count, u32 bool_type, StructuredHost host) on cpu
-    requires nonzero(host.labels) requires nonzero(host.constant) requires nonzero(host.exit_targets)
-    requires nonzero(host.record_return) requires nonzero(host.reserve_words) requires nonzero(host.finish_words);
-
-
+    requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve)
+    requires nonzero(control.labels) requires nonzero(control.reserve_words) requires nonzero(control.finish_words)
+    requires nonzero(control.reserve_edges)
+    requires nonzero(host.next_phase) requires nonzero(host.next_value);
 
 struct AppendEmission {
     u32 uint_type;

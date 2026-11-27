@@ -1480,14 +1480,21 @@ ControlWords close_selection(u32 merge, u32 yes_reaches, u32 no_reaches, address
     return ControlWords(at, merge, reaches);
 }
 
-enum StructuredKind:u32 { Selection=0; Loop=1; };
-struct StructuredControl {
-    Span first;
-    Span second;
-    usize test;
-    ControlTargets targets;
-    StructuredKind kind;
+struct ReturnEdges { EdgeStorage storage; usize used; };
+struct ControlTargets {
+    u32 end; u32 next;
+    u32 function_merge; u32 return_loop;
 };
+
+void record_return_edge(inout ReturnEdges edges, u32 label, u32 returned, StructuredHost host) on cpu
+    requires nonzero(host.reserve_edges) {
+    usize at = edges.used;
+    usize needed = at + 2u64;
+    if (needed > edges.storage.capacity) { edges.storage = host.reserve_edges(host.context, at, needed); }
+    put(edges.storage.words, at, label);
+    put(edges.storage.words, at + 1u64, returned);
+    edges.used = needed;
+}
 
 struct LoopLabels { u32 header; u32 check; u32 run; u32 next; u32 end; };
 
@@ -1509,94 +1516,6 @@ ControlWords close_loop(LoopLabels labels, u32 reaches, address body) on cpu {
     at = words_one(body, at, 248, labels.next);
     at = words_one(body, at, 249, labels.header);
     return ControlWords(words_one(body, at, 248, labels.end), labels.end, 1);
-}
-
-extern "C" void emit_tile_phases(u32 active, StructuredHost control, TilePhaseHost host, BlockHost emit) on cpu
-    requires nonzero(control.labels) requires nonzero(control.reserve_words)
-    requires nonzero(control.finish_words) requires nonzero(control.block)
-    requires nonzero(host.next_phase) requires nonzero(host.next_value)
-    requires nonzero(emit.ir.inspect) requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
-    requires nonzero(emit.tile.components) requires nonzero(emit.values.finish)
-    requires nonzero(emit.paging.current_label) requires nonzero(emit.paging.finish_body) requires nonzero(emit.values.scalar)
-    requires nonzero(emit.values.scalars.constant)
-    requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve) {
-    address context = control.context;
-    ScalarHost stream = emit.values.scalars;
-    MemoryHost memory = MemoryHost(stream, emit.paging.finish_body);
-    TilePhaseView phase = host.next_phase(host.cursor);
-    while (phase.present != 0) {
-        u32 before = emit.paging.current_label(stream.context);
-        u32 execute = control.labels(context, 2);
-        u32 end = execute + 1;
-        control.finish_words(context, open_selection(end, active, execute, end, control.reserve_words(context, 9u64)));
-        if (control.block(context, phase.code, ControlTargets(0, 0)) == BlockFlow::Error) { return; }
-        Span empty = Span(address(), 0u64, 0u64);
-        View step = address_bits(phase.step.data) == 0u64
-            ? View(0, 0u64, 0u64, 0u64, 0u64, empty, empty, phase.step, phase.step)
-            : emit.ir.inspect(phase.step);
-        if (step.tag == OP_TILE_PUBLISH) { block_tile_publish(step, emit.values, emit.tile, memory); }
-        u32 producer = emit.paging.current_label(stream.context);
-        control.finish_words(context, next_control_block(end, end, 1, control.reserve_words(context, 4u64)));
-        TilePhaseValue saved = host.next_value(host.cursor, context);
-        while (saved.value_type != 0) {
-            // Module constants dominate both paths. Only live SSA registers need a Phi for the inactive tail.
-            if (saved.module_constant == 0) {
-                u32 result = control.labels(context, 1);
-                u32 zero = stream.constant(stream.context, emit.values.scalar(stream.context, saved.register), 0u64);
-                address body = control.reserve_words(context, 7u64);
-                u64 words = phi_two(body, 0u64, saved.value_type, result, saved.value, producer, zero, before);
-                control.finish_words(context, ControlWords(words, 0, 1));
-                put(emit.values.registers, saved.register, result);
-            }
-            saved = host.next_value(host.cursor, context);
-        }
-        if (step.tag == OP_TILE_PUBLISH || step.tag == OP_TILE_BARRIER) {
-            tile_workgroup_sync(0x148, memory);
-        } else if (step.tag == OP_TILE_COLLECTIVE) {
-            block_tile_collective(step, emit, memory, control);
-        }
-        phase = host.next_phase(host.cursor);
-    }
-}
-
-BlockFlow lower_structured(StructuredControl input, StructuredHost host) on cpu
-    requires nonzero(host.labels) requires nonzero(host.reserve_words) requires nonzero(host.finish_words)
-    requires nonzero(host.block) requires nonzero(host.value) requires nonzero(host.begin_return)
-    requires nonzero(host.normal_exit) requires nonzero(host.finish_return) {
-    address context = host.context;
-    if (input.kind == StructuredKind::Selection) {
-        u32 yes = host.labels(context, 3);
-        u32 no = yes + 1;
-        u32 merge = yes + 2;
-        u32 test = host.value(context, input.test);
-        host.finish_words(context, open_selection(merge, test, yes, no, host.reserve_words(context, 9u64)));
-        BlockFlow first = host.block(context, input.first, input.targets);
-        if (first == BlockFlow::Error) { return first; }
-        u32 yes_reaches = u32(first == BlockFlow::Next);
-        host.finish_words(context, next_control_block(merge, no, yes_reaches, host.reserve_words(context, 4u64)));
-        BlockFlow second = host.block(context, input.second, input.targets);
-        if (second == BlockFlow::Error) { return second; }
-        ControlWords close = close_selection(merge, yes_reaches, u32(second == BlockFlow::Next),
-            host.reserve_words(context, 4u64));
-        host.finish_words(context, close);
-        return close.reaches_next != 0 ? BlockFlow::Next : BlockFlow::Stop;
-    }
-
-    u32 first_id = host.labels(context, 5);
-    LoopLabels labels = LoopLabels(first_id, first_id + 1, first_id + 2, first_id + 3, first_id + 4);
-    ControlTargets targets = ControlTargets(labels.end, labels.next);
-    u32 returning = host.begin_return(context, input.second, labels.end);
-    host.finish_words(context, open_loop(labels, host.reserve_words(context, 12u64)));
-    BlockFlow condition = host.block(context, input.first, targets);
-    if (condition == BlockFlow::Error) { return condition; }
-    host.normal_exit(context, labels.end);
-    u32 test = host.value(context, input.test);
-    host.finish_words(context, test_loop(labels, test, host.reserve_words(context, 6u64)));
-    BlockFlow flow = host.block(context, input.second, targets);
-    if (flow == BlockFlow::Error) { return flow; }
-    host.finish_words(context, close_loop(labels, u32(flow == BlockFlow::Next), host.reserve_words(context, 8u64)));
-    if (returning != 0) { host.finish_return(context); }
-    return BlockFlow::Next;
 }
 
 ControlWords open_function_scope(u32 merge, u32 selector, u32 begin, address body) on cpu {
@@ -1633,43 +1552,6 @@ ControlWords dispatch_loop_return(LoopReturn input, address edges, address body)
     }
     at = open_conditional(body, at, input.merge, input.result, input.target, input.merge);
     return ControlWords(words_one(body, at, 248, input.merge), input.merge, 1);
-}
-
-BlockFlow lower_function_scope(Span body, StructuredHost host) on cpu
-    requires nonzero(host.labels) requires nonzero(host.constant) requires nonzero(host.reserve_words)
-    requires nonzero(host.finish_words) requires nonzero(host.open_function) requires nonzero(host.block)
-    requires nonzero(host.close_function) {
-    address context = host.context;
-    u32 merge = host.labels(context, 2);
-    u32 begin = merge + 1;
-    u32 selector = host.constant(context, ControlConstant::Selector, 0);
-    host.finish_words(context, open_function_scope(merge, selector, begin, host.reserve_words(context, 8u64)));
-    host.open_function(context, merge);
-    BlockFlow flow = host.block(context, body, ControlTargets(0, 0));
-    if (flow == BlockFlow::Error) { return flow; }
-    host.close_function(context);
-    host.finish_words(context, next_control_block(merge, merge, u32(flow == BlockFlow::Next),
-        host.reserve_words(context, 4u64)));
-    return BlockFlow::Next;
-}
-
-u32 return_destination(StructuredHost host) on cpu
-    requires nonzero(host.exit_targets) requires nonzero(host.record_return) {
-    ReturnTargets targets = host.exit_targets(host.context);
-    if (targets.loop_merge != 0) {
-        host.record_return(targets.loop_edges, targets.label);
-        return targets.loop_merge;
-    }
-    return targets.function_merge;
-}
-
-u32 lower_function_exit(StructuredHost host) on cpu
-    requires nonzero(host.exit_targets) requires nonzero(host.record_return) requires nonzero(host.reserve_words)
-    requires nonzero(host.finish_words) {
-    u32 target = return_destination(host);
-    ControlWords emitted = leave_control(target, host.reserve_words(host.context, 2u64));
-    host.finish_words(host.context, emitted);
-    return emitted.reaches_next;
 }
 
 u32 block_register(address registers, usize reg) on cpu {
@@ -1932,8 +1814,165 @@ void block_private_storage(View instruction, BlockValues values, BlockLocals loc
     }
 }
 
-extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
-    StructuredHost host, BlockHost emit) on cpu
+void finish_return_loop(ControlTargets targets, usize first, u32 predecessor, inout ReturnEdges scratch,
+    StructuredHost host, ScalarHost scalars) on cpu
+    requires nonzero(host.labels) requires nonzero(host.reserve_words) requires nonzero(host.finish_words)
+    requires nonzero(host.reserve_edges) requires nonzero(scalars.constant) {
+    address context = host.context;
+    address edges = word_at(scratch.storage.words, first);
+    u32 count = u32((scratch.used - first) / 2u64);
+    u32 result = host.labels(context, 1);
+    u32 not_returned = 0;
+    u32 returned = 0;
+    for (edge in 0..count) {
+        if (read_word(edges, edge * 2 + 1) == 0) {
+            if (not_returned == 0) { not_returned = scalars.constant(scalars.context, BuiltinScalar::Bool, 0u64); }
+        } else {
+            if (returned == 0) { returned = scalars.constant(scalars.context, BuiltinScalar::Bool, 1u64); }
+        }
+        if (not_returned != 0 && returned != 0) { break; }
+    }
+    u32 target = targets.return_loop != 0 ? targets.return_loop : targets.function_merge;
+    u32 bool_type = scalar_id(scalars.types, BuiltinScalar::Bool);
+    u32 merge = host.labels(context, 1);
+    LoopReturn input = LoopReturn(bool_type, result, target, merge, not_returned, returned, count);
+    host.finish_words(context, dispatch_loop_return(input, edges, host.reserve_words(context, 12u64 + 2u64 * u64(count))));
+    // The child Phi consumed these pairs. Reuse that space for its parent predecessor.
+    scratch.used = first;
+    if (targets.return_loop != 0) {
+        record_return_edge(scratch, predecessor, 1, host);
+    }
+}
+
+BlockFlow emit_leaf(View value, StructuredHost host, BlockHost emit) on cpu
+    requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
+    requires nonzero(emit.textures.declaration) requires nonzero(emit.rays.declare_type)
+    requires nonzero(emit.tile.components)
+    requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
+    requires nonzero(emit.paging.finish_body)
+    requires nonzero(emit.paging.current_label)
+    requires nonzero(emit.values.scalar) requires nonzero(emit.values.binary) requires nonzero(emit.values.finish)
+    requires nonzero(emit.values.scalars.constant)
+    requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve)
+    requires nonzero(host.labels) requires nonzero(host.reserve_words) requires nonzero(host.finish_words) {
+    address context = host.context;
+    MemoryHost memory = MemoryHost(emit.values.scalars, emit.paging.finish_body);
+    u32 kind = value.tag;
+    if (kind == OP_PRINT) {
+        return emit.reject(context, BlockRejection::Print);
+    } else if (kind == OP_INVOKE || kind == OP_RAISE || kind == OP_CLEANUP) {
+        return emit.reject(context, BlockRejection::CpuCall);
+    } else if (kind == OP_TEXTURE_SAMPLE) {
+        block_texture_sample(value, emit.ir.inspect(value.left), emit.values, emit.textures);
+    } else if (kind <= OP_TEXTURE_FETCH) {
+        return emit.reject(context, BlockRejection::CpuTexture);
+    } else if (kind == OP_APPEND) {
+        block_append(value, emit.values, emit.paging, emit.subgroup.ballot_type, memory, host);
+    } else if (kind == OP_ATOMIC) {
+        View target = emit.ir.inspect(value.left);
+        if (target.tag != INDEXED_DATA && target.tag != INDEXED_TILE) {
+            return emit.reject(context, BlockRejection::AtomicAddress);
+        }
+        block_atomic(value, target, emit.ir.inspect(value.right), emit, memory);
+    } else if (kind == OP_TILE_BARRIER) {
+        tile_workgroup_sync(0x148, memory);
+    } else if (kind == OP_TILE_PUBLISH) {
+        block_tile_publish(value, emit.values, emit.tile, memory);
+    } else if (kind == OP_TILE_COLLECTIVE) {
+        block_tile_collective(value, emit, memory, host);
+    } else if (kind == OP_TILE_LENGTH || kind == OP_TILE_LANE) {
+        ScalarHost stream = memory.scalars;
+        u32 type_id = scalar_id(stream.types, emit.values.scalar(stream.context, value.a));
+        u32 result = block_register(emit.values.registers, value.a);
+        u32 id = kind == OP_TILE_LANE ? emit.tile.lane : emit.tile.length;
+        address body = stream.reserve(stream.context, 4u64, 0u64).body;
+        memory.finish_body(stream.context, copy_shader_value(body, 0u64, type_id, result, id));
+    } else if (kind == OP_TILE_LOAD) {
+        TileKey key = emit.tile.word(memory.scalars.context, value.b, u32(value.d));
+        u32 index = block_register(emit.values.registers, value.c);
+        block_tile_read(emit.values, emit.tile, key, index, 0, value.a, memory);
+    } else if (kind == OP_SUBGROUP) {
+        block_subgroup(value, emit.values, emit.subgroup, memory);
+    } else if (kind == OP_VIEW_LOAD) {
+        PageInputs page = block_view_page(emit.paging.base, emit.values.registers, value.first,
+            emit.ir.inspect(value.left), emit.values.scalars);
+        page.index = block_register(emit.values.registers, value.b);
+        page.word = u32(value.c);
+        page.has_word = 1;
+        block_physical_access(page, value.a, false, emit.values, memory);
+    } else if (kind == OP_RAY_QUERY) {
+        block_ray_query(value, emit.ir.inspect(value.left).first, emit.values, emit.rays, host);
+    } else if (kind == OP_POSITION_ADDRESS || kind == OP_BUFFER_STRIDE) {
+        return emit.reject(context, BlockRejection::CpuAddress);
+    } else if (kind == OP_LOAD_INDEXED || kind == OP_STORE_INDEXED) {
+        View source = emit.ir.inspect(value.left);
+        if (source.tag == INDEXED_POINTER) {
+            return emit.reject(context, BlockRejection::CpuAddress);
+        }
+        bool write = kind == OP_STORE_INDEXED;
+        if (source.tag == INDEXED_TILE) {
+            TileKey key = emit.tile.word(memory.scalars.context, source.a, u32(value.c));
+            u32 index = block_register(emit.values.registers, source.b);
+            u32 offset = block_register(emit.values.registers, write ? value.a : value.b);
+            if (write) {
+                block_tile_write(emit.values, emit.tile, key, index, offset, value.b, memory);
+            } else {
+                block_tile_read(emit.values, emit.tile, key, index, offset, value.a, memory);
+            }
+        } else {
+            address registers = emit.values.registers;
+            PageInputs page = emit.paging.base;
+            if (source.tag == INDEXED_DATA) {
+                page = block_dataset_page(emit.paging, source.a);
+                page.index = block_register(registers, source.b);
+            } else {
+                page = block_view_page(page, registers, source.first, emit.ir.inspect(source.left), emit.values.scalars);
+                page.index = block_register(registers, source.a);
+            }
+            page.word = u32(value.c);
+            page.has_word = 1;
+            page.extra = block_register(registers, write ? value.a : value.b);
+            block_physical_access(page, write ? value.b : value.a, write, emit.values, memory);
+        }
+    } else if (kind == OP_FUNCTION_ADDRESS) {
+        return emit.reject(context, BlockRejection::CpuFunction);
+    } else if (kind == OP_CONSTANT) {
+        BuiltinScalar scalar = BuiltinScalar(u32(value.c));
+        if (scalar == BuiltinScalar::F32 || scalar == BuiltinScalar::F64) {
+            block_float_constant(value, emit.values, memory);
+        } else {
+            ScalarHost stream = emit.values.scalars;
+            put(emit.values.registers, u64(value.a), stream.constant(stream.context, scalar, u64(value.b)));
+        }
+    } else if (kind == OP_INDEX_VALUE) {
+        ScalarHost stream = emit.values.scalars;
+        u32 type_id = scalar_id(stream.types, emit.values.scalar(stream.context, value.a));
+        u32 result = block_register(emit.values.registers, value.a);
+        address body = stream.reserve(stream.context, 4u64, 0u64).body;
+        u64 length = copy_shader_value(body, 0u64, type_id, result, emit.values.index);
+        emit.values.finish(stream.context, ScalarWords(length, 0u64));
+    } else if (kind == OP_UNIFORM) {
+        block_uniform(value, emit.values);
+    } else if (kind >= OP_LOAD_LOCAL && kind <= OP_STORE_LOCAL_INDEXED) {
+        block_private_storage(value, emit.values, emit.locals, memory, emit.ir);
+    } else if (kind == OP_LOAD || kind == OP_STORE) {
+        bool write = kind == OP_STORE;
+        PageInputs page = block_dataset_page(emit.paging, write ? value.a : value.b);
+        page.index = block_register(emit.values.registers, write ? value.b : value.c);
+        page.word = u32(write ? value.c : value.d);
+        page.has_word = 1;
+        block_physical_access(page, write ? value.d : value.a, write, emit.values, memory);
+    } else if (kind >= OP_UNARY && kind <= OP_SELECT_VALUE) {
+        ScalarWords written = block_calculation(value, emit.values, emit.ir);
+        if (kind == OP_MATH && written.body == 0u64) {
+            return emit.reject(context, BlockRejection::FloatMath);
+        }
+        emit.values.finish(emit.values.scalars.context, written);
+    }
+    return BlockFlow::Next;
+}
+
+BlockFlow emit_block(Span code, ControlTargets targets, inout ReturnEdges edges, StructuredHost host, BlockHost emit) on cpu
     requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
     requires nonzero(emit.textures.declaration) requires nonzero(emit.rays.declare_type)
     requires nonzero(emit.tile.components)
@@ -1944,168 +1983,154 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     requires nonzero(emit.values.scalars.constant)
     requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve)
     requires nonzero(host.labels) requires nonzero(host.reserve_words) requires nonzero(host.finish_words)
-    requires nonzero(host.block) requires nonzero(host.value) requires nonzero(host.begin_return)
-    requires nonzero(host.normal_exit) requires nonzero(host.finish_return)
-    requires nonzero(host.constant) requires nonzero(host.open_function) requires nonzero(host.close_function)
-    requires nonzero(host.exit_targets) requires nonzero(host.record_return) {
+    requires nonzero(host.reserve_edges) {
     address context = host.context;
-    MemoryHost memory = MemoryHost(emit.values.scalars, emit.paging.finish_body);
+    ScalarHost scalars = emit.values.scalars;
     usize i = 0u64;
     while (i < code.count) {
         address instruction = unsafe_address(address_bits(code.data) + i * code.stride);
         View value = emit.ir.inspect(Node(instruction, N_INSTRUCTION));
         u32 kind = value.tag;
-        if (kind == OP_PRINT) {
-            return emit.reject(context, BlockRejection::Print);
-        } else if (kind == OP_INVOKE || kind == OP_RAISE || kind == OP_CLEANUP) {
-            return emit.reject(context, BlockRejection::CpuCall);
-        } else if (kind == OP_TEXTURE_SAMPLE) {
-            block_texture_sample(value, emit.ir.inspect(value.left), emit.values, emit.textures);
-        } else if (kind <= OP_TEXTURE_FETCH) {
-            return emit.reject(context, BlockRejection::CpuTexture);
-        } else if (kind == OP_SCOPE) {
-            if (lower_function_scope(value.first, host) == BlockFlow::Error) { return BlockFlow::Error; }
+        if (kind == OP_SCOPE) {
+            u32 merge = host.labels(context, 2);
+            u32 selector = scalars.constant(scalars.context, BuiltinScalar::U32, 0u64);
+            host.finish_words(context, open_function_scope(merge, selector, merge + 1, host.reserve_words(context, 8u64)));
+            BlockFlow flow = emit_block(value.first, ControlTargets(0, 0, merge, 0), edges, host, emit);
+            if (flow == BlockFlow::Error) { return flow; }
+            host.finish_words(context, next_control_block(merge, merge, u32(flow == BlockFlow::Next),
+                host.reserve_words(context, 4u64)));
         } else if (kind == OP_EXIT_VALUE) {
-            return lower_function_exit(host) != 0 ? BlockFlow::Next : BlockFlow::Stop;
-        } else if (kind == OP_APPEND) {
-            block_append(value, emit.values, emit.paging, emit.subgroup.ballot_type, memory, host);
-        } else if (kind == OP_ATOMIC) {
-            View target = emit.ir.inspect(value.left);
-            if (target.tag != INDEXED_DATA && target.tag != INDEXED_TILE) {
-                return emit.reject(context, BlockRejection::AtomicAddress);
+            u32 destination = targets.function_merge;
+            if (targets.return_loop != 0) {
+                u32 label = emit.paging.current_label(scalars.context);
+                record_return_edge(edges, label, 1, host);
+                destination = targets.return_loop;
             }
-            block_atomic(value, target, emit.ir.inspect(value.right), emit, memory);
-        } else if (kind == OP_TILE_BARRIER) {
-            tile_workgroup_sync(0x148, memory);
-        } else if (kind == OP_TILE_PUBLISH) {
-            block_tile_publish(value, emit.values, emit.tile, memory);
-        } else if (kind == OP_TILE_COLLECTIVE) {
-            block_tile_collective(value, emit, memory, host);
-        } else if (kind == OP_TILE_LENGTH || kind == OP_TILE_LANE) {
-            ScalarHost stream = memory.scalars;
-            u32 type_id = scalar_id(stream.types, emit.values.scalar(stream.context, value.a));
-            u32 result = block_register(emit.values.registers, value.a);
-            u32 id = kind == OP_TILE_LANE ? emit.tile.lane : emit.tile.length;
-            address body = stream.reserve(stream.context, 4u64, 0u64).body;
-            memory.finish_body(stream.context, copy_shader_value(body, 0u64, type_id, result, id));
-        } else if (kind == OP_TILE_LOAD) {
-            TileKey key = emit.tile.word(memory.scalars.context, value.b, u32(value.d));
-            u32 index = block_register(emit.values.registers, value.c);
-            block_tile_read(emit.values, emit.tile, key, index, 0, value.a, memory);
-        } else if (kind == OP_SUBGROUP) {
-            block_subgroup(value, emit.values, emit.subgroup, memory);
-        } else if (kind == OP_VIEW_LOAD) {
-            PageInputs page = block_view_page(emit.paging.base, emit.values.registers, value.first,
-                emit.ir.inspect(value.left), emit.values.scalars);
-            page.index = block_register(emit.values.registers, value.b);
-            page.word = u32(value.c);
-            page.has_word = 1;
-            block_physical_access(page, value.a, false, emit.values, memory);
-        } else if (kind == OP_RAY_QUERY) {
-            block_ray_query(value, emit.ir.inspect(value.left).first, emit.values, emit.rays, host);
-        } else if (kind == OP_POSITION_ADDRESS || kind == OP_BUFFER_STRIDE) {
-            return emit.reject(context, BlockRejection::CpuAddress);
-        } else if (kind == OP_LOAD_INDEXED || kind == OP_STORE_INDEXED) {
-            View source = emit.ir.inspect(value.left);
-            if (source.tag == INDEXED_POINTER) {
-                return emit.reject(context, BlockRejection::CpuAddress);
+            host.finish_words(context, leave_control(destination, host.reserve_words(context, 2u64)));
+            return BlockFlow::Stop;
+        } else if (kind == OP_BRANCH) {
+            u32 yes = host.labels(context, 3);
+            u32 no = yes + 1;
+            u32 merge = yes + 2;
+            u32 condition = block_register(emit.values.registers, value.a);
+            host.finish_words(context, open_selection(merge, condition, yes, no, host.reserve_words(context, 9u64)));
+            BlockFlow first = emit_block(value.first, targets, edges, host, emit);
+            if (first == BlockFlow::Error) { return first; }
+            u32 yes_reaches = u32(first == BlockFlow::Next);
+            host.finish_words(context, next_control_block(merge, no, yes_reaches, host.reserve_words(context, 4u64)));
+            BlockFlow second = emit_block(value.second, targets, edges, host, emit);
+            if (second == BlockFlow::Error) { return second; }
+            ControlWords close = close_selection(merge, yes_reaches, u32(second == BlockFlow::Next),
+                host.reserve_words(context, 4u64));
+            host.finish_words(context, close);
+            if (close.reaches_next == 0) { return BlockFlow::Stop; }
+        } else if (kind == OP_LOOP_VALUE) {
+            u32 head = host.labels(context, 5);
+            LoopLabels labels = LoopLabels(head, head + 1, head + 2, head + 3, head + 4);
+            bool returning = targets.function_merge != 0 && has_function_exit(value.second, emit.ir) != 0;
+            usize first = returning ? edges.used : 0u64;
+            ControlTargets inner = ControlTargets(labels.end, labels.next, targets.function_merge,
+                returning ? labels.end : targets.return_loop);
+            host.finish_words(context, open_loop(labels, host.reserve_words(context, 12u64)));
+            BlockFlow condition = emit_block(value.first, inner, edges, host, emit);
+            if (condition == BlockFlow::Error) { return condition; }
+            if (returning) {
+                u32 label = emit.paging.current_label(scalars.context);
+                record_return_edge(edges, label, 0, host);
             }
-            bool write = kind == OP_STORE_INDEXED;
-            if (source.tag == INDEXED_TILE) {
-                TileKey key = emit.tile.word(memory.scalars.context, source.a, u32(value.c));
-                u32 index = block_register(emit.values.registers, source.b);
-                u32 offset = block_register(emit.values.registers, write ? value.a : value.b);
-                if (write) {
-                    block_tile_write(emit.values, emit.tile, key, index, offset, value.b, memory);
-                } else {
-                    block_tile_read(emit.values, emit.tile, key, index, offset, value.a, memory);
-                }
-            } else {
-                address registers = emit.values.registers;
-                PageInputs page = emit.paging.base;
-                if (source.tag == INDEXED_DATA) {
-                    page = block_dataset_page(emit.paging, source.a);
-                    page.index = block_register(registers, source.b);
-                } else {
-                    page = block_view_page(page, registers, source.first, emit.ir.inspect(source.left), emit.values.scalars);
-                    page.index = block_register(registers, source.a);
-                }
-                page.word = u32(value.c);
-                page.has_word = 1;
-                page.extra = block_register(registers, write ? value.a : value.b);
-                block_physical_access(page, write ? value.b : value.a, write, emit.values, memory);
-            }
-        } else if (kind == OP_FUNCTION_ADDRESS) {
-            return emit.reject(context, BlockRejection::CpuFunction);
-        } else if (kind == OP_CONSTANT) {
-            BuiltinScalar scalar = BuiltinScalar(u32(value.c));
-            if (scalar == BuiltinScalar::F32 || scalar == BuiltinScalar::F64) {
-                block_float_constant(value, emit.values, memory);
-            } else {
-                ScalarHost stream = emit.values.scalars;
-                put(emit.values.registers, u64(value.a), stream.constant(stream.context, scalar, u64(value.b)));
-            }
-        } else if (kind == OP_INDEX_VALUE) {
-            ScalarHost stream = emit.values.scalars;
-            u32 type_id = scalar_id(stream.types, emit.values.scalar(stream.context, value.a));
-            u32 result = block_register(emit.values.registers, value.a);
-            address body = stream.reserve(stream.context, 4u64, 0u64).body;
-            u64 length = copy_shader_value(body, 0u64, type_id, result, emit.values.index);
-            emit.values.finish(stream.context, ScalarWords(length, 0u64));
-        } else if (kind == OP_UNIFORM) {
-            block_uniform(value, emit.values);
-        } else if (kind >= OP_LOAD_LOCAL && kind <= OP_STORE_LOCAL_INDEXED) {
-            block_private_storage(value, emit.values, emit.locals, memory, emit.ir);
-        } else if (kind == OP_LOAD || kind == OP_STORE) {
-            bool write = kind == OP_STORE;
-            PageInputs page = block_dataset_page(emit.paging, write ? value.a : value.b);
-            page.index = block_register(emit.values.registers, write ? value.b : value.c);
-            page.word = u32(write ? value.c : value.d);
-            page.has_word = 1;
-            block_physical_access(page, write ? value.d : value.a, write, emit.values, memory);
-        } else if (kind >= OP_UNARY && kind <= OP_SELECT_VALUE) {
-            ScalarWords written = block_calculation(value, emit.values, emit.ir);
-            if (kind == OP_MATH && written.body == 0u64) {
-                return emit.reject(context, BlockRejection::FloatMath);
-            }
-            emit.values.finish(emit.values.scalars.context, written);
-        } else if (kind == OP_BRANCH || kind == OP_LOOP_VALUE) {
-            StructuredKind control = kind == OP_BRANCH ? StructuredKind::Selection : StructuredKind::Loop;
-            BlockFlow flow = lower_structured(StructuredControl(value.first, value.second, value.a, targets, control), host);
-            if (flow != BlockFlow::Next) { return flow; }
+            u32 test = block_register(emit.values.registers, value.a);
+            host.finish_words(context, test_loop(labels, test, host.reserve_words(context, 6u64)));
+            BlockFlow flow = emit_block(value.second, inner, edges, host, emit);
+            if (flow == BlockFlow::Error) { return flow; }
+            host.finish_words(context, close_loop(labels, u32(flow == BlockFlow::Next), host.reserve_words(context, 8u64)));
+            if (returning) { finish_return_loop(targets, first, labels.end, edges, host, scalars); }
         } else if (kind == OP_BREAK_VALUE) {
-            host.normal_exit(context, targets.end);
+            if (targets.return_loop == targets.end && targets.end != 0) {
+                u32 label = emit.paging.current_label(scalars.context);
+                record_return_edge(edges, label, 0, host);
+            }
             host.finish_words(context, leave_control(targets.end, host.reserve_words(context, 2u64)));
             return BlockFlow::Stop;
         } else if (kind == OP_CONTINUE_VALUE) {
             host.finish_words(context, leave_control(targets.next, host.reserve_words(context, 2u64)));
             return BlockFlow::Stop;
+        } else {
+            BlockFlow flow = emit_leaf(value, host, emit);
+            if (flow != BlockFlow::Next) { return flow; }
         }
         i += 1u64;
     }
     return BlockFlow::Next;
 }
 
+extern "C" BlockFlow emit_instruction_block(Span code, StructuredHost host, BlockHost emit) on cpu
+    requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
+    requires nonzero(emit.textures.declaration) requires nonzero(emit.rays.declare_type)
+    requires nonzero(emit.tile.components)
+    requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
+    requires nonzero(emit.paging.finish_body)
+    requires nonzero(emit.paging.current_label)
+    requires nonzero(emit.values.scalar) requires nonzero(emit.values.binary) requires nonzero(emit.values.finish)
+    requires nonzero(emit.values.scalars.constant)
+    requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve)
+    requires nonzero(host.labels) requires nonzero(host.reserve_words) requires nonzero(host.finish_words)
+    requires nonzero(host.reserve_edges) {
+    ReturnEdges edges = ReturnEdges(EdgeStorage(address(), 0u64), 0u64);
+    return emit_block(code, ControlTargets(0, 0, 0, 0), edges, host, emit);
+}
 
-extern "C" void lower_return_loop(address edges, u32 count, u32 bool_type, StructuredHost host) on cpu
-    requires nonzero(host.labels) requires nonzero(host.constant) requires nonzero(host.exit_targets)
-    requires nonzero(host.record_return) requires nonzero(host.reserve_words) requires nonzero(host.finish_words) {
-    address context = host.context;
-    u32 result = host.labels(context, 1);
-    u32 not_returned = 0;
-    u32 returned = 0;
-    for (edge in 0..count) {
-        if (read_word(edges, edge * 2 + 1) == 0) {
-            if (not_returned == 0) { not_returned = host.constant(context, ControlConstant::Flag, 0); }
-        } else {
-            if (returned == 0) { returned = host.constant(context, ControlConstant::Flag, 1); }
+extern "C" void emit_tile_phases(u32 active, StructuredHost control, TilePhaseHost host, BlockHost emit) on cpu
+    requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
+    requires nonzero(emit.textures.declaration) requires nonzero(emit.rays.declare_type)
+    requires nonzero(emit.tile.components)
+    requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
+    requires nonzero(emit.paging.finish_body)
+    requires nonzero(emit.paging.current_label)
+    requires nonzero(emit.values.scalar) requires nonzero(emit.values.binary) requires nonzero(emit.values.finish)
+    requires nonzero(emit.values.scalars.constant)
+    requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve)
+    requires nonzero(control.labels) requires nonzero(control.reserve_words) requires nonzero(control.finish_words)
+    requires nonzero(control.reserve_edges)
+    requires nonzero(host.next_phase) requires nonzero(host.next_value) {
+    address context = control.context;
+    ScalarHost stream = emit.values.scalars;
+    MemoryHost memory = MemoryHost(stream, emit.paging.finish_body);
+    ReturnEdges edges = ReturnEdges(EdgeStorage(address(), 0u64), 0u64);
+    ControlTargets targets = ControlTargets(0, 0, 0, 0);
+    TilePhaseView phase = host.next_phase(host.cursor);
+    while (phase.present != 0) {
+        u32 before = emit.paging.current_label(stream.context);
+        u32 execute = control.labels(context, 2);
+        u32 end = execute + 1;
+        control.finish_words(context, open_selection(end, active, execute, end, control.reserve_words(context, 9u64)));
+        if (emit_block(phase.code, targets, edges, control, emit) == BlockFlow::Error) { return; }
+        Span empty = Span(address(), 0u64, 0u64);
+        View step = address_bits(phase.step.data) == 0u64
+            ? View(0, 0u64, 0u64, 0u64, 0u64, empty, empty, phase.step, phase.step)
+            : emit.ir.inspect(phase.step);
+        if (step.tag == OP_TILE_PUBLISH) { block_tile_publish(step, emit.values, emit.tile, memory); }
+        u32 producer = emit.paging.current_label(stream.context);
+        control.finish_words(context, next_control_block(end, end, 1, control.reserve_words(context, 4u64)));
+        TilePhaseValue saved = host.next_value(host.cursor, context);
+        while (saved.value_type != 0) {
+            // Module constants dominate both paths. Only live SSA registers need a Phi for the inactive tail.
+            if (saved.module_constant == 0) {
+                u32 result = control.labels(context, 1);
+                u32 zero = stream.constant(stream.context, emit.values.scalar(stream.context, saved.register), 0u64);
+                address body = control.reserve_words(context, 7u64);
+                u64 words = phi_two(body, 0u64, saved.value_type, result, saved.value, producer, zero, before);
+                control.finish_words(context, ControlWords(words, 0, 1));
+                put(emit.values.registers, saved.register, result);
+            }
+            saved = host.next_value(host.cursor, context);
         }
-        if (not_returned != 0 && returned != 0) { break; }
+        if (step.tag == OP_TILE_PUBLISH || step.tag == OP_TILE_BARRIER) {
+            tile_workgroup_sync(0x148, memory);
+        } else if (step.tag == OP_TILE_COLLECTIVE) {
+            block_tile_collective(step, emit, memory, control);
+        }
+        phase = host.next_phase(host.cursor);
     }
-    u32 target = return_destination(host);
-    u32 merge = host.labels(context, 1);
-    LoopReturn input = LoopReturn(bool_type, result, target, merge, not_returned, returned, count);
-    host.finish_words(context, dispatch_loop_return(input, edges, host.reserve_words(context, 12u64 + 2u64 * u64(count))));
 }
 
 struct SubgroupArithmetic { u32 opcode; u32 group; };
