@@ -58,6 +58,13 @@ struct OrderedTree {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
+pub(in super::super) struct ConditionNodes {
+    fields: *const c_void,
+    count: usize,
+}
+
+#[repr(C)]
 #[derive(Default)]
 pub(in super::super) struct CanonicalGraph<'a> {
     nodes: OrderedTree,
@@ -73,6 +80,8 @@ unsafe extern "C" {
     fn canonical_index(graph: *const c_void, key: usize) -> usize;
     #[link_name = "bootstrap.condition_index::condition_node_at"]
     fn canonical_node(graph: *const c_void, index: usize) -> NodeFields;
+    #[link_name = "bootstrap.condition_index::condition_seal"]
+    fn canonical_seal(graph: Slot) -> ConditionNodes;
     #[link_name = "bootstrap.condition_index::condition_graph_drop"]
     fn canonical_drop(graph: Slot);
 }
@@ -84,6 +93,10 @@ impl<'a> CanonicalGraph<'a> {
 
     pub(in super::super) fn len(&self) -> usize {
         self.nodes.count
+    }
+
+    pub(in super::super) fn seal(&mut self) -> ConditionNodes {
+        unsafe { canonical_seal(slot(self)) }
     }
 
     pub(in super::super) fn nodes(&self) -> impl ExactSizeIterator<Item = EncodedClause<&'a Facts>> + '_ {

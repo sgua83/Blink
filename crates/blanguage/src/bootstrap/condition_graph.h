@@ -2,6 +2,7 @@ module bootstrap.condition_graph;
 import codec.scalar_ranges;
 import bootstrap.scalar_fold;
 import bootstrap.fact_key;
+import bootstrap.condition_index;
 
 // These descriptors borrow the original Clause query and its physical buffers.
 // They are private native fields, not a stored condition or public graph format.
@@ -112,9 +113,9 @@ extern "C" u32 equivalent(usize first,usize second,address plan,address context,
  requires nonzero(preparation.append) requires nonzero(preparation.gate_get) requires nonzero(preparation.gate_put)
  requires nonzero(preparation.size) requires nonzero(preparation.build);
 
-// Original required-facts query nodes; the result stays in its owning container.
-struct RequiredNode { usize left; usize right; u32 kind; usize users; usize remaining; };
-struct RequiredGraph { address nodes; usize stride; usize count; usize root; };
+// The original index owns the topology. The solver mutates counts independently of host results.
+struct RequiredUses { usize users; usize remaining; };
+struct RequiredGraph { ConditionNodes nodes; address uses; usize root; };
 struct RequiredPending { u32 present; usize index; };
 struct RequiredHost {
  cfn<u32,address,usize> ensures memory(read) status;
@@ -122,12 +123,13 @@ struct RequiredHost {
  cfn<RequiredPending,address> pop;
  cfn<usize,address> ensures memory(read) pending_count;
  cfn<void,address,usize> impossible;
- cfn<void,address,usize> leaf;
- cfn<void,address,usize,u32,u32> union;
- cfn<void,address,usize,u32,u32> common;
- cfn<u32,address,usize> valid_additions;
+ cfn<void,address,usize,address> leaf;
+ cfn<void,address,usize,usize,usize,u32,u32> union;
+ cfn<void,address,usize,usize,usize,u32,u32> common;
+ cfn<u32,address,usize,usize> valid_additions;
  cfn<u32,address,usize,u32> release;
 };
+extern "C" void required_prepare(RequiredGraph graph) on cpu;
 extern "C" void required_evaluate(RequiredGraph graph,address context,RequiredHost host) on cpu
  requires nonzero(host.status) requires nonzero(host.push)
  requires nonzero(host.pop) requires nonzero(host.pending_count) requires nonzero(host.impossible)

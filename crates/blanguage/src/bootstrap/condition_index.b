@@ -1,6 +1,5 @@
 module bootstrap.condition_index;
 
-struct ShapeSlot { OrderedNode link; NodeFields value; };
 struct IdentitySlot { OrderedNode link; u64 key; u64 index; };
 
 address graph_slot(address records,u64 stride,u64 index) on cpu {
@@ -19,21 +18,25 @@ i32 shape_order(NodeFields left,NodeFields right) on cpu {
     return order!=i32(0)?order:ordered_word(left.second,right.second);
 }
 
-u64 intern_condition_shape(address tree_address,NodeFields shape) on cpu {
-    OrderedTree tree=unsafe_position<OrderedTree>(tree_address);
+u64 intern_condition_shape(address nodes_address,address order_address,NodeFields shape) on cpu {
+    OrderedTree tree=unsafe_position<OrderedTree>(order_address);
+    address nodes=unsafe_position<OrderedTree>(nodes_address).records;
     u64 index=tree.root;
     u64 parent=0u64;
     i32 order=i32(0);
     while(index!=0u64){
-        ShapeSlot slot=unsafe_position<ShapeSlot>(graph_slot(tree.records,size_of<ShapeSlot>(),index));
-        order=shape_order(shape,slot.value);
+        NodeFields value=unsafe_position<NodeFields>(graph_slot(nodes,size_of<NodeFields>(),index));
+        order=shape_order(shape,value);
         if(order==i32(0)){return index-1u64;}
         parent=index;
-        index=order<i32(0)?slot.link.left:slot.link.right;
+        OrderedNode link=unsafe_position<OrderedNode>(graph_slot(tree.records,size_of<OrderedNode>(),index));
+        index=order<i32(0)?link.left:link.right;
     }
-    address fresh=ordered_tree_prepare(tree_address,size_of<ShapeSlot>());
-    unsafe_position<ShapeSlot>(fresh).value=shape;
-    ordered_tree_publish(tree_address,size_of<ShapeSlot>(),parent,order);
+    address fresh=ordered_tree_prepare(nodes_address,size_of<NodeFields>());
+    unsafe_position<NodeFields>(fresh)=shape;
+    unsafe_position<OrderedTree>(nodes_address).count+=1u64;
+    address link=ordered_tree_prepare(order_address,size_of<OrderedNode>());
+    ordered_tree_publish(order_address,size_of<OrderedNode>(),parent,order);
     return tree.count;
 }
 
@@ -68,8 +71,14 @@ extern "C" u64 condition_node_index(address graph,u64 key) on cpu {
 }
 
 extern "C" NodeFields condition_node_at(address graph,u64 index) on cpu {
-    return unsafe_position<ShapeSlot>(graph_slot(unsafe_position<CanonicalGraph>(graph).nodes.records,
-        size_of<ShapeSlot>(),index+1u64)).value;
+    return unsafe_position<NodeFields>(graph_slot(unsafe_position<CanonicalGraph>(graph).nodes.records,
+        size_of<NodeFields>(),index+1u64));
+}
+
+extern "C" ConditionNodes condition_seal(address graph) on cpu {
+    fact_tree_clear(address_of(unsafe_position<CanonicalGraph>(graph).identities));
+    OrderedTree nodes=unsafe_position<CanonicalGraph>(graph).nodes;
+    return ConditionNodes(nodes.records,nodes.count);
 }
 
 extern "C" void condition_graph_drop(address graph) on cpu {
@@ -77,34 +86,36 @@ extern "C" void condition_graph_drop(address graph) on cpu {
     fact_tree_clear(address_of(unsafe_position<CanonicalGraph>(graph).identities));
 }
 
-u64 intern_condition_pair(address graph,address shapes,NodeKind kind,ClauseFields source,u32 keep_pairs) on cpu {
+u64 intern_condition_pair(address graph,address nodes,address order,NodeKind kind,ClauseFields source,u32 keep_pairs) on cpu {
     u64 left=condition_node_index(graph,source.first);
     u64 right=condition_node_index(graph,source.second);
     if(keep_pairs==0&&left==right){return left;}
-    return intern_condition_shape(shapes,NodeFields(kind,address(),left,right));
+    return intern_condition_shape(nodes,order,NodeFields(kind,address(),left,right));
 }
 
-u64 intern_condition_node(address graph,address shapes,ClauseFields source,u32 keep_pairs) on cpu {
+u64 intern_condition_node(address graph,address nodes,address order,ClauseFields source,u32 keep_pairs) on cpu {
     if(source.kind==ClauseKind::Facts){
-        return intern_condition_shape(shapes,NodeFields(NodeKind::Facts,source.facts,0u64,0u64));
+        return intern_condition_shape(nodes,order,NodeFields(NodeKind::Facts,source.facts,0u64,0u64));
     }
     if(source.kind==ClauseKind::Both||source.kind==ClauseKind::Branch){
-        return intern_condition_pair(graph,shapes,NodeKind::Both,source,keep_pairs);
+        return intern_condition_pair(graph,nodes,order,NodeKind::Both,source,keep_pairs);
     }
     if(source.kind==ClauseKind::Either){
-        return intern_condition_pair(graph,shapes,NodeKind::Either,source,keep_pairs);
+        return intern_condition_pair(graph,nodes,order,NodeKind::Either,source,keep_pairs);
     }
-    return intern_condition_shape(shapes,NodeFields(NodeKind::Impossible,address(),0u64,0u64));
+    return intern_condition_shape(nodes,order,NodeFields(NodeKind::Impossible,address(),0u64,0u64));
 }
 
 extern "C" void condition_node_ids(address context,address graph,cfn<ClauseFields,address,address> next,u32 keep_pairs)
  on cpu requires nonzero(next) {
-    address shapes=address_of(unsafe_position<CanonicalGraph>(graph).nodes);
+    address nodes=address_of(unsafe_position<CanonicalGraph>(graph).nodes);
     address identities=address_of(unsafe_position<CanonicalGraph>(graph).identities);
+    OrderedTree order=OrderedTree(address(),0u64,0u64,0u64);
     ClauseFields source=next(context,graph);
     while(source.present!=0){
-        u64 index=intern_condition_node(graph,shapes,source,keep_pairs);
+        u64 index=intern_condition_node(graph,nodes,address_of(order),source,keep_pairs);
         bind_condition_identity(identities,source.key,index);
         source=next(context,graph);
     }
+    fact_tree_clear(address_of(order));
 }

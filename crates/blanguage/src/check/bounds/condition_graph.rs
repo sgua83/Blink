@@ -1223,32 +1223,29 @@ fn host(unsigned32: &super::Scalar) -> Host {
     }
 }
 
-// The original required-facts query retains its physical nodes and values.
-// B owns their build/evaluation order and the count of actual consumers.
-#[derive(Clone, Copy)]
+// Only evaluation state is local to the query. The index retains the original nodes.
+#[derive(Clone, Copy, Default)]
 #[repr(C)]
-struct RequiredNode {
-    left: usize,
-    right: usize,
-    kind: u32,
+struct RequiredUses {
     users: usize,
     remaining: usize,
 }
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct RequiredGraph {
-    nodes: *mut RequiredNode,
-    stride: usize,
-    count: usize,
+    nodes: super::codec::conditions::ConditionNodes,
+    uses: *mut RequiredUses,
     root: usize,
 }
+#[derive(Default)]
 struct RequiredResult<'a> {
-    facts: Option<&'a Facts>,
-    node: RequiredNode,
     value: Option<Option<super::QueryFacts<'a>>>,
     valid_additions: Option<bool>,
 }
 pub(super) struct RequiredQuery<'a> {
+    _index: super::codec::conditions::CanonicalGraph<'a>,
+    topology: super::codec::conditions::ConditionNodes,
+    uses: Vec<RequiredUses>,
     nodes: Vec<RequiredResult<'a>>,
     root: usize,
     pending: Vec<usize>,
@@ -1295,26 +1292,23 @@ unsafe extern "C" fn required_pending_count(slot: Slot) -> usize {
 unsafe extern "C" fn required_impossible(slot: Slot, id: usize) {
     unsafe { required_evaluation(slot) }.query.nodes[id].value = Some(None);
 }
-unsafe extern "C" fn required_leaf(slot: Slot, id: usize) {
+unsafe extern "C" fn required_leaf(slot: Slot, id: usize, facts: Borrowed) {
     let evaluation = unsafe { required_evaluation(slot) };
-    if let Some(required) = evaluation.query.nodes[id].facts {
-        let required = if required.is_disjoint(evaluation.environment) {
-            super::QueryFacts::Borrowed(required)
-        } else {
-            super::QueryFacts::Owned(std::sync::Arc::new(
-                required
-                    .difference(evaluation.environment)
-                    .copied()
-                    .collect(),
-            ))
-        };
-        let value = if super::cross_conflict(evaluation.environment, &required, false) {
-            None
-        } else {
-            Some(required)
-        };
-        evaluation.query.nodes[id].value = Some(value);
-    }
+    // Fact leaves in the borrowed topology refer to the original Clause's Facts.
+    let required = unsafe { &*facts.cast::<Facts>() };
+    let required = if required.is_disjoint(evaluation.environment) {
+        super::QueryFacts::Borrowed(required)
+    } else {
+        super::QueryFacts::Owned(Arc::new(
+            required.difference(evaluation.environment).copied().collect(),
+        ))
+    };
+    let value = if super::cross_conflict(evaluation.environment, &required, false) {
+        None
+    } else {
+        Some(required)
+    };
+    evaluation.query.nodes[id].value = Some(value);
 }
 fn take_required<'a>(result: &mut RequiredResult<'a>, last: u32) -> Option<super::QueryFacts<'a>> {
     if last != 0 {
@@ -1323,18 +1317,16 @@ fn take_required<'a>(result: &mut RequiredResult<'a>, last: u32) -> Option<super
         result.value.as_ref().unwrap().clone()
     }
 }
-unsafe extern "C" fn required_union(slot: Slot, id: usize, left_last: u32, right_last: u32) {
+unsafe extern "C" fn required_union(slot: Slot, id: usize, left: usize, right: usize, left_last: u32, right_last: u32) {
     let query = &mut unsafe { required_evaluation(slot) }.query;
-    let node = query.nodes[id].node;
-    let a = take_required(&mut query.nodes[node.left], left_last).unwrap();
-    let b = take_required(&mut query.nodes[node.right], right_last).unwrap();
+    let a = take_required(&mut query.nodes[left], left_last).unwrap();
+    let b = take_required(&mut query.nodes[right], right_last).unwrap();
     query.nodes[id].value = Some(super::combine_facts(a, b));
 }
-unsafe extern "C" fn required_common(slot: Slot, id: usize, left_last: u32, right_last: u32) {
+unsafe extern "C" fn required_common(slot: Slot, id: usize, left: usize, right: usize, left_last: u32, right_last: u32) {
     let evaluation = unsafe { required_evaluation(slot) };
-    let node = evaluation.query.nodes[id].node;
-    let a = take_required(&mut evaluation.query.nodes[node.left], left_last);
-    let b = take_required(&mut evaluation.query.nodes[node.right], right_last);
+    let a = take_required(&mut evaluation.query.nodes[left], left_last);
+    let b = take_required(&mut evaluation.query.nodes[right], right_last);
     evaluation.query.nodes[id].valid_additions = None;
     evaluation.query.nodes[id].value = Some(super::common_facts::either(
         evaluation.environment,
@@ -1345,11 +1337,11 @@ unsafe extern "C" fn required_common(slot: Slot, id: usize, left_last: u32, righ
         b,
     ));
 }
-unsafe extern "C" fn required_valid_additions(slot: Slot, id: usize) -> u32 {
+unsafe extern "C" fn required_valid_additions(slot: Slot, id: usize, users: usize) -> u32 {
     let evaluation = unsafe { required_evaluation(slot) };
     let node = &mut evaluation.query.nodes[id];
     let facts = node.value.as_ref().unwrap().as_ref().unwrap();
-    if node.node.users == 1 {
+    if users == 1 {
         return u32::from(!super::additions_conflict(evaluation.environment, facts));
     }
     // All consumers of this result see the same immutable query environment.
@@ -1371,42 +1363,36 @@ struct RequiredHost {
     pop: unsafe extern "C" fn(Slot) -> RequiredPending,
     pending_count: unsafe extern "C" fn(Slot) -> usize,
     impossible: unsafe extern "C" fn(Slot, usize),
-    leaf: unsafe extern "C" fn(Slot, usize),
-    union: unsafe extern "C" fn(Slot, usize, u32, u32),
-    common: unsafe extern "C" fn(Slot, usize, u32, u32),
-    valid_additions: unsafe extern "C" fn(Slot, usize) -> u32,
+    leaf: unsafe extern "C" fn(Slot, usize, Borrowed),
+    union: unsafe extern "C" fn(Slot, usize, usize, usize, u32, u32),
+    common: unsafe extern "C" fn(Slot, usize, usize, usize, u32, u32),
+    valid_additions: unsafe extern "C" fn(Slot, usize, usize) -> u32,
     release: unsafe extern "C" fn(Slot, usize, u32) -> u32,
 }
 unsafe extern "C" {
+    #[link_name = "bootstrap.condition_graph::required_prepare"]
+    fn prepare_required(graph: RequiredGraph);
     #[link_name = "bootstrap.condition_graph::required_evaluate"]
     fn evaluate_required(graph: RequiredGraph, context: Slot, host: RequiredHost);
 }
 impl<'a> RequiredQuery<'a> {
     pub(super) fn new(root: &'a Clause) -> Self {
-        use super::EncodedClause;
-        let mut nodes = Vec::<RequiredResult<'a>>::new();
-        let graph = super::codec::conditions::node_ids([root], true);
-        for shape in graph.nodes() {
-            let (kind, facts, left, right) = match shape {
-                EncodedClause::Impossible => (0, None, 0, 0),
-                EncodedClause::Facts(facts) => (1, Some(facts), 0, 0),
-                EncodedClause::Both(left, right) => (2, None, left, right),
-                EncodedClause::Either(left, right) => (3, None, left, right),
-            };
-            if kind >= 2 {
-                nodes[left].node.users += 1;
-                nodes[right].node.users += 1;
-            }
-            nodes.push(RequiredResult {
-                facts,
-                node: RequiredNode { left, right, kind, users: 0, remaining: 0 },
-                value: None,
-                valid_additions: None,
-            });
+        let mut index = super::codec::conditions::node_ids([root], true);
+        let root = index.index(root.key());
+        let topology = index.seal();
+        let uses = vec![RequiredUses::default(); index.len()];
+        let nodes = (0..index.len()).map(|_| RequiredResult::default()).collect();
+        let mut query = Self { _index: index, topology, uses, nodes, root, pending: Vec::new() };
+        unsafe { prepare_required(query.graph()) };
+        query
+    }
+
+    fn graph(&mut self) -> RequiredGraph {
+        RequiredGraph {
+            nodes: self.topology,
+            uses: self.uses.as_mut_ptr(),
+            root: self.root,
         }
-        let root = graph.index(root.key());
-        nodes[root].node.users += 1;
-        Self { nodes, root, pending: Vec::new() }
     }
     pub(super) fn evaluate(
         &mut self,
@@ -1414,12 +1400,7 @@ impl<'a> RequiredQuery<'a> {
         roots: &std::collections::BTreeMap<super::ValueIdentity, super::ValueIdentity>,
         members: &[(&super::ValueIdentity, &super::ValueIdentity)],
     ) -> Option<super::QueryFacts<'a>> {
-        let graph = RequiredGraph {
-            nodes: std::ptr::addr_of_mut!(self.nodes[0].node),
-            stride: std::mem::size_of::<RequiredResult<'a>>(),
-            count: self.nodes.len(),
-            root: self.root,
-        };
+        let graph = self.graph();
         let mut evaluation = RequiredEvaluation {
             common_equalities: (!roots.is_empty()).then(std::cell::OnceCell::new),
             query: self,
