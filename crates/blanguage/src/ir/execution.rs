@@ -1,6 +1,6 @@
 //! 原生执行只消费接口、访问依赖和调度布局；值函数与指令属于编译阶段。
 use super::*;
-use std::{collections::BTreeSet, ops::Deref};
+use std::{collections::{BTreeMap, BTreeSet}, ffi::c_void, ops::Deref};
 
 /// A common field value in the original Scalar's ordered numeric encoding.
 /// Binding and byte offset name the actual logical input, never an SSA value.
@@ -66,22 +66,67 @@ pub trait ProgramInterface {
     }
     fn length_requirements(&self) -> &[(usize, usize)];
     fn same_length(&self, a: usize, b: usize) -> bool {
-        let fixed = |a: usize, b: usize| a == b
-            || self.buffers()[a].count.is_some() && self.buffers()[a].count == self.buffers()[b].count;
-        let mut pending = vec![a];
-        let mut visited = BTreeSet::new();
-        while let Some(current) = pending.pop() {
-            if fixed(current, b) { return true; }
-            if !visited.insert(current) { continue; }
-            for &(left, right) in self.length_requirements() {
-                if fixed(current, left) { pending.push(right); }
-                if fixed(current, right) { pending.push(left); }
-            }
+        let relations = self.length_requirements();
+        let mut input = LengthInput {
+            buffers: self.buffers(), relations, fixed: BTreeMap::new(), parents: Vec::new(),
+        };
+        let host = LengthHost {
+            fixed_count: length_count, relation: length_relation,
+            fixed_binding: length_fixed_binding, allocate: length_parents,
+        };
+        unsafe {
+            same_length(LengthPair { left: a, right: b }, relations.len(),
+                std::ptr::from_mut(&mut input).cast(), host) != 0
         }
-        false
     }
     fn requirements(&self) -> DeviceRequirements;
 }
+#[repr(C)]
+struct LengthPair { left: usize, right: usize }
+
+#[repr(C)]
+struct LengthHost {
+    fixed_count: unsafe extern "C" fn(*const c_void, usize) -> u64,
+    relation: unsafe extern "C" fn(*const c_void, usize) -> LengthPair,
+    fixed_binding: unsafe extern "C" fn(*mut c_void, u64, usize) -> usize,
+    allocate: unsafe extern "C" fn(*mut c_void) -> *mut i64,
+}
+
+struct LengthInput<'a> {
+    buffers: &'a [Buffer],
+    relations: &'a [(usize, usize)],
+    fixed: BTreeMap<u64, usize>,
+    parents: Vec<i64>,
+}
+
+unsafe extern "C" {
+    #[link_name = "codec.type_layout::same_length"]
+    fn same_length(query: LengthPair, relations: usize, input: *mut c_void, host: LengthHost) -> u32;
+}
+
+unsafe extern "C" fn length_count(input: *const c_void, binding: usize) -> u64 {
+    let input = unsafe { &*input.cast::<LengthInput<'_>>() };
+    // A length of zero is fixed as well. The wire value zero means dynamic.
+    input.buffers[binding].count.map_or(0, |count| u64::from(count) + 1)
+}
+
+unsafe extern "C" fn length_relation(input: *const c_void, index: usize) -> LengthPair {
+    let input = unsafe { &*input.cast::<LengthInput<'_>>() };
+    let (left, right) = input.relations[index];
+    LengthPair { left, right }
+}
+
+unsafe extern "C" fn length_fixed_binding(input: *mut c_void, count: u64, binding: usize) -> usize {
+    let input = unsafe { &mut *input.cast::<LengthInput<'_>>() };
+    *input.fixed.entry(count).or_insert(binding)
+}
+
+unsafe extern "C" fn length_parents(input: *mut c_void) -> *mut i64 {
+    let input = unsafe { &mut *input.cast::<LengthInput<'_>>() };
+    input.parents.resize(input.buffers.len(), -1);
+    input.parents.as_mut_ptr()
+}
+
 macro_rules! interface_fields {
     ($vis:vis,) => {
         $vis fn name(&self) -> &str { &self.name }

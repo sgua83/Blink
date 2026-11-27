@@ -101,3 +101,15 @@ extern "C" VectorLayout ray_hit_fields(address context,
 extern "C" address field_layout_at(address value, u32 offset, address expected, PathHost host,
     cfn<u32,address,address> ensures memory(read) equal) on cpu
     requires nonzero(host.fields.types.inspect) requires nonzero(host.entry) requires nonzero(equal);
+
+struct LengthPair { u64 left; u64 right; };
+struct LengthHost {
+    cfn<u64,address,u64> ensures memory(read) fixed_count;
+    cfn<LengthPair,address,u64> ensures memory(read) relation;
+    cfn<u64,address,u64,u64> fixed_binding;
+    cfn<address,address> allocate;
+};
+
+extern "C" u32 same_length(LengthPair query, u64 relations, address context, LengthHost host) on cpu
+    requires nonzero(host.fixed_count) requires nonzero(host.relation)
+    requires nonzero(host.fixed_binding) requires nonzero(host.allocate);

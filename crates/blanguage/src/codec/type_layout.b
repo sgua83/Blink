@@ -247,3 +247,67 @@ extern "C" address field_layout_at(address value, u32 offset, address expected, 
     }
     return address();
 }
+
+u64 count_member(address context, LengthHost host, u64 binding, u64 count) on cpu
+    requires nonzero(host.fixed_binding) {
+    return count == 0u64 ? binding : host.fixed_binding(context, count, binding);
+}
+
+address parent_slot(address parents, u64 item) on cpu {
+    return unsafe_address(address_bits(parents) + item * 8u64);
+}
+
+// Roots carry a negative membership count. Other entries name their parent.
+u64 length_root(address parents, u64 item) on cpu {
+    u64 current = item;
+    i64 parent = unsafe_position<i64>(parent_slot(parents, current));
+    while (parent >= i64(0)) {
+        u64 next = u64(parent);
+        i64 ancestor = unsafe_position<i64>(parent_slot(parents, next));
+        if (ancestor < i64(0)) { return next; }
+        unsafe_position<i64>(parent_slot(parents, current)) = ancestor;
+        current = u64(ancestor);
+        parent = unsafe_position<i64>(parent_slot(parents, current));
+    }
+    return current;
+}
+
+void merge_lengths(address parents, u64 left, u64 right) on cpu {
+    u64 first = length_root(parents, left);
+    u64 second = length_root(parents, right);
+    if (first == second) { return; }
+    address a = parent_slot(parents, first);
+    address b = parent_slot(parents, second);
+    i64 a_members = unsafe_position<i64>(a);
+    i64 b_members = unsafe_position<i64>(b);
+    if (a_members <= b_members) {
+        unsafe_position<i64>(a) = a_members + b_members;
+        unsafe_position<i64>(b) = i64(first);
+    } else {
+        unsafe_position<i64>(b) = a_members + b_members;
+        unsafe_position<i64>(a) = i64(second);
+    }
+}
+
+extern "C" u32 same_length(LengthPair query, u64 relations, address context, LengthHost host) on cpu
+    requires nonzero(host.fixed_count) requires nonzero(host.relation)
+    requires nonzero(host.fixed_binding) requires nonzero(host.allocate) {
+    if (query.left == query.right) { return 1; }
+    u64 left = host.fixed_count(context, query.left);
+    u64 right = host.fixed_count(context, query.right);
+    if (left != 0u64 && left == right) { return 1; }
+    if (relations == 0u64) { return 0; }
+
+    address parents = host.allocate(context);
+    u64 first = count_member(context, host, query.left, left);
+    u64 second = count_member(context, host, query.right, right);
+    u64 index = 0u64;
+    while (index < relations) {
+        LengthPair relation = host.relation(context, index);
+        u64 a = count_member(context, host, relation.left, host.fixed_count(context, relation.left));
+        u64 b = count_member(context, host, relation.right, host.fixed_count(context, relation.right));
+        merge_lengths(parents, a, b);
+        index += 1u64;
+    }
+    return u32(length_root(parents, first) == length_root(parents, second));
+}
