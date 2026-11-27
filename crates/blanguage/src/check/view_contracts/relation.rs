@@ -62,8 +62,20 @@ unsafe extern "C" {
 }
 
 #[derive(Clone)]
-pub(in crate::check) enum Epoch { Input, Local { memory:usize, snapshots:Option<Arc<[ValueSnapshot]>> } }
-impl Epoch { fn key(&self)->Option<usize>{match self{Self::Input=>None,Self::Local{memory,..}=>Some(*memory)}} }
+pub(in crate::check) enum Epoch {
+    Input,
+    Local {
+        memory: usize,
+        snapshots: Option<Arc<[ValueSnapshot]>>,
+        replayed: Arc<[usize]>,
+    },
+}
+impl Epoch {
+    fn local(memory: usize, snapshots: Option<Arc<[ValueSnapshot]>>) -> Self {
+        Self::Local { memory, snapshots, replayed: Arc::default() }
+    }
+    fn key(&self)->Option<usize>{match self{Self::Input=>None,Self::Local{memory,..}=>Some(*memory)}}
+}
 impl PartialEq for Epoch{fn eq(&self,b:&Self)->bool{self.key()==b.key()}}
 impl Eq for Epoch{}
 impl PartialOrd for Epoch{fn partial_cmp(&self,b:&Self)->Option<std::cmp::Ordering>{Some(self.cmp(b))}}
@@ -1219,6 +1231,7 @@ struct AddressCaptures<'a, 'env> {
     position: &'a Position,
     path: &'a bounds::Clause,
     index: Option<bounds::Operand>,
+    replayed: &'a [usize],
     value: Option<Borrow>,
 }
 
@@ -1251,10 +1264,32 @@ impl AddressCaptures<'_, '_> {
             bounds::Condition::index_equal(selected, index).truth_in(read.path) == Some(true)))
     }
 
+    fn before_replay(&self, snapshot: &ValueSnapshot) -> Borrow {
+        let mut value = snapshot.proof.view_borrow(0);
+        if self.replayed.is_empty() {
+            return value;
+        }
+        // Replay owns these writes. Recover the value saved before each write.
+        let mut pending: Vec<_> = std::mem::take(&mut value.reads).into_entries().collect();
+        while let Some((read, path)) = pending.pop() {
+            if let ContentRead::Snapshot { memory, position, index, initial, .. } = &read
+                && self.replayed.contains(memory) && *position == snapshot.position && *index == snapshot.index
+            {
+                let mut prior = initial.view_borrow(0).restricted_by(&path);
+                pending.extend(std::mem::take(&mut prior.reads).into_entries());
+                value.union(&prior);
+            } else {
+                value.reads.union_when(read, &path);
+            }
+        }
+        value
+    }
+
     unsafe extern "C" fn accept(context: Slot, at: usize) {
         let read = unsafe { &mut *context.cast::<Self>() };
         let snapshot = &read.snapshots[at];
-        let value = read.evaluation.evaluate(&snapshot.proof.view_borrow(0));
+        let initial = read.before_replay(snapshot);
+        let value = read.evaluation.evaluate(&initial);
         let value = if let Some(bounds::Operand::Value(id @ ValueIdentity::ElementIndex(_))) = snapshot.index {
             let proof = read.index.map_or_else(bounds::Proof::default,
                 |index| bounds::Proof::element_operand(index, (0, u32::MAX)));
@@ -1272,7 +1307,7 @@ impl AddressCaptures<'_, '_> {
 
 impl BorrowEvaluation<'_> {
     pub(super) fn captured_address(&mut self, origin: &address::Origin, word: u32,
-        position: Option<&Position>, memory: usize, snapshots: &[ValueSnapshot],
+        position: Option<&Position>, memory: usize, snapshots: &[ValueSnapshot], replayed: &[usize],
     ) -> Option<Borrow> {
         if snapshots.is_empty() {
             return None;
@@ -1285,7 +1320,7 @@ impl BorrowEvaluation<'_> {
             _ => (Cow::Borrowed(position?), None),
         };
         let path = &self.function.uses[memory].path;
-        let mut read = AddressCaptures { evaluation: self, snapshots, position: &position, path, index, value: None };
+        let mut read = AddressCaptures { evaluation: self, snapshots, position: &position, path, index, replayed, value: None };
         let host = CaptureHost {
             candidate: AddressCaptures::candidate,
             same_index: AddressCaptures::same_index,
@@ -1303,11 +1338,8 @@ impl Builder<'_> {
     fn empty(&mut self)->usize{let id=self.graph.nodes.len();self.graph.nodes.push(Node::default());id}
     fn edge(&mut self,to:usize,from:usize,op:Op,when:bounds::Clause){self.graph.nodes[to].edges.push(Edge{from,op,when:RelationPath::Guard(when)})}
     fn borrow(&mut self,value:&Borrow,epoch:&Epoch)->usize{let id=self.empty();self.fill(id,value,epoch);id}
-    fn read(&mut self, to: usize, from: usize, word: u32, epoch: Epoch, when: RelationPath) -> bool {
-        let (frame, carried) = match &epoch {
-            Epoch::Input => (None, false),
-            Epoch::Local { memory, .. } => self.read_frame(*memory),
-        };
+    fn read(&mut self, to: usize, from: usize, word: u32, mut epoch: Epoch, when: RelationPath) -> bool {
+        let (frame, carried) = self.read_frame(&mut epoch);
         self.graph.nodes[to].edges.push(Edge { from, op: Op::Read { word, epoch, frame }, when });
         carried
     }
@@ -1435,7 +1467,9 @@ impl Builder<'_> {
         }
     }
 
-    fn read_frame(&mut self, memory: usize) -> (Option<usize>, bool) {
+    fn read_frame(&mut self, epoch: &mut Epoch) -> (Option<usize>, bool) {
+        let Epoch::Local { memory, snapshots, replayed } = epoch else { return (None, false); };
+        let memory = *memory;
         let mut current = self.frame(memory);
         let mut frames = Vec::new();
         while let Some(frame) = current {
@@ -1449,6 +1483,7 @@ impl Builder<'_> {
         let path = &function.uses[memory].path;
         let mut parent = None;
         let mut normal = bounds::Normalizer::new();
+        let mut replayed_events = Vec::new();
         let carried = function.visit_carried_writes(memory, |scope, at, prior| {
             let names = function.history_names(at, memory, Some(scope));
             let prior = prior.output_bound(&names);
@@ -1484,6 +1519,9 @@ impl Builder<'_> {
                     write.when.assume(path, true), write.when.assume(path, false),
                 ));
             }
+            if snapshots.is_some() && !writes.is_empty() {
+                replayed_events.push(at);
+            }
             let frame=Frame{parent,writes};let id=match self.graph.frames.iter().position(|f|*f==frame){Some(id)=>id,None=>{let id=self.graph.frames.len();self.graph.frames.push(frame);id}};parent=Some(id);
         }
         if let Some(observe) = self.known.observe {
@@ -1491,6 +1529,7 @@ impl Builder<'_> {
                 memory, tables: normal.storage(),
             });
         }
+        *replayed = replayed_events.into();
         (parent, carried)
     }
     fn key(&mut self,key:Key)->usize{
@@ -1499,21 +1538,22 @@ impl Builder<'_> {
         match key{
             Key::Loop(input)=>{self.graph.inputs.insert(input,id);self.graph.variables.insert(id);self.fill(id,&self.function.loops[&input].borrow.clone(),&Epoch::Input)},
             Key::Read(ContentRead::Relation { memory, graph, root, snapshots }) => {
-                let (prefix, _) = self.read_frame(memory);
-                let from = self.import(&graph, root, prefix, &Epoch::Local { memory, snapshots });
+                let mut epoch = Epoch::local(memory, snapshots);
+                let (prefix, _) = self.read_frame(&mut epoch);
+                let from = self.import(&graph, root, prefix, &epoch);
                 self.edge(id, from, Op::Identity, bounds::Clause::default());
             },
             Key::Read(ContentRead::Value { memory, word, borrow, snapshots }) => {
                 let from = self.borrow(&borrow, &Epoch::Input);
                 let when = RelationPath::Cases(bounds::Condition::execution(&self.function.uses[memory].path));
-                if self.read(id, from, word, Epoch::Local { memory, snapshots: Some(snapshots) }, when) {
+                if self.read(id, from, word, Epoch::local(memory, Some(snapshots)), when) {
                     self.graph.variables.insert(id);
                 }
             },
             Key::Read(ContentRead::Call { memory, origin, word, snapshots }) => {
                 let from = self.position(&origin, &Epoch::Input);
                 let when = RelationPath::Cases(bounds::Condition::execution(&self.function.uses[memory].path));
-                if self.read(id, from, word, Epoch::Local { memory, snapshots }, when) {
+                if self.read(id, from, word, Epoch::local(memory, snapshots), when) {
                     self.graph.variables.insert(id);
                 }
             },
@@ -1537,10 +1577,10 @@ impl Builder<'_> {
                 });
             },
             Key::Read(read)=>{
-                let epoch=match &read{ContentRead::Snapshot{memory,..}|ContentRead::Returned{memory}=>Epoch::Local{memory:*memory,snapshots:None},_=>Epoch::Input};
+                let epoch=match &read{ContentRead::Snapshot{memory,..}|ContentRead::Returned{memory}=>Epoch::local(*memory,None),_=>Epoch::Input};
                 let mut evaluation=BorrowEvaluation{function:self.function,state:self.state,known:self.known,expand_loops:false,deferred_reads:true,loop_bindings:None,values:BTreeMap::new(),stored: None, exit_writes: None,stored_paths:Default::default()};let value=evaluation.content_read(&read,LoopSources::Deferred);self.fill(id,&value,&epoch);
             },
-            Key::Call(result)=>{let call=&self.function.calls[result.call];let value=self.known[&call.function].interface.outputs.get(&result.output).map(|output|call_content_sources(output,call,&call.arguments).at_call(&call.arguments)).unwrap_or_else(||Borrow::source(Origin::Unresolved));self.fill(id,&value,&Epoch::Local{memory:call.memory,snapshots:call.snapshots.clone()});},
+            Key::Call(result)=>{let call=&self.function.calls[result.call];let value=self.known[&call.function].interface.outputs.get(&result.output).map(|output|call_content_sources(output,call,&call.arguments).at_call(&call.arguments)).unwrap_or_else(||Borrow::source(Origin::Unresolved));self.fill(id,&value,&Epoch::local(call.memory,call.snapshots.clone()));},
         }id
     }
     fn import(&mut self, graph: &Graph, root: usize, prefix: Option<usize>, entry: &Epoch) -> usize {
@@ -1688,7 +1728,7 @@ impl<F> ComponentCallInputs<'_, '_, '_, '_, '_, F> {
                 index
             }
         };
-        let epoch = Epoch::Local { memory: call.memory, snapshots: call.snapshots.clone() };
+        let epoch = Epoch::local(call.memory, call.snapshots.clone());
         for (input, proof) in &call.arguments {
             let Some(&node) = inputs.ports[target].roots.get(input) else { continue; };
             let actual = proof.view_borrow(0).restricted(&call.path);
@@ -1771,9 +1811,7 @@ impl SelfCallInputs<'_, '_> {
         if let Some(calls) = &mut roots.forwarding_calls {
             calls.push(index);
         }
-        let epoch = std::cell::LazyCell::new(|| Epoch::Local {
-            memory: call.memory, snapshots: call.snapshots.clone(),
-        });
+        let epoch = std::cell::LazyCell::new(|| Epoch::local(call.memory, call.snapshots.clone()));
         for (input, value) in &call.arguments {
             if let Some(&id) = roots.nodes.get(input) {
                 let value = value.view_borrow(0).restricted(&call.path);
@@ -1914,8 +1952,9 @@ impl Graph {
         function: &Function, state: LoopScope<'_>, known: &States,
     ) -> (Arc<Self>, usize) {
         let mut builder = Self::builder(function, state, known);
-        let (prefix, _) = builder.read_frame(memory);
-        let root = builder.import(self, root, prefix, &Epoch::Local { memory, snapshots });
+        let mut epoch = Epoch::local(memory, snapshots);
+        let (prefix, _) = builder.read_frame(&mut epoch);
+        let root = builder.import(self, root, prefix, &epoch);
         (Arc::new(builder.graph), root)
     }
     fn remove_identity_feedback(&mut self) {
@@ -2772,7 +2811,13 @@ impl<'g> Query<'g> {
                 decision
             });
             let value=if !ready{Borrow::default()}else if delayed{self.deferred(id)}else if content.earlier.as_ref().is_some_and(|p|!p.possible()){content.with_initial(Borrow::default())}else if origin.symbolic_input(){self.deferred(id)}else{
-                let base=match epoch{Epoch::Input=>input_contents(origin,word),Epoch::Local{memory,snapshots}=>evaluation.content_before(origin,word,*memory,snapshots.as_deref())};
+                let initial = match epoch {
+                    Epoch::Input => None,
+                    Epoch::Local { memory, snapshots, replayed } => snapshots.as_ref().and_then(|snapshots| {
+                        evaluation.captured_address(origin, word, position.as_ref(), *memory, snapshots, replayed)
+                    }),
+                };
+                let base = initial.unwrap_or_else(|| input_contents(origin, word));
                 if base.sources.iter().any(|s|matches!(s,Origin::Contents{..})){self.deferred(id)}else{content.with_initial(base)}
             };output.sources.union_restricted(&value.sources, &path);
         }output

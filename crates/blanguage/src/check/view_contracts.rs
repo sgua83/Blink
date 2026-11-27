@@ -1084,7 +1084,7 @@ impl BorrowEvaluation<'_>{
 
         let position=content_position(origin,word);
         if let Some(snapshots) = snapshots
-            && let Some(value) = self.captured_address(origin, word, position.as_ref(), memory, snapshots)
+            && let Some(value) = self.captured_address(origin, word, position.as_ref(), memory, snapshots, &[])
         {
             return value;
         }
