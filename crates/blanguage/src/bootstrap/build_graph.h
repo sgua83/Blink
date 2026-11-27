@@ -13,17 +13,17 @@ struct GraphSource {
     cfn<GraphRow,address,u64> row;
     cfn<GraphEdge,address,u64> edge;
 };
-struct GraphOutput {
+struct GraphStorage {
     address providers; address following; address waiting; address followers;
     address ready; address counts;
 };
 
 // The allocation starts with borrowed external identities. Provider IDs below
 // the unit count name units, and the remaining IDs index that prefix.
-struct GraphPlan { address ids; u64 count; u64 status; u64 unit; };
-extern "C" GraphPlan plan(GraphSource source,GraphOutput output) on cpu
+struct GraphPlan { address ids; u64 count; GraphStorage storage; u64 status; u64 unit; };
+extern "C" GraphPlan plan(GraphSource source) on cpu
     requires nonzero(source.row) requires nonzero(source.edge);
-extern "C" void release_plan(address ids) on cpu;
+extern "C" void release_plan(address ids,address storage) on cpu;
 
 // Entry keys borrow canonical paths and the planner's existing provider rows.
 struct EntryKey { NameBytes path; NameBytes root; GraphRange providers; u64 unit; };

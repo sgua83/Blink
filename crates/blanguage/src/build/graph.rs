@@ -1,7 +1,7 @@
 //! 调用方持有的一次编译图；只调度本次真实依赖，不保留后台消费者。
 use super::{ByteField, Compilation, ObjectCompilation, ObjectKind, Result, inputs::{Capture, CapturedUnit, ProviderInterface}};
 use crate::{Compiler, ast::Target, object::Object, source_path};
-use std::{collections::BTreeMap, ffi::{OsStr, c_void}, marker::PhantomData, mem::MaybeUninit, os::windows::ffi::OsStrExt, path::{Path, PathBuf}, ptr, sync::{Arc, Condvar, Mutex, MutexGuard}, thread};
+use std::{collections::BTreeMap, ffi::{OsStr, c_void}, marker::PhantomData, os::windows::ffi::OsStrExt, path::{Path, PathBuf}, ptr, sync::{Arc, Condvar, Mutex, MutexGuard}, thread};
 #[derive(Clone, Copy)]
 pub enum Dependency<'a> {
     Unit(usize),
@@ -41,7 +41,7 @@ struct Prepared<'a> {
     kind: UnitKind<'a>,
 }
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 struct GraphRange {
     start: usize,
     count: usize,
@@ -105,11 +105,11 @@ unsafe extern "C" fn graph_edge(dependencies: *const c_void, index: usize) -> Gr
 }
 
 #[repr(C)]
-struct GraphOutput {
-    providers: *mut GraphRange,
-    following: *mut GraphRange,
+struct GraphStorage {
+    providers: *const GraphRange,
+    following: *const GraphRange,
     waiting: *mut usize,
-    followers: *mut usize,
+    followers: *const usize,
     ready: *mut usize,
     counts: *mut ScheduleCounts,
 }
@@ -122,6 +122,7 @@ const ENTRY_PROVIDER: u64 = 3;
 struct GraphPlan<'object> {
     ids: *const usize,
     count: usize,
+    storage: GraphStorage,
     status: u64,
     unit: usize,
     objects: PhantomData<&'object Object>,
@@ -129,19 +130,19 @@ struct GraphPlan<'object> {
 
 unsafe extern "C" {
     #[link_name = "bootstrap.build_graph::plan"]
-    fn build_dependency_plan<'object>(source: GraphSource<'object>, output: GraphOutput) -> GraphPlan<'object>;
+    fn build_dependency_plan<'object>(source: GraphSource<'object>) -> GraphPlan<'object>;
     #[link_name = "bootstrap.build_graph::release_plan"]
-    fn release_dependency_plan(ids: *const usize);
+    fn release_dependency_plan(ids: *const usize, storage: *const GraphRange);
     #[link_name = "bootstrap.build_graph::capture_sources"]
     fn capture_sources(source: CaptureSource, indices: *mut usize) -> i32;
     #[link_name = "bootstrap.build_schedule::run_worker"]
     fn run_worker(context: *mut c_void, host: WorkHost);
 }
 
-// The planner transfers an immutable allocation and retains no input borrow
-// except the original Object references. The process heap is shared by workers.
+// The allocation moves into the graph state. Workers access its mutable
+// scheduling rows under the state lock, and only the original Object
+// references remain borrowed from the input.
 unsafe impl Send for GraphPlan<'_> {}
-unsafe impl Sync for GraphPlan<'_> {}
 
 impl<'object> GraphPlan<'object> {
     fn ids(&self) -> &[usize] {
@@ -153,8 +154,15 @@ impl<'object> GraphPlan<'object> {
         }
     }
 
-    fn dependencies(&self, row: GraphRange, unit_count: usize) -> impl Iterator<Item = Dependency<'object>> + '_ {
+    fn provider_row(&self, unit: usize, unit_count: usize) -> GraphRange {
+        // A successful B plan initialized one provider row per input unit.
+        let rows = unsafe { std::slice::from_raw_parts(self.storage.providers, unit_count) };
+        rows[unit]
+    }
+
+    fn dependencies(&self, unit: usize, unit_count: usize) -> impl Iterator<Item = Dependency<'object>> + '_ {
         let ids = self.ids();
+        let row = self.provider_row(unit, unit_count);
         row.slice(ids).iter().copied().map(move |id| {
             if id < unit_count {
                 Dependency::Unit(id)
@@ -169,22 +177,8 @@ impl<'object> GraphPlan<'object> {
 
 impl Drop for GraphPlan<'_> {
     fn drop(&mut self) {
-        unsafe { release_dependency_plan(self.ids); }
+        unsafe { release_dependency_plan(self.ids, self.storage.providers); }
     }
-}
-
-struct DependencyPlan<'a> {
-    plan: GraphPlan<'a>,
-    provider_rows: Vec<GraphRange>,
-    schedule: Schedule,
-}
-
-struct Schedule {
-    following: Vec<GraphRange>,
-    followers: Vec<usize>,
-    waiting: Vec<usize>,
-    ready: Vec<usize>,
-    counts: ScheduleCounts,
 }
 
 #[repr(C)]
@@ -193,33 +187,17 @@ struct ScheduleCounts {
     unfinished: usize,
 }
 
-fn dependency_plan<'a>(units: &[Unit<'a>]) -> Result<DependencyPlan<'a>> {
+fn dependency_plan<'a>(units: &[Unit<'a>]) -> Result<GraphPlan<'a>> {
     let edge_count = units.iter().map(|unit| unit.dependencies.len()).sum();
-    let mut provider_rows = vec![GraphRange::default(); units.len()];
-    let mut following_rows = vec![GraphRange::default(); units.len()];
-    let mut waiting = vec![0; units.len()];
-    let mut followers = vec![0; edge_count];
-    let mut ready = vec![0; units.len()];
-    let mut counts = MaybeUninit::uninit();
     let plan = unsafe {
-        build_dependency_plan(
-            GraphSource {
-                units: units.as_ptr().cast(),
-                count: units.len(),
-                edge_count,
-                row: graph_row,
-                edge: graph_edge,
-                objects: PhantomData::<&'a Object>,
-            },
-            GraphOutput {
-                providers: provider_rows.as_mut_ptr(),
-                following: following_rows.as_mut_ptr(),
-                waiting: waiting.as_mut_ptr(),
-                followers: followers.as_mut_ptr(),
-                ready: ready.as_mut_ptr(),
-                counts: counts.as_mut_ptr(),
-            },
-        )
+        build_dependency_plan(GraphSource {
+            units: units.as_ptr().cast(),
+            count: units.len(),
+            edge_count,
+            row: graph_row,
+            edge: graph_edge,
+            objects: PhantomData::<&'a Object>,
+        })
     };
     let index = plan.unit;
     match plan.status {
@@ -235,12 +213,7 @@ fn dependency_plan<'a>(units: &[Unit<'a>]) -> Result<DependencyPlan<'a>> {
         }
         status => return Err(std::io::Error::from_raw_os_error(status as i32).into()),
     }
-    let schedule = Schedule {
-        following: following_rows, followers, waiting, ready,
-        // The successful plan initializes both counts before returning.
-        counts: unsafe { counts.assume_init() },
-    };
-    Ok(DependencyPlan { plan, provider_rows, schedule })
+    Ok(plan)
 }
 
 enum Provider<'a> {
@@ -253,15 +226,15 @@ impl Provider<'_> {
     }
 }
 
-struct State {
-    schedule: Schedule,
+struct State<'source> {
+    plan: GraphPlan<'source>,
     outputs: Vec<Option<Output>>,
     // Zero gives a worker-start error precedence over any unit error.
     // Unit positions use index + 1, so the original input order breaks ties
     // between failures from work already in flight.
     failure: Option<(usize, Box<dyn std::error::Error + Send + Sync>)>,
 }
-impl State {
+impl State<'_> {
     fn failure_rank(&self) -> usize {
         self.failure.as_ref().map_or(usize::MAX, |(rank, _)| *rank)
     }
@@ -295,9 +268,7 @@ struct GraphExecution<'graph, 'source> {
     prepared: &'graph [Prepared<'source>],
     inputs: &'graph [super::Inputs],
     capture_indices: &'graph [usize],
-    provider_rows: &'graph [GraphRange],
-    plan: &'graph GraphPlan<'source>,
-    state: Mutex<State>,
+    state: Mutex<State<'source>>,
     changed: Condvar,
 }
 impl GraphExecution<'_, '_> {
@@ -332,7 +303,7 @@ impl GraphExecution<'_, '_> {
 // release or borrow of the protected state inside that call.
 struct GraphWorker<'graph, 'source> {
     execution: &'graph GraphExecution<'graph, 'source>,
-    guard: Option<MutexGuard<'graph, State>>,
+    guard: Option<MutexGuard<'graph, State<'source>>>,
     result: Option<(usize, Result<Output>)>,
 }
 
@@ -340,13 +311,13 @@ impl GraphWorker<'_, '_> {
     fn queue(&mut self) -> WorkQueue {
         let state = self.guard.as_deref_mut().unwrap();
         let failure = state.failure_rank();
-        let schedule = &mut state.schedule;
+        let storage = &mut state.plan.storage;
         WorkQueue {
-            ready: schedule.ready.as_mut_ptr(),
-            waiting: schedule.waiting.as_mut_ptr(),
-            following: schedule.following.as_ptr(),
-            followers: schedule.followers.as_ptr(),
-            counts: &mut schedule.counts,
+            ready: storage.ready,
+            waiting: storage.waiting,
+            following: storage.following,
+            followers: storage.followers,
+            counts: storage.counts,
             failure,
         }
     }
@@ -369,7 +340,7 @@ unsafe extern "C" fn execute_unit(context: *mut c_void, index: usize) -> WorkRes
     let worker = unsafe { &mut *context.cast::<GraphWorker<'_, '_>>() };
     let graph = worker.execution;
     let state = worker.guard.take().unwrap();
-    let providers = graph.plan.dependencies(graph.provider_rows[index], graph.prepared.len()).map(|dependency| match dependency {
+    let providers = state.plan.dependencies(index, graph.prepared.len()).map(|dependency| match dependency {
         Dependency::Unit(id) => match state.outputs[id].as_ref().unwrap() {
             Output::Object(value) => Provider::Built(value.clone()),
             Output::Entry(_) => unreachable!(),
@@ -406,7 +377,7 @@ unsafe extern "C" fn release_graph(context: *mut c_void) {
 }
 struct GraphCapture<'graph, 'source> {
     prepared: &'graph [Prepared<'source>],
-    dependencies: &'graph DependencyPlan<'source>,
+    dependencies: &'graph GraphPlan<'source>,
     headers: &'graph [Arc<crate::syntax::Module>],
     capture: Capture,
     captured: Vec<CapturedUnit>,
@@ -419,7 +390,7 @@ unsafe extern "C" fn capture_key(context: *mut c_void, index: usize, key: *mut E
     unsafe { key.write(EntryKey {
         path: unit.path.as_os_str().as_encoded_bytes().into(),
         root: unit.root.as_os_str().as_encoded_bytes().into(),
-        providers: state.dependencies.provider_rows[index],
+        providers: state.dependencies.provider_row(index, state.prepared.len()),
         unit: index,
     }); }
     true
@@ -428,9 +399,8 @@ unsafe extern "C" fn capture_key(context: *mut c_void, index: usize, key: *mut E
 unsafe extern "C" fn capture_unit(context: *mut c_void, index: usize, shared: bool) {
     let state = unsafe { &mut *context.cast::<GraphCapture<'_, '_>>() };
     let unit = &state.prepared[index];
-    let row = state.dependencies.provider_rows[index];
     let mut providers = BTreeMap::new();
-    for dependency in state.dependencies.plan.dependencies(row, state.prepared.len()) {
+    for dependency in state.dependencies.dependencies(index, state.prepared.len()) {
         let (name, interface) = match dependency {
             Dependency::Unit(id) => {
                 let header = &state.headers[id];
@@ -494,7 +464,7 @@ impl Compiler {
         // the synchronous capture. It writes the final worker indices here.
         let status = unsafe { capture_sources(CaptureSource {
             context: ptr::from_mut(&mut state).cast(),
-            unit_count: prepared.len(), entry_count, ids: dependency_plan.plan.ids().as_ptr(),
+            unit_count: prepared.len(), entry_count, ids: dependency_plan.ids().as_ptr(),
             key: capture_key, capture: capture_unit,
         }, capture_indices.as_mut_ptr()) };
         if status != 0 { return Err(std::io::Error::from_raw_os_error(status).into()); }
@@ -504,12 +474,10 @@ impl Compiler {
             crate::parallel::Error::Work(error) => error,
             crate::parallel::Error::Resource(error) => Box::new(error) as Box<dyn std::error::Error + Send + Sync>,
         })?;
-        let DependencyPlan { plan, provider_rows, schedule } = dependency_plan;
         let graph = GraphExecution {
-            compiler: self, prepared: &prepared, inputs: &inputs, capture_indices: &capture_indices, provider_rows: &provider_rows,
-            plan: &plan,
+            compiler: self, prepared: &prepared, inputs: &inputs, capture_indices: &capture_indices,
             state: Mutex::new(State {
-                schedule, outputs: (0..units.len()).map(|_| None).collect(), failure: None,
+                plan: dependency_plan, outputs: (0..units.len()).map(|_| None).collect(), failure: None,
             }),
             changed: Condvar::new(),
         };
