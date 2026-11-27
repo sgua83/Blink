@@ -95,11 +95,8 @@ impl<K:Ord+Clone> Edges<K>{
         }
     }
 
-    fn guards_at_call(&self, bindings: &BTreeMap<ValueIdentity,bounds::Proof>) -> Self {
-        Self(self.0.iter().map(|(key, when)| {
-            let when = when.project_guard(bindings);
-            (key.clone(), when)
-        }).collect())
+    fn with_paths(&self, paths: &mut impl Iterator<Item = bounds::Clause>) -> Self {
+        Self(self.0.keys().cloned().zip(paths).collect())
     }
 
     fn output_bound(&self, bindings: &BTreeMap<ValueIdentity,ValueIdentity>) -> Self {
@@ -535,18 +532,19 @@ impl Borrow{
     pub(super) fn map_sources_at_call(
         &self, bindings: &BTreeMap<ValueIdentity, bounds::Proof>, map: impl Fn(Source, &bounds::Clause) -> Self,
     ) -> Self {
-        self.map_sources_into(self.pending_guards_at_call(bindings), |source, condition| {
-            map(source,condition).restricted_by(&condition.project_guard(bindings))
-        })
-    }
-
-    fn pending_guards_at_call(&self, bindings: &BTreeMap<ValueIdentity, bounds::Proof>) -> Self {
-        Self {
-            sources: Edges::default(),
-            inputs: self.inputs.guards_at_call(bindings),
-            calls: self.calls.guards_at_call(bindings),
-            reads: self.reads.guards_at_call(bindings),
+        let roots = self.inputs.paths().chain(self.calls.paths())
+            .chain(self.reads.paths()).chain(self.sources.paths());
+        let mut projected = bounds::Clause::project_guard_paths(roots, bindings).into_iter();
+        let mut result = Self {
+            inputs: self.inputs.with_paths(&mut projected),
+            calls: self.calls.with_paths(&mut projected),
+            reads: self.reads.with_paths(&mut projected),
+            ..Self::default()
+        };
+        for ((source, original), path) in self.sources.0.iter().zip(projected) {
+            result.union_restricted(&map(source.clone(), original), &path);
         }
+        result
     }
     pub(super) fn bind_guards(&self,bindings:&BTreeMap<ValueIdentity,ValueIdentity>)->Self {
         Self{sources:self.sources.output_bound(bindings),inputs:self.inputs.output_bound(bindings),
@@ -561,18 +559,12 @@ impl Borrow{
     }
 
     pub(super) fn map_source_paths(&self, map: impl Fn(Source, &bounds::Clause) -> Self) -> Self {
-        let result = Self {
+        let mut result = Self {
             inputs: self.inputs.clone(), calls: self.calls.clone(),
             reads: self.reads.clone(), ..Self::default()
         };
-        self.map_sources_into(result, |source, condition| map(source,condition).restricted_by(condition))
-    }
-
-    fn map_sources_into(
-        &self, mut result: Self, map: impl Fn(Source, &bounds::Clause) -> Self,
-    ) -> Self {
         for (source, condition) in &self.sources.0 {
-            result.union(&map(source.clone(), condition));
+            result.union_restricted(&map(source.clone(), condition), condition);
         }
         result
     }
