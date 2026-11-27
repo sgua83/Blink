@@ -1,5 +1,34 @@
 module codec.value_format;
 
+const u32 BLDATA_MAGIC_LOW = 0x41444c42;
+const u32 BLDATA_MAGIC_HIGH = 0x00004154;
+const u32 BLDATA_VERSION = 1;
+
+u32 decode_bldata_word(BldataWord word) on cpu {
+    return u32(word.b0) | (u32(word.b1) << 8) | (u32(word.b2) << 16) | (u32(word.b3) << 24);
+}
+
+BldataWord encode_bldata_word(u32 value) on cpu {
+    return BldataWord(u8(value), u8(value >> 8), u8(value >> 16), u8(value >> 24));
+}
+
+extern "C" BldataHeader decode_bldata_header(read BldataWire bytes) on cpu {
+    if (decode_bldata_word(bytes.magic_low) != BLDATA_MAGIC_LOW ||
+        decode_bldata_word(bytes.magic_high) != BLDATA_MAGIC_HIGH) {
+        return BldataHeader(BldataStatus::Magic, 0, 0);
+    }
+    if (decode_bldata_word(bytes.version) != BLDATA_VERSION) {
+        return BldataHeader(BldataStatus::Version, 0, 0);
+    }
+    return BldataHeader(BldataStatus::Valid, decode_bldata_word(bytes.count), decode_bldata_word(bytes.stride));
+}
+
+extern "C" void encode_bldata_header(write BldataWire bytes, u32 count, u32 stride, u32 steps) on cpu {
+    bytes = BldataWire(
+        encode_bldata_word(BLDATA_MAGIC_LOW), encode_bldata_word(BLDATA_MAGIC_HIGH), encode_bldata_word(BLDATA_VERSION),
+        encode_bldata_word(count), encode_bldata_word(stride), encode_bldata_word(steps));
+}
+
 struct ReadBytes { Bytes value;ReadStatus status; };
 struct ReadAccess { AccessTag value;ReadStatus status; };
 struct ReadTarget { TargetTag value;ReadStatus status; };

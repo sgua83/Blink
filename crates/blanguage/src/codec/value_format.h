@@ -2,6 +2,17 @@ module codec.value_format;
 // Borrowed typed projections and construction slots for the shared value format.
 // Callers retain original inputs, containers and the sole Reader position.
 
+// BLDATA v1 is a fixed little-endian header at the start of the file.
+struct BldataWord { u8 b0; u8 b1; u8 b2; u8 b3; };
+struct BldataWire {
+    BldataWord magic_low; BldataWord magic_high; BldataWord version;
+    BldataWord count; BldataWord stride; BldataWord steps;
+};
+enum BldataStatus : u32 { Valid = 0; Magic = 1; Version = 2; };
+struct BldataHeader { BldataStatus status; u32 count; u32 stride; };
+extern "C" BldataHeader decode_bldata_header(read BldataWire bytes) on cpu;
+extern "C" void encode_bldata_header(write BldataWire bytes, u32 count, u32 stride, u32 steps) on cpu;
+
 struct Bytes { address data; u64 count; };
 
 struct Span { address data; u64 count; u64 stride; };

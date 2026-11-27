@@ -114,6 +114,27 @@ pub struct DatasetMemory {
     pub capacity_bytes: u64,
 }
 
+const BLDATA_HEADER_BYTES: usize = 24;
+
+#[allow(dead_code)] // Produced by the B header decoder.
+#[repr(u32)]
+enum BldataStatus { Valid, Magic, Version }
+
+#[repr(C)]
+struct BldataHeader {
+    status: BldataStatus,
+    count: u32,
+    stride: u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "codec.value_format::decode_bldata_header"]
+    fn decode_bldata_header(bytes: &[u8; BLDATA_HEADER_BYTES]) -> BldataHeader;
+
+    #[link_name = "codec.value_format::encode_bldata_header"]
+    fn encode_bldata_header(bytes: *mut [u8; BLDATA_HEADER_BYTES], count: u32, stride: u32, steps: u32);
+}
+
 pub struct Dataset {
     pub(crate) ty: Ty,
     pub(crate) stride: u32,
@@ -194,28 +215,27 @@ impl Dataset {
     ) -> Result<Self> {
         use std::io::Read;
         let mut input = std::fs::File::open(path)?;
-        let mut header = [0u8; 24];
-        input.read_exact(&mut header)?;
-        if &header[..8] != b"BLDATA\0\0" {
-            return Err(error("不是 BLDATA 数据"));
-        }
-        let word = |i| u32::from_le_bytes(header[i..i + 4].try_into().unwrap());
-        if word(8) != 1 {
-            return Err(error("不支持的 BLDATA 版本"));
+        let mut bytes = [0u8; BLDATA_HEADER_BYTES];
+        input.read_exact(&mut bytes)?;
+        let header = unsafe { decode_bldata_header(&bytes) };
+        match header.status {
+            BldataStatus::Valid => (),
+            BldataStatus::Magic => return Err(error("不是 BLDATA 数据")),
+            BldataStatus::Version => return Err(error("不支持的 BLDATA 版本")),
         }
         let ty = &program.buffers().get(binding)
             .ok_or_else(|| error("数据绑定编号越界"))?.ty;
-        if word(16) != blanguage::ir::align_up(ty.size, ty.align) {
+        if header.stride != blanguage::ir::align_up(ty.size, ty.align) {
             return Err(error("BLDATA 步长与编译布局不一致"));
         }
-        let length = word(16) as usize * word(12) as usize;
+        let length = header.stride as usize * header.count as usize;
         let file_bytes = disk_file_length(&input)?;
-        if file_bytes.is_some_and(|bytes| bytes < header.len() as u64 + length as u64) {
+        if file_bytes.is_some_and(|bytes| bytes < BLDATA_HEADER_BYTES as u64 + length as u64) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof, "failed to fill whole buffer",
             ).into());
         }
-        let mut data = Self::with_type(ty.clone(), word(12))?;
+        let mut data = Self::with_type(ty.clone(), header.count)?;
         // 已初始化的原字存储覆盖完整逻辑载荷；末字未读填充保持零。
         let bytes = unsafe {
             std::slice::from_raw_parts_mut(data.words.as_mut_ptr().cast::<u8>(), length)
@@ -233,10 +253,13 @@ impl Dataset {
     pub fn write_data(&self, path: &std::path::Path, steps: u32) -> Result<()> {
         use std::io::Write;
         let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
-        file.write_all(b"BLDATA\0\0")?;
-        for word in [1, self.count, self.stride, steps] {
-            file.write_all(&word.to_le_bytes())?;
-        }
+        let mut header = std::mem::MaybeUninit::<[u8; BLDATA_HEADER_BYTES]>::uninit();
+        // The B codec writes the entire fixed header before it returns.
+        let header = unsafe {
+            encode_bldata_header(header.as_mut_ptr(), self.count, self.stride, steps);
+            header.assume_init()
+        };
+        file.write_all(&header)?;
         let length = self.stride as usize * self.count as usize;
         if cfg!(target_endian = "little") {
             // 原字存储已是文件字节序；只交付逻辑载荷，不包含末字额外填充。
