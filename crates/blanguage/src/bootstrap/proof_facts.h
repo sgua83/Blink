@@ -21,5 +21,6 @@ extern "C" FactCursor fact_tree_range(address owner, FactBound start, FactBound 
 extern "C" address fact_tree_next(address owner, address cursor, u32 reverse) on cpu;
 
 extern "C" address fact_tree_merge(address left, address right, address cursors, u32 operation) on cpu;
+extern "C" void fact_tree_collect_merge(address left,address right,address cursors,u32 operation,address output) on cpu;
 extern "C" i32 fact_tree_compare(address left, address right) on cpu;
 extern "C" u32 fact_tree_relation(address left, address right, u32 subset) on cpu;

@@ -2443,6 +2443,9 @@ fn combine_facts<'a>(mut a: QueryFacts<'a>, mut b: QueryFacts<'a>) -> Option<Que
         return None;
     }
     if a.len() < b.len() { std::mem::swap(&mut a, &mut b); }
+    if let QueryFacts::Borrowed(facts) = &a {
+        return Some(QueryFacts::Owned(Arc::new(facts.union(&b).into_facts())));
+    }
     a.extend(b.iter().copied());
     Some(a)
 }
@@ -2615,7 +2618,7 @@ impl Condition {
     pub(super) fn with_aliases(&self,aliases:&Clause)->Self{
         let common=aliases.required();
         Self{cases:self.cases.each_ref().map(|case|match Clause::both(case,aliases).required(){
-            Some(facts)=>Clause::both(case,&Clause::facts(facts.difference(common.as_ref().unwrap()).copied().collect())),
+            Some(facts)=>Clause::both(case,&Clause::facts(facts.difference(common.as_ref().unwrap()).into_facts())),
             None=>Clause::impossible(),
         })}
     }

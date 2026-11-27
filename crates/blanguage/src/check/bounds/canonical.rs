@@ -306,7 +306,7 @@ unsafe extern "C" fn product_right(slot: Slot) -> Term {
 }
 unsafe extern "C" fn product_union(slot: Slot, left: Borrowed, right: Borrowed) {
     let (left, right) = unsafe { (&*left.cast::<Facts>(), &*right.cast::<Facts>()) };
-    let facts = left.union(right).copied().collect();
+    let facts = left.union(right).into_facts();
     accept(&facts, unsafe { product(slot) }.output);
 }
 #[repr(C)]

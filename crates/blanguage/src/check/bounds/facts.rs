@@ -80,6 +80,9 @@ unsafe extern "C" {
     #[link_name = "bootstrap.proof_facts::fact_tree_merge"]
     fn merge(left: &Facts, right: &Facts, cursors: &mut [Cursor; 2],
         operation: MergeOperation) -> Borrowed;
+    #[link_name = "bootstrap.proof_facts::fact_tree_collect_merge"]
+    fn collect_merge(left: &Facts, right: &Facts, cursors: &mut [Cursor; 2],
+        operation: MergeOperation, output: &mut Facts);
     #[link_name = "bootstrap.proof_facts::fact_tree_compare"]
     fn ordered(left: &Facts, right: &Facts) -> i32;
     #[link_name = "bootstrap.proof_facts::fact_tree_relation"]
@@ -290,6 +293,12 @@ impl<'a> Merge<'a> {
     fn new(left: &'a Facts, right: &'a Facts, operation: MergeOperation) -> Self {
         let positions = unsafe { [cursor(left), cursor(right)] };
         Self { left, right, positions, operation }
+    }
+
+    pub(super) fn into_facts(mut self) -> Facts {
+        let mut output = Facts::new();
+        unsafe { collect_merge(self.left, self.right, &mut self.positions, self.operation, &mut output) };
+        output
     }
 }
 

@@ -29,10 +29,7 @@ unsafe fn context<'a, 'b>(slot: Slot) -> &'a mut Context<'b> {
 }
 unsafe extern "C" fn intersection(slot: Slot) {
     let context = unsafe { context(slot) };
-    context.common = context.sides[0]
-        .intersection(context.sides[1])
-        .copied()
-        .collect();
+    context.common = context.sides[0].intersection(context.sides[1]).into_facts();
 }
 #[repr(C)]
 struct Root {

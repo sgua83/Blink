@@ -361,6 +361,32 @@ extern "C" address fact_tree_merge(address left, address right, address cursors,
     }
 }
 
+struct LinkedTree { u64 root; u64 height; };
+
+LinkedTree link_ordered(address records,u64 first,u64 count,u64 parent) on cpu {
+    if(count==0u64){return LinkedTree(0u64,0u64);}
+    u64 left_count=count/2u64;
+    u64 index=first+left_count;
+    LinkedTree left=link_ordered(records,first,left_count,index);
+    LinkedTree right=link_ordered(records,index+1u64,count-left_count-1u64,index);
+    u64 height=1u64+max(left.height,right.height);
+    unsafe_position<OrderedNode>(node(records,index))=OrderedNode(left.root,right.root,parent,height);
+    return LinkedTree(index,height);
+}
+
+extern "C" void fact_tree_collect_merge(address left,address right,address cursors,u32 operation,address output) on cpu {
+    address key=fact_tree_merge(left,right,cursors,operation);
+    while(key!=address()){
+        address cell=ordered_tree_prepare(output,size_of<FactCell>());
+        RtlMoveMemory(offset(cell,size_of<OrderedNode>()),key,size_of<FactKey>());
+        unsafe_position<OrderedTree>(output).count+=1u64;
+        key=fact_tree_merge(left,right,cursors,operation);
+    }
+    OrderedTree tree=unsafe_position<OrderedTree>(output);
+    LinkedTree linked=link_ordered(tree.records,1u64,tree.count,0u64);
+    unsafe_position<OrderedTree>(output).root=linked.root;
+}
+
 extern "C" i32 fact_tree_compare(address left, address right) on cpu {
     if (left == right) { return i32(0); }
     OrderedTree a = unsafe_position<OrderedTree>(left);

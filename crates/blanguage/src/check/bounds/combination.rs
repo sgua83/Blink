@@ -72,7 +72,7 @@ fn leaf_host() -> LeafHost {
 }
 unsafe extern "C" fn unite(output: Slot, left: Borrowed, right: Borrowed) {
     let (left, right) = unsafe { (&*left.cast::<Facts>(), &*right.cast::<Facts>()) };
-    let mut facts: Facts = left.union(right).copied().collect();
+    let mut facts = left.union(right).into_facts();
     unsafe { b_facts((&mut facts as *mut Facts).cast(), output, leaf_host()) };
 }
 #[repr(C)]

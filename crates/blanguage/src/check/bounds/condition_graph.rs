@@ -1279,9 +1279,7 @@ unsafe extern "C" fn required_leaf(slot: Slot, id: usize, facts: Borrowed) {
     let required = if required.is_disjoint(evaluation.environment) {
         super::QueryFacts::Borrowed(required)
     } else {
-        super::QueryFacts::Owned(Arc::new(
-            required.difference(evaluation.environment).copied().collect(),
-        ))
+        super::QueryFacts::Owned(Arc::new(required.difference(evaluation.environment).into_facts()))
     };
     let value = if super::cross_conflict(evaluation.environment, &required, false) {
         None
