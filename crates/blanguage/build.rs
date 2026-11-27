@@ -148,7 +148,7 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 "metadata_read" | "object_read" => &["coff_read"],
                 "pe" => &["coff_read", "combine"],
-                "parser" => &["unicode_scalar"],
+                "parser" => &["unicode_scalar", "lexer", "ast_storage"],
                 _ => &[],
             };
             for &input in inputs {
@@ -226,6 +226,7 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
 
 const MODULES: &[&str] = &[
     "lexer",
+    "ast_storage",
     "parser",
     "names",
     "signatures",
@@ -246,7 +247,6 @@ const MODULES: &[&str] = &[
     "bindings",
     "metadata_read",
     "object_read",
-    "ast_storage",
     "combine",
     "pe",
     "native_import",
