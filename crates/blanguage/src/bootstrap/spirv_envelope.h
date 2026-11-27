@@ -128,7 +128,7 @@ struct FunctionStorageInput {
     address pointers;
     usize rays; u32 next; u32 ray_pointer; u32 word_type; u32 byte_type; u32 short_type;
 };
-struct FunctionStorageWords { u64 definitions; u64 body; usize arrays; u32 next; };
+struct FunctionStorageWords { u64 definitions; u64 body; usize arrays; u32 next; u32 ray_base; };
 struct FunctionStorageStreams { address definitions; address body; address arrays; };
 struct FunctionStorageHost {
     address context;
@@ -456,14 +456,14 @@ struct TextureSampling {
     u32 vec4;
 };
 
-struct RayDeclaration { u32 id; u32 positions; u32 object_to_world; u32 world_to_object; };
 struct RayBindings {
     address accelerations;
     u32 acceleration_type;
     u32 vec2;
     u32 vec3;
     address types;
-    cfn<RayDeclaration,address,usize> ensures memory(read) query;
+    Span queries;
+    u32 base;
     cfn<u32,address,TypeShape,u32,u32> declare_type;
 };
 
@@ -481,7 +481,7 @@ struct BlockHost {
 extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     StructuredHost host, BlockHost emit) on cpu
     requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
-    requires nonzero(emit.textures.declaration) requires nonzero(emit.rays.query) requires nonzero(emit.rays.declare_type)
+    requires nonzero(emit.textures.declaration) requires nonzero(emit.rays.declare_type)
     requires nonzero(emit.tile.identity) requires nonzero(emit.tile.components)
     requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
     requires nonzero(emit.paging.pointer_type) requires nonzero(emit.paging.finish_body)

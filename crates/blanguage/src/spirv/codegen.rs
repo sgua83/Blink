@@ -709,21 +709,14 @@ struct TextureSampling {
 }
 
 #[repr(C)]
-struct RayDeclaration {
-    id: u32,
-    positions: u32,
-    object_to_world: u32,
-    world_to_object: u32,
-}
-
-#[repr(C)]
 struct RayBindings {
     accelerations: *const u32,
     acceleration_type: u32,
     vec2: u32,
     vec3: u32,
     types: *mut u32,
-    query: unsafe extern "C" fn(StructuredContext, Reg) -> RayDeclaration,
+    queries: Span,
+    base: u32,
     declare_type: unsafe extern "C" fn(*mut std::ffi::c_void, TypeShape, u32, u32) -> u32,
 }
 
@@ -786,7 +779,8 @@ fn block_host(emitter: &mut Emitter<'_>) -> BlockHost {
             vec2: emitter.vec2_type,
             vec3: emitter.vec3_type,
             types: emitter.ray_types.as_mut_ptr(),
-            query: block_ray_declaration,
+            queries: Span::slice(emitter.ray_queries),
+            base: emitter.ray_base,
             declare_type: block_declare_type,
         },
     }
@@ -807,17 +801,6 @@ unsafe extern "C" fn block_reject(context: StructuredContext, rejection: BlockRe
         BlockRejection::FloatMath => "GPU f64 超越函数尚未实现；GLSL.std.450 对应指令不接受64位浮点，不能隐式降低精度",
     });
     BlockFlow::Error
-}
-
-unsafe extern "C" fn block_ray_declaration(context: StructuredContext, hit: Reg) -> RayDeclaration {
-    let emission = unsafe { &*context.cast::<StructuredEmission<'_, '_>>() };
-    let (id, fields) = emission.emitter.ray_variables[&hit];
-    RayDeclaration {
-        id,
-        positions: u32::from(fields.positions),
-        object_to_world: u32::from(fields.object_to_world),
-        world_to_object: u32::from(fields.world_to_object),
-    }
 }
 
 unsafe extern "C" fn block_declare_type(
@@ -1033,6 +1016,7 @@ struct FunctionStorageWords {
     body: u64,
     arrays: usize,
     next: u32,
+    ray_base: u32,
 }
 
 #[repr(C)]
@@ -1100,7 +1084,8 @@ struct Emitter<'a> {
     texture_types: [SampledType; 2],
     vec4_type: u32,
     acceleration_type: u32,
-    ray_variables: BTreeMap<Reg, (u32, crate::ir::dataflow::RayFields)>,
+    ray_queries: &'a [dataflow::RayQuery],
+    ray_base: u32,
     ray_types: [u32; 2],
     vec3_type: u32,
     vec2_type: u32,
@@ -1180,14 +1165,12 @@ impl<'ir> Emitter<'ir> {
         id
     }
     fn declare_function_storage(
-        &mut self, ray_pointer: u32, facts: &ShaderStageFacts, code: &[Inst],
+        &mut self, ray_pointer: u32, code: &[Inst],
         declarations: &'ir BTreeMap<usize, Ty>,
     ) {
         let slots = declarations.last_key_value().map_or(0, |(end, _)| *end);
         let definitions = self.defs.len();
         let body = self.body.len();
-        let rays = &facts.ray_queries;
-        let first_ray = self.next;
         self.locals.resize(slots, 0);
         let result = {
             let mut storage = FunctionStorage {
@@ -1205,7 +1188,7 @@ impl<'ir> Emitter<'ir> {
                 code: Span::slice(code),
                 locals: Span::mutable(&mut self.locals),
                 pointers: self.pointers.0.as_ptr(),
-                rays: rays.len(), next: self.next, ray_pointer,
+                rays: self.ray_queries.len(), next: self.next, ray_pointer,
                 word_type: self.types[&Scalar::U32],
                 byte_type: self.types[&Scalar::U8],
                 short_type: self.types[&Scalar::U16],
@@ -1220,9 +1203,7 @@ impl<'ir> Emitter<'ir> {
             self.private_arrays.set_len(result.arrays);
         }
         self.next = result.next;
-        for (offset, &(reg, fields)) in rays.iter().enumerate() {
-            self.ray_variables.insert(reg, (first_ray + offset as u32, fields));
-        }
+        self.ray_base = result.ray_base;
     }
     fn declare_workgroup(&mut self, input: WorkgroupDeclaration) -> Result<WorkgroupVariables, &'static str> {
         let definitions = self.defs.len();
@@ -1621,7 +1602,7 @@ unsafe extern "C" {
 }
 
 struct ShaderStageFacts {
-    ray_queries: Vec<(Reg, crate::ir::dataflow::RayFields)>,
+    ray_queries: dataflow::ShaderRayQueries,
     code: crate::ir::dataflow::ShaderCodeRequirements,
 }
 
@@ -1900,7 +1881,8 @@ fn emit_shader(
         texture_types: [SampledType::default(); 2],
         vec4_type: 0,
         acceleration_type: 0,
-        ray_variables: BTreeMap::new(),
+        ray_queries: &facts.ray_queries.rows,
+        ray_base: 0,
         ray_types: [0; 2],
         vec3_type: 0,
         vec2_type: 0,
@@ -1971,7 +1953,7 @@ fn emit_shader(
         subgroup_shuffle: u32::from(subgroup_caps.shuffle),
         subgroup_shuffle_relative: u32::from(subgroup_caps.shuffle_relative),
         acceleration: u32::from(acceleration),
-        position_fetch: u32::from(facts.ray_queries.iter().any(|(_, fields)| fields.positions)),
+        position_fetch: facts.ray_queries.position_fetch,
         descriptor_indexing: u32::from(descriptor_indexing),
         maximal_reconvergence: subgroups.maximal_reconvergence,
     };
@@ -2043,7 +2025,7 @@ fn emit_shader(
     e.emit_control(7, |body| unsafe { begin_shader_body(void, main, fn_ty, entry, body) });
     if !argument_pass {
         e.regs = (0..registers.len()).map(|_| e.id()).collect();
-        e.declare_function_storage(ray_pointer, facts, code, locals);
+        e.declare_function_storage(ray_pointer, code, locals);
     }
     let gid = e.id();
     let local_index = e.id();

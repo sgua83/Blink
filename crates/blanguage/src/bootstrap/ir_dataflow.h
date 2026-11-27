@@ -551,7 +551,10 @@ extern "C" SubgroupFlags subgroup_capabilities(Span stages,RegisterHost host) on
 extern "C" ProgramCodeRequirements program_code_requirements(Span stages,u32 requested,RegisterHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar);
 
-struct RayQuery { Span fields; usize result; };
+const u32 RAY_POSITIONS = 1;
+const u32 RAY_OBJECT_TO_WORLD = 2;
+const u32 RAY_WORLD_TO_OBJECT = 4;
+struct RayQuery { Span fields; usize result; u32 ordinal; u32 used; };
 extern "C" u32 scan_ray_queries(Span code,Host host,bool closest_only,address context,
  cfn<void,address,Span,usize> emit) on cpu requires nonzero(host.inspect) requires nonzero(emit);
 
@@ -565,6 +568,10 @@ extern "C" u32 ray_result_queries(Span code,Span queries,Span ranges,RayHost hos
  cfn<u32,address,usize,usize> visit) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.include) requires nonzero(host.contains)
  requires nonzero(host.fields) requires nonzero(visit);
+
+extern "C" u32 shader_ray_usage(Span code,Span queries,bool closest,RayHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.include) requires nonzero(host.contains)
+ requires nonzero(host.fields);
 
 struct ExecutionBuffers { usize indirect; usize auxiliary; };
 extern "C" usize indirect_buffer(Span stages,usize buffers,Host host) on cpu

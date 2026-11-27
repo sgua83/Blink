@@ -601,7 +601,7 @@ extern "C" FunctionStorageWords function_storage(FunctionStorageInput input, Fun
         group = host.next_local(host.context);
     }
 
-    return FunctionStorageWords(out.words, words, count, out.next);
+    return FunctionStorageWords(out.words, words, count, out.next, input.next);
 }
 
 extern "C" u64 flag_decoration(address decorations, u64 at, FlagDecoration decoration, u32 id) on cpu {
@@ -1955,7 +1955,7 @@ void block_private_storage(View instruction, BlockValues values, BlockLocals loc
 extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     StructuredHost host, BlockHost emit) on cpu
     requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
-    requires nonzero(emit.textures.declaration) requires nonzero(emit.rays.query) requires nonzero(emit.rays.declare_type)
+    requires nonzero(emit.textures.declaration) requires nonzero(emit.rays.declare_type)
     requires nonzero(emit.tile.identity) requires nonzero(emit.tile.components)
     requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
     requires nonzero(emit.paging.pointer_type) requires nonzero(emit.paging.finish_body)
@@ -3462,19 +3462,35 @@ ControlWords ray_closest(RayIntersection input, Span results, BlockValues values
     return ControlWords(at, merge, 1);
 }
 
+RayQuery ray_at(Span queries, usize index) on cpu {
+    return unsafe_position<RayQuery>(unsafe_address(address_bits(queries.data) + index * size_of<RayQuery>()));
+}
+
+RayQuery ray_declaration(Span queries, usize result) on cpu {
+    usize low = 0u64;
+    usize high = queries.count;
+    while (low < high) {
+        usize mid = low + (high - low) / 2u64;
+        if (ray_at(queries, mid).result <= result) { low = mid + 1u64; }
+        else { high = mid; }
+    }
+    return ray_at(queries, low - 1u64);
+}
+
 void block_ray_query(View source, Span direction_values, BlockValues values, RayBindings bindings, StructuredHost host) on cpu
-    requires nonzero(bindings.query) requires nonzero(bindings.declare_type)
+    requires nonzero(bindings.declare_type)
     requires nonzero(host.reserve_words) requires nonzero(host.finish_words)
     requires nonzero(values.scalars.constant) requires nonzero(values.scalars.type_id) requires nonzero(values.scalars.ids) {
     Span results = source.first;
-    RayDeclaration declared = bindings.query(host.context, unsafe_position<usize>(results.data));
+    RayQuery declared = ray_declaration(bindings.queries, unsafe_position<usize>(results.data));
+    u32 used = declared.used;
     ScalarHost stream = values.scalars;
     address context = stream.context;
     address registers = values.registers;
     bool closest = results.count == 39u64;
 
     u32 position_type = 0;
-    if (declared.positions != 0) {
+    if ((used & RAY_POSITIONS) != 0) {
         position_type = read_word(bindings.types, 0);
         if (position_type == 0) {
             u32 length = stream.constant(context, BuiltinScalar::U32, 3u64);
@@ -3483,7 +3499,7 @@ void block_ray_query(View source, Span direction_values, BlockValues values, Ray
         }
     }
     u32 transform_type = 0;
-    if (declared.object_to_world != 0 || declared.world_to_object != 0) {
+    if ((used & (RAY_OBJECT_TO_WORLD | RAY_WORLD_TO_OBJECT)) != 0) {
         transform_type = read_word(bindings.types, 1);
         if (transform_type == 0) {
             transform_type = bindings.declare_type(context, TypeShape::Matrix, bindings.vec3, 4);
@@ -3523,7 +3539,7 @@ void block_ray_query(View source, Span direction_values, BlockValues values, Ray
     u32 end = first + 6;
     u32 more = first + 7;
     u32 kind = first + 8;
-    u32 query = declared.id;
+    u32 query = bindings.base + declared.ordinal;
     at = words_three(body, at, 61, bindings.acceleration_type, acceleration,
                      block_register(bindings.accelerations, source.c));
     at = words_five(body, at, 80, bindings.vec3, origin,
@@ -3555,8 +3571,8 @@ void block_ray_query(View source, Span direction_values, BlockValues values, Ray
     if (closest) {
         u32 f32_type = stream.type_id(context, BuiltinScalar::F32);
         RayIntersection intersection = RayIntersection(query, u32_type, f32_type, bindings.vec2, maximum, committed,
-            zero, float_zero, position_type, declared.object_to_world != 0 ? transform_type : 0,
-            declared.world_to_object != 0 ? transform_type : 0);
+            zero, float_zero, position_type, (used & RAY_OBJECT_TO_WORLD) != 0 ? transform_type : 0,
+            (used & RAY_WORLD_TO_OBJECT) != 0 ? transform_type : 0);
         host.finish_words(host.context, ray_closest(intersection, results, values, body, at));
     } else {
         host.finish_words(host.context, ControlWords(at, end, 1));

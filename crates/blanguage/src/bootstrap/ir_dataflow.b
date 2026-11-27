@@ -2243,6 +2243,39 @@ extern "C" u32 scan_ray_queries(Span code,Host host,bool closest_only,address co
  return closest;
 }
 
+bool ray_fields_used(Span result,usize begin,usize end,RayHost host) on cpu
+ requires nonzero(host.fields) requires nonzero(host.contains) {
+ Span fields=host.fields(result,begin,end);
+ usize field=0u64;
+ while(field<fields.count) {
+  if(host.contains(host.used,word_at(fields,field))!=0){return true;}
+  field+=1u64;
+ }
+ return false;
+}
+
+extern "C" u32 shader_ray_usage(Span code,Span queries,bool closest,RayHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.include) requires nonzero(host.contains)
+ requires nonzero(host.fields) {
+ if(closest){collect_ray_operands(code,host);}
+ u32 used=0;
+ usize ordinal=0u64;
+ while(ordinal<queries.count) {
+  address row=node_at(queries,ordinal,N_INSTRUCTION).data;
+  RayQuery query=unsafe_position<RayQuery>(row);
+  query.ordinal=u32(ordinal);
+  if(query.fields.count==39u64) {
+   if(ray_fields_used(query.fields,6u64,15u64,host)){query.used|=RAY_POSITIONS;}
+   if(ray_fields_used(query.fields,15u64,27u64,host)){query.used|=RAY_OBJECT_TO_WORLD;}
+   if(ray_fields_used(query.fields,27u64,39u64,host)){query.used|=RAY_WORLD_TO_OBJECT;}
+  }
+  used|=query.used;
+  unsafe_position<RayQuery>(row)=query;
+  ordinal+=1u64;
+ }
+ return used & RAY_POSITIONS;
+}
+
 extern "C" u32 ray_result_queries(Span code,Span queries,Span ranges,RayHost host,address context,
  cfn<u32,address,usize,usize> visit) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.include) requires nonzero(host.contains)
@@ -2255,12 +2288,7 @@ extern "C" u32 ray_result_queries(Span code,Span queries,Span ranges,RayHost hos
    usize group=0u64;
    while(group<ranges.count) {
     View range=host.ir.inspect(node_at(ranges,group,N_RAY_RANGE));
-    Span fields=host.fields(result,range.a,range.b);
-    usize field=0u64; bool consumed=false;
-    while(field<fields.count && !consumed) {
-     consumed=host.contains(host.used,word_at(fields,field))!=0;field+=1u64;
-    }
-    if(consumed && visit(context,group,query)==0){return 0;}
+    if(ray_fields_used(result,range.a,range.b,host) && visit(context,group,query)==0){return 0;}
     group+=1u64;
    }
   }
