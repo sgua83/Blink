@@ -74,11 +74,11 @@ struct TileKey {
     kind: TileKeyKind,
 }
 
-impl From<SharedWord> for TileKey {
-    fn from(value: SharedWord) -> Self {
-        match value {
-            SharedWord::Input { binding, word } => Self { owner: binding, word, kind: TileKeyKind::Input },
-            SharedWord::Published { tile, word } => Self { owner: tile, word, kind: TileKeyKind::Published },
+impl TileKey {
+    fn shared_word(self) -> SharedWord {
+        match self.kind {
+            TileKeyKind::Input => SharedWord::Input { binding: self.owner, word: self.word },
+            TileKeyKind::Published => SharedWord::Published { tile: self.owner, word: self.word },
         }
     }
 }
@@ -88,42 +88,38 @@ struct TileCell {
     unit: ScalarCode,
     slot: u32,
     byte: u32,
-    variable: u32,
-    pointer_type: u32,
+    present: u32,
+}
+
+#[repr(C)]
+struct TilePlanes {
+    narrow: u32,
+    narrow_pointer: u32,
+    wide: u32,
+    wide_pointer: u32,
 }
 
 #[repr(C)]
 pub(super) struct TileStorage {
     cell: unsafe extern "C" fn(*mut c_void, TileKey) -> TileCell,
-    word: unsafe extern "C" fn(*mut c_void, usize, u32) -> TileKey,
+    tiles: Span,
     components: unsafe extern "C" fn(*mut c_void, usize) -> *mut scan::TreeComponent,
+    planes: TilePlanes,
     width: u32,
     lane: u32,
     length: u32,
-    shared: u32,
-    pointer: u32,
     data_words: u32,
 }
 
 unsafe extern "C" fn tile_cell(context: *mut c_void, key: TileKey) -> TileCell {
     let emitter = unsafe { &*context.cast::<Emitter<'_>>() };
-    let shared = match key.kind {
-        TileKeyKind::Input => SharedWord::Input { binding: key.owner, word: key.word },
-        TileKeyKind::Published => SharedWord::Published { tile: key.owner, word: key.word },
-    };
-    emitter.tile_layout.get(&shared.aligned()).map_or(TileCell::ABSENT, |&(unit, slot, part)| {
-        emitter.placed_tile_cell(unit, slot, part + key.word % 4)
+    emitter.tile_layout.get(&key.shared_word()).map_or(TileCell::ABSENT, |&(unit, slot, byte)| {
+        TileCell { unit: unit.into(), slot: slot as u32, byte, present: 1 }
     })
 }
 
 impl TileCell {
-    const ABSENT: Self = Self {
-        unit: ScalarCode::U32, slot: 0, byte: 0, variable: 0, pointer_type: 0,
-    };
-}
-
-unsafe extern "C" fn tile_word(context: *mut c_void, tile: usize, word: u32) -> TileKey {
-    unsafe { &*context.cast::<Emitter<'_>>() }.stage.shared_word(tile, word).into()
+    const ABSENT: Self = Self { unit: ScalarCode::U32, slot: 0, byte: 0, present: 0 };
 }
 
 unsafe extern "C" fn tile_tree_components(context: *mut c_void, count: usize) -> *mut scan::TreeComponent {
@@ -137,6 +133,7 @@ unsafe extern "C" fn tile_tree_components(context: *mut c_void, count: usize) ->
 struct TileInputLayout {
     page: PageInputs,
     descriptors: *const u32,
+    planes: TilePlanes,
     count: u32,
     active: u32,
     width: u32,
@@ -173,21 +170,21 @@ struct TileInputCursor<'a> {
 #[repr(C)]
 struct TileInputSource {
     cursor: *mut c_void,
-    row: unsafe extern "C" fn(*mut c_void, *mut c_void) -> TileInputRow,
+    row: unsafe extern "C" fn(*mut c_void) -> TileInputRow,
     fragment: unsafe extern "C" fn(*mut c_void) -> TileInputFragment,
 }
 
-unsafe extern "C" fn tile_input_row(cursor: *mut c_void, context: *mut c_void) -> TileInputRow {
+unsafe extern "C" fn tile_input_row(cursor: *mut c_void) -> TileInputRow {
     let cursor = unsafe { &mut *cursor.cast::<TileInputCursor<'_>>() };
     let Some((&SharedWord::Input { binding, word }, &(unit, slot, byte))) = cursor.cells.next() else {
         return TileInputRow { binding: 0, word: 0, fragments: 0, cell: TileCell::ABSENT };
     };
-    let emitter = unsafe { &*context.cast::<Emitter<'_>>() };
     let fragments = cursor.inputs.get(&(binding, word)).map_or(0, |fragments| {
         cursor.fragments = fragments.iter();
         fragments.len()
     });
-    TileInputRow { binding, word, fragments, cell: emitter.placed_tile_cell(unit, slot, byte) }
+    let cell = TileCell { unit: unit.into(), slot: slot as u32, byte, present: 1 };
+    TileInputRow { binding, word, fragments, cell }
 }
 
 unsafe extern "C" fn tile_input_fragment(cursor: *mut c_void) -> TileInputFragment {
@@ -210,7 +207,7 @@ impl Emitter<'_> {
         };
         let input = TileInputLayout {
             page: self.page_inputs(0, self.index, Some(0), 0), descriptors: self.buffers.as_ptr(),
-            count, active, width: self.workgroup_width, label: self.current_label,
+            planes: self.tile_planes(), count, active, width: self.workgroup_width, label: self.current_label,
         };
         let source = TileInputSource {
             cursor: std::ptr::from_mut(&mut cursor).cast(),
@@ -222,20 +219,18 @@ impl Emitter<'_> {
         self.current_label = range.label;
     }
 
-    fn placed_tile_cell(&self, unit: Scalar, slot: usize, byte: u32) -> TileCell {
-        let (pointer_type, variable) = if unit == Scalar::U64 {
-            (self.tile_pointer64, self.tile_shared64)
-        } else {
-            (self.tile_pointer, self.tile_shared)
-        };
-        TileCell { unit: unit.into(), slot: slot as u32, byte, variable, pointer_type }
+    fn tile_planes(&self) -> TilePlanes {
+        TilePlanes {
+            narrow: self.tile_shared, narrow_pointer: self.tile_pointer,
+            wide: self.tile_shared64, wide_pointer: self.tile_pointer64,
+        }
     }
 
     pub(super) fn tile_storage(&self) -> TileStorage {
         TileStorage {
-            cell: tile_cell, word: tile_word, components: tile_tree_components,
-            width: self.workgroup_width, lane: self.tile_lane, length: self.tile_length,
-            shared: self.tile_shared, pointer: self.tile_pointer, data_words: self.tile_data_words,
+            cell: tile_cell, tiles: Span::slice(&self.stage.tiles), components: tile_tree_components,
+            planes: self.tile_planes(), width: self.workgroup_width,
+            lane: self.tile_lane, length: self.tile_length, data_words: self.tile_data_words,
         }
     }
 

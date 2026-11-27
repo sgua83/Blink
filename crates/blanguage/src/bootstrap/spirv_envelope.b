@@ -1848,7 +1848,7 @@ BlockFlow emit_leaf(View value, StructuredHost host, BlockHost emit) on cpu
     requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
     requires nonzero(emit.textures.declaration) requires nonzero(emit.rays.declare_type)
     requires nonzero(emit.tile.components)
-    requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
+    requires nonzero(emit.tile.cell)
     requires nonzero(emit.paging.finish_body)
     requires nonzero(emit.paging.current_label)
     requires nonzero(emit.values.scalar) requires nonzero(emit.values.binary) requires nonzero(emit.values.finish)
@@ -1888,7 +1888,7 @@ BlockFlow emit_leaf(View value, StructuredHost host, BlockHost emit) on cpu
         address body = stream.reserve(stream.context, 4u64, 0u64).body;
         memory.finish_body(stream.context, copy_shader_value(body, 0u64, type_id, result, id));
     } else if (kind == OP_TILE_LOAD) {
-        TileKey key = emit.tile.word(memory.scalars.context, value.b, u32(value.d));
+        TileKey key = tile_key(emit.tile.tiles, value.b, u32(value.d), emit.ir);
         u32 index = block_register(emit.values.registers, value.c);
         block_tile_read(emit.values, emit.tile, key, index, 0, value.a, memory);
     } else if (kind == OP_SUBGROUP) {
@@ -1911,7 +1911,7 @@ BlockFlow emit_leaf(View value, StructuredHost host, BlockHost emit) on cpu
         }
         bool write = kind == OP_STORE_INDEXED;
         if (source.tag == INDEXED_TILE) {
-            TileKey key = emit.tile.word(memory.scalars.context, source.a, u32(value.c));
+            TileKey key = tile_key(emit.tile.tiles, source.a, u32(value.c), emit.ir);
             u32 index = block_register(emit.values.registers, source.b);
             u32 offset = block_register(emit.values.registers, write ? value.a : value.b);
             if (write) {
@@ -1976,7 +1976,7 @@ BlockFlow emit_block(Span code, ControlTargets targets, inout ReturnEdges edges,
     requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
     requires nonzero(emit.textures.declaration) requires nonzero(emit.rays.declare_type)
     requires nonzero(emit.tile.components)
-    requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
+    requires nonzero(emit.tile.cell)
     requires nonzero(emit.paging.finish_body)
     requires nonzero(emit.paging.current_label)
     requires nonzero(emit.values.scalar) requires nonzero(emit.values.binary) requires nonzero(emit.values.finish)
@@ -2067,7 +2067,7 @@ extern "C" BlockFlow emit_instruction_block(Span code, StructuredHost host, Bloc
     requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
     requires nonzero(emit.textures.declaration) requires nonzero(emit.rays.declare_type)
     requires nonzero(emit.tile.components)
-    requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
+    requires nonzero(emit.tile.cell)
     requires nonzero(emit.paging.finish_body)
     requires nonzero(emit.paging.current_label)
     requires nonzero(emit.values.scalar) requires nonzero(emit.values.binary) requires nonzero(emit.values.finish)
@@ -2083,7 +2083,7 @@ extern "C" void emit_tile_phases(u32 active, StructuredHost control, TilePhaseHo
     requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
     requires nonzero(emit.textures.declaration) requires nonzero(emit.rays.declare_type)
     requires nonzero(emit.tile.components)
-    requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
+    requires nonzero(emit.tile.cell)
     requires nonzero(emit.paging.finish_body)
     requires nonzero(emit.paging.current_label)
     requires nonzero(emit.values.scalar) requires nonzero(emit.values.binary) requires nonzero(emit.values.finish)
@@ -2332,7 +2332,7 @@ u32 atomic_operand(BlockValues values, usize reg, MemoryHost memory) on cpu
 }
 
 void block_atomic(View instruction, View target, View op, BlockHost emit, MemoryHost memory) on cpu
-    requires nonzero(emit.values.scalar) requires nonzero(emit.tile.word) requires nonzero(emit.tile.cell)
+    requires nonzero(emit.values.scalar) requires nonzero(emit.ir.inspect) requires nonzero(emit.tile.cell)
     requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve)
     requires nonzero(memory.finish_body) {
@@ -2348,7 +2348,7 @@ void block_atomic(View instruction, View target, View op, BlockHost emit, Memory
     bool workgroup = target.tag == INDEXED_TILE;
     u32 pointer;
     if (workgroup) {
-        TileKey key = emit.tile.word(context, target.a, u32(instruction.a));
+        TileKey key = tile_key(emit.tile.tiles, target.a, u32(instruction.a), emit.ir);
         pointer = tile_storage_pointer(emit.tile, key, index, offset, memory);
     } else {
         PageInputs page = block_dataset_page(emit.paging, target.a);
@@ -3586,7 +3586,22 @@ void block_ray_query(View source, Span direction_values, BlockValues values, Ray
 
 struct TileLocation { u32 pointer; u32 byte; };
 
-TileLocation tile_cell_address(TileCell cell, u32 index, u32 offset, u32 width, MemoryHost memory) on cpu
+TileKey tile_key(Span tiles, usize tile, u32 word, Host ir) on cpu requires nonzero(ir.inspect) {
+    address element = unsafe_address(address_bits(tiles.data) + tile * tiles.stride);
+    View source = ir.inspect(Node(element, N_TILE));
+    return source.tag == 0
+        ? TileKey(source.a, u32(source.b) + word, TileKeyKind::Input)
+        : TileKey(tile, word, TileKeyKind::Published);
+}
+
+TileCell tile_storage_cell(TileStorage storage, TileKey key, address context) on cpu requires nonzero(storage.cell) {
+    TileKey aligned = TileKey(key.owner, key.word & 0xfffffffc, key.kind);
+    TileCell cell = storage.cell(context, aligned);
+    cell.byte += key.word % 4;
+    return cell;
+}
+
+TileLocation tile_cell_address(TileCell cell, TilePlanes planes, u32 index, u32 offset, u32 width, MemoryHost memory) on cpu
     requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
     ScalarHost stream = memory.scalars;
@@ -3612,7 +3627,10 @@ TileLocation tile_cell_address(TileCell cell, u32 index, u32 offset, u32 width, 
         at = stage_op(out, 128, ty, index, lane_offset);
     }
     if (base != 0) { at = stage_op(out, 128, ty, at, base); }
-    u32 pointer = stage_op(out, 65, cell.pointer_type, cell.variable, at);
+    bool wide = cell.unit == BuiltinScalar::U64;
+    u32 pointer_type = wide ? planes.wide_pointer : planes.narrow_pointer;
+    u32 variable = wide ? planes.wide : planes.narrow;
+    u32 pointer = stage_op(out, 65, pointer_type, variable, at);
     memory.finish_body(context, out.words);
     stream.ids(context, out.next - next);
     return TileLocation(pointer, byte);
@@ -3622,8 +3640,8 @@ u32 tile_storage_pointer(TileStorage storage, TileKey key, u32 index, u32 offset
     requires nonzero(storage.cell)
     requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
-    TileCell cell = storage.cell(memory.scalars.context, key);
-    return tile_cell_address(cell, index, offset, storage.width, memory).pointer;
+    TileCell cell = tile_storage_cell(storage, key, memory.scalars.context);
+    return tile_cell_address(cell, storage.planes, index, offset, storage.width, memory).pointer;
 }
 
 u32 tile_storage_read(TileStorage storage, TileKey key, u32 index, u32 offset,
@@ -3633,8 +3651,8 @@ u32 tile_storage_read(TileStorage storage, TileKey key, u32 index, u32 offset,
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
     ScalarHost stream = memory.scalars;
     address context = stream.context;
-    TileCell cell = storage.cell(context, key);
-    TileLocation at = tile_cell_address(cell, index, offset, storage.width, memory);
+    TileCell cell = tile_storage_cell(storage, key, context);
+    TileLocation at = tile_cell_address(cell, storage.planes, index, offset, storage.width, memory);
     u32 width = scalar_definition(scalar).width;
     u32 cell_width = scalar_definition(cell.unit).width;
     if (width < cell_width) {
@@ -3701,10 +3719,10 @@ void block_tile_write(BlockValues values, TileStorage storage, TileKey key, u32 
         raw, address_of(pointers[0]), address(), memory);
 }
 
-void emit_shared_store(TileCell cell, u32 index, u32 width, u32 value, MemoryHost memory) on cpu
+void emit_shared_store(TileCell cell, TilePlanes planes, u32 index, u32 width, u32 value, MemoryHost memory) on cpu
     requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
-    u32 pointer = tile_cell_address(cell, index, 0, width, memory).pointer;
+    u32 pointer = tile_cell_address(cell, planes, index, 0, width, memory).pointer;
     ScalarHost stream = memory.scalars;
     address body = stream.reserve(stream.context, 3u64, 0u64).body;
     memory.finish_body(stream.context, plain_store(body, 0u64, pointer, value));
@@ -3726,14 +3744,14 @@ void pack_record_field(PackedField field, u32 word_type, u32 zero, address packe
     stream.ids(context, out.next - next);
 }
 
-TileInputRow next_tile_snapshot(TileInputSource source, address context) on cpu
+TileInputRow next_tile_snapshot(TileInputSource source) on cpu
     requires nonzero(source.row) {
-    TileInputRow row = source.row(source.cursor, context);
-    while (row.cell.variable != 0) {
+    TileInputRow row = source.row(source.cursor);
+    while (row.cell.present != 0) {
         if (row.cell.unit == BuiltinScalar::U64 ? row.cell.byte == 0 : row.fragments != 0u64) {
             break;
         }
-        row = source.row(source.cursor, context);
+        row = source.row(source.cursor);
     }
     return row;
 }
@@ -3753,8 +3771,8 @@ extern "C" TileInputRange emit_tile_input(TileInputLayout input, TileInputSource
     memory.finish_body(context, range.words);
     stream.ids(context, range.next - next);
 
-    TileInputRow row = next_tile_snapshot(source, context);
-    if (row.cell.variable == 0) { return TileInputRange(range.lane, range.length, input.label); }
+    TileInputRow row = next_tile_snapshot(source);
+    if (row.cell.present == 0) { return TileInputRange(range.lane, range.length, input.label); }
 
     u32 load = stream.ids(context, 2);
     u32 end = load + 1;
@@ -3764,7 +3782,7 @@ extern "C" TileInputRange emit_tile_input(TileInputLayout input, TileInputSource
     // The ordered input set has unique (position, width) pairs.
     array<PackedField,12> fields = array<PackedField,12>(PackedField(0, 0, 0, 0));
     address scratch = address_of(fields[0]);
-    while (row.cell.variable != 0) {
+    while (row.cell.present != 0) {
         PageInputs page = input.page;
         page.descriptor = block_register(input.descriptors, row.binding);
         page.word = row.word;
@@ -3792,8 +3810,8 @@ extern "C" TileInputRange emit_tile_input(TileInputLayout input, TileInputSource
                 part += 1u64;
             }
         }
-        emit_shared_store(row.cell, range.lane, input.width, value, memory);
-        row = next_tile_snapshot(source, context);
+        emit_shared_store(row.cell, input.planes, range.lane, input.width, value, memory);
+        row = next_tile_snapshot(source);
     }
 
     address merge = stream.reserve(context, 4u64, 0u64).body;
@@ -3832,7 +3850,7 @@ void block_tile_publish(View publication, BlockValues values, TileStorage storag
         u32 word = offset - offset % 4;
         if (packed != 0 && word != packed_word) {
             TileKey key = TileKey(publication.a, packed_word, TileKeyKind::Published);
-            emit_shared_store(storage.cell(context, key), storage.lane, storage.width, packed, memory);
+            emit_shared_store(tile_storage_cell(storage, key, context), storage.planes, storage.lane, storage.width, packed, memory);
             packed = 0;
         }
         address reg = unsafe_address(address_bits(registers.data) + i * registers.stride);
@@ -3842,8 +3860,8 @@ void block_tile_publish(View publication, BlockValues values, TileStorage storag
         u32 width = scalar_definition(type).width;
         if (width == 64) {
             TileKey key = TileKey(publication.a, offset, TileKeyKind::Published);
-            TileCell cell = storage.cell(context, key);
-            if (cell.variable != 0) { emit_shared_store(cell, storage.lane, storage.width, raw, memory); }
+            TileCell cell = tile_storage_cell(storage, key, context);
+            if (cell.present != 0) { emit_shared_store(cell, storage.planes, storage.lane, storage.width, raw, memory); }
         } else {
             u32 raw_type = scalar_id(stream.types, unsigned_scalar(width));
             packed_word = word;
@@ -3853,7 +3871,7 @@ void block_tile_publish(View publication, BlockValues values, TileStorage storag
     }
     if (packed != 0) {
         TileKey key = TileKey(publication.a, packed_word, TileKeyKind::Published);
-        emit_shared_store(storage.cell(context, key), storage.lane, storage.width, packed, memory);
+        emit_shared_store(tile_storage_cell(storage, key, context), storage.planes, storage.lane, storage.width, packed, memory);
     }
 }
 
@@ -3986,7 +4004,7 @@ void tile_collective_layer(u32 stride, u32 padded, u32 down, address components,
 }
 
 void block_tile_collective(View operation, BlockHost emit, MemoryHost memory, StructuredHost control) on cpu
-    requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
+    requires nonzero(emit.tile.cell) requires nonzero(emit.ir.inspect)
     requires nonzero(emit.tile.components)
     requires nonzero(emit.values.scalar) requires nonzero(emit.values.finish) requires nonzero(emit.paging.current_label)
     requires nonzero(memory.scalars.constant)
@@ -4026,7 +4044,7 @@ void block_tile_collective(View operation, BlockHost emit, MemoryHost memory, St
             u32 low = word != 0 ? stream.constant(context, BuiltinScalar::U32, u64(word)) : 0;
             u32 high = parts == 2 ? stream.constant(context, BuiltinScalar::U32, u64(word + 1)) : 0;
             u32 shift = parts == 2 ? stream.constant(context, BuiltinScalar::U32, 32u64) : 0;
-            TreeComponent component = TreeComponent(storage.shared, storage.pointer, low, high, scale, shift, parts,
+            TreeComponent component = TreeComponent(storage.planes.narrow, storage.planes.narrow_pointer, low, high, scale, shift, parts,
                 opcode, scalar, scalar_id(stream.types, raw), scalar_id(stream.types, scalar));
             address component_at = unsafe_address(address_bits(components) + u64(slot) * size_of<TreeComponent>());
             unsafe_position<TreeComponent>(component_at) = component;
@@ -4038,7 +4056,7 @@ void block_tile_collective(View operation, BlockHost emit, MemoryHost memory, St
             u32 end = test + 2;
             address branch = control.reserve_words(control_context, 14u64);
             control.finish_words(control_context, open_index_selection(bool_type, test, storage.lane, storage.length, true, read, end, branch));
-            TileKey key = storage.word(context, operation.a, offset);
+            TileKey key = tile_key(storage.tiles, operation.a, offset, emit.ir);
             u32 input = tile_storage_read(storage, key, storage.lane, 0, scalar, memory);
             control.finish_words(control_context, next_control_block(end, end, 1, control.reserve_words(control_context, 4u64)));
             u32 value = stream.ids(context, 1);
