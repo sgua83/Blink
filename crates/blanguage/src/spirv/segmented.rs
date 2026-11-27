@@ -63,7 +63,7 @@ impl Emitter<'_> {
         };
         let bindings = SegmentBindings {
             descriptors: self.buffers.as_ptr(), source: values.source,
-            prefix: self.scan_input_binding(values), target: values.target,
+            prefix: self.scan_input_binding(values.source, values.target), target: values.target,
             summary: self.program.buffers.len(), counter: count.map_or(0, |field| field.binding),
         };
         let page = self.page_inputs(0, self.index, None, 0);

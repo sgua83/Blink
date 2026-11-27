@@ -84,10 +84,10 @@ pub(super) struct NumericGroupInput {
 }
 
 impl NumericGroupInput {
-    pub(super) fn borrow(ty: &Ty, operator: CollectiveOperator, source_word: u32,
+    pub(super) fn new(fields: CollectiveLayout, operator: CollectiveOperator, source_word: u32,
         tail: bool, dispatch: NumericDispatch) -> Self {
         Self {
-            fields: CollectiveLayout::borrow(ty),
+            fields,
             operation: operator as u32,
             source_word,
             tail: u32::from(tail),
@@ -152,7 +152,8 @@ impl Emitter<'_> {
     ) {
         let r = &reduction.fields;
         let dispatch = NumericDispatch { lane, shared, pointer, active, count, before: self.current_label };
-        let input = NumericGroupInput::borrow(&reduction.ty, reduction.operator, r.source_word, tail, dispatch);
+        let input = NumericGroupInput::new(CollectiveLayout::borrow(&reduction.ty), reduction.operator,
+            r.source_word, tail, dispatch);
         let page = self.page_inputs(self.buffers[r.target], self.index, None, 0);
         let mut words = Vec::new();
         let result = unsafe {

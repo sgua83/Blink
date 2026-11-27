@@ -1119,14 +1119,6 @@ impl Scan {
     pub fn summary_words(&self) -> usize {
         self.ty.size.div_ceil(4) as usize + usize::from(self.head_word.is_some())
     }
-    pub fn counts(values: Reduction) -> Self {
-        Self {
-            values,
-            ty: Ty::scalar(Scalar::U32),
-            operator: CollectiveOperator::Sum,
-            head_word: None,
-        }
-    }
     pub fn needs_root_add(&self, program: &dyn ProgramInterface) -> bool {
         self.head_word.is_some()
             || self.values.target_word != 0
@@ -1197,16 +1189,6 @@ impl PrefixRelation {
 pub struct Selection {
     pub binding: usize,
     pub word: u32,
-}
-impl Selection {
-    pub fn scan(self, target: usize) -> Reduction {
-        Reduction {
-            source: self.binding,
-            source_word: self.word,
-            target,
-            target_word: 0,
-        }
-    }
 }
 #[derive(Clone, Debug)]
 pub struct Stage {

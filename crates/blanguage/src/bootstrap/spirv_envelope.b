@@ -6158,23 +6158,34 @@ extern "C" void emit_stage_entries(StageEntryInput input, StageEntrySink sink) o
 
 BodyStepResult body_step(ShaderBodySink sink, BodyStep action, u32 flag) on cpu
     requires nonzero(sink.emit) {
-    return sink.emit(sink.context, action, BodyScan::Original, flag);
+    return sink.emit(sink.context, action, flag);
 }
 
-void body_scan(ShaderBodySink sink, BodyScan source, u32 local, u32 tail, u32 root) on cpu
-    requires nonzero(sink.emit) {
+extern "C" CollectiveComponent count_component(address source, usize index) on cpu {
+    return CollectiveComponent(BuiltinScalar::U32, 0);
+}
+
+ScanParameters count_scan(usize source, usize target, u32 source_word) on cpu {
+    CollectiveLayout layout = CollectiveLayout(address(), 1u64, c_function(count_component));
+    return ScanParameters(layout, source, target, source_word, 0, CollectiveOperation::Sum, 4);
+}
+
+void body_scan(ShaderBodyInput input, ShaderBodySink sink, ScanParameters parameters, u32 local, u32 tail, u32 root) on cpu
+    requires nonzero(sink.emit) requires nonzero(sink.scan) {
     if (local != 0) {
         body_step(sink, BodyStep::Local, 0);
-        sink.emit(sink.context, BodyStep::Scan, source, tail);
+        u32 ordinary = u32(input.operation == ENTRY_SCAN);
+        u32 normalized = u32(input.operation == ENTRY_COMPACT || input.selection != 0);
+        sink.scan(sink.context, parameters, 1, tail, ordinary, normalized);
     } else {
         body_step(sink, BodyStep::Open, 0);
-        sink.emit(sink.context, BodyStep::ScanAdd, source, root);
+        sink.scan(sink.context, parameters, 0, root, 0, 0);
         body_step(sink, BodyStep::Merge, 1);
     }
 }
 
 extern "C" ShaderBodyEnd emit_shader_body(ShaderBodyInput input, ShaderBodySink sink) on cpu
-    requires nonzero(sink.emit) {
+    requires nonzero(input.ir.inspect) requires nonzero(sink.emit) requires nonzero(sink.scan) {
     EntryPass pass = input.pass;
     u32 operation = input.operation;
     if (pass == EntryPass::DispatchArguments || pass == EntryPass::SelectionArguments) {
@@ -6197,7 +6208,8 @@ extern "C" ShaderBodyEnd emit_shader_body(ShaderBodyInput input, ShaderBodySink 
         if (pass == EntryPass::SelectionScatter) {
             body_step(sink, BodyStep::SelectionScatter, 0);
         } else {
-            body_scan(sink, BodyScan::Selection, input.scan_local, tail, 0);
+            ScanParameters parameters = count_scan(input.selection_source, input.selection_target, input.selection_word);
+            body_scan(input, sink, parameters, input.scan_local, tail, 0);
         }
         return ShaderBodyEnd::Plain;
     }
@@ -6208,10 +6220,10 @@ extern "C" ShaderBodyEnd emit_shader_body(ShaderBodyInput input, ShaderBodySink 
             body_step(sink, BodyStep::SortGather, 0);
         } else if (pass == EntryPass::SortHistogram || pass == EntryPass::SortScatter) {
             body_step(sink, BodyStep::SortRank, u32(pass == EntryPass::SortHistogram));
-        } else if (pass == EntryPass::SortScan || pass == EntryPass::ScanTail) {
-            body_scan(sink, BodyScan::Sort, 1, 1, 0);
-        } else if (pass == EntryPass::ScanAdd) {
-            body_scan(sink, BodyScan::Sort, 0, 0, 0);
+        } else if (pass == EntryPass::SortScan || pass == EntryPass::ScanTail || pass == EntryPass::ScanAdd) {
+            View source = input.ir.inspect(input.source_operation);
+            u32 local = u32(pass != EntryPass::ScanAdd);
+            body_scan(input, sink, count_scan(source.a, source.b, 0), local, local, 0);
         } else {
             return ShaderBodyEnd::BadSortPass;
         }
@@ -6242,11 +6254,13 @@ extern "C" ShaderBodyEnd emit_shader_body(ShaderBodyInput input, ShaderBodySink 
         if (pass == EntryPass::CompactScatter) {
             body_step(sink, BodyStep::CompactScatter, 0);
         } else {
-            body_scan(sink, BodyScan::Compact, input.scan_local, tail, 0);
+            View source = input.ir.inspect(input.source_operation);
+            body_scan(input, sink, count_scan(source.c, source.b, u32(source.d)), input.scan_local, tail, 0);
         }
     } else if (operation == ENTRY_SCAN) {
         if (input.segmented_scan == 0) {
-            body_scan(sink, BodyScan::Original, input.scan_local, tail, root);
+            ScanParameters parameters = unsafe_position<ScanParameters>(input.ordinary_scan);
+            body_scan(input, sink, parameters, input.scan_local, tail, root);
         } else if (input.scan_local != 0) {
             body_step(sink, BodyStep::Local, 0);
             body_step(sink, BodyStep::SegmentedScan, tail);

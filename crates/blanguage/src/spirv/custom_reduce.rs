@@ -173,7 +173,7 @@ impl Emitter<'_> {
             counter_binding: counter.map_or(0, |field| field.binding),
             push_pointer: self.ptr_push_u32, push: self.push,
         };
-        let bindings = self.collective_bindings(fields);
+        let bindings = self.collective_bindings(fields.source, fields.target);
         let page = self.page_inputs(0, self.index, None, 0);
         let memory = self.memory_host();
         let mut context = CheckedCollective {

@@ -21,6 +21,7 @@ impl Node {
     fn of<T>(value: &T, kind: Kind) -> Self { Self { data: ptr::from_ref(value).cast(), kind } }
     pub(crate) fn call(value: &Call) -> Self { Self::of(value, Kind::Call) }
     pub(crate) fn ty(value: &Ty) -> Self { Self::of(value, Kind::Type) }
+    pub(crate) fn operation(value: &Operation) -> Self { Self::of(value, Kind::Operation) }
     pub(crate) const EMPTY: Self = Self { data: ptr::null(), kind: Kind::Instruction };
 }
 #[derive(Clone, Copy)]
@@ -329,7 +330,12 @@ unsafe extern "C" fn inspect(node: Node) -> View {
                 Operation::CustomSegmentedReduce(v) => custom(4, &v.values),
                 Operation::SegmentedReduce(v) => typed(5, &v.values.fields, &v.values.ty),
                 Operation::ScanExclusive(v) => typed(6, &v.values, &v.ty),
-                Operation::Compact(v) => pair(7, v.source, v.target),
+                Operation::Compact(v) => {
+                    let mut view = pair(7, v.source, v.target);
+                    view.c = v.flags;
+                    view.d = v.flag_word as usize;
+                    view
+                }
                 Operation::StableSort(v) => pair(8, v.source, v.target),
             }
         }

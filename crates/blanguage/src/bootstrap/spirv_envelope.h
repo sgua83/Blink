@@ -1038,6 +1038,12 @@ struct StageEntrySink { address context; cfn<u32,address,StageEntryRequest> emit
 extern "C" void emit_stage_entries(StageEntryInput input, StageEntrySink sink) on cpu requires nonzero(sink.emit);
 
 struct WorkgroupLayout { u32 scan; u32 local_index; u32 ranks; u32 words; };
+struct ScanParameters {
+    CollectiveLayout fields;
+    usize source; usize target;
+    u32 source_word; u32 target_word;
+    CollectiveOperation operation; u32 value_bytes;
+};
 struct ShaderBodyInput {
     u32 operation;
     EntryPass pass;
@@ -1047,16 +1053,21 @@ struct ShaderBodyInput {
     u32 invariants;
     u32 tile_scope;
     u32 prefix_index;
+    address ordinary_scan;
+    Node source_operation;
+    Host ir;
+    usize selection_source;
+    usize selection_target;
+    u32 selection_word;
 };
 enum BodyStep:u32 {
     DispatchArguments=0; SelectionArguments=1; PrefixIndex=2; LinearIndex=3; Invariants=4;
     Local=5; Open=6; Merge=7; SelectionScatter=8; SortKey=9; SortGather=10; SortRank=11;
-    Scan=12; ScanAdd=13; SegmentedScan=14; SegmentedAdd=15; SegmentedRoot=16;
+    SegmentedScan=14; SegmentedAdd=15; SegmentedRoot=16;
     CustomSegmented=17; CustomScan=18; CustomScanAdd=19; CustomReduce=20; Reduce=21;
     SegmentedReduce=22; SegmentedReduceAdd=23; CompactScatter=24; TileInput=25; TilePhases=26;
     SelectedIndex=27; Map=28;
 };
-enum BodyScan:u32 { Original=0; Selection=1; Compact=2; Sort=3; };
 struct CustomCollective {
     CollectiveLayout source_layout;
     CollectiveLayout value_layout;
@@ -1087,10 +1098,11 @@ enum BodyStepResult:u32 { Error=0; No=1; Yes=2; };
 enum ShaderBodyEnd:u32 { Plain=0; Prepared=1; BadSortPass=2; BadSegmentedPass=3; };
 struct ShaderBodySink {
     address context;
-    cfn<BodyStepResult,address,BodyStep,BodyScan,u32> emit;
+    cfn<BodyStepResult,address,BodyStep,u32> emit;
+    cfn<void,address,ScanParameters,u32,u32,u32,u32> scan;
 };
 extern "C" ShaderBodyEnd emit_shader_body(ShaderBodyInput input, ShaderBodySink sink) on cpu
-    requires nonzero(sink.emit);
+    requires nonzero(input.ir.inspect) requires nonzero(sink.emit) requires nonzero(sink.scan);
 extern "C" WorkgroupLayout workgroup_layout(
     u32 operation, EntryPass pass, u32 selected, u32 summary_words, u32 scan_width
 ) on cpu;

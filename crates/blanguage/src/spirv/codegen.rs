@@ -1644,6 +1644,12 @@ struct ShaderBodyInput {
     invariants: u32,
     tile_scope: u32,
     prefix_index: u32,
+    ordinary_scan: *const scan::ScanParameters,
+    source_operation: Node,
+    ir: dataflow::Host,
+    selection_source: usize,
+    selection_target: usize,
+    selection_word: u32,
 }
 
 #[allow(dead_code)] // Discriminants are selected by the B stage control.
@@ -1651,15 +1657,11 @@ struct ShaderBodyInput {
 enum BodyStep {
     DispatchArguments, SelectionArguments, PrefixIndex, LinearIndex, Invariants,
     Local, Open, Merge, SelectionScatter, SortKey, SortGather, SortRank,
-    Scan, ScanAdd, SegmentedScan, SegmentedAdd, SegmentedRoot,
+    SegmentedScan = 14, SegmentedAdd, SegmentedRoot,
     CustomSegmented, CustomScan, CustomScanAdd, CustomReduce, Reduce,
     SegmentedReduce, SegmentedReduceAdd, CompactScatter, TileInput, TilePhases,
     SelectedIndex, Map,
 }
-
-#[allow(dead_code)]
-#[repr(u32)]
-enum BodyScan { Original, Selection, Compact, Sort }
 
 #[repr(u32)]
 enum BodyStepResult { Error, No, Yes }
@@ -1671,7 +1673,8 @@ enum ShaderBodyEnd { Plain, Prepared, BadSortPass, BadSegmentedPass }
 #[repr(C)]
 struct ShaderBodySink {
     context: *mut std::ffi::c_void,
-    emit: unsafe extern "C" fn(*mut std::ffi::c_void, BodyStep, BodyScan, u32) -> BodyStepResult,
+    emit: unsafe extern "C" fn(*mut std::ffi::c_void, BodyStep, u32) -> BodyStepResult,
+    scan: unsafe extern "C" fn(*mut std::ffi::c_void, scan::ScanParameters, u32, u32, u32, u32),
 }
 
 unsafe extern "C" {
@@ -1707,10 +1710,10 @@ struct ShaderBodyEmission<'a, 'ir> {
 }
 
 unsafe extern "C" fn shader_body_step(
-    context: *mut std::ffi::c_void, step: BodyStep, source: BodyScan, flag: u32,
+    context: *mut std::ffi::c_void, step: BodyStep, flag: u32,
 ) -> BodyStepResult {
     let emission = unsafe { &mut *context.cast::<ShaderBodyEmission<'_, '_>>() };
-    match emission.emit(step, source, flag != 0) {
+    match emission.emit(step, flag != 0) {
         Ok(true) => BodyStepResult::Yes,
         Ok(false) => BodyStepResult::No,
         Err(error) => {
@@ -1720,8 +1723,25 @@ unsafe extern "C" fn shader_body_step(
     }
 }
 
+unsafe extern "C" fn shader_body_scan(
+    context: *mut std::ffi::c_void, parameters: scan::ScanParameters, local: u32, flag: u32,
+    root_operation: u32, normalized: u32,
+) {
+    let emission = unsafe { &mut *context.cast::<ShaderBodyEmission<'_, '_>>() };
+    let e = &mut *emission.emitter;
+    if local != 0 {
+        let dispatch = reduce::NumericDispatch {
+            lane: emission.local, shared: emission.shared, pointer: emission.shared_pointer,
+            active: emission.active, count: emission.count, before: e.current_label,
+        };
+        e.scan(parameters, flag != 0, root_operation, normalized, dispatch);
+    } else {
+        e.scan_add(parameters, flag != 0);
+    }
+}
+
 impl ShaderBodyEmission<'_, '_> {
-    fn emit(&mut self, step: BodyStep, source: BodyScan, flag: bool) -> Result<bool, &'static str> {
+    fn emit(&mut self, step: BodyStep, flag: bool) -> Result<bool, &'static str> {
         // B selects steps using the discriminant paired with this borrowed operation.
         let operation = self.operation;
         let selection = self.selection;
@@ -1761,32 +1781,6 @@ impl ShaderBodyEmission<'_, '_> {
                 unsafe { &*operation.cast::<Sorting>() }, self.request.parameter as u32, flag,
                 count, &self.subgroup_inputs, self.ballot_type, shared, pointer,
             ),
-            BodyStep::Scan | BodyStep::ScanAdd => {
-                let counts;
-                let scan = match source {
-                    BodyScan::Original => unsafe { &*operation.cast::<Scan>() },
-                    BodyScan::Selection => {
-                        counts = Scan::counts(unsafe { *selection }.scan(e.execution_buffers.selection()));
-                        &counts
-                    }
-                    BodyScan::Compact => {
-                        counts = Scan::counts(unsafe { &*operation.cast::<Compaction>() }.scan());
-                        &counts
-                    }
-                    BodyScan::Sort => {
-                        let sort = unsafe { &*operation.cast::<Sorting>() };
-                        counts = Scan::counts(Reduction {
-                            source: sort.source, source_word: 0, target: sort.target, target_word: 0,
-                        });
-                        &counts
-                    }
-                };
-                if matches!(step, BodyStep::Scan) {
-                    e.scan(scan, flag, local, shared, pointer, active, count);
-                } else {
-                    e.scan_add(scan, flag);
-                }
-            }
             BodyStep::SegmentedScan | BodyStep::SegmentedAdd
             | BodyStep::SegmentedReduce | BodyStep::SegmentedReduceAdd => {
                 let dispatch = segmented::SegmentDispatch {
@@ -2025,10 +2019,12 @@ fn emit_shader(
     let local_index = e.id();
     e.emit_body(9, |body| unsafe { read_shader_index(v3, u, global, gid, local_index, body) });
     let selection = stage.selection.as_ref().map_or(std::ptr::null(), std::ptr::from_ref);
-    let segment_head = match &stage.operation {
-        Operation::ScanExclusive(scan) => scan.head_word,
-        _ => None,
+    let (segment_head, ordinary_scan) = match &stage.operation {
+        Operation::ScanExclusive(scan) => (scan.head_word, Some(scan::ScanParameters::borrow(scan))),
+        _ => (None, None),
     };
+    let selection_source = stage.selection.map_or(0, |source| source.binding);
+    let selection_word = stage.selection.map_or(0, |source| source.word);
     let input = ShaderBodyInput {
         operation, pass,
         selection: u32::from(!selection.is_null()), scan_local,
@@ -2036,6 +2032,9 @@ fn emit_shader(
         invariants: u32::from(custom_kernel.is_some()),
         tile_scope: u32::from(tile_width.is_some()),
         prefix_index: u32::from(num_groups != 0),
+        ordinary_scan: ordinary_scan.as_ref().map_or(std::ptr::null(), std::ptr::from_ref),
+        source_operation: Node::operation(&stage.operation), ir: dataflow::HOST,
+        selection_source, selection_target: e.execution_buffers.selection(), selection_word,
     };
     let mut emission = ShaderBodyEmission {
         emitter: &mut e, inputs, operation: operation_data, selection,
@@ -2045,7 +2044,9 @@ fn emit_shader(
         subgroup_inputs, ballot_type, local: 0, count: 0, active: 0, groups: [0; 2],
         error: None,
     };
-    let sink = ShaderBodySink { context: std::ptr::from_mut(&mut emission).cast(), emit: shader_body_step };
+    let sink = ShaderBodySink {
+        context: std::ptr::from_mut(&mut emission).cast(), emit: shader_body_step, scan: shader_body_scan,
+    };
     let result = unsafe { emit_shader_body(input, sink) };
     if let Some(error) = emission.error { return Err(error); }
     match result {

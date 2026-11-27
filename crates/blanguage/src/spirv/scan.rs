@@ -33,6 +33,27 @@ pub(super) struct CollectiveBindings {
 }
 
 #[repr(C)]
+pub(super) struct ScanParameters {
+    fields: CollectiveLayout,
+    source: usize,
+    target: usize,
+    source_word: u32,
+    target_word: u32,
+    operation: CollectiveOperator,
+    value_bytes: u32,
+}
+
+impl ScanParameters {
+    pub(super) fn borrow(scan: &Scan) -> Self {
+        Self {
+            fields: CollectiveLayout::borrow(&scan.ty), source: scan.values.source,
+            target: scan.values.target, source_word: scan.values.source_word,
+            target_word: scan.values.target_word, operation: scan.operator, value_bytes: scan.ty.size,
+        }
+    }
+}
+
+#[repr(C)]
 struct NumericScanOptions {
     target_word: u32,
     root_operation: u32,
@@ -60,8 +81,8 @@ unsafe extern "C" {
 }
 
 impl Emitter<'_> {
-    pub(super) fn scan_input_binding(&self, fields: &Reduction) -> usize {
-        if fields.source == fields.target
+    pub(super) fn scan_input_binding(&self, source: usize, target: usize) -> usize {
+        if source == target
             && matches!(
                 self.stage.operation,
                 Operation::ScanExclusive(_)
@@ -72,7 +93,7 @@ impl Emitter<'_> {
         {
             self.execution_buffers.scan_source()
         } else {
-            fields.source
+            source
         }
     }
 
@@ -80,54 +101,43 @@ impl Emitter<'_> {
         self.workgroup_barrier(0x108);
     }
     pub(super) fn scan(
-        &mut self,
-        scan: &Scan,
-        tail: bool,
-        lane: u32,
-        shared: u32,
-        pointer: u32,
-        active: u32,
-        count: u32,
+        &mut self, scan: ScanParameters, tail: bool, root_operation: u32, normalized_input: u32,
+        dispatch: NumericDispatch,
     ) {
-        let r = &scan.values;
-        let dispatch = NumericDispatch { lane, shared, pointer, active, count, before: self.current_label };
-        let input = NumericGroupInput::borrow(&scan.ty, scan.operator, r.source_word, tail, dispatch);
-        let options = NumericScanOptions {
-            target_word: r.target_word,
-            root_operation: u32::from(matches!(self.stage.operation, Operation::ScanExclusive(_))),
-            normalized_input: u32::from(matches!(self.stage.operation, Operation::Compact(_))
-                || self.stage.selection.is_some()),
-        };
+        let bindings = self.collective_bindings(scan.source, scan.target);
+        let input = NumericGroupInput::new(scan.fields, scan.operation, scan.source_word, tail, dispatch);
+        let options = NumericScanOptions { target_word: scan.target_word, root_operation, normalized_input };
         let page = self.page_inputs(0, self.index, None, 0);
         let mut words = Vec::new();
         let result = unsafe {
-            emit_numeric_scan(input, self.collective_bindings(r), options, page,
+            emit_numeric_scan(input, bindings, options, page,
                 WordScratch::borrow(&mut words), self.memory_host())
         };
         self.finish_tree(result);
     }
 
-    pub(super) fn scan_add(&mut self, scan: &Scan, root: bool) {
+    pub(super) fn scan_add(&mut self, scan: ScanParameters, root: bool) {
         self.emit_scan_prefix(scan, root, false);
     }
 
     pub(super) fn segmented_root_add(&mut self, scan: &Scan) {
-        self.emit_scan_prefix(scan, true, true);
+        self.emit_scan_prefix(ScanParameters::borrow(scan), true, true);
     }
 
-    pub(super) fn collective_bindings(&self, r: &Reduction) -> CollectiveBindings {
+    pub(super) fn collective_bindings(&self, source: usize, target: usize) -> CollectiveBindings {
         CollectiveBindings {
-            descriptors: self.buffers.as_ptr(), source: r.source, prefix: self.scan_input_binding(r),
-            target: r.target, summary: self.program.buffers.len(),
+            descriptors: self.buffers.as_ptr(), source, prefix: self.scan_input_binding(source, target),
+            target, summary: self.program.buffers.len(),
         }
     }
 
-    fn emit_scan_prefix(&mut self, scan: &Scan, root: bool, segmented: bool) {
+    fn emit_scan_prefix(&mut self, scan: ScanParameters, root: bool, segmented: bool) {
+        let bindings = self.collective_bindings(scan.source, scan.target);
         let input = NumericPrefix {
-            fields: CollectiveLayout::borrow(&scan.ty),
-            operation: scan.operator as u32,
-            target_word: scan.values.target_word,
-            value_bytes: scan.ty.size,
+            fields: scan.fields,
+            operation: scan.operation as u32,
+            target_word: scan.target_word,
+            value_bytes: scan.value_bytes,
             root: u32::from(root),
             segmented: u32::from(segmented),
             label: self.current_label,
@@ -135,7 +145,7 @@ impl Emitter<'_> {
         let page = self.page_inputs(0, self.index, None, 0);
         let mut words = Vec::new();
         let result = unsafe {
-            emit_numeric_prefix(input, self.collective_bindings(&scan.values), page,
+            emit_numeric_prefix(input, bindings, page,
                 WordScratch::borrow(&mut words), self.memory_host())
         };
         self.finish_tree(result);
