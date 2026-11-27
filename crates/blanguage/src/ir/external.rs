@@ -38,7 +38,7 @@ pub struct CallReference {
 pub struct DatasetBorrow {
     pub frame: [Reg; 2],
     pub handle: Reg,
-    pub input: usize,
+    pub parameter: usize,
     pub call: usize,
 }
 #[derive(Clone, Debug)]

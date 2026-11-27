@@ -440,3 +440,26 @@ extern "C" u32 data_external_sources(u32 pending,address context,cfn<u32,address
  if(pending!=0){return 0;}u32 source=next(context);if(source==0){return 0;}
  while(source!=0){if(source!=1){return 0;}source=next(context);}return 1;
 }
+
+// Each field window repeats over the same rows with the same stride.
+extern "C" void dataset_write_ranges(
+    address regions, usize count, address output,
+    cfn<DatasetWriteRegion,address> next, cfn<void,address,DatasetWriteRegion> emit
+) on cpu requires nonzero(next) requires nonzero(emit) {
+    if (count==0u64) { return; }
+    DatasetWriteRegion current=next(regions);
+    usize index=1u64;
+    while (index<count) {
+        DatasetWriteRegion part=next(regions);
+        u64 end=u64(current.word)+u64(current.bytes);
+        u64 part_end=u64(part.word)+u64(part.bytes);
+        if (u64(part.word)<=end && part_end-u64(current.word)<=4294967295u64) {
+            if (part_end>end) { current.bytes=u32(part_end-u64(current.word)); }
+        } else {
+            emit(output,current);
+            current=part;
+        }
+        index+=1u64;
+    }
+    emit(output,current);
+}

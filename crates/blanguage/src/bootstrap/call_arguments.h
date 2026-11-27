@@ -111,3 +111,13 @@ enum ExternalPositionNeed:u32 {BadTarget=0;BadArguments=1;Type=2;Owned=3;BadLayo
 struct ExternalPositionStep {Phase cursor;ExternalPositionNeed need;};
 extern "C" ExternalPositionStep external_position_step(Phase cursor,ExternalPositionFacts facts) on cpu;
 extern "C" u32 data_external_sources(u32 pending,address context,cfn<u32,address> next) on cpu requires nonzero(next);
+
+struct DatasetWriteRegion {
+    u32 word;
+    u32 bytes;
+};
+
+extern "C" void dataset_write_ranges(
+    address regions, usize count, address output,
+    cfn<DatasetWriteRegion,address> next, cfn<void,address,DatasetWriteRegion> emit
+) on cpu requires nonzero(next) requires nonzero(emit);

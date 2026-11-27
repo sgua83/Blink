@@ -795,7 +795,7 @@ impl Builder<'_> {
                     }
                     let dataset_borrow=if descriptor.components[0].0==Scalar::U64 && reference.root.ty.components[0].0==Scalar::U32 {
                         let frame=self.application_frame(span)?;
-                        Some(Box::new(ir::DatasetBorrow{frame:[frame.regs[0],frame.regs[1]],handle:reference.root.regs[0],input:actual.len(),call:self.view_model.calls.len()}))
+                        Some(Box::new(ir::DatasetBorrow{frame:[frame.regs[0],frame.regs[1]],handle:reference.root.regs[0],parameter:index,call:self.view_model.calls.len()}))
                     }else{None};
                     let mut value=self.application_reference_value(&reference,descriptor,span)?;
                     let(field,ty)=reference.element_layout();
@@ -2008,7 +2008,7 @@ for effect in contract.view_access.as_ref().unwrap() {
         if !path.possible(){continue;}
         let view::Source::Position(origin)=source else{continue};
         for(source,when)in origin.resources().sources.entries() {
-            if !matches!(source,view::Source::Data(ValueIdentity::Register(input))|view::Source::Parameter(ValueIdentity::Register(input),_)if *input==borrow.input){continue;}
+            if !matches!(source,view::Source::Data(input)|view::Source::Parameter(input,_)if *input==ValueIdentity::ResourceParameter(borrow.parameter,0)){continue;}
             if !bounds::Clause::both(&path, &bounds::Condition::guard(when).projected_case(true, &context.arguments)).possible(){continue;}
             regions.extend(origin.layout.parts.iter().zip(origin.words.iter()).map(|((scalar,_),word)|(*word,scalar.size())));
         }
@@ -2016,68 +2016,148 @@ for effect in contract.view_access.as_ref().unwrap() {
 }
     regions
 }
+#[repr(C)]
+struct DatasetWriteRegion {
+    word: u32,
+    bytes: u32,
+}
+
+type DatasetWriteRegions<'a> = std::collections::btree_set::Iter<'a, (u32, u32)>;
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::dataset_write_ranges"]
+    fn dataset_write_ranges(
+        regions: *mut DatasetWriteRegions<'_>,
+        count: usize,
+        output: *mut DatasetWriteOutput<'_>,
+        next: unsafe extern "C" fn(*mut DatasetWriteRegions<'_>) -> DatasetWriteRegion,
+        emit: unsafe extern "C" fn(*mut DatasetWriteOutput<'_>, DatasetWriteRegion),
+    );
+}
+
+struct DatasetWriteOutput<'a> {
+    code: &'a mut Vec<InstKind>,
+    registers: &'a mut Vec<Scalar>,
+    borrow: &'a DatasetBorrow,
+    values: &'a [Reg],
+    field: Option<Reg>,
+}
+
+impl DatasetWriteOutput<'_> {
+    fn register(&mut self, scalar: Scalar) -> Reg {
+        let reg = self.registers.len();
+        self.registers.push(scalar);
+        reg
+    }
+
+    fn constant(&mut self, scalar: Scalar, bits: Bits) -> Reg {
+        let reg = self.register(scalar);
+        self.code.push(InstKind::Constant(reg, scalar, bits));
+        reg
+    }
+}
+
+unsafe extern "C" fn next_dataset_write(regions: *mut DatasetWriteRegions<'_>) -> DatasetWriteRegion {
+    // B reads exactly the supplied length from the original ordered set.
+    let &(word, bytes) = unsafe { (*regions).next().unwrap_unchecked() };
+    DatasetWriteRegion { word, bytes }
+}
+
+unsafe extern "C" fn emit_dataset_write(output: *mut DatasetWriteOutput<'_>, region: DatasetWriteRegion) {
+    let output = unsafe { &mut *output };
+    let field = match output.field {
+        Some(field) => field,
+        None => {
+            let field = output.register(Scalar::U64);
+            output.code.push(InstKind::Cast { dst: field, src: output.values[3] });
+            output.field = Some(field);
+            field
+        }
+    };
+    let offset = if region.word == 0 {
+        field
+    } else {
+        let word = output.constant(Scalar::U64, Bits::from(region.word));
+        let offset = output.register(Scalar::U64);
+        output.code.push(InstKind::Binary { dst: offset, op: BinaryOp::IAdd, a: field, b: word });
+        offset
+    };
+    let bytes = output.constant(Scalar::U32, Bits::from(region.bytes));
+    let result = application::pointer_type();
+    let outputs = result.components.iter().map(|(scalar, _)| output.register(*scalar)).collect();
+    let value = |ty, values| CallArgument::Value {
+        #[cfg(feature = "compiler")]
+        origin: None,
+        ty,
+        values,
+        dataset_borrow: None,
+    };
+    output.code.push(application::runtime_call(
+        "address",
+        vec![
+            value(application::pointer_type(), output.borrow.frame.to_vec()),
+            value(Ty::scalar(Scalar::U32), vec![output.borrow.handle]),
+            value(Ty::scalar(Scalar::U64), vec![offset]),
+            value(Ty::scalar(Scalar::U32), vec![bytes]),
+            value(Ty::scalar(Scalar::U64), vec![output.values[2]]),
+            value(Ty::scalar(Scalar::U32), vec![output.values[1]]),
+        ],
+        Some(result), outputs, None, None,
+    ).kind);
+}
+
 fn lower_dataset_borrows<'a>(
-    body:&mut ValueCode,
-    model:&view_contracts::Function,
-    contract:&impl Fn(&str)->&'a Contract,
+    body: &mut ValueCode,
+    model: &view_contracts::Function,
+    contract: &impl Fn(&str) -> &'a Contract,
 ) {
-    fn register(registers:&mut Vec<Scalar>,scalar:Scalar)->Reg {
-        let reg=registers.len();registers.push(scalar);reg
-    }
-    fn constant(code:&mut Vec<InstKind>,registers:&mut Vec<Scalar>,scalar:Scalar,bits:Bits)->Reg {
-        let reg=register(registers,scalar);code.push(InstKind::Constant(reg,scalar,bits));reg
-    }
-    fn value(ty:Ty,values:Vec<Reg>)->CallArgument {CallArgument::Value{ #[cfg(feature = "compiler")] origin: None,ty,values,dataset_borrow:None}}
-    fn block<'a>(code:&mut [Inst],registers:&mut Vec<Scalar>,model:&view_contracts::Function,contract:&impl Fn(&str)->&'a Contract) {
+    fn block<'a>(
+        code: &mut [Inst],
+        registers: &mut Vec<Scalar>,
+        model: &view_contracts::Function,
+        contract: &impl Fn(&str) -> &'a Contract,
+    ) {
         for instruction in code {
-            let mut before=Vec::new();
             match &mut instruction.kind {
-                InstKind::Scope(code)=>block(code,registers,model,contract),
-                InstKind::If{yes,no,..}=>{block(yes,registers,model,contract);block(no,registers,model,contract);}
-                InstKind::Loop{condition,body,..}=>{block(condition,registers,model,contract);block(body,registers,model,contract);}
-                InstKind::Call(call)=>{
+                InstKind::Scope(body) => block(body, registers, model, contract),
+                InstKind::If { yes, no, .. } => {
+                    block(yes, registers, model, contract);
+                    block(no, registers, model, contract);
+                }
+                InstKind::Loop { condition, body, .. } => {
+                    block(condition, registers, model, contract);
+                    block(body, registers, model, contract);
+                }
+                InstKind::Call(call) => {
+                    let mut before = Vec::new();
                     for argument in &mut call.arguments {
-                        let CallArgument::Value{values,dataset_borrow,..}=argument else{continue};
-                        let Some(borrow)=dataset_borrow.take() else{continue};
-                        let context=&model.calls[borrow.call];
-                        let regions=dataset_write_regions(&borrow,context,contract(&context.function));
-                        for(word,bytes)in regions {
-                            let field=register(registers,Scalar::U64);
-                            before.push(InstKind::Cast{dst:field,src:values[3]});
-                            let word=constant(&mut before,registers,Scalar::U64,Bits::from(word));
-                            let offset=register(registers,Scalar::U64);
-                            before.push(InstKind::Binary{dst:offset,op:BinaryOp::IAdd,a:field,b:word});
-                            let bytes=constant(&mut before,registers,Scalar::U32,Bits::from(bytes));
-                            let result=application::pointer_type();
-                            let outputs=result.components.iter().map(|(scalar,_)|register(registers,*scalar)).collect();
-                            before.push(InstKind::Call(Call{
-                                failure:None,error:None,
-                                target:CallTarget::External(ExternalName{library:crate::application::RUNTIME_LIBRARY.into(),symbol:"blink_address".into()}),
-                                arguments:vec![
-                                    value(application::pointer_type(),borrow.frame.to_vec()),
-                                    value(Ty::scalar(Scalar::U32),vec![borrow.handle]),
-                                    value(Ty::scalar(Scalar::U64),vec![offset]),
-                                    value(Ty::scalar(Scalar::U32),vec![bytes]),
-                                    value(Ty::scalar(Scalar::U64),vec![values[2]]),
-                                    value(Ty::scalar(Scalar::U32),vec![values[1]]),
-                                ],
-                                memory:Vec::new(),memory_use:None,result:Some(result),values:outputs,
-                            }));
+                        let CallArgument::Value { values, dataset_borrow, .. } = argument else { continue };
+                        let Some(borrow) = dataset_borrow.take() else { continue };
+                        let context = &model.calls[borrow.call];
+                        let regions = dataset_write_regions(&borrow, context, contract(&context.function));
+                        let mut output = DatasetWriteOutput {
+                            code: &mut before, registers, borrow: &borrow, values, field: None,
+                        };
+                        unsafe {
+                            dataset_write_ranges(&mut regions.iter(), regions.len(), &mut output,
+                                next_dataset_write, emit_dataset_write);
                         }
                     }
+                    if !before.is_empty() {
+                        let original = std::mem::replace(&mut instruction.kind, InstKind::Scope(Vec::new()));
+                        before.push(original);
+                        instruction.kind = InstKind::Scope(before.into_iter().map(|kind| Inst {
+                            source_site: instruction.source_site.clone(),
+                            generated_origin: instruction.generated_origin.clone(),
+                            ..Inst::new(kind)
+                        }).collect());
+                    }
                 }
-                _=>{}
-            }
-            if !before.is_empty() {
-                let original=std::mem::replace(&mut instruction.kind,InstKind::Scope(Vec::new()));
-                before.push(original);
-                instruction.kind=InstKind::Scope(before.into_iter().map(|kind|Inst{
-                    source_site:instruction.source_site.clone(),generated_origin:instruction.generated_origin.clone(),..Inst::new(kind)
-                }).collect());
+                _ => {}
             }
         }
     }
-    block(&mut body.code,&mut body.registers,model,contract);
+    block(&mut body.code, &mut body.registers, model, contract);
 }
 
 // The existing Module owns the closed effect; no second call graph is built.
