@@ -1165,20 +1165,17 @@ u64 store_immediate(u64 at, MoveLocation dst, u64 value, u32 size) on cpu {
 }
 
 u64 copy_small(u64 at, MoveLocation dst, MoveLocation src, u32 size, bool signed) on cpu {
-    u8 target = u8(0);
-    if (dst.kind == MOVE_GPR) { target = dst.base; }
-    u64 cursor = at;
+    if (dst.kind == MOVE_MEMORY) {
+        return at + write_scalar_move(dst, src, size, unsafe_address(at));
+    }
+    u8 target = dst.kind == MOVE_GPR ? dst.base : u8(0);
     if (src.kind == MOVE_IMMEDIATE) {
-        u32 sign = 0x80;
-        if (size == 2) { sign = 0x8000; }
+        u32 sign = size == 2 ? 0x8000 : 0x80;
         u32 bits = u32(src.value) & (2 * sign - 1);
         if (signed) { bits = (bits ^ sign) - sign; }
-        cursor = move_immediate(cursor, target, u64(bits), false);
-    } else {
-        cursor = load_extended(cursor, target, src, size, signed);
+        return move_immediate(at, target, u64(bits), false);
     }
-    if (dst.kind == MOVE_MEMORY) { cursor = store_bits(cursor, dst, target, size); }
-    return cursor;
+    return load_extended(at, target, src, size, signed);
 }
 
 u64 copy_bits(u64 at, MoveLocation dst, MoveLocation src, u32 size) on cpu {
