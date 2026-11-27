@@ -58,6 +58,14 @@ struct OrderedTree {
 }
 
 #[repr(C)]
+#[derive(Default)]
+struct IdentityTable {
+    entries: *mut c_void,
+    count: usize,
+    capacity: usize,
+}
+
+#[repr(C)]
 #[derive(Clone, Copy)]
 pub(in super::super) struct ConditionNodes {
     fields: *const c_void,
@@ -68,7 +76,7 @@ pub(in super::super) struct ConditionNodes {
 #[derive(Default)]
 pub(in super::super) struct CanonicalGraph<'a> {
     nodes: OrderedTree,
-    identities: OrderedTree,
+    identities: IdentityTable,
     roots: std::marker::PhantomData<&'a Clause>,
 }
 
