@@ -20,7 +20,7 @@ pub use transfer::GpuReadback;
 use crate::{Dataset, DomainBindings, Result, Value, arguments, error};
 use blanguage::{
     ExecutableProgram, TemplateProgram,
-    ir::{DeviceRequirements, ExecutionPlan as Program, ProgramInterface, Ty},
+    ir::{DeviceRequirements, ExecutionPlan as Program, ProgramInterface, SubgroupCapabilities, Ty},
 };
 pub use execution::{GpuCompletion, GpuStageTimestamps, GpuTimestamps};
 use execution::{Completion, Dependencies, DependencySources, Execution, ExecutionResources, QueryPool};
@@ -44,6 +44,14 @@ type Gipa = unsafe extern "system" fn(VkInstance, *const c_char) -> *const c_voi
 type Gdpa = unsafe extern "system" fn(VkDevice, *const c_char) -> *const c_void;
 type DestroyInstance = unsafe extern "system" fn(VkInstance, *const c_void);
 type DestroyDevice = unsafe extern "system" fn(VkDevice, *const c_void);
+fn subgroup_operation_mask(caps: SubgroupCapabilities) -> u32 {
+    u32::from(caps.basic)
+        | (u32::from(caps.vote) << 1)
+        | (u32::from(caps.arithmetic) << 2)
+        | (u32::from(caps.ballot) << 3)
+        | (u32::from(caps.shuffle) << 4)
+        | (u32::from(caps.shuffle_relative) << 5)
+}
 fn check(code: i32, operation: &str) -> Result<()> {
     if code == 0 {
         Ok(())
@@ -463,34 +471,13 @@ impl Device {
                     shared_bytes = shared_bytes.max(stage.shared_bytes());
                 }
             }
-            let required = program.requirements();
-            requirements.float64 |= required.float64;
-            requirements.float32_preserve |= required.float32_preserve;
-            requirements.float64_preserve |= required.float64_preserve;
-            requirements.integer8 |= required.integer8;
-            requirements.integer16 |= required.integer16;
-            requirements.atomic64 |= required.atomic64;
-            requirements.shared_atomic64 |= required.shared_atomic64;
-            requirements.ray_query |= required.ray_query;
-            requirements.sorting |= required.sorting;
-            requirements.maximal_reconvergence |= required.maximal_reconvergence;
-            requirements.texture_indexing |= required.texture_indexing;
-            requirements.position_fetch |= required.position_fetch;
-            requirements.subgroup.basic |= required.subgroup.basic;
-            requirements.subgroup.vote |= required.subgroup.vote;
-            requirements.subgroup.arithmetic |= required.subgroup.arithmetic;
-            requirements.subgroup.ballot |= required.subgroup.ballot;
-            requirements.subgroup.shuffle |= required.subgroup.shuffle;
-            requirements.subgroup.shuffle_relative |= required.subgroup.shuffle_relative;
-            requirements.subgroup.extended_types |= required.subgroup.extended_types;
+            requirements.include(program.requirements());
         }
         let DeviceRequirements { ray_query, sorting, maximal_reconvergence, texture_indexing,
             position_fetch, float64, float32_preserve, float64_preserve, integer8, integer16,
             atomic64, shared_atomic64, subgroup } = requirements;
         let subgroup_extended_types = subgroup.extended_types;
-        let required_subgroup = u32::from(subgroup.basic) | (u32::from(subgroup.vote) << 1)
-            | (u32::from(subgroup.arithmetic) << 2) | (u32::from(subgroup.ballot) << 3)
-            | (u32::from(subgroup.shuffle) << 4) | (u32::from(subgroup.shuffle_relative) << 5);
+        let required_subgroup = subgroup_operation_mask(subgroup);
         let mut candidates: Vec<_> = candidates.into_iter().collect();
         candidates.sort_by_key(|candidate| !candidate.is_discrete());
         let mut unavailable = Vec::new();
@@ -662,7 +649,7 @@ impl Device {
                     continue 'physical;
                 }
                 if subgroup_extended_types && extended_types.shaderSubgroupExtendedTypes == 0 {
-                    unavailable.push(format!("{device_name}: {}", "64位subgroup运算需要设备支持shaderSubgroupExtendedTypes"));
+                    unavailable.push(format!("{device_name}: {}", "subgroup扩展类型需要设备支持shaderSubgroupExtendedTypes"));
                     continue 'physical;
                 }
                 // VkPhysicalDeviceDescriptorIndexingFeatures::shaderSampledImageArrayNonUniformIndexing。
@@ -2235,19 +2222,14 @@ impl GpuProgram {
         }
         let caps = program.subgroup_capabilities();
         if caps.extended_types && !inner.subgroup_extended_types {
-            return Err(error("64位subgroup程序必须以Device::for_program声明扩展类型能力"));
+            return Err(error("使用subgroup扩展类型的程序必须以Device::for_program声明所需能力"));
         }
         if program.requirements().float32_preserve && !inner.float32_preserve {
             return Err(error(
                 "f32 运算需要设备支持 DenormPreserve 与 SignedZeroInfNanPreserve",
             ));
         }
-        let required = u32::from(caps.basic)
-            | (u32::from(caps.vote) << 1)
-            | (u32::from(caps.arithmetic) << 2)
-            | (u32::from(caps.ballot) << 3)
-            | (u32::from(caps.shuffle) << 4)
-            | (u32::from(caps.shuffle_relative) << 5);
+        let required = subgroup_operation_mask(caps);
         if inner.subgroup_operations & required != required {
             return Err(error(format!(
                 "GPU 不支持程序需要的 compute subgroup 操作：需要 {required:#x}，实际 {:#x}",

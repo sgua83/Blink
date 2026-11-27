@@ -117,11 +117,19 @@ impl From<DeviceFields> for DeviceRequirements {
     }
 }
 unsafe extern "C" {
+    #[link_name = "codec.value_format::union_device_requirements"]
+    fn union_device_requirements(existing: DeviceFields, required: DeviceFields) -> DeviceFields;
     #[link_name = "codec.value_format::contract_write_device_requirements"]
     fn write_device_requirements(value: DeviceFields, output: Slot,
         append: unsafe extern "C" fn(Slot, *const u8, usize));
     #[link_name = "codec.value_format::contract_read_device_requirements"]
     fn read_device_requirements(input: contracts::Bytes, position: *mut usize, output: *mut DeviceFields) -> ReadStatus;
+}
+impl DeviceRequirements {
+    /// Include the features required by another program on the same logical device.
+    pub fn include(&mut self, required: Self) {
+        *self = unsafe { union_device_requirements(DeviceFields::from(&*self), DeviceFields::from(&required)) }.into();
+    }
 }
 impl Native for DeviceRequirements {
     fn empty() -> Self { Self::default() }

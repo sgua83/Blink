@@ -1258,6 +1258,30 @@ extern "C" ReadStatus contract_read_subgroup_capabilities(Bytes input,inout u64 
  return ReadStatus::Success;
 }
 
+extern "C" DeviceFields union_device_requirements(DeviceFields existing, DeviceFields required) on cpu {
+ return DeviceFields(
+  existing.ray_query | required.ray_query,
+  existing.float64 | required.float64,
+  existing.integer8 | required.integer8,
+  existing.integer16 | required.integer16,
+  existing.atomic64 | required.atomic64,
+  existing.shared_atomic64 | required.shared_atomic64,
+  existing.float32_preserve | required.float32_preserve,
+  existing.float64_preserve | required.float64_preserve,
+  existing.sorting | required.sorting,
+  existing.maximal_reconvergence | required.maximal_reconvergence,
+  existing.texture_indexing | required.texture_indexing,
+  existing.position_fetch | required.position_fetch,
+  SubgroupFields(
+   existing.subgroup.basic | required.subgroup.basic,
+   existing.subgroup.vote | required.subgroup.vote,
+   existing.subgroup.arithmetic | required.subgroup.arithmetic,
+   existing.subgroup.ballot | required.subgroup.ballot,
+   existing.subgroup.shuffle | required.subgroup.shuffle,
+   existing.subgroup.shuffle_relative | required.subgroup.shuffle_relative,
+   existing.subgroup.extended_types | required.subgroup.extended_types));
+}
+
 extern "C" void contract_write_device_requirements(DeviceFields value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
  contract_write_bool(value.ray_query,output,append);
  contract_write_bool(value.float64,output,append);

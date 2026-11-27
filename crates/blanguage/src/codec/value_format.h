@@ -927,6 +927,7 @@ extern "C" void contract_write_subgroup_capabilities(SubgroupFields value,addres
 
 extern "C" ReadStatus contract_read_subgroup_capabilities(Bytes input,inout u64 position,inout SubgroupFields output) on cpu;
 
+extern "C" DeviceFields union_device_requirements(DeviceFields existing, DeviceFields required) on cpu;
 extern "C" void contract_write_device_requirements(DeviceFields value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
 
 extern "C" ReadStatus contract_read_device_requirements(Bytes input,inout u64 position,inout DeviceFields output) on cpu;
