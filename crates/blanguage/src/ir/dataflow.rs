@@ -1004,19 +1004,6 @@ unsafe extern "C" fn visit_ray_query<F: FnMut(usize, Reg) -> bool>(context: *mut
     u32::from(unsafe { &mut *context.cast::<F>() }(group, query))
 }
 
-unsafe extern "C" {
-    #[link_name = "bootstrap.ir_dataflow::indirect_buffer"]
-    fn b_indirect_buffer(stages: Span, buffers: usize, host: Host) -> usize;
-    #[link_name = "bootstrap.ir_dataflow::execution_buffers"]
-    fn b_execution_buffers(stages: Span, buffers: usize, host: Host) -> ExecutionBuffers;
-}
-pub(super) fn indirect_buffer(program: &Program) -> usize {
-    unsafe { b_indirect_buffer(Span::slice(program.stages()), program.buffers.len(), HOST) }
-}
-pub(super) fn execution_buffers(program: &Program) -> ExecutionBuffers {
-    unsafe { b_execution_buffers(Span::slice(program.stages()), program.buffers.len(), HOST) }
-}
-
 #[repr(C)]
 struct NumericRequirements { float64: u32, integer8: u32, integer16: u32 }
 #[repr(C)]

@@ -2297,41 +2297,6 @@ extern "C" u32 ray_result_queries(Span code,Span queries,Span ranges,RayHost hos
  return 1;
 }
 
-bool needs_intermediate(u32 operation,usize selection) on cpu {
- return selection!=0u64 || operation==3 || operation==4 || operation==5
-  || operation==6 || operation==7 || operation==8;
-}
-extern "C" usize indirect_buffer(Span stages,usize buffers,Host host) on cpu
- requires nonzero(host.inspect) {
- usize index=0u64;
- while(index<stages.count) {
-  View stage=host.inspect(node_at(stages,index,N_STAGE));
-  if(stage.b!=0u64){return buffers+1u64;}
-  View operation=host.inspect(stage.left);
-  if(needs_intermediate(operation.tag,0u64)){return buffers+1u64;}
-  index+=1u64;
- }
- return buffers;
-}
-extern "C" ExecutionBuffers execution_buffers(Span stages,usize buffers,Host host) on cpu
- requires nonzero(host.inspect) {
- bool intermediate=false;bool prefix=false;bool selection=false;bool scan_alias=false;
- usize index=0u64;
- while(index<stages.count) {
-  View stage=host.inspect(node_at(stages,index,N_STAGE));View operation=host.inspect(stage.left);
-  intermediate=intermediate || needs_intermediate(operation.tag,stage.b);
-  prefix=prefix || stage.a!=0u64 || stage.b!=0u64;selection=selection || stage.b!=0u64;
-  if(operation.tag==3 || operation.tag==4 || operation.tag==5 || operation.tag==6) {
-   scan_alias=scan_alias || operation.a==operation.b;
-  }
-  index+=1u64;
- }
- usize indirect=buffers+(intermediate?1u64:0u64);
- usize auxiliary=(intermediate?1u64:0u64)+(prefix?1u64:0u64)+(selection?1u64:0u64);
- if(scan_alias && auxiliary<indirect+3u64-buffers){auxiliary=indirect+3u64-buffers;}
- return ExecutionBuffers(indirect,auxiliary);
-}
-
 const u32 N_BUFFER=20;const u32 N_UNIFORM=21;const u32 N_VALUE_CODE=22;const u32 N_SCALAR=24;
 void numeric_scalar(inout NumericRequirements flags,u32 scalar,bool code) on cpu {
  if(code && scalar==6){flags.float64=1;}

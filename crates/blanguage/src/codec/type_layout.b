@@ -332,3 +332,28 @@ extern "C" u32 same_length(LengthPair query, u64 relations, address context, Len
     }
     return u32(length_root(parents, first) == length_root(parents, second));
 }
+
+extern "C" ExecutionBuffers device_slots(address stages, usize count, usize buffers,
+    cfn<StageSlots,address,usize> ensures memory(read) stage) on cpu requires nonzero(stage) {
+    bool intermediate = false;
+    bool prefix = false;
+    bool selection = false;
+    bool scan_alias = false;
+    usize index = 0u64;
+    while (index < count) {
+        StageSlots input = stage(stages, index);
+        SlotOperation operation = input.operation;
+        bool scan = operation == SlotOperation::CustomScan || operation == SlotOperation::CustomSegmentedReduce
+            || operation == SlotOperation::SegmentedReduce || operation == SlotOperation::ScanExclusive;
+        selection = selection || input.selection != 0;
+        prefix = prefix || input.prefix != 0 || input.selection != 0;
+        intermediate = intermediate || scan || input.selection != 0
+            || operation == SlotOperation::Compact || operation == SlotOperation::StableSort;
+        scan_alias = scan_alias || (scan && input.source == input.target);
+        index += 1u64;
+    }
+    usize summary = intermediate ? 1u64 : 0u64;
+    // A scan with the same source and target uses the slot after the selection slot.
+    usize auxiliary = scan_alias ? summary + 3u64 : summary + (prefix ? 1u64 : 0u64) + (selection ? 1u64 : 0u64);
+    return ExecutionBuffers(buffers + summary, auxiliary);
+}

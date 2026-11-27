@@ -573,12 +573,6 @@ extern "C" u32 shader_ray_usage(Span code,Span queries,bool closest,RayHost host
  requires nonzero(host.ir.inspect) requires nonzero(host.include) requires nonzero(host.contains)
  requires nonzero(host.fields);
 
-struct ExecutionBuffers { usize indirect; usize auxiliary; };
-extern "C" usize indirect_buffer(Span stages,usize buffers,Host host) on cpu
- requires nonzero(host.inspect);
-extern "C" ExecutionBuffers execution_buffers(Span stages,usize buffers,Host host) on cpu
- requires nonzero(host.inspect);
-
 struct NumericRequirements { u32 float64; u32 integer8; u32 integer16; };
 struct NumericHost {
  Host ir;

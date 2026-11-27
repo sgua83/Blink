@@ -2,6 +2,51 @@
 use super::*;
 use std::{collections::{BTreeMap, BTreeSet}, ffi::c_void, ops::Deref};
 
+#[repr(u32)]
+enum SlotOperation {
+    Map, Reduce, CustomReduce, CustomScan, CustomSegmentedReduce, SegmentedReduce,
+    ScanExclusive, Compact, StableSort,
+}
+
+#[repr(C)]
+struct StageSlots {
+    operation: SlotOperation,
+    prefix: u32,
+    selection: u32,
+    source: usize,
+    target: usize,
+}
+
+unsafe extern "C" {
+    #[link_name = "codec.type_layout::device_slots"]
+    fn b_device_slots(stages: *const c_void, count: usize, buffers: usize,
+        stage: unsafe extern "C" fn(*const c_void, usize) -> StageSlots) -> ExecutionBuffers;
+}
+
+pub(super) fn device_slots(stages: &[Stage], buffers: usize) -> ExecutionBuffers {
+    unsafe { b_device_slots(stages.as_ptr().cast(), stages.len(), buffers, stage_slots) }
+}
+
+unsafe extern "C" fn stage_slots(stages: *const c_void, index: usize) -> StageSlots {
+    let stage = unsafe { &*stages.cast::<Stage>().add(index) };
+    let (operation, fields) = match &stage.operation {
+        Operation::Map => (SlotOperation::Map, None),
+        Operation::Reduce(_) => (SlotOperation::Reduce, None),
+        Operation::CustomReduce(_) => (SlotOperation::CustomReduce, None),
+        Operation::CustomScan(value) => (SlotOperation::CustomScan, Some(&value.values.fields)),
+        Operation::CustomSegmentedReduce(value) => (SlotOperation::CustomSegmentedReduce, Some(&value.values.fields)),
+        Operation::SegmentedReduce(value) => (SlotOperation::SegmentedReduce, Some(&value.values.fields)),
+        Operation::ScanExclusive(value) => (SlotOperation::ScanExclusive, Some(&value.values)),
+        Operation::Compact(_) => (SlotOperation::Compact, None),
+        Operation::StableSort(_) => (SlotOperation::StableSort, None),
+    };
+    let (source, target) = fields.map_or((0, 0), |fields| (fields.source, fields.target));
+    StageSlots {
+        operation, prefix: u32::from(stage.prefix.is_some()), selection: u32::from(stage.selection.is_some()),
+        source, target,
+    }
+}
+
 /// A common field value in the original Scalar's ordered numeric encoding.
 /// Binding and byte offset name the actual logical input, never an SSA value.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]

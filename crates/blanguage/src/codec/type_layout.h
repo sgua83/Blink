@@ -121,3 +121,19 @@ struct LengthHost {
 extern "C" u32 same_length(LengthPair query, u64 relations, address context, LengthHost host) on cpu
     requires nonzero(host.fixed_count) requires nonzero(host.relation)
     requires nonzero(host.fixed_binding) requires nonzero(host.allocate);
+
+enum SlotOperation : u32 {
+    Map = 0; Reduce = 1; CustomReduce = 2; CustomScan = 3; CustomSegmentedReduce = 4;
+    SegmentedReduce = 5; ScanExclusive = 6; Compact = 7; StableSort = 8;
+};
+struct StageSlots {
+    SlotOperation operation;
+    u32 prefix;
+    u32 selection;
+    usize source;
+    usize target;
+};
+struct ExecutionBuffers { usize indirect; usize auxiliary; };
+
+extern "C" ExecutionBuffers device_slots(address stages, usize count, usize buffers,
+    cfn<StageSlots,address,usize> ensures memory(read) stage) on cpu requires nonzero(stage);
