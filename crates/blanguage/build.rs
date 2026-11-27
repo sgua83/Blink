@@ -141,7 +141,7 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
             );
             let inputs: &[&str] = match name {
                 "condition_index" => &["proof_facts"],
-                "contract_codec" => &["value_format", "condition_index"],
+                "contract_codec" => &["value_format", "condition_index", "fact_key", "proof_facts", "scalar_fold"],
                 "host_sdk" => {
                     job.arguments.extend(["-I".into(), "../../library".into()]);
                     &["path_core", "ast_storage", "coff", "bindings", "names", "metadata", "native_select"]
