@@ -6,6 +6,14 @@ struct MipExtent { u32 width; u32 height; u32 depth; };
 extern "C" u32 mip_level_count(MipExtent base) on cpu;
 extern "C" MipExtent mip_extent(MipExtent base, u32 level) on cpu;
 
+struct TileScratchGroup { address results; u64 count; CollectiveOperation operation; };
+struct TileScratchHost {
+    cfn<TileScratchGroup,address> next;
+    cfn<u32,address,address,u64> ensures memory(read) scalar_bytes;
+};
+extern "C" u64 tile_scratch_bytes(u32 width, address context, TileScratchHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.scalar_bytes);
+
 struct VectorLayout {
     u64 size;
     u32 alignment;

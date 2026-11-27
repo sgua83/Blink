@@ -1,7 +1,8 @@
 //! 发布点切分块内阶段；私有值与共享 word 分别按实际消费者安排生命周期。
 use super::*;
+use std::ffi::c_void;
 #[cfg(feature = "compiler")]
-use std::{collections::{BTreeMap, BTreeSet}, ffi::c_void, mem::MaybeUninit};
+use std::{collections::{BTreeMap, BTreeSet}, mem::MaybeUninit};
 #[cfg(feature = "compiler")]
 mod private_live;
 #[cfg(feature = "compiler")]
@@ -242,27 +243,59 @@ impl Stage {
         words as u64 * u64::from(self.workgroup_width()) * 4
     }
     pub fn tile_scratch_bytes(&self) -> u64 {
-        let bytes_per_lane = self
-            .code
-            .iter()
-            .filter_map(|i| match &(i).kind {
-                InstKind::TileCollective(c) if !c.results.is_empty() => {
-                    Some(if c.op.operator() == CollectiveOperator::Sum {
-                        c.results.iter().map(|(_,result)|self.registers[*result].size().div_ceil(4) * 4).max().unwrap_or(0)
-                    } else {
-                        c.results.iter().map(|(_,result)|self.registers[*result].size().div_ceil(4) * 4).sum()
-                    })
-                }
-                _ => None,
-            })
-            .max()
-            .unwrap_or(0);
-        (self.workgroup_width() as u64).next_power_of_two() * u64::from(bytes_per_lane)
+        let mut input = TileScratchInput { code: self.code.iter(), registers: &self.registers };
+        let host = TileScratchHost { next: next_scratch_group, scalar_bytes: scratch_field_bytes };
+        unsafe { tile_scratch_bytes(self.workgroup_width(), std::ptr::from_mut(&mut input).cast(), host) }
     }
     #[cfg(feature = "compiler")]
     pub fn tile_bytes(&self) -> u64 {
         self.tile_data_bytes() + self.tile_scratch_bytes()
     }
+}
+
+#[repr(C)]
+struct TileScratchGroup {
+    results: *const c_void,
+    count: usize,
+    operation: CollectiveOperator,
+}
+
+#[repr(C)]
+struct TileScratchHost {
+    next: unsafe extern "C" fn(*mut c_void) -> TileScratchGroup,
+    scalar_bytes: unsafe extern "C" fn(*const c_void, *const c_void, usize) -> u32,
+}
+
+struct TileScratchInput<'a> {
+    code: std::slice::Iter<'a, Inst>,
+    registers: &'a [Scalar],
+}
+
+unsafe extern "C" {
+    #[link_name = "codec.type_layout::tile_scratch_bytes"]
+    fn tile_scratch_bytes(width: u32, context: *mut c_void, host: TileScratchHost) -> u64;
+}
+
+unsafe extern "C" fn next_scratch_group(context: *mut c_void) -> TileScratchGroup {
+    let input = unsafe { &mut *context.cast::<TileScratchInput<'_>>() };
+    for inst in input.code.by_ref() {
+        if let InstKind::TileCollective(collective) = &inst.kind && !collective.results.is_empty() {
+            return TileScratchGroup {
+                results: collective.results.as_ptr().cast(),
+                count: collective.results.len(),
+                operation: collective.op.operator(),
+            };
+        }
+    }
+    TileScratchGroup { results: std::ptr::null(), count: 0, operation: CollectiveOperator::Sum }
+}
+
+unsafe extern "C" fn scratch_field_bytes(
+    context: *const c_void, results: *const c_void, index: usize,
+) -> u32 {
+    let input = unsafe { &*context.cast::<TileScratchInput<'_>>() };
+    let (_, reg) = unsafe { *results.cast::<(u32, Reg)>().add(index) };
+    input.registers[reg].size()
 }
 
 impl Inst {

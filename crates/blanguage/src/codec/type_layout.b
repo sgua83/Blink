@@ -15,6 +15,27 @@ extern "C" MipExtent mip_extent(MipExtent base, u32 level) on cpu {
         max(base.depth >> level, 1));
 }
 
+extern "C" u64 tile_scratch_bytes(u32 width, address context, TileScratchHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.scalar_bytes) {
+    u32 lane_bytes = 0;
+    TileScratchGroup group = host.next(context);
+    while (group.count != 0u64) {
+        u32 bytes = 0;
+        u64 index = 0u64;
+        while (index < group.count) {
+            u32 size = host.scalar_bytes(context, group.results, index);
+            u32 field = ((size + 3) / 4) * 4;
+            bytes = group.operation == CollectiveOperation::Sum ? max(bytes, field) : bytes + field;
+            index += 1u64;
+        }
+        lane_bytes = max(lane_bytes, bytes);
+        group = host.next(context);
+    }
+    u64 lanes = 1u64;
+    while (lanes < u64(width)) { lanes = lanes * 2u64; }
+    return lanes * u64(lane_bytes);
+}
+
 extern "C" VectorLayout vector(u32 scalar_size, u32 scalar_alignment, u64 count) on cpu {
     u32 lanes = count == 2 ? 2 : 4;
     return VectorLayout(u64(scalar_size) * count, scalar_alignment * lanes);

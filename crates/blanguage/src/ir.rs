@@ -1927,15 +1927,17 @@ impl Program {
                 s.selection
             );
             if s.has_tile_scope() {
+                let tiles = s.storage_tiles();
+                let scratch = s.tile_scratch_bytes();
                 out += &format!(
                     "    tile_width={}, shared_values={}, phases={}, tile_word_bytes={}, collective_scratch_bytes={}\n",
                     s.workgroup_width(),
-                    s.storage_tiles().len(),
+                    tiles.len(),
                     s.code.iter().filter(|inst| matches!(&inst.kind, InstKind::TilePublish(_) | InstKind::TileCollective(_) | InstKind::TileBarrier)).count() + 1,
-                    s.tile_bytes(),
-                    s.tile_scratch_bytes()
+                    s.tile_data_bytes() + scratch,
+                    scratch
                 );
-                for tile in s.storage_tiles() {
+                for tile in tiles {
                     let t = &s.tiles[tile];
                     match t.source {
                         TileSource::Input { binding, word } => {
