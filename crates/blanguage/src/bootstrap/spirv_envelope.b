@@ -529,16 +529,20 @@ View function_component(Span components, usize index, Host ir) on cpu requires n
     return ir.inspect(Node(value, N_COMPONENT));
 }
 
+address private_array_at(address arrays, usize index) on cpu {
+    return unsafe_address(address_bits(arrays) + index * size_of<PrivateArray>());
+}
+
 extern "C" FunctionStorageWords function_storage(FunctionStorageInput input, FunctionStorageHost host,
     ShaderConstants constants) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.reserve) requires nonzero(host.local_type)
-    requires nonzero(host.next_local) requires nonzero(host.retain_array) requires nonzero(constants.intern) {
+    requires nonzero(host.next_local) requires nonzero(constants.intern) {
     address locals = input.locals.data;
     FunctionArrayMarks marks = FunctionArrayMarks(locals, 0u64);
     // Each complete declaration marks its final local slot. Duplicate uses share that slot.
     private_spans(input.code, host.ir, address_of(marks), c_function(mark_function_array));
     FunctionStorageStreams streams = host.reserve(host.context, 12u64 * marks.count,
-        4u64 * (input.rays + input.locals.count));
+        4u64 * (input.rays + input.locals.count), marks.count);
     ResourceCursor out = ResourceCursor(streams.definitions, address(), 0u64, 0u64, input.next);
     u64 words = 0u64;
     usize ray = 0u64;
@@ -548,6 +552,7 @@ extern "C" FunctionStorageWords function_storage(FunctionStorageInput input, Fun
     }
 
     // Array declarations precede scalar variables, both in original local order.
+    usize count = 0u64;
     usize slot = 0u64;
     while (slot < input.locals.count) {
         if (unsafe_position<u32>(word_at(locals, slot)) != 0) {
@@ -567,7 +572,11 @@ extern "C" FunctionStorageWords function_storage(FunctionStorageInput input, Fun
             u32 array_type = define_type(out, TypeShape::Array, element, length);
             u32 pointer = define_pointer(out, StorageClass::Function, array_type);
             u32 variable = function_variable(out, streams.body, words, pointer);
-            host.retain_array(host.context, end - components.count, end, shape.data, unit, variable);
+            BuiltinScalar storage = unit == 1 ? BuiltinScalar::U8 :
+                (unit == 2 ? BuiltinScalar::U16 : BuiltinScalar::U32);
+            unsafe_position<PrivateArray>(private_array_at(streams.arrays, count)) =
+                PrivateArray(end, components, variable, storage);
+            count += 1u64;
         }
         slot += 1u64;
     }
@@ -592,7 +601,7 @@ extern "C" FunctionStorageWords function_storage(FunctionStorageInput input, Fun
         group = host.next_local(host.context);
     }
 
-    return FunctionStorageWords(out.words, words, out.next);
+    return FunctionStorageWords(out.words, words, count, out.next);
 }
 
 extern "C" u64 flag_decoration(address decorations, u64 at, FlagDecoration decoration, u32 id) on cpu {
@@ -1858,8 +1867,26 @@ void block_append(View instruction, BlockValues values, BlockPaging paging, u32 
         control.reserve_words(control.context, 4u64)));
 }
 
-void block_private_storage(View instruction, BlockValues values, BlockLocals locals, MemoryHost memory) on cpu
-    requires nonzero(values.scalar) requires nonzero(locals.array)
+struct PrivateField { u32 variable; u32 pointer_type; BuiltinScalar unit; u32 offset; };
+
+PrivateField private_array_field(BlockLocals locals, usize base, Host ir) on cpu requires nonzero(ir.inspect) {
+    usize low = 0u64;
+    usize high = locals.arrays.count;
+    while (low < high) {
+        usize mid = low + (high - low) / 2u64;
+        PrivateArray array = unsafe_position<PrivateArray>(private_array_at(locals.arrays.data, mid));
+        if (array.end <= base) { low = mid + 1u64; }
+        else { high = mid; }
+    }
+    PrivateArray array = unsafe_position<PrivateArray>(private_array_at(locals.arrays.data, low));
+    usize start = array.end - array.components.count;
+    View component = function_component(array.components, base - start, ir);
+    u32 pointer = unsafe_position<u32>(word_at(locals.pointers, u64(u32(array.unit))));
+    return PrivateField(array.variable, pointer, array.unit, u32(component.a));
+}
+
+void block_private_storage(View instruction, BlockValues values, BlockLocals locals, MemoryHost memory, Host ir) on cpu
+    requires nonzero(values.scalar) requires nonzero(ir.inspect)
     requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body) {
     ScalarHost scalars = memory.scalars;
@@ -1881,7 +1908,7 @@ void block_private_storage(View instruction, BlockValues values, BlockLocals loc
         }
     }
 
-    PrivateField field = locals.array(context, base);
+    PrivateField field = private_array_field(locals, base, ir);
     u32 bytes = scalar_definition(field.unit).width / 8;
     u32 scalar_bytes = scalar_definition(scalar).width / 8;
     u32 count = (scalar_bytes + bytes - 1) / bytes;
@@ -1936,7 +1963,6 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     requires nonzero(emit.values.scalar) requires nonzero(emit.values.binary) requires nonzero(emit.values.finish)
     requires nonzero(emit.values.scalars.constant) requires nonzero(emit.values.scalars.type_id)
     requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve)
-    requires nonzero(emit.locals.array)
     requires nonzero(host.labels) requires nonzero(host.reserve_words) requires nonzero(host.finish_words)
     requires nonzero(host.block) requires nonzero(host.value) requires nonzero(host.begin_return)
     requires nonzero(host.normal_exit) requires nonzero(host.finish_return)
@@ -2049,7 +2075,7 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
         } else if (kind == OP_UNIFORM) {
             block_uniform(value, emit.values);
         } else if (kind >= OP_LOAD_LOCAL && kind <= OP_STORE_LOCAL_INDEXED) {
-            block_private_storage(value, emit.values, emit.locals, memory);
+            block_private_storage(value, emit.values, emit.locals, memory, emit.ir);
         } else if (kind == OP_LOAD || kind == OP_STORE) {
             bool write = kind == OP_STORE;
             PageInputs page = block_dataset_page(emit.paging, write ? value.a : value.b);

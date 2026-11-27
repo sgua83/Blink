@@ -690,30 +690,10 @@ struct BlockSubgroup {
 }
 
 #[repr(C)]
-struct PrivateField {
-    variable: u32,
-    pointer_type: u32,
-    unit: ScalarCode,
-    offset: u32,
-}
-
-#[repr(C)]
 struct BlockLocals {
     slots: *const u32,
-    array: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> PrivateField,
-}
-
-unsafe extern "C" fn private_array_field(context: *mut std::ffi::c_void, base: usize) -> PrivateField {
-    use std::ops::Bound::{Excluded, Unbounded};
-
-    let emitter = unsafe { &*context.cast::<Emitter<'_>>() };
-    let (_, array) = emitter.private_arrays.range((Excluded(base), Unbounded)).next().unwrap();
-    PrivateField {
-        variable: array.variable,
-        pointer_type: emitter.pointers[&array.unit],
-        unit: array.unit.into(),
-        offset: array.shape.components[base - array.start].1,
-    }
+    arrays: Span,
+    pointers: *const u32,
 }
 
 #[repr(C)]
@@ -784,7 +764,8 @@ fn block_host(emitter: &mut Emitter<'_>) -> BlockHost {
         },
         locals: BlockLocals {
             slots: emitter.locals.as_ptr(),
-            array: private_array_field,
+            arrays: Span::slice(&emitter.private_arrays),
+            pointers: emitter.pointers.0.as_ptr(),
         },
         tile: emitter.tile_storage(),
         subgroup: BlockSubgroup { lane, size, id, ballot_type: emitter.ballot_type },
@@ -1019,11 +1000,12 @@ unsafe extern "C" {
         definitions: *mut std::ffi::c_void, reserve: ReserveConstant) -> ConstantWords;
 }
 
-struct PrivateArray<'a> {
-    start: usize,
-    unit: Scalar,
+#[repr(C)]
+struct PrivateArray {
+    end: usize,
+    components: Span,
     variable: u32,
-    shape: &'a Ty,
+    unit: ScalarCode,
 }
 
 #[repr(C)]
@@ -1049,6 +1031,7 @@ struct FunctionStorageInput {
 struct FunctionStorageWords {
     definitions: u64,
     body: u64,
+    arrays: usize,
     next: u32,
 }
 
@@ -1056,6 +1039,7 @@ struct FunctionStorageWords {
 struct FunctionStorageStreams {
     definitions: *mut u32,
     body: *mut u32,
+    arrays: *mut PrivateArray,
 }
 
 type FunctionStorageContext = *mut std::ffi::c_void;
@@ -1064,29 +1048,30 @@ type FunctionStorageContext = *mut std::ffi::c_void;
 struct FunctionStorageHost {
     context: FunctionStorageContext,
     ir: dataflow::Host,
-    reserve: unsafe extern "C" fn(FunctionStorageContext, usize, usize) -> FunctionStorageStreams,
+    reserve: unsafe extern "C" fn(FunctionStorageContext, usize, usize, usize) -> FunctionStorageStreams,
     local_type: unsafe extern "C" fn(FunctionStorageContext, usize) -> Node,
     next_local: unsafe extern "C" fn(FunctionStorageContext) -> FunctionLocal,
-    retain_array: unsafe extern "C" fn(FunctionStorageContext, usize, usize, *const Ty, u32, u32),
 }
 
 struct FunctionStorage<'a, 'emit> {
     declarations: &'a BTreeMap<usize, Ty>,
     locals: std::collections::btree_map::Iter<'a, usize, Ty>,
-    arrays: &'emit mut BTreeMap<usize, PrivateArray<'a>>,
+    arrays: &'emit mut Vec<PrivateArray>,
     definitions: &'emit mut Vec<u32>,
     body: &'emit mut Vec<u32>,
 }
 
 unsafe extern "C" fn reserve_function_storage(
-    context: FunctionStorageContext, definitions: usize, body: usize,
+    context: FunctionStorageContext, definitions: usize, body: usize, arrays: usize,
 ) -> FunctionStorageStreams {
     let source = unsafe { &mut *context.cast::<FunctionStorage<'_, '_>>() };
     source.definitions.reserve(definitions);
     source.body.reserve(body);
+    source.arrays.reserve(arrays);
     FunctionStorageStreams {
         definitions: unsafe { source.definitions.as_mut_ptr().add(source.definitions.len()) },
         body: unsafe { source.body.as_mut_ptr().add(source.body.len()) },
+        arrays: source.arrays.as_mut_ptr(),
     }
 }
 
@@ -1099,16 +1084,6 @@ unsafe extern "C" fn next_function_local(context: FunctionStorageContext) -> Fun
     let source = unsafe { &mut *context.cast::<FunctionStorage<'_, '_>>() };
     source.locals.next().map_or(FunctionLocal { end: 0, ty: Node::EMPTY },
         |(&end, ty)| FunctionLocal { end, ty: Node::ty(ty) })
-}
-
-unsafe extern "C" fn retain_function_array(
-    context: FunctionStorageContext, start: usize, end: usize, shape: *const Ty, bytes: u32, variable: u32,
-) {
-    let source = unsafe { &mut *context.cast::<FunctionStorage<'_, '_>>() };
-    // The shape borrows this stage's original local declaration.
-    let shape = unsafe { &*shape };
-    let unit = match bytes { 1 => Scalar::U8, 2 => Scalar::U16, _ => Scalar::U32 };
-    source.arrays.insert(end, PrivateArray { start, unit, variable, shape });
 }
 
 struct Emitter<'a> {
@@ -1137,7 +1112,7 @@ struct Emitter<'a> {
     index: u32,
     regs: Vec<u32>,
     locals: Vec<u32>,
-    private_arrays: BTreeMap<usize, PrivateArray<'a>>,
+    private_arrays: Vec<PrivateArray>,
     stage: &'a Stage,
     registers: &'a [Scalar],
     program: &'a Program,
@@ -1225,7 +1200,6 @@ impl<'ir> Emitter<'ir> {
                 reserve: reserve_function_storage,
                 local_type: function_local_type,
                 next_local: next_function_local,
-                retain_array: retain_function_array,
             };
             let input = FunctionStorageInput {
                 code: Span::slice(code),
@@ -1243,6 +1217,7 @@ impl<'ir> Emitter<'ir> {
         unsafe {
             self.defs.set_len(definitions + result.definitions as usize);
             self.body.set_len(body + result.body as usize);
+            self.private_arrays.set_len(result.arrays);
         }
         self.next = result.next;
         for (offset, &(reg, fields)) in rays.iter().enumerate() {
@@ -1937,7 +1912,7 @@ fn emit_shader(
         index: 0,
         regs: Vec::new(),
         locals: Vec::new(),
-        private_arrays: BTreeMap::new(),
+        private_arrays: Vec::new(),
         stage,
         registers,
         program,

@@ -120,27 +120,28 @@ enum StorageClass:u32 {
 enum VariableAnnotation:u32 { Descriptor=0; PageTable=1; BuiltIn=2; };
 
 struct FunctionLocal { usize end; Node ty; };
+// Pinned to the original local declarations for the duration of this shader.
+struct PrivateArray { usize end; Span components; u32 variable; BuiltinScalar unit; };
 struct FunctionStorageInput {
     Span code;
     Span locals;
     address pointers;
     usize rays; u32 next; u32 ray_pointer; u32 word_type; u32 byte_type; u32 short_type;
 };
-struct FunctionStorageWords { u64 definitions; u64 body; u32 next; };
-struct FunctionStorageStreams { address definitions; address body; };
+struct FunctionStorageWords { u64 definitions; u64 body; usize arrays; u32 next; };
+struct FunctionStorageStreams { address definitions; address body; address arrays; };
 struct FunctionStorageHost {
     address context;
     Host ir;
-    cfn<FunctionStorageStreams,address,u64,u64> reserve;
+    cfn<FunctionStorageStreams,address,u64,u64,usize> reserve;
     cfn<Node,address,usize> ensures memory(read) local_type;
     cfn<FunctionLocal,address> next_local;
-    cfn<void,address,usize,usize,address,u32,u32> retain_array;
 };
 // The original locals buffer is zeroed before function storage is assigned.
 extern "C" FunctionStorageWords function_storage(FunctionStorageInput input, FunctionStorageHost host,
     ShaderConstants constants) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.reserve) requires nonzero(host.local_type)
-    requires nonzero(host.next_local) requires nonzero(host.retain_array) requires nonzero(constants.intern);
+    requires nonzero(host.next_local) requires nonzero(constants.intern);
 // Output has room for four definition words and eleven decoration words.
 
 enum FlagDecoration:u32 { NoContraction=42; NonUniform=5300; };
@@ -405,8 +406,7 @@ struct BlockPaging {
     cfn<u32,address> current_label;
 };
 struct BlockSubgroup { u32 lane; u32 size; u32 id; u32 ballot_type; };
-struct PrivateField { u32 variable; u32 pointer_type; BuiltinScalar unit; u32 offset; };
-struct BlockLocals { address slots; cfn<PrivateField,address,usize> array; };
+struct BlockLocals { address slots; Span arrays; address pointers; };
 enum TileKeyKind : u32 { Input = 0; Published = 1; };
 struct TileKey { usize owner; u32 word; TileKeyKind kind; };
 struct TileCell { BuiltinScalar unit; u32 slot; u32 byte; u32 variable; u32 pointer_type; };
@@ -489,7 +489,6 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     requires nonzero(emit.values.scalar) requires nonzero(emit.values.binary) requires nonzero(emit.values.finish)
     requires nonzero(emit.values.scalars.constant) requires nonzero(emit.values.scalars.type_id)
     requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve)
-    requires nonzero(emit.locals.array)
     requires nonzero(host.labels) requires nonzero(host.reserve_words) requires nonzero(host.finish_words)
     requires nonzero(host.block) requires nonzero(host.value) requires nonzero(host.begin_return)
     requires nonzero(host.normal_exit) requires nonzero(host.finish_return)
