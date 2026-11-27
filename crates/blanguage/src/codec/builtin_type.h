@@ -10,3 +10,7 @@ struct BuiltinType { BuiltinKind kind; BuiltinScalar scalar; u32 rows; u32 colum
 extern "C" BuiltinType recognize(address name, u64 length) on cpu;
 
 u8 name_byte(address name, u64 index) on cpu;
+
+enum CollectiveOperation:u32 { Sum=0; Min=1; Max=2; BitAnd=3; BitOr=4; BitXor=5; };
+extern "C" u64 collective_identity(CollectiveOperation operation, BuiltinScalar scalar,
+    u32 width, u32 signed) on cpu;

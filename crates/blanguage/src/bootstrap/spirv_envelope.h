@@ -175,7 +175,6 @@ struct CastEmission {
 };
 
 
-enum CollectiveOperation:u32 { Sum=0; Min=1; Max=2; BitAnd=3; BitOr=4; BitXor=5; };
 struct CollectivePair {
     CollectiveOperation operation;
     BuiltinScalar scalar;
@@ -434,7 +433,6 @@ extern "C" TileInputRange emit_tile_input(TileInputLayout input, TileInputSource
 struct TileStorage {
     cfn<TileCell,address,TileKey> cell;
     cfn<TileKey,address,usize,u32> word;
-    cfn<u64,address,CollectiveOperation,usize> identity;
     cfn<address,address,usize> components;
     u32 width;
     u32 lane;
@@ -481,7 +479,7 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     StructuredHost host, BlockHost emit) on cpu
     requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
     requires nonzero(emit.textures.declaration) requires nonzero(emit.rays.declare_type)
-    requires nonzero(emit.tile.identity) requires nonzero(emit.tile.components)
+    requires nonzero(emit.tile.components)
     requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
     requires nonzero(emit.paging.finish_body)
     requires nonzero(emit.paging.current_label)
@@ -506,7 +504,7 @@ extern "C" void emit_tile_phases(u32 active, StructuredHost control, TilePhaseHo
     requires nonzero(control.finish_words) requires nonzero(control.block)
     requires nonzero(host.next_phase) requires nonzero(host.next_value)
     requires nonzero(emit.ir.inspect) requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
-    requires nonzero(emit.tile.identity) requires nonzero(emit.tile.components) requires nonzero(emit.values.finish)
+    requires nonzero(emit.tile.components) requires nonzero(emit.values.finish)
     requires nonzero(emit.paging.current_label) requires nonzero(emit.paging.finish_body) requires nonzero(emit.values.scalar)
     requires nonzero(emit.values.scalars.constant)
     requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve);
@@ -668,7 +666,6 @@ struct NumericDispatch {
 };
 struct NumericGroupInput {
     CollectiveLayout fields;
-    u64 identity;
     CollectiveOperation operation;
     u32 source_word;
     u32 tail;
@@ -993,12 +990,6 @@ struct ShaderPass {
 };
 extern "C" ShaderPass shader_pass(EntryPass kind, usize parameter, u32 word) on cpu;
 
-struct SegmentIdentityField { u64 bits; u32 offset; BuiltinScalar scalar; };
-struct SegmentScratch {
-    WordScratch words;
-    address context;
-    cfn<SegmentIdentityField,address,u32> identity;
-};
 struct SegmentLayout {
     CollectiveLayout fields;
     CollectiveOperation operation;
@@ -1022,8 +1013,8 @@ struct SegmentDispatch {
     u32 run; u32 end; u32 before;
 };
 extern "C" TreeWords emit_segmented(EntryPass pass, u32 single_group, SegmentLayout layout,
-    SegmentBindings bindings, SegmentDispatch dispatch, PageInputs raw_page, SegmentScratch scratch, MemoryHost host) on cpu
-    requires nonzero(layout.fields.component) requires nonzero(scratch.words.reserve) requires nonzero(scratch.identity)
+    SegmentBindings bindings, SegmentDispatch dispatch, PageInputs raw_page, WordScratch scratch, MemoryHost host) on cpu
+    requires nonzero(layout.fields.component) requires nonzero(scratch.reserve)
     requires nonzero(host.scalars.constant)
     requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve);
 

@@ -77,7 +77,6 @@ pub(super) struct NumericDispatch {
 #[repr(C)]
 pub(super) struct NumericGroupInput {
     fields: CollectiveLayout,
-    identity: u64,
     operation: u32,
     source_word: u32,
     tail: u32,
@@ -89,7 +88,6 @@ impl NumericGroupInput {
         tail: bool, dispatch: NumericDispatch) -> Self {
         Self {
             fields: CollectiveLayout::borrow(ty),
-            identity: operator.identity(ty.components[0].0),
             operation: operator as u32,
             source_word,
             tail: u32::from(tail),

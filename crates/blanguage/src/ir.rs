@@ -1305,28 +1305,14 @@ pub enum CollectiveOperator {
 }
 impl CollectiveOperator {
     pub fn identity(self, scalar: Scalar) -> Bits {
-        match self {
-            Self::Sum | Self::BitOr | Self::BitXor => 0,
-            Self::BitAnd => scalar.bit_mask(),
-            Self::Min => {
-                if scalar.is_float() {
-                    if scalar == Scalar::F64 { f64::INFINITY.to_bits() } else { Bits::from(f32::INFINITY.to_bits()) }
-                } else if scalar.is_signed() {
-                    scalar.order_bias() - 1
-                } else {
-                    scalar.bit_mask()
-                }
-            }
-            Self::Max => {
-                if scalar.is_float() {
-                    if scalar == Scalar::F64 { f64::NEG_INFINITY.to_bits() } else { Bits::from(f32::NEG_INFINITY.to_bits()) }
-                } else if scalar.is_signed() {
-                    scalar.order_bias()
-                } else {
-                    0
-                }
-            }
+        unsafe extern "C" {
+            #[link_name = "codec.builtin_type::collective_identity"]
+            fn identity(
+                operator: CollectiveOperator, scalar: crate::builtin_types::ScalarCode,
+                width: u32, signed: u32,
+            ) -> Bits;
         }
+        unsafe { identity(self, scalar.into(), scalar.bit_width(), u32::from(scalar.is_signed())) }
     }
 }
 #[derive(Clone, Debug)]

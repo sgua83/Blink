@@ -1,20 +1,5 @@
 //! 原内置分段着色器从 Rust 借用布局、绑定和单位元。
 use super::{reduce::{CollectiveLayout, WordScratch}, scan::TreeWords, *};
-use std::ffi::c_void;
-
-#[repr(C)]
-struct SegmentIdentityField {
-    bits: Bits,
-    offset: u32,
-    scalar: ScalarCode,
-}
-
-#[repr(C)]
-struct SegmentScratch {
-    words: WordScratch,
-    context: *mut c_void,
-    identity: unsafe extern "C" fn(*mut c_void, u32) -> SegmentIdentityField,
-}
 
 #[repr(C)]
 struct SegmentLayout {
@@ -53,18 +38,7 @@ pub(super) struct SegmentDispatch {
 unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::emit_segmented"]
     fn emit_segmented(pass: EntryPass, single_group: u32, layout: SegmentLayout, bindings: SegmentBindings,
-        dispatch: SegmentDispatch, page: PageInputs, scratch: SegmentScratch, host: MemoryHost) -> TreeWords;
-}
-
-struct SegmentData<'a> {
-    ty: &'a Ty,
-    operator: CollectiveOperator,
-}
-
-unsafe extern "C" fn segment_identity_field(context: *mut c_void, index: u32) -> SegmentIdentityField {
-    let data = unsafe { &*context.cast::<SegmentData<'_>>() };
-    let (scalar, offset) = data.ty.components[index as usize];
-    SegmentIdentityField { bits: data.operator.identity(scalar), offset, scalar: scalar.into() }
+        dispatch: SegmentDispatch, page: PageInputs, scratch: WordScratch, host: MemoryHost) -> TreeWords;
 }
 
 impl Emitter<'_> {
@@ -94,12 +68,7 @@ impl Emitter<'_> {
         };
         let page = self.page_inputs(0, self.index, None, 0);
         let mut words = Vec::new();
-        let mut data = SegmentData { ty, operator };
-        let scratch = SegmentScratch {
-            words: WordScratch::borrow(&mut words),
-            context: std::ptr::from_mut(&mut data).cast(),
-            identity: segment_identity_field,
-        };
+        let scratch = WordScratch::borrow(&mut words);
         let result = unsafe {
             emit_segmented(pass, u32::from(single_group), layout, bindings, dispatch, page, scratch, self.memory_host())
         };

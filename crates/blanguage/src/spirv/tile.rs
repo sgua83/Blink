@@ -96,7 +96,6 @@ struct TileCell {
 pub(super) struct TileStorage {
     cell: unsafe extern "C" fn(*mut c_void, TileKey) -> TileCell,
     word: unsafe extern "C" fn(*mut c_void, usize, u32) -> TileKey,
-    identity: unsafe extern "C" fn(*mut c_void, CollectiveOperator, Reg) -> Bits,
     components: unsafe extern "C" fn(*mut c_void, usize) -> *mut scan::TreeComponent,
     width: u32,
     lane: u32,
@@ -125,11 +124,6 @@ impl TileCell {
 
 unsafe extern "C" fn tile_word(context: *mut c_void, tile: usize, word: u32) -> TileKey {
     unsafe { &*context.cast::<Emitter<'_>>() }.stage.shared_word(tile, word).into()
-}
-
-unsafe extern "C" fn tile_identity(context: *mut c_void, operator: CollectiveOperator, register: Reg) -> Bits {
-    let emitter = unsafe { &*context.cast::<Emitter<'_>>() };
-    operator.identity(emitter.registers[register])
 }
 
 unsafe extern "C" fn tile_tree_components(context: *mut c_void, count: usize) -> *mut scan::TreeComponent {
@@ -239,7 +233,7 @@ impl Emitter<'_> {
 
     pub(super) fn tile_storage(&self) -> TileStorage {
         TileStorage {
-            cell: tile_cell, word: tile_word, identity: tile_identity, components: tile_tree_components,
+            cell: tile_cell, word: tile_word, components: tile_tree_components,
             width: self.workgroup_width, lane: self.tile_lane, length: self.tile_length,
             shared: self.tile_shared, pointer: self.tile_pointer, data_words: self.tile_data_words,
         }

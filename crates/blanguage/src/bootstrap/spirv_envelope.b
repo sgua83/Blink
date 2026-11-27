@@ -1540,7 +1540,7 @@ extern "C" void emit_tile_phases(u32 active, StructuredHost control, TilePhaseHo
     requires nonzero(control.finish_words) requires nonzero(control.block)
     requires nonzero(host.next_phase) requires nonzero(host.next_value)
     requires nonzero(emit.ir.inspect) requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
-    requires nonzero(emit.tile.identity) requires nonzero(emit.tile.components) requires nonzero(emit.values.finish)
+    requires nonzero(emit.tile.components) requires nonzero(emit.values.finish)
     requires nonzero(emit.paging.current_label) requires nonzero(emit.paging.finish_body) requires nonzero(emit.values.scalar)
     requires nonzero(emit.values.scalars.constant)
     requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve) {
@@ -1960,7 +1960,7 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     StructuredHost host, BlockHost emit) on cpu
     requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
     requires nonzero(emit.textures.declaration) requires nonzero(emit.rays.declare_type)
-    requires nonzero(emit.tile.identity) requires nonzero(emit.tile.components)
+    requires nonzero(emit.tile.components)
     requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
     requires nonzero(emit.paging.finish_body)
     requires nonzero(emit.paging.current_label)
@@ -3984,7 +3984,7 @@ void tile_collective_layer(u32 stride, u32 padded, u32 down, address components,
 
 void block_tile_collective(View operation, BlockHost emit, MemoryHost memory, StructuredHost control) on cpu
     requires nonzero(emit.tile.cell) requires nonzero(emit.tile.word)
-    requires nonzero(emit.tile.identity) requires nonzero(emit.tile.components)
+    requires nonzero(emit.tile.components)
     requires nonzero(emit.values.scalar) requires nonzero(emit.values.finish) requires nonzero(emit.paging.current_label)
     requires nonzero(memory.scalars.constant)
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body)
@@ -4014,9 +4014,11 @@ void block_tile_collective(View operation, BlockHost emit, MemoryHost memory, St
             usize register = unsafe_position<usize>(unsafe_address(address_bits(operation.first.data) + row * operation.first.stride));
             u32 offset = unsafe_position<u32>(unsafe_address(address_bits(operation.second.data) + row * operation.second.stride));
             BuiltinScalar scalar = emit.values.scalar(context, register);
-            BuiltinScalar raw = unsigned_scalar(scalar_definition(scalar).width);
-            u32 parts = (scalar_definition(scalar).width + 31) / 32;
-            u32 identity = stream.constant(context, raw, storage.identity(context, opcode, register));
+            ScalarDefinition type = scalar_definition(scalar);
+            BuiltinScalar raw = unsigned_scalar(type.width);
+            u32 parts = (type.width + 31) / 32;
+            u64 bits = collective_identity(opcode, scalar, type.width, type.signed);
+            u32 identity = stream.constant(context, raw, bits);
             u32 scale = parts == 2 ? stream.constant(context, BuiltinScalar::U32, 2u64) : 0;
             u32 low = word != 0 ? stream.constant(context, BuiltinScalar::U32, u64(word)) : 0;
             u32 high = parts == 2 ? stream.constant(context, BuiltinScalar::U32, u64(word + 1)) : 0;
@@ -4068,12 +4070,12 @@ void block_tile_collective(View operation, BlockHost emit, MemoryHost memory, St
             control.finish_words(control_context, open_index_selection(bool_type, test, storage.lane, zero, false, test + 1, end, branch));
             u32 root = stream.constant(context, BuiltinScalar::U32, u64(padded - 1));
             for (slot in 0..batch) {
-                usize row = first + u64(slot);
-                usize register = unsafe_position<usize>(unsafe_address(address_bits(operation.first.data) + row * operation.first.stride));
                 TreeComponent component = unsafe_position<TreeComponent>(
                     unsafe_address(address_bits(components) + u64(slot) * size_of<TreeComponent>()));
-                BuiltinScalar raw = unsigned_scalar(scalar_definition(component.scalar).width);
-                u32 identity = stream.constant(context, raw, storage.identity(context, opcode, register));
+                ScalarDefinition type = scalar_definition(component.scalar);
+                BuiltinScalar raw = unsigned_scalar(type.width);
+                u64 bits = collective_identity(opcode, component.scalar, type.width, type.signed);
+                u32 identity = stream.constant(context, raw, bits);
                 tile_tree_store(component, root, identity, uint_type, memory);
             }
             control.finish_words(control_context, next_control_block(end, end, 1, control.reserve_words(control_context, 4u64)));
@@ -4878,18 +4880,20 @@ void segment_storage_fields(CollectiveLayout layout, u32 first, MemoryHost host,
     }
 }
 
-void segment_identity(ScalarHost host, SegmentMerge merge, address source,
-    cfn<SegmentIdentityField,address,u32> field, u32 fields, address output) on cpu
-    requires nonzero(host.constant) requires nonzero(field) {
+void segment_identity(ScalarHost host, SegmentMerge merge, address fields, u32 count, address output) on cpu
+    requires nonzero(host.constant) {
     for (word in 0..(merge.value_words + 1 + merge.counted)) {
         put(output, u64(word), merge.zero);
     }
-    for (index in 0..fields) {
-        let component = field(source, index);
-        u64 word = u64(component.offset / 4);
-        put(output, word, host.constant(host.context, BuiltinScalar::U32, u64(u32(component.bits))));
-        if (scalar_definition(component.scalar).width == 64) {
-            put(output, word + 1u64, host.constant(host.context, BuiltinScalar::U32, component.bits >> 32u64));
+    for (index in 0..count) {
+        address at = unsafe_address(address_bits(fields) + u64(index) * size_of<SegmentField>());
+        SegmentField component = unsafe_position<SegmentField>(at);
+        ScalarDefinition type = scalar_definition(component.scalar);
+        u64 bits = collective_identity(merge.operation, component.scalar, type.width, type.signed);
+        u64 word = u64(component.word);
+        put(output, word, host.constant(host.context, BuiltinScalar::U32, u64(u32(bits))));
+        if (type.width == 64) {
+            put(output, word + 1u64, host.constant(host.context, BuiltinScalar::U32, bits >> 32u64));
         }
     }
 }
@@ -5489,14 +5493,14 @@ void clear_workspace(address workspace, u64 words) on cpu {
 }
 
 TreeWords emit_segment_add(SegmentLayout layout, SegmentBindings bindings, SegmentDispatch dispatch,
-    PageInputs raw_page, SegmentScratch scratch, MemoryHost host, u32 value_words, u64 field_words, u64 span) on cpu
-    requires nonzero(layout.fields.component) requires nonzero(scratch.words.reserve)
+    PageInputs raw_page, WordScratch scratch, MemoryHost host, u32 value_words, u64 field_words, u64 span) on cpu
+    requires nonzero(layout.fields.component) requires nonzero(scratch.reserve)
     requires nonzero(host.scalars.constant)
     requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) {
     ScalarHost stream = host.scalars;
     address context = stream.context;
     u64 count = layout.fields.count;
-    address fields = scratch.words.reserve(scratch.words.context, field_words + 5u64 * span);
+    address fields = scratch.reserve(scratch.context, field_words + 5u64 * span);
     address workspace = word_at(fields, field_words);
     segment_fields(layout.fields, stream, fields);
     clear_workspace(workspace, 5u64 * span);
@@ -5514,8 +5518,8 @@ TreeWords emit_segment_add(SegmentLayout layout, SegmentBindings bindings, Segme
 }
 
 extern "C" TreeWords emit_segmented(EntryPass pass, u32 single_group, SegmentLayout layout,
-    SegmentBindings bindings, SegmentDispatch dispatch, PageInputs raw_page, SegmentScratch scratch, MemoryHost host) on cpu
-    requires nonzero(layout.fields.component) requires nonzero(scratch.words.reserve) requires nonzero(scratch.identity)
+    SegmentBindings bindings, SegmentDispatch dispatch, PageInputs raw_page, WordScratch scratch, MemoryHost host) on cpu
+    requires nonzero(layout.fields.component) requires nonzero(scratch.reserve)
     requires nonzero(host.scalars.constant)
     requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve) {
     u32 value_words = layout.value_bytes / 4 + u32(layout.value_bytes % 4 != 0);
@@ -5535,7 +5539,7 @@ extern "C" TreeWords emit_segmented(EntryPass pass, u32 single_group, SegmentLay
     u64 field_storage = count * size_of<SegmentStorageField>() / 4u64;
     u64 source_words = tail ? 0u64 : field_storage;
     u64 target_words = writes ? field_storage : 0u64;
-    address fields = scratch.words.reserve(scratch.words.context,
+    address fields = scratch.reserve(scratch.context,
         field_words + source_words + target_words + 9u64 * span + 6u64 * size_of<ScanLevel>() / 4u64);
     address source_fields = word_at(fields, field_words);
     address target_fields = word_at(source_fields, source_words);
@@ -5545,7 +5549,7 @@ extern "C" TreeWords emit_segmented(EntryPass pass, u32 single_group, SegmentLay
 
     segment_fields(layout.fields, stream, fields);
     SegmentMerge merge = segment_merge(layout, value_words, stream);
-    segment_identity(stream, merge, scratch.context, scratch.identity, u32(count), identity);
+    segment_identity(stream, merge, fields, u32(count), identity);
     scan_levels(stream, levels);
     clear_workspace(workspace, 8u64 * span);
     for (index in 1..u32(span)) {
@@ -5609,9 +5613,11 @@ NumericWorkspace numeric_workspace(NumericGroupInput input, u64 level_words, Wor
     address values = word_at(fields, field_words);
     address levels = word_at(values, 4u64 * count);
     BuiltinScalar scalar = input.fields.component(input.fields.source, 0u64).scalar;
-    u32 low = stream.constant(context, BuiltinScalar::U32, u64(u32(input.identity)));
-    u32 high = scalar_definition(scalar).width == 64
-        ? stream.constant(context, BuiltinScalar::U32, input.identity >> 32u64) : 0;
+    ScalarDefinition type = scalar_definition(scalar);
+    u64 identity = collective_identity(input.operation, scalar, type.width, type.signed);
+    u32 low = stream.constant(context, BuiltinScalar::U32, u64(u32(identity)));
+    u32 high = type.width == 64
+        ? stream.constant(context, BuiltinScalar::U32, identity >> 32u64) : 0;
     CollectiveTree tree = CollectiveTree(input.dispatch.shared, input.dispatch.pointer, input.operation);
     collective_tree(input.fields, tree, stream, components);
     collective_fields(input.fields, input.tail == 0 ? input.source_word : 0, 1, host, fields);
