@@ -3,7 +3,7 @@
 use super::facts;
 use super::{
     CallBindings, Clause, ClauseNode, ClausePostorder, Condition, EncodedClause, Fact, Facts, IndexDomain, OutputBindings, Proof, Value, ValueIdentity,
-    internal_conflicts, map_domain, output_identity,
+    TraversalStack, internal_conflicts, map_domain, output_identity,
 };
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -1248,11 +1248,11 @@ pub(super) struct RequiredQuery<'a> {
     uses: Vec<RequiredUses>,
     nodes: Vec<RequiredResult<'a>>,
     root: usize,
-    pending: Vec<usize>,
+    pending: TraversalStack,
 }
 struct RequiredEvaluation<'a, 'b, 'c> {
     common_equalities: Option<std::cell::OnceCell<Arc<Facts>>>,
-    query: &'a mut RequiredQuery<'b>,
+    nodes: &'a mut [RequiredResult<'b>],
     environment: &'c Facts,
     roots: &'c std::collections::BTreeMap<super::ValueIdentity, super::ValueIdentity>,
     members: &'c [(&'c super::ValueIdentity, &'c super::ValueIdentity)],
@@ -1262,35 +1262,15 @@ unsafe fn required_evaluation<'a, 'b, 'c, 'd>(
 ) -> &'a mut RequiredEvaluation<'b, 'c, 'd> {
     unsafe { &mut *slot.cast::<RequiredEvaluation<'b, 'c, 'd>>() }
 }
-#[repr(C)]
-struct RequiredPending {
-    present: u32,
-    index: usize,
-}
 unsafe extern "C" fn required_status(slot: Slot, id: usize) -> u32 {
-    match &unsafe { required_evaluation(slot) }.query.nodes[id].value {
+    match &unsafe { required_evaluation(slot) }.nodes[id].value {
         None => 0,
         Some(None) => 1,
         Some(Some(_)) => 2,
     }
 }
-unsafe extern "C" fn required_push(slot: Slot, id: usize) {
-    unsafe { required_evaluation(slot) }.query.pending.push(id);
-}
-unsafe extern "C" fn required_pop(slot: Slot) -> RequiredPending {
-    match unsafe { required_evaluation(slot) }.query.pending.pop() {
-        Some(index) => RequiredPending { present: 1, index },
-        None => RequiredPending {
-            present: 0,
-            index: 0,
-        },
-    }
-}
-unsafe extern "C" fn required_pending_count(slot: Slot) -> usize {
-    unsafe { required_evaluation(slot) }.query.pending.len()
-}
 unsafe extern "C" fn required_impossible(slot: Slot, id: usize) {
-    unsafe { required_evaluation(slot) }.query.nodes[id].value = Some(None);
+    unsafe { required_evaluation(slot) }.nodes[id].value = Some(None);
 }
 unsafe extern "C" fn required_leaf(slot: Slot, id: usize, facts: Borrowed) {
     let evaluation = unsafe { required_evaluation(slot) };
@@ -1308,7 +1288,7 @@ unsafe extern "C" fn required_leaf(slot: Slot, id: usize, facts: Borrowed) {
     } else {
         Some(required)
     };
-    evaluation.query.nodes[id].value = Some(value);
+    evaluation.nodes[id].value = Some(value);
 }
 fn take_required<'a>(result: &mut RequiredResult<'a>, last: u32) -> Option<super::QueryFacts<'a>> {
     if last != 0 {
@@ -1318,17 +1298,17 @@ fn take_required<'a>(result: &mut RequiredResult<'a>, last: u32) -> Option<super
     }
 }
 unsafe extern "C" fn required_union(slot: Slot, id: usize, left: usize, right: usize, left_last: u32, right_last: u32) {
-    let query = &mut unsafe { required_evaluation(slot) }.query;
-    let a = take_required(&mut query.nodes[left], left_last).unwrap();
-    let b = take_required(&mut query.nodes[right], right_last).unwrap();
-    query.nodes[id].value = Some(super::combine_facts(a, b));
+    let evaluation = unsafe { required_evaluation(slot) };
+    let a = take_required(&mut evaluation.nodes[left], left_last).unwrap();
+    let b = take_required(&mut evaluation.nodes[right], right_last).unwrap();
+    evaluation.nodes[id].value = Some(super::combine_facts(a, b));
 }
 unsafe extern "C" fn required_common(slot: Slot, id: usize, left: usize, right: usize, left_last: u32, right_last: u32) {
     let evaluation = unsafe { required_evaluation(slot) };
-    let a = take_required(&mut evaluation.query.nodes[left], left_last);
-    let b = take_required(&mut evaluation.query.nodes[right], right_last);
-    evaluation.query.nodes[id].valid_additions = None;
-    evaluation.query.nodes[id].value = Some(super::common_facts::either(
+    let a = take_required(&mut evaluation.nodes[left], left_last);
+    let b = take_required(&mut evaluation.nodes[right], right_last);
+    evaluation.nodes[id].valid_additions = None;
+    evaluation.nodes[id].value = Some(super::common_facts::either(
         evaluation.environment,
         evaluation.roots,
         evaluation.members,
@@ -1339,7 +1319,7 @@ unsafe extern "C" fn required_common(slot: Slot, id: usize, left: usize, right: 
 }
 unsafe extern "C" fn required_valid_additions(slot: Slot, id: usize, users: usize) -> u32 {
     let evaluation = unsafe { required_evaluation(slot) };
-    let node = &mut evaluation.query.nodes[id];
+    let node = &mut evaluation.nodes[id];
     let facts = node.value.as_ref().unwrap().as_ref().unwrap();
     if users == 1 {
         return u32::from(!super::additions_conflict(evaluation.environment, facts));
@@ -1349,7 +1329,7 @@ unsafe extern "C" fn required_valid_additions(slot: Slot, id: usize, users: usiz
     u32::from(*node.valid_additions.get_or_insert_with(|| !super::additions_conflict(evaluation.environment, facts)))
 }
 unsafe extern "C" fn required_release(slot: Slot, id: usize, last: u32) -> u32 {
-    let result = &mut unsafe { required_evaluation(slot) }.query.nodes[id];
+    let result = &mut unsafe { required_evaluation(slot) }.nodes[id];
     let computed = result.value.is_some();
     if last != 0 {
         result.value = None;
@@ -1359,9 +1339,6 @@ unsafe extern "C" fn required_release(slot: Slot, id: usize, last: u32) -> u32 {
 #[repr(C)]
 struct RequiredHost {
     status: unsafe extern "C" fn(Slot, usize) -> u32,
-    push: unsafe extern "C" fn(Slot, usize),
-    pop: unsafe extern "C" fn(Slot) -> RequiredPending,
-    pending_count: unsafe extern "C" fn(Slot) -> usize,
     impossible: unsafe extern "C" fn(Slot, usize),
     leaf: unsafe extern "C" fn(Slot, usize, Borrowed),
     union: unsafe extern "C" fn(Slot, usize, usize, usize, u32, u32),
@@ -1373,7 +1350,7 @@ unsafe extern "C" {
     #[link_name = "bootstrap.condition_graph::required_prepare"]
     fn prepare_required(graph: RequiredGraph);
     #[link_name = "bootstrap.condition_graph::required_evaluate"]
-    fn evaluate_required(graph: RequiredGraph, context: Slot, host: RequiredHost);
+    fn evaluate_required(graph: RequiredGraph, pending: &mut TraversalStack, context: Slot, host: RequiredHost);
 }
 impl<'a> RequiredQuery<'a> {
     pub(super) fn new(root: &'a Clause) -> Self {
@@ -1382,7 +1359,7 @@ impl<'a> RequiredQuery<'a> {
         let topology = index.seal();
         let uses = vec![RequiredUses::default(); index.len()];
         let nodes = (0..index.len()).map(|_| RequiredResult::default()).collect();
-        let mut query = Self { _index: index, topology, uses, nodes, root, pending: Vec::new() };
+        let mut query = Self { _index: index, topology, uses, nodes, root, pending: TraversalStack::default() };
         unsafe { prepare_required(query.graph()) };
         query
     }
@@ -1403,7 +1380,7 @@ impl<'a> RequiredQuery<'a> {
         let graph = self.graph();
         let mut evaluation = RequiredEvaluation {
             common_equalities: (!roots.is_empty()).then(std::cell::OnceCell::new),
-            query: self,
+            nodes: &mut self.nodes,
             environment,
             roots,
             members,
@@ -1411,12 +1388,10 @@ impl<'a> RequiredQuery<'a> {
         unsafe {
             evaluate_required(
                 graph,
+                &mut self.pending,
                 (&mut evaluation as *mut RequiredEvaluation<'_, '_, '_>).cast(),
                 RequiredHost {
                     status: required_status,
-                    push: required_push,
-                    pop: required_pop,
-                    pending_count: required_pending_count,
                     impossible: required_impossible,
                     leaf: required_leaf,
                     union: required_union,

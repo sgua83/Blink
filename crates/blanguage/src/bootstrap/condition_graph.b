@@ -9,14 +9,13 @@ extern "C" void abort() on cpu from "ucrtbase.dll";
 
 struct PostorderFrame { address source; u32 expanded; };
 
-address postorder_at(address records,u64 index) on cpu {
-    return unsafe_address(address_bits(records)+index*size_of<PostorderFrame>());
+address stack_slot(address records,u64 index,u64 stride) on cpu {
+    return unsafe_address(address_bits(records)+index*stride);
 }
 
-void postorder_push(address owner,PostorderFrame frame) on cpu {
-    ClausePostorder stack=unsafe_position<ClausePostorder>(owner);
+void stack_push<T>(inout TraversalStack stack,T value) on cpu {
+    u64 stride=size_of<T>();
     if(stack.length==stack.capacity){
-        u64 stride=size_of<PostorderFrame>();
         u64 limit=9223372036854775807u64/stride;
         if(stack.length==limit){abort();return;}
         u64 capacity=stack.capacity==0u64?4u64:stack.length+min(stack.length,limit-stack.length);
@@ -27,26 +26,29 @@ void postorder_push(address owner,PostorderFrame frame) on cpu {
         stack.records=records;
         stack.capacity=capacity;
     }
-    unsafe_position<PostorderFrame>(postorder_at(stack.records,stack.length))=frame;
+    unsafe_position<T>(stack_slot(stack.records,stack.length,stride))=value;
     stack.length+=1u64;
-    unsafe_position<ClausePostorder>(owner)=stack;
 }
 
-extern "C" void clause_postorder_start(address owner,address context,cfn<address,address> next) on cpu
+T stack_pop<T>(inout TraversalStack stack) on cpu {
+    stack.length-=1u64;
+    return unsafe_position<T>(stack_slot(stack.records,stack.length,size_of<T>()));
+}
+
+extern "C" void clause_postorder_start(inout TraversalStack stack,address context,cfn<address,address> next) on cpu
     requires nonzero(next) {
     address root=next(context);
     while(root!=address()){
-        postorder_push(owner,PostorderFrame(root,0));
+        stack_push(stack,PostorderFrame(root,0));
         root=next(context);
     }
-    ClausePostorder stack=unsafe_position<ClausePostorder>(owner);
     u64 left=0u64;
     u64 right=stack.length;
     while(left<right){
         right-=1u64;
         if(left==right){break;}
-        address first=postorder_at(stack.records,left);
-        address last=postorder_at(stack.records,right);
+        address first=stack_slot(stack.records,left,size_of<PostorderFrame>());
+        address last=stack_slot(stack.records,right,size_of<PostorderFrame>());
         PostorderFrame saved=unsafe_position<PostorderFrame>(first);
         unsafe_position<PostorderFrame>(first)=unsafe_position<PostorderFrame>(last);
         unsafe_position<PostorderFrame>(last)=saved;
@@ -54,30 +56,25 @@ extern "C" void clause_postorder_start(address owner,address context,cfn<address
     }
 }
 
-extern "C" address clause_postorder_next(address owner,address context,
+extern "C" address clause_postorder_next(inout TraversalStack stack,address context,
     cfn<PostorderChildren,address,address> inspect) on cpu requires nonzero(inspect) {
-    u64 length=unsafe_position<ClausePostorder>(owner).length;
-    while(length!=0u64){
-        length-=1u64;
-        address records=unsafe_position<ClausePostorder>(owner).records;
-        PostorderFrame frame=unsafe_position<PostorderFrame>(postorder_at(records,length));
-        unsafe_position<ClausePostorder>(owner).length=length;
+    while(stack.length!=0u64){
+        PostorderFrame frame=stack_pop<PostorderFrame>(stack);
         // Descendants finish before this frame and cannot visit their ancestor.
         if(frame.expanded!=0){return frame.source;}
         PostorderChildren children=inspect(context,frame.source);
         if(children.visited==0){
             if(children.first==address()){return frame.source;}
-            postorder_push(owner,PostorderFrame(frame.source,1));
-            postorder_push(owner,PostorderFrame(children.second,0));
-            postorder_push(owner,PostorderFrame(children.first,0));
-            length=unsafe_position<ClausePostorder>(owner).length;
+            stack_push(stack,PostorderFrame(frame.source,1));
+            stack_push(stack,PostorderFrame(children.second,0));
+            stack_push(stack,PostorderFrame(children.first,0));
         }
     }
     return address();
 }
 
-extern "C" void clause_postorder_drop(address owner) on cpu {
-    address records=unsafe_position<ClausePostorder>(owner).records;
+extern "C" void traversal_stack_drop(inout TraversalStack stack) on cpu {
+    address records=stack.records;
     if(records!=address()){HeapFree(GetProcessHeap(),0,records);}
 }
 
@@ -591,24 +588,22 @@ extern "C" void required_prepare(RequiredGraph graph) on cpu {
  }
  unsafe_position<RequiredUses>(required_use(graph,graph.root)).users+=1u64;
 }
-void required_abandon(RequiredGraph graph,address context,RequiredHost host,usize index) on cpu
- requires nonzero(host.push) requires nonzero(host.pop) requires nonzero(host.pending_count)
+void required_abandon(RequiredGraph graph,inout TraversalStack pending,address context,RequiredHost host,usize index) on cpu
  requires nonzero(host.release) {
- usize before=host.pending_count(context);
- host.push(context,index);
- while(host.pending_count(context)>before){
-  RequiredPending pending=host.pop(context);usize id=pending.index;
+ usize before=pending.length;
+ stack_push(pending,index);
+ while(pending.length>before){
+  usize id=stack_pop<usize>(pending);
   u32 last=required_consume(graph,id);
   u32 computed=host.release(context,id,last);
   if(last!=0&&computed==0){
    NodeFields node=required_node(graph.nodes,id);
-   if(node.kind==NodeKind::Both||node.kind==NodeKind::Either){host.push(context,node.first);host.push(context,node.second);}
+   if(node.kind==NodeKind::Both||node.kind==NodeKind::Either){stack_push(pending,node.first);stack_push(pending,node.second);}
   }
  }
 }
-extern "C" void required_evaluate(RequiredGraph graph,address context,RequiredHost host) on cpu
- requires nonzero(host.status) requires nonzero(host.push)
- requires nonzero(host.pop) requires nonzero(host.pending_count) requires nonzero(host.impossible)
+extern "C" void required_evaluate(RequiredGraph graph,inout TraversalStack pending,address context,RequiredHost host) on cpu
+ requires nonzero(host.status) requires nonzero(host.impossible)
  requires nonzero(host.leaf) requires nonzero(host.union) requires nonzero(host.common)
  requires nonzero(host.valid_additions) requires nonzero(host.release) {
  usize at=0u64;
@@ -617,25 +612,23 @@ extern "C" void required_evaluate(RequiredGraph graph,address context,RequiredHo
   unsafe_position<RequiredUses>(counter).remaining=unsafe_position<RequiredUses>(counter).users;
   at+=1u64;
  }
- host.push(context,graph.root);
- while(true){
-  RequiredPending pending=host.pop(context);
-  if(pending.present==0){break;}
-  usize id=pending.index;
+ stack_push(pending,graph.root);
+ while(pending.length!=0u64){
+  usize id=stack_pop<usize>(pending);
   if(host.status(context,id)!=0){continue;}
   NodeFields node=required_node(graph.nodes,id);
   if(node.kind==NodeKind::Impossible){host.impossible(context,id);continue;}
   if(node.kind==NodeKind::Facts){host.leaf(context,id,node.facts);continue;}
   u32 a=host.status(context,node.first);
-  if(a==0){host.push(context,id);host.push(context,node.first);continue;}
+  if(a==0){stack_push(pending,id);stack_push(pending,node.first);continue;}
   if(node.kind==NodeKind::Both&&a==1){
    u32 last=required_consume(graph,node.first);
    u32 computed=host.release(context,node.first,last);
-   required_abandon(graph,context,host,node.second);
+   required_abandon(graph,pending,context,host,node.second);
    host.impossible(context,id);continue;
   }
   u32 b=host.status(context,node.second);
-  if(b==0){host.push(context,id);host.push(context,node.second);continue;}
+  if(b==0){stack_push(pending,id);stack_push(pending,node.second);continue;}
   u32 valid=1;
   if(node.kind==NodeKind::Both){
    if(a!=2||b!=2){valid=0;}

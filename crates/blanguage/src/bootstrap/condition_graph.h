@@ -7,14 +7,14 @@ import bootstrap.condition_index;
 // These descriptors borrow the original Clause query and its physical buffers.
 // They are private native fields, not a stored condition or public graph format.
 struct Span { address data; usize count; };
-struct ClausePostorder { address records; u64 length; u64 capacity; };
+struct TraversalStack { address records; u64 length; u64 capacity; };
 struct PostorderChildren { address first; address second; u32 visited; };
 
-extern "C" void clause_postorder_start(address owner,address context,cfn<address,address> next) on cpu
+extern "C" void clause_postorder_start(inout TraversalStack stack,address context,cfn<address,address> next) on cpu
     requires nonzero(next);
-extern "C" address clause_postorder_next(address owner,address context,
+extern "C" address clause_postorder_next(inout TraversalStack stack,address context,
     cfn<PostorderChildren,address,address> inspect) on cpu requires nonzero(inspect);
-extern "C" void clause_postorder_drop(address owner) on cpu;
+extern "C" void traversal_stack_drop(inout TraversalStack stack) on cpu;
 
 struct SourceNode { u32 kind; address left; address right; address no; u32 truth; u32 empty; address condition; };
 struct FactWalkHost {
@@ -116,12 +116,8 @@ extern "C" u32 equivalent(usize first,usize second,address plan,address context,
 // The original index owns the topology. The solver mutates counts independently of host results.
 struct RequiredUses { usize users; usize remaining; };
 struct RequiredGraph { ConditionNodes nodes; address uses; usize root; };
-struct RequiredPending { u32 present; usize index; };
 struct RequiredHost {
  cfn<u32,address,usize> ensures memory(read) status;
- cfn<void,address,usize> push;
- cfn<RequiredPending,address> pop;
- cfn<usize,address> ensures memory(read) pending_count;
  cfn<void,address,usize> impossible;
  cfn<void,address,usize,address> leaf;
  cfn<void,address,usize,usize,usize,u32,u32> union;
@@ -130,9 +126,8 @@ struct RequiredHost {
  cfn<u32,address,usize,u32> release;
 };
 extern "C" void required_prepare(RequiredGraph graph) on cpu;
-extern "C" void required_evaluate(RequiredGraph graph,address context,RequiredHost host) on cpu
- requires nonzero(host.status) requires nonzero(host.push)
- requires nonzero(host.pop) requires nonzero(host.pending_count) requires nonzero(host.impossible)
+extern "C" void required_evaluate(RequiredGraph graph,inout TraversalStack pending,address context,RequiredHost host) on cpu
+ requires nonzero(host.status) requires nonzero(host.impossible)
  requires nonzero(host.leaf) requires nonzero(host.union) requires nonzero(host.common)
  requires nonzero(host.valid_additions) requires nonzero(host.release);
 

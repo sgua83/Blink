@@ -1966,10 +1966,15 @@ impl Drop for Clause {
     }
 }
 #[repr(C)]
-struct ClausePostorder<'a> {
+#[derive(Default)]
+struct TraversalStack {
     records: *mut std::ffi::c_void,
     length: usize,
     capacity: usize,
+}
+
+struct ClausePostorder<'a> {
+    stack: TraversalStack,
     roots: std::marker::PhantomData<&'a Clause>,
 }
 
@@ -1982,14 +1987,14 @@ struct PostorderChildren {
 
 unsafe extern "C" {
     #[link_name = "bootstrap.condition_graph::clause_postorder_start"]
-    fn postorder_start(stack: &mut ClausePostorder<'_>, context: *mut std::ffi::c_void,
+    fn postorder_start(stack: &mut TraversalStack, context: *mut std::ffi::c_void,
                        next: unsafe extern "C" fn(*mut std::ffi::c_void) -> *const std::ffi::c_void);
     #[link_name = "bootstrap.condition_graph::clause_postorder_next"]
-    fn postorder_next(stack: &mut ClausePostorder<'_>, context: *const std::ffi::c_void,
+    fn postorder_next(stack: &mut TraversalStack, context: *const std::ffi::c_void,
                       inspect: unsafe extern "C" fn(*const std::ffi::c_void, *const std::ffi::c_void) -> PostorderChildren)
                       -> *const std::ffi::c_void;
-    #[link_name = "bootstrap.condition_graph::clause_postorder_drop"]
-    fn postorder_drop(stack: &mut ClausePostorder<'_>);
+    #[link_name = "bootstrap.condition_graph::traversal_stack_drop"]
+    fn traversal_stack_drop(stack: &mut TraversalStack);
 }
 
 impl<'a> ClausePostorder<'a> {
@@ -1998,10 +2003,10 @@ impl<'a> ClausePostorder<'a> {
             unsafe { &mut *context.cast::<I>() }.next().map_or(std::ptr::null(), |clause| std::ptr::from_ref(clause).cast())
         }
         let mut stack = Self {
-            records: std::ptr::null_mut(), length: 0, capacity: 0, roots: std::marker::PhantomData,
+            stack: TraversalStack::default(), roots: std::marker::PhantomData,
         };
         let mut roots = roots.into_iter();
-        unsafe { postorder_start(&mut stack, std::ptr::from_mut(&mut roots).cast(), next_root::<I::IntoIter>) };
+        unsafe { postorder_start(&mut stack.stack, std::ptr::from_mut(&mut roots).cast(), next_root::<I::IntoIter>) };
         stack
     }
 
@@ -2020,13 +2025,13 @@ impl<'a> ClausePostorder<'a> {
         }
         // Every stored and returned pointer borrows one of the original roots
         // or its immutable children for the complete stack lifetime.
-        unsafe { postorder_next(self, std::ptr::from_ref(&completed).cast(), inspect::<F>).cast::<Clause>().as_ref() }
+        unsafe { postorder_next(&mut self.stack, std::ptr::from_ref(&completed).cast(), inspect::<F>).cast::<Clause>().as_ref() }
     }
 }
 
-impl Drop for ClausePostorder<'_> {
+impl Drop for TraversalStack {
     fn drop(&mut self) {
-        unsafe { postorder_drop(self) };
+        unsafe { traversal_stack_drop(self) };
     }
 }
 
