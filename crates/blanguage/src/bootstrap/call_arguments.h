@@ -147,6 +147,13 @@ extern "C" u8 project_address_write_bytes(address position, u32 width, WriteProj
     requires nonzero(host.distinct_element) requires nonzero(host.position) requires nonzero(host.child)
     requires nonzero(host.regions) requires nonzero(host.region);
 
+extern "C" void push_memory_effect_record(address records, usize width, address record) on cpu
+    requires nonzero(width);
+extern "C" void append_memory_effect_records(address records, address source, usize width) on cpu
+    requires nonzero(width);
+extern "C" void drop_memory_effect_records(address records, cfn<void,address,usize> release) on cpu
+    requires nonzero(release);
+
 struct MemoryEffectCoverage {
     usize count;
     u32 width;

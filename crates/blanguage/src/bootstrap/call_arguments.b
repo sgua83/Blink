@@ -1,4 +1,7 @@
 module bootstrap.call_arguments;
+import bootstrap.proof_facts;
+
+extern "C" void RtlMoveMemory(address output, address input, u64 bytes) on cpu from "KERNEL32.dll";
 bool reads(CallAccess access) on cpu {return access==CallAccess::Read||access==CallAccess::InOut||access==CallAccess::Atomic;}
 bool writes(CallAccess access) on cpu {return access==CallAccess::Write||access==CallAccess::InOut||access==CallAccess::Atomic;}
 bool retained_consumer(CallAccess access,ArgumentKind kind,u32 scoped_dataset) on cpu {
@@ -490,6 +493,38 @@ extern "C" u8 project_address_write_bytes(address position, u32 width, WriteProj
         }
     }
     return bytes;
+}
+
+extern "C" void push_memory_effect_record(address records, usize width, address record) on cpu
+    requires nonzero(width) {
+    let destination = ordered_tree_prepare(records, width);
+    RtlMoveMemory(destination, record, width);
+    unsafe_position<OrderedTree>(records).count += 1u64;
+}
+
+extern "C" void append_memory_effect_records(address records, address source, usize width) on cpu
+    requires nonzero(width) {
+    let incoming = unsafe_position<OrderedTree>(source);
+    if (incoming.count == 0u64) { return; }
+    if (unsafe_position<OrderedTree>(records).count == 0u64) {
+        unsafe_position<OrderedTree>(records) = incoming;
+        unsafe_position<OrderedTree>(source) = OrderedTree(address(), 0u64, 0u64, 0u64);
+        return;
+    }
+    usize at = 0u64;
+    while (at < incoming.count) {
+        let record = unsafe_address(address_bits(incoming.records) + at * width);
+        push_memory_effect_record(records, width, record);
+        at += 1u64;
+    }
+    fact_tree_clear(source);
+}
+
+extern "C" void drop_memory_effect_records(address records, cfn<void,address,usize> release) on cpu
+    requires nonzero(release) {
+    let current = unsafe_position<OrderedTree>(records);
+    if (current.count != 0u64) { release(current.records, current.count); }
+    fact_tree_clear(records);
 }
 
 extern "C" u8 memory_effect_bytes(MemoryEffectCoverage effect, MemoryEffectCoverageHost host) on cpu

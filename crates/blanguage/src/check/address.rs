@@ -688,8 +688,70 @@ impl CapturePositions<'_> {
 #[derive(Clone,Copy,PartialEq,Eq)]
 pub(super) enum Capture { Read, Write }
 // External仅表示没有静态来源；不能把它当作与本函数实际存储不相交。
+type KnownMemoryEffect = (Arc<Origin>, bounds::Clause, Access, Option<bounds::Proof>);
+
+#[repr(C)]
 #[derive(Default)]
-pub(super) struct MemoryEffect {external:Option<Access>,known:Vec<(Arc<Origin>,bounds::Clause,Access,Option<bounds::Proof>)>}
+struct MemoryEffectRecords {
+    records: *mut std::ffi::c_void,
+    root: usize,
+    count: usize,
+    capacity: usize,
+}
+
+// B's process-heap allocation provides 16-byte alignment on the supported CPU ABI.
+const _: () = assert!(std::mem::align_of::<KnownMemoryEffect>() <= 16);
+
+unsafe impl Send for MemoryEffectRecords where KnownMemoryEffect: Send {}
+unsafe impl Sync for MemoryEffectRecords where KnownMemoryEffect: Sync {}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::push_memory_effect_record"]
+    fn push_memory_effect_record(records: &mut MemoryEffectRecords, width: usize, record: *const std::ffi::c_void);
+    #[link_name = "bootstrap.call_arguments::append_memory_effect_records"]
+    fn append_memory_effect_records(records: &mut MemoryEffectRecords, source: &mut MemoryEffectRecords, width: usize);
+    #[link_name = "bootstrap.call_arguments::drop_memory_effect_records"]
+    fn drop_memory_effect_records(records: &mut MemoryEffectRecords, release: unsafe extern "C" fn(*mut std::ffi::c_void, usize));
+}
+
+impl MemoryEffectRecords {
+    fn push(&mut self, record: KnownMemoryEffect) {
+        let record = std::mem::ManuallyDrop::new(record);
+        unsafe { push_memory_effect_record(self, std::mem::size_of::<KnownMemoryEffect>(), std::ptr::from_ref(&*record).cast()) };
+    }
+
+    fn append(&mut self, mut source: Self) {
+        unsafe { append_memory_effect_records(self, &mut source, std::mem::size_of::<KnownMemoryEffect>()) };
+    }
+}
+
+impl std::ops::Deref for MemoryEffectRecords {
+    type Target = [KnownMemoryEffect];
+
+    fn deref(&self) -> &[KnownMemoryEffect] {
+        if self.count == 0 { return &[]; }
+        // B publishes the count only after transferring each complete initialized record.
+        unsafe { std::slice::from_raw_parts(self.records.cast::<KnownMemoryEffect>(), self.count) }
+    }
+}
+
+impl Drop for MemoryEffectRecords {
+    fn drop(&mut self) {
+        unsafe extern "C" fn release(records: *mut std::ffi::c_void, count: usize) {
+            let records = std::ptr::slice_from_raw_parts_mut(records.cast::<KnownMemoryEffect>(), count);
+            unsafe { std::ptr::drop_in_place(records) };
+        }
+        if self.capacity != 0 {
+            unsafe { drop_memory_effect_records(self, release) };
+        }
+    }
+}
+
+#[derive(Default)]
+pub(super) struct MemoryEffect {
+    external: Option<Access>,
+    known: MemoryEffectRecords,
+}
 
 #[repr(C)]
 struct MemoryEffectCoverage {
@@ -951,7 +1013,7 @@ impl MemoryEffect {
     }
 
     pub fn union(&mut self,other:Self) {
-        self.known.extend(other.known);
+        self.known.append(other.known);
         self.external = merged_external_access(self.external, other.external);
     }
     fn same_element(origin:&Origin,when:&bounds::Clause,position:&Position,index:Option<bounds::Operand>)->Option<bool> {
@@ -1048,7 +1110,7 @@ impl MemoryAccesses {
         merged_external_access(self.external, Some(access)) != self.external
     }
     pub(super) fn record(&mut self, effect: &MemoryEffect) {
-        for (origin, _, access, _) in &effect.known {
+        for (origin, _, access, _) in effect.known.iter() {
             let aliases = origin.aliases_when(&|alias| !self.contains(*alias, *access), || true);
             self.known.extend(aliases.into_iter().map(|alias| MemoryAccess { alias, access: *access }));
         }
