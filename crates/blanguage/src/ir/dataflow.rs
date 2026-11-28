@@ -3,6 +3,7 @@
 //! results nor own, copy, retain, or rewrite the IR containers.
 use super::*;
 use crate::builtin_types::ScalarCode;
+use tile::TileGroup;
 use std::{ffi::c_void, marker::PhantomData, mem::{MaybeUninit, size_of}, ptr};
 
 #[derive(Clone, Copy)]
@@ -617,48 +618,11 @@ pub(super) fn float_preserve(stage: &Stage, scalar: Scalar) -> bool {
     unsafe { b_float_preserve(Node::of(stage, Kind::Stage), requested, REGISTER_HOST) != 0 }
 }
 
-#[repr(C)]
-struct StorageHost {
-    ir: Host, stage: *const c_void,
-    scalar_bytes: unsafe extern "C" fn(*const c_void, usize) -> u32,
-}
-
-#[repr(C)]
-struct StorageOutput {
-    context: *mut c_void,
-    read: unsafe extern "C" fn(*mut c_void, usize, u32, i64),
-    publication_phases: Span,
-    group_storage: *mut c_void,
-    reserve_groups: unsafe extern "C" fn(*mut c_void, usize) -> *mut c_void,
-}
-
-#[repr(C)]
-struct StorageFacts { preserve: u32, group_count: usize }
-
-unsafe extern "C" {
-    #[link_name = "bootstrap.ir_dataflow::storage_facts"]
-    fn b_storage_facts(code: Span, tiles: Span, host: StorageHost, phase: i64, output: StorageOutput) -> StorageFacts;
-}
-
-unsafe extern "C" fn register_bytes(stage: *const c_void, register: usize) -> u32 {
-    unsafe { &*stage.cast::<Stage>() }.registers[register].size()
-}
-
 fn collect_storage_reads(
-    stage: &Stage, phase: i64, publication_phases: Span, group_storage: *mut c_void,
-) -> (Vec<TileUse>, StorageFacts) {
+    stage: &Stage, layout: Option<(&mut [i64], &mut Vec<MaybeUninit<TileGroup>>)>,
+) -> (Vec<TileUse>, tile::StorageFacts) {
     let mut output = ReadOutput { stage, reads: BTreeMap::new() };
-    let facts = unsafe {
-        b_storage_facts(
-            Span::slice(&stage.code), Span::slice(&stage.tiles),
-            StorageHost { ir: HOST, stage: ptr::from_ref(stage).cast(), scalar_bytes: register_bytes },
-            phase,
-            StorageOutput {
-                context: ptr::from_mut(&mut output).cast(), read: emit_storage_read,
-                publication_phases, group_storage, reserve_groups: reserve_tile_groups,
-            },
-        )
-    };
+    let facts = tile::storage_facts(stage, ptr::from_mut(&mut output).cast(), emit_storage_read, layout);
     let reads = output.reads.into_iter().map(|(word, (end, read_mask))| {
         TileUse { key: word.into(), end, read_mask }
     }).collect();
@@ -667,19 +631,8 @@ fn collect_storage_reads(
 
 pub(crate) fn storage_usage(stage: &Stage) -> (Vec<TileUse>, u32) {
     if stage.tiles.is_empty() { return (Vec::new(), 0); }
-    let (reads, facts) = collect_storage_reads(stage, -1, Span::EMPTY, ptr::null_mut());
+    let (reads, facts) = collect_storage_reads(stage, None);
     (reads, facts.preserve)
-}
-
-pub(super) fn storage_words(stage: &Stage) -> BTreeSet<SharedWord> {
-    storage_usage(stage).0.into_iter().flat_map(|row| {
-        (0..4).filter_map(move |part| {
-            if row.read_mask & (1 << part) == 0 { return None; }
-            let mut key = row.key;
-            key.byte += part;
-            Some(key.word())
-        })
-    }).collect()
 }
 
 #[repr(C)]
@@ -696,21 +649,6 @@ pub(crate) type TileLayout = Vec<TilePlacedWord>;
 #[repr(C)]
 pub(crate) struct TileUse { pub(super) key: TileKey, pub(super) end: i64, pub(super) read_mask: u32 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub(super) struct TileGroup {
-    storage: u64,
-    owner: usize,
-    first: u32,
-    end: u32,
-}
-
-unsafe extern "C" fn reserve_tile_groups(storage: *mut c_void, count: usize) -> *mut c_void {
-    let groups = unsafe { &mut *storage.cast::<Vec<MaybeUninit<TileGroup>>>() };
-    groups.resize_with(count, MaybeUninit::uninit);
-    groups.as_mut_ptr().cast()
-}
-
 pub(super) struct LayoutFacts {
     pub(super) reads: Vec<TileUse>,
     pub(super) publication_phases: Vec<i64>,
@@ -726,7 +664,7 @@ pub(super) fn tile_layout_facts(stage: &Stage) -> LayoutFacts {
     let mut publication_phases = vec![-1i64; stage.tiles.len()];
     let mut groups = Vec::new();
     let (reads, facts) = collect_storage_reads(
-        stage, 0, Span::mutable(&mut publication_phases), ptr::from_mut(&mut groups).cast(),
+        stage, Some((&mut publication_phases, &mut groups)),
     );
     groups.truncate(facts.group_count);
     LayoutFacts { reads, publication_phases, groups }

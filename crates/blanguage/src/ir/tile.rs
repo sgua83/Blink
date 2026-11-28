@@ -1,8 +1,8 @@
 //! 发布点切分块内阶段；私有值与共享 word 分别按实际消费者安排生命周期。
 use super::*;
-use std::ffi::c_void;
+use std::{ffi::c_void, mem::MaybeUninit};
 #[cfg(feature = "compiler")]
-use std::{collections::{BTreeMap, BTreeSet}, mem::MaybeUninit};
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "compiler")]
 mod private_live;
 #[cfg(feature = "compiler")]
@@ -150,6 +150,158 @@ impl PrivateSlot {
     }
 }
 
+#[repr(u32)]
+enum StorageInstruction { Ordinary, Read, Components, Collective, Publish, Barrier, Preserve, Block }
+
+#[repr(C)]
+struct StorageStep {
+    kind: StorageInstruction,
+    byte: u32,
+    tile: usize,
+    bytes: u32,
+    first: StageSpan,
+    second: StageSpan,
+}
+
+#[repr(C)]
+struct StorageTile {
+    storage: u64,
+    owner: usize,
+    start: u32,
+    bytes: u32,
+    components: StageSpan,
+}
+
+#[repr(C)]
+struct StoragePart { byte: u32, bytes: u32 }
+
+#[repr(C)]
+struct StorageHost {
+    stage: *const c_void,
+    step: unsafe extern "C" fn(*const c_void, StageSpan, usize) -> StorageStep,
+    tile: unsafe extern "C" fn(*const c_void, usize) -> StorageTile,
+    component: unsafe extern "C" fn(StageSpan, usize) -> StoragePart,
+    result: unsafe extern "C" fn(*const c_void, StageSpan, usize) -> StoragePart,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(super) struct TileGroup {
+    storage: u64,
+    owner: usize,
+    first: u32,
+    end: u32,
+}
+
+type StorageRead = unsafe extern "C" fn(*mut c_void, usize, u32, i64);
+
+#[repr(C)]
+struct StorageOutput {
+    context: *mut c_void,
+    read: StorageRead,
+    publication_phases: *mut i64,
+    group_storage: *mut c_void,
+    reserve_groups: unsafe extern "C" fn(*mut c_void, usize) -> *mut c_void,
+}
+
+#[repr(C)]
+pub(super) struct StorageFacts { pub(super) preserve: u32, pub(super) group_count: usize }
+
+unsafe extern "C" {
+    #[link_name = "codec.type_layout::storage_facts"]
+    fn b_storage_facts(code: StageSpan, host: StorageHost, phase: i64, output: StorageOutput) -> StorageFacts;
+}
+
+unsafe extern "C" fn storage_step(stage: *const c_void, code: StageSpan, index: usize) -> StorageStep {
+    use StorageInstruction::*;
+    let inst = unsafe { &*code.data.cast::<Inst>().add(index) };
+    let mut step = StorageStep {
+        kind: Ordinary, byte: 0, tile: 0, bytes: 0, first: StageSpan::EMPTY, second: StageSpan::EMPTY,
+    };
+    match &inst.kind {
+        InstKind::TileLoad { dst, tile, word, .. } => {
+            step.kind = Read;
+            step.tile = *tile;
+            step.byte = *word;
+            step.bytes = unsafe { &*stage.cast::<Stage>() }.registers[*dst].size();
+        }
+        InstKind::Atomic(Atomic { target: IndexedSource::Tile { tile, .. }, word, scalar, offset: None, .. }) => {
+            step.kind = Read;
+            step.tile = *tile;
+            step.byte = *word;
+            step.bytes = scalar.size();
+        }
+        InstKind::LoadIndexed { source: IndexedSource::Tile { tile, .. }, .. }
+        | InstKind::Atomic(Atomic { target: IndexedSource::Tile { tile, .. }, .. }) => {
+            step.kind = Components;
+            step.tile = *tile;
+        }
+        InstKind::TileCollective(value) => {
+            step.kind = Collective;
+            step.tile = value.tile;
+            step.first = StageSpan::borrow(&value.results);
+        }
+        InstKind::TilePublish(value) => {
+            step.kind = Publish;
+            step.tile = value.tile;
+        }
+        InstKind::TileBarrier => step.kind = Barrier,
+        InstKind::Append(_) | InstKind::Subgroup { .. } => step.kind = Preserve,
+        InstKind::Scope(body) => {
+            step.kind = Block;
+            step.first = StageSpan::borrow(body);
+        }
+        InstKind::If { yes, no, .. } | InstKind::Loop { condition: yes, body: no, .. } => {
+            step.kind = Block;
+            step.first = StageSpan::borrow(yes);
+            step.second = StageSpan::borrow(no);
+        }
+        _ => {}
+    }
+    step
+}
+
+unsafe extern "C" fn storage_tile(stage: *const c_void, index: usize) -> StorageTile {
+    let tile = &unsafe { &*stage.cast::<Stage>() }.tiles[index];
+    let (storage, owner, start) = match tile.shared_word(index, 0) {
+        SharedWord::Input { binding, word } => (0, binding, word),
+        SharedWord::Published { tile, word } => (1, tile, word),
+    };
+    StorageTile { storage, owner, start, bytes: tile.ty.size, components: StageSpan::borrow(&tile.ty.components) }
+}
+
+unsafe extern "C" fn storage_component(components: StageSpan, index: usize) -> StoragePart {
+    let (scalar, byte) = unsafe { *components.data.cast::<(Scalar, u32)>().add(index) };
+    StoragePart { byte, bytes: scalar.size() }
+}
+
+unsafe extern "C" fn storage_result(stage: *const c_void, results: StageSpan, index: usize) -> StoragePart {
+    let (byte, reg) = unsafe { *results.data.cast::<(u32, Reg)>().add(index) };
+    StoragePart { byte, bytes: unsafe { &*stage.cast::<Stage>() }.registers[reg].size() }
+}
+
+unsafe extern "C" fn reserve_tile_groups(storage: *mut c_void, count: usize) -> *mut c_void {
+    let groups = unsafe { &mut *storage.cast::<Vec<MaybeUninit<TileGroup>>>() };
+    groups.resize_with(count, MaybeUninit::uninit);
+    groups.as_mut_ptr().cast()
+}
+
+pub(super) fn storage_facts(
+    stage: &Stage, context: *mut c_void, read: StorageRead,
+    layout: Option<(&mut [i64], &mut Vec<MaybeUninit<TileGroup>>)>,
+) -> StorageFacts {
+    let (phase, publication_phases, group_storage) = layout.map_or(
+        (-1, std::ptr::null_mut(), std::ptr::null_mut()),
+        |(phases, groups)| (0, phases.as_mut_ptr(), std::ptr::from_mut(groups).cast()),
+    );
+    let host = StorageHost {
+        stage: std::ptr::from_ref(stage).cast(), step: storage_step, tile: storage_tile,
+        component: storage_component, result: storage_result,
+    };
+    let output = StorageOutput { context, read, publication_phases, group_storage, reserve_groups: reserve_tile_groups };
+    unsafe { b_storage_facts(StageSpan::borrow(&stage.code), host, phase, output) }
+}
+
 impl Tile {
     pub(crate) fn shared_word(&self, tile: usize, word: u32) -> SharedWord {
         match self.source {
@@ -165,6 +317,19 @@ impl Tile {
     }
 }
 impl Stage {
+    pub fn storage_words(&self) -> BTreeSet<SharedWord> {
+        let mut words = BTreeSet::new();
+        if !self.tiles.is_empty() {
+            unsafe extern "C" fn read(context: *mut c_void, tile: usize, offset: u32, _phase: i64) {
+                let (stage, words) = unsafe { &mut *context.cast::<(&Stage, &mut BTreeSet<SharedWord>)>() };
+                words.insert(stage.shared_word(tile, offset));
+            }
+            let mut context = (self, &mut words);
+            storage_facts(self, std::ptr::from_mut(&mut context).cast(), read, None);
+        }
+        words
+    }
+
     pub fn shared_word(&self, tile: usize, word: u32) -> SharedWord {
         self.tiles[tile].shared_word(tile, word)
     }

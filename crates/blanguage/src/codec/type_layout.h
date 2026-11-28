@@ -173,3 +173,35 @@ extern "C" u32 program_subgroup_uses(StageSpan stages, u32 append_only,
     cfn<StageSubgroupSource,StageSpan,usize> ensures memory(read) stage,
     StageSubgroupHost host) on cpu
     requires nonzero(stage) requires nonzero(host.inspect) requires nonzero(host.scalar_bytes);
+
+enum StorageInstruction : u32 { Ordinary = 0; Read = 1; Components = 2; Collective = 3; Publish = 4; Barrier = 5; Preserve = 6; Block = 7; };
+struct StorageStep {
+    StorageInstruction kind;
+    u32 byte;
+    usize tile;
+    u32 bytes;
+    StageSpan first;
+    StageSpan second;
+};
+struct StorageTile { u64 storage; usize owner; u32 start; u32 bytes; StageSpan components; };
+struct StoragePart { u32 byte; u32 bytes; };
+struct StorageHost {
+    address stage;
+    cfn<StorageStep,address,StageSpan,usize> ensures memory(read) step;
+    cfn<StorageTile,address,usize> ensures memory(read) tile;
+    cfn<StoragePart,StageSpan,usize> ensures memory(read) component;
+    cfn<StoragePart,address,StageSpan,usize> ensures memory(read) result;
+};
+struct TileGroup { u64 storage; usize owner; u32 first; u32 end; };
+struct StorageOutput {
+    address context;
+    cfn<void,address,usize,u32,i64> read;
+    address publication_phases;
+    address group_storage;
+    cfn<address,address,usize> reserve_groups;
+};
+struct StorageFacts { u32 preserve; usize group_count; };
+extern "C" StorageFacts storage_facts(StageSpan code, StorageHost host, i64 phase, StorageOutput output) on cpu
+    requires nonzero(host.step) requires nonzero(host.tile)
+    requires nonzero(host.component) requires nonzero(host.result)
+    requires nonzero(output.read) requires nonzero(output.reserve_groups);

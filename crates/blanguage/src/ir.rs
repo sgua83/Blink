@@ -1577,69 +1577,6 @@ impl Stage {
     pub fn workgroup_width(&self) -> u32 {
         self.tile_workgroup_width().unwrap_or(Self::DEFAULT_WORKGROUP_WIDTH)
     }
-    pub fn storage_words(&self) -> std::collections::BTreeSet<SharedWord> {
-        #[cfg(feature = "compiler")]
-        { dataflow::storage_words(self) }
-        #[cfg(not(feature = "compiler"))]
-        {
-        fn visit(stage: &Stage, code: &[Inst], words: &mut std::collections::BTreeSet<SharedWord>) {
-            for inst in code {
-                match &(inst).kind {
-                    InstKind::Atomic(Atomic {
-                        target: IndexedSource::Tile { tile, .. },
-                        word, scalar,
-                        offset: None,
-                        ..
-                    }) => {
-                        words.extend((0..scalar.size().div_ceil(4)).map(|part| stage.shared_word(*tile, *word + part * 4)));
-                    }
-                    InstKind::LoadIndexed {
-                        source: IndexedSource::Tile { tile, .. },
-                        ..
-                    }
-                    | InstKind::Atomic(Atomic {
-                        target: IndexedSource::Tile { tile, .. },
-                        offset: Some(_),
-                        ..
-                    }) => {
-                        words.extend(
-                            stage.tiles[*tile].ty.components.iter().flat_map(|(scalar, byte)|
-                                (0..scalar.size().div_ceil(4)).map(move |part|
-                                    stage.shared_word(*tile, *byte + part * 4))),
-                        );
-                    }
-                    InstKind::TileLoad { dst, tile, word, .. } => {
-                        words.extend((0..stage.registers[*dst].size().div_ceil(4))
-                            .map(|part| stage.shared_word(*tile, *word + part * 4)));
-                    }
-                    InstKind::TileCollective(c) => {
-                        words.extend(
-                            c.results
-                                .iter()
-                                .flat_map(|(word, result)| (0..stage.registers[*result].size().div_ceil(4))
-                                    .map(move |part| stage.shared_word(c.tile, *word + part * 4))),
-                        );
-                    }
-                    InstKind::Scope(body) => visit(stage, body, words),
-                    InstKind::If { yes, no, .. } => {
-                        visit(stage, yes, words);
-                        visit(stage, no, words);
-                    }
-                    InstKind::Loop {
-                        condition, body, ..
-                    } => {
-                        visit(stage, condition, words);
-                        visit(stage, body, words);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        let mut words = std::collections::BTreeSet::new();
-        visit(self, &self.code, &mut words);
-        words
-        }
-    }
     pub fn subgroup_operations(&self) -> BTreeSet<SubgroupOp> {
         let used = stage_subgroup_uses(&self.code, false);
         SUBGROUP_OPERATIONS.into_iter()

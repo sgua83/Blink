@@ -2,6 +2,7 @@ module bootstrap.stage_fusion;
 import bootstrap.ir_dataflow;
 import bootstrap.names;
 import codec.builtin_type;
+import codec.type_layout;
 
 extern "C" void abort() on cpu from "ucrtbase.dll";
 
