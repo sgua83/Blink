@@ -9,16 +9,29 @@ extern "C" LoopProjection loop_projection(LoopWriteKind kind, u32 address_write,
     return LoopProjection::Position;
 }
 
-extern "C" LoopStorage loop_storage(u32 descendants, u32 declared_layout, u32 constant_index) on cpu {
-    if (descendants != 0) { return LoopStorage::Descendants; }
-    if (declared_layout != 0 && constant_index != 0) { return LoopStorage::Bytes; }
-    return LoopStorage::Frame;
-}
-
-extern "C" LoopBytes loop_bytes(u32 index, u32 stride, u32 word, u32 width) on cpu {
-    // All four inputs are u32. The product has enough room for both additions.
-    let begin = u64(index) * u64(stride) + u64(word);
-    return LoopBytes(begin, begin + u64(width));
+extern "C" void project_loop_storage(LoopStorageHost host, usize count, u32 constant_index, u32 index) on cpu
+    requires nonzero(host.site) requires nonzero(host.start_parts)
+    requires nonzero(host.next_part) requires nonzero(host.emit) {
+    usize location = 0u64;
+    while (location < count) {
+        let site = host.site(host.context, location);
+        if (site.descendants != 0) {
+            host.emit(host.context, site.root, LoopStorage::Descendants, LoopBytes(0u64, 0u64));
+        } else if (site.declared == 0 || constant_index == 0) {
+            host.emit(host.context, site.root, LoopStorage::Frame, LoopBytes(0u64, 0u64));
+        } else {
+            let stride = host.start_parts(host.context, location);
+            // All terms are u32. Their product has room for both additions.
+            let element = u64(index) * u64(stride);
+            while (true) {
+                let part = host.next_part(host.context);
+                if (part.present == 0) { break; }
+                let begin = element + u64(part.word);
+                host.emit(host.context, site.root, LoopStorage::Bytes, LoopBytes(begin, begin + u64(part.width)));
+            }
+        }
+        location += 1u64;
+    }
 }
 
 extern "C" LoopBytes loop_array_elements(u64 length, u32 exact, u32 index) on cpu {

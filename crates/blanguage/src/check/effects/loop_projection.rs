@@ -27,6 +27,76 @@ enum LoopStorage { Descendants, Frame, Bytes }
 #[repr(C)]
 struct LoopBytes { begin: u64, end: u64 }
 
+#[repr(C)]
+struct LoopStorageSite { root: Reg, descendants: u32, declared: u32 }
+
+#[repr(C)]
+struct LoopStoragePart { present: u32, word: u32, width: u32 }
+
+#[repr(C)]
+struct LoopStorageHost {
+    context: *mut std::ffi::c_void,
+    site: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> LoopStorageSite,
+    start_parts: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> u32,
+    next_part: unsafe extern "C" fn(*mut std::ffi::c_void) -> LoopStoragePart,
+    emit: unsafe extern "C" fn(*mut std::ffi::c_void, Reg, LoopStorage, LoopBytes),
+}
+
+struct LoopStorageProjection<'a, I> {
+    storage: &'a mut Vec<StorageWrite>,
+    locations: &'a [(StorageWrite, Ty, application::DataLayout)],
+    parts: I,
+    current: Option<I>,
+}
+
+impl<I: Iterator<Item = (Scalar, u32)> + Clone> LoopStorageProjection<'_, I> {
+    unsafe extern "C" fn site(context: *mut std::ffi::c_void, index: usize) -> LoopStorageSite {
+        let projection = unsafe { &*context.cast::<Self>() };
+        let (location, _, layout) = &projection.locations[index];
+        let (root, descendants) = match location {
+            StorageWrite::Descendants { root } => (*root, 1),
+            StorageWrite::Frame { root, .. } => (*root, 0),
+        };
+        LoopStorageSite { root, descendants, declared: matches!(layout, application::DataLayout::Declared).into() }
+    }
+
+    unsafe extern "C" fn start_parts(context: *mut std::ffi::c_void, index: usize) -> u32 {
+        let projection = unsafe { &mut *context.cast::<Self>() };
+        let (_, ty, _) = &projection.locations[index];
+        projection.current = Some(projection.parts.clone());
+        ir::align_up(ty.size, ty.align)
+    }
+
+    unsafe extern "C" fn next_part(context: *mut std::ffi::c_void) -> LoopStoragePart {
+        let projection = unsafe { &mut *context.cast::<Self>() };
+        match projection.current.as_mut().and_then(Iterator::next) {
+            Some((scalar, word)) => LoopStoragePart { present: 1, word, width: scalar.size() },
+            None => LoopStoragePart { present: 0, word: 0, width: 0 },
+        }
+    }
+
+    unsafe extern "C" fn emit(context: *mut std::ffi::c_void, root: Reg, kind: LoopStorage, range: LoopBytes) {
+        let projection = unsafe { &mut *context.cast::<Self>() };
+        let written = match kind {
+            LoopStorage::Descendants => StorageWrite::Descendants { root },
+            LoopStorage::Frame => StorageWrite::Frame { root, range: None },
+            LoopStorage::Bytes => StorageWrite::Frame { root, range: Some(range.begin.into()..range.end.into()) },
+        };
+        projection.storage.push(written);
+    }
+
+    fn project(&mut self, constant: bool, index: u32) {
+        let host = LoopStorageHost {
+            context: (self as *mut Self).cast(),
+            site: Self::site,
+            start_parts: Self::start_parts,
+            next_part: Self::next_part,
+            emit: Self::emit,
+        };
+        unsafe { project_loop_storage(host, self.locations.len(), constant.into(), index) };
+    }
+}
+
 #[repr(u32)]
 enum LoopPosition { Missing, Local, Reference, Other }
 
@@ -77,10 +147,8 @@ struct LoopMemoryUse { raw: u32, deferred: u32 }
 unsafe extern "C" {
     #[link_name = "bootstrap.source_writes::loop_projection"]
     fn loop_projection(kind: LoopWriteKind, address_write: u32, iterator: u32) -> LoopProjection;
-    #[link_name = "bootstrap.source_writes::loop_storage"]
-    fn loop_storage(descendants: u32, declared_layout: u32, constant_index: u32) -> LoopStorage;
-    #[link_name = "bootstrap.source_writes::loop_bytes"]
-    fn loop_bytes(index: u32, stride: u32, word: u32, width: u32) -> LoopBytes;
+    #[link_name = "bootstrap.source_writes::project_loop_storage"]
+    fn project_loop_storage(host: LoopStorageHost, count: usize, constant_index: u32, index: u32);
     #[link_name = "bootstrap.source_writes::loop_array_elements"]
     fn loop_array_elements(length: u64, exact: u32, index: u32) -> LoopBytes;
     #[link_name = "bootstrap.source_writes::loop_part_matches"]
@@ -116,7 +184,6 @@ unsafe extern "C" {
 }
 
 impl Builder<'_> {
-    // The resource and IR owners provide locations. B selects their coverage.
     async fn append_loop_storage(
         &self,
         effect: &mut LoopWrites,
@@ -132,24 +199,12 @@ impl Builder<'_> {
             Some(bounds::Operand::Constant(Scalar::U32, value)) => (true, value as u32),
             _ => (false, 0),
         };
-        for (location, ty, layout) in locations {
-            let (root, descendants) = match location {
-                StorageWrite::Descendants { root } => (root, true),
-                StorageWrite::Frame { root, .. } => (root, false),
-            };
-            let declared = matches!(layout, application::DataLayout::Declared);
-            match unsafe { loop_storage(descendants.into(), declared.into(), constant.into()) } {
-                LoopStorage::Descendants => effect.storage.push(StorageWrite::Descendants { root }),
-                LoopStorage::Frame => effect.storage.push(StorageWrite::Frame { root, range: None }),
-                LoopStorage::Bytes => {
-                    let stride = ir::align_up(ty.size, ty.align);
-                    for (scalar, word) in parts.clone() {
-                        let range = unsafe { loop_bytes(index, stride, word, scalar.size()) };
-                        effect.storage.push(StorageWrite::Frame { root, range: Some(range.begin.into()..range.end.into()) });
-                    }
-                }
-            }
-        }
+        LoopStorageProjection {
+            storage: &mut effect.storage,
+            locations: &locations,
+            parts,
+            current: None,
+        }.project(constant, index);
         Ok(true)
     }
 
