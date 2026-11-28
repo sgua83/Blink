@@ -104,9 +104,6 @@ struct LoopProjectionCursor {
 #[repr(C)]
 struct LoopProjectionRequest { index: usize, action: LoopProjectionAction }
 
-#[repr(u32)]
-enum LoopMemoryFact { Unresolved, Resource, OtherResource, Owner }
-
 #[repr(C)]
 struct LoopWriteInfo { kind: LoopWriteKind, address_write: u32, iterator: u32 }
 
@@ -160,6 +157,96 @@ impl LoopProjectionInput<'_, '_> {
     }
 }
 
+#[repr(C)]
+#[derive(Default)]
+struct LoopMemoryCursor { next: usize, origin: *const address::Origin, located: u32 }
+
+#[repr(C)]
+struct LoopMemoryOrigin { source: *const address::Origin, resource: u32, active: u32 }
+
+#[repr(C)]
+struct LoopMemoryOwner {
+    slots: *const usize,
+    components: *const usize,
+    count: usize,
+    position: LoopPosition,
+    present: u32,
+}
+
+#[repr(C)]
+struct LoopMemoryRequest { origin: *const address::Origin, resource: *const application::Data }
+
+#[repr(C)]
+struct LoopMemoryHost {
+    context: *mut std::ffi::c_void,
+    origin: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> LoopMemoryOrigin,
+    resource: unsafe extern "C" fn(*mut std::ffi::c_void, u32) -> *const application::Data,
+    owner: unsafe extern "C" fn(*mut std::ffi::c_void) -> LoopMemoryOwner,
+}
+
+struct LoopMemoryInputs<'a, 'w, R, O> {
+    builder: &'a Builder<'w>,
+    origins: &'a [&'a address::Origin],
+    positions: &'a [Position],
+    resources: R,
+    current_resources: Option<R>,
+    owners: O,
+    current_owner: Option<Place>,
+    components: Vec<usize>,
+}
+
+impl<'a, R, O> LoopMemoryInputs<'a, '_, R, O>
+where
+    R: Iterator<Item = &'a application::Data> + Clone,
+    O: Iterator<Item = Place>,
+{
+    unsafe extern "C" fn origin(context: *const std::ffi::c_void, index: usize) -> LoopMemoryOrigin {
+        let input = unsafe { &*context.cast::<Self>() };
+        let source = input.origins[index];
+        let resource = matches!(source.root, address::Root::Resource { .. } | address::Root::Dataset { .. });
+        LoopMemoryOrigin { source, resource: resource.into(), active: (!resource && source.resources().active()).into() }
+    }
+
+    unsafe extern "C" fn resource(context: *mut std::ffi::c_void, restart: u32) -> *const application::Data {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        if restart != 0 {
+            input.current_resources = Some(input.resources.clone());
+        }
+        input.current_resources.as_mut().and_then(Iterator::next).map_or(std::ptr::null(), std::ptr::from_ref)
+    }
+
+    unsafe extern "C" fn owner(context: *mut std::ffi::c_void) -> LoopMemoryOwner {
+        // B consumes the slot layout and selected components before requesting another owner.
+        let input = unsafe { &mut *context.cast::<Self>() };
+        input.current_owner = input.owners.next();
+        let Some(owner) = &input.current_owner else {
+            return LoopMemoryOwner { slots: std::ptr::null(), components: std::ptr::null(), count: 0,
+                position: LoopPosition::Missing, present: 0 };
+        };
+        let storage = owner.storage();
+        input.components = input.builder.address_write_components(input.positions, owner);
+        let slots = match storage {
+            Place::Local(_, slots, ..) => slots.as_ptr(),
+            _ => std::ptr::null(),
+        };
+        LoopMemoryOwner { slots, components: input.components.as_ptr(), count: input.components.len(),
+            position: position(Some(storage)), present: 1 }
+    }
+
+    fn advance(&mut self, cursor: &mut LoopMemoryCursor, projection: &mut LoopProjectionCursor,
+        locals: &mut LoopSlots, resolved: bool, located: bool,
+    ) -> LoopMemoryRequest {
+        let count = self.origins.len();
+        let host = LoopMemoryHost {
+            context: (self as *mut Self).cast(),
+            origin: Self::origin,
+            resource: Self::resource,
+            owner: Self::owner,
+        };
+        unsafe { advance_loop_memory(cursor, projection, locals, count, host, resolved.into(), located.into()) }
+    }
+}
+
 #[repr(u32)]
 #[allow(dead_code)]
 enum LoopInvalidation { Elements, Rebind, Select, Apply, Done }
@@ -195,8 +282,11 @@ unsafe extern "C" {
     fn loop_array_elements(length: u64, exact: u32, index: u32) -> LoopBytes;
     #[link_name = "bootstrap.source_writes::loop_part_matches"]
     fn loop_part_matches(source_scalar: u32, source_word: u32, target_scalar: u32, target_word: u32, offset: u32) -> u32;
-    #[link_name = "bootstrap.source_writes::record_loop_memory"]
-    fn record_loop_memory(cursor: &mut LoopProjectionCursor, fact: LoopMemoryFact, position: LoopPosition, present: u32);
+    #[link_name = "bootstrap.source_writes::advance_loop_memory"]
+    fn advance_loop_memory(cursor: &mut LoopMemoryCursor, projection: &mut LoopProjectionCursor,
+        locals: &mut LoopSlots, origins: usize, host: LoopMemoryHost, resolved: u32, located: u32) -> LoopMemoryRequest;
+    #[link_name = "bootstrap.source_writes::record_loop_resource"]
+    fn record_loop_resource(cursor: &mut LoopProjectionCursor, located: u32);
     #[link_name = "bootstrap.source_writes::record_loop_position"]
     fn record_loop_position(cursor: &mut LoopProjectionCursor, position: LoopPosition, written: u32, has_binding: u32, direct: u32);
     #[link_name = "bootstrap.source_writes::loop_invalidation_next"]
@@ -247,45 +337,40 @@ impl Builder<'_> {
         Ok(true)
     }
 
-    async fn project_loop_memory(&self, effect: &mut LoopWrites, cursor: &mut LoopProjectionCursor,
+    async fn project_loop_memory(&self, effect: &mut LoopWrites, projection: &mut LoopProjectionCursor,
         borrow: &view::Borrow,
     ) -> Result<()> {
         let mut positions = Vec::new();
         let mut origins = Vec::new();
-        if Self::visit_address_writes(borrow, |origin, when| {
+        let resolved = Self::visit_address_writes(borrow, |origin, when| {
             if origin.writable {
                 positions.extend(origin.memory_regions(&when)?.into_iter().map(|region| region.position));
                 origins.push(origin.as_ref());
             }
             Some(())
-        }).is_none() {
-            unsafe { record_loop_memory(cursor, LoopMemoryFact::Unresolved, LoopPosition::Missing, 0) };
-            return Ok(());
+        }).is_some();
+
+        let mut cursor = LoopMemoryCursor::default();
+        let mut input = LoopMemoryInputs {
+            builder: self,
+            origins: &origins,
+            positions: &positions,
+            resources: self.env.values().flat_map(Binding::application_resources),
+            current_resources: None,
+            owners: self.env.values().filter_map(Binding::stored_place),
+            current_owner: None,
+            components: Vec::new(),
+        };
+        let mut located = false;
+        loop {
+            let request = input.advance(&mut cursor, projection, &mut effect.locals, resolved, located);
+            let Some(resource) = (unsafe { request.resource.as_ref() }) else { return Ok(()); };
+            let origin = unsafe { &*request.origin };
+            let (address::Root::Resource { borrow, index } | address::Root::Dataset { borrow, index }) = &origin.root
+                else { unreachable!() };
+            let parts = origin.layout.parts.iter().zip(origin.words.iter()).map(|((scalar, _), word)| (*scalar, *word));
+            located = self.append_loop_storage(effect, resource, borrow, *index, parts).await?;
         }
-        for origin in origins {
-            match &origin.root {
-                address::Root::Resource { borrow, index } | address::Root::Dataset { borrow, index } => {
-                    let parts = origin.layout.parts.iter().zip(origin.words.iter()).map(|((scalar, _), word)| (*scalar, *word));
-                    let mut located = false;
-                    for input in self.env.values().flat_map(Binding::application_resources) {
-                        located |= self.append_loop_storage(effect, input, borrow, *index, parts.clone()).await?;
-                    }
-                    unsafe { record_loop_memory(cursor, LoopMemoryFact::Resource, LoopPosition::Missing, located.into()) };
-                }
-                _ => unsafe { record_loop_memory(cursor, LoopMemoryFact::OtherResource, LoopPosition::Missing,
-                    origin.resources().active().into()) },
-            }
-        }
-        for owner in self.env.values().filter_map(Binding::stored_place) {
-            let storage = owner.storage();
-            let components = self.address_write_components(&positions, &owner);
-            unsafe { record_loop_memory(cursor, LoopMemoryFact::Owner, position(Some(storage)),
-                (!components.is_empty()).into()) };
-            if let Place::Local(_, slots, ..) = storage {
-                effect.locals.extend(components.into_iter().map(|component| slots[component]));
-            }
-        }
-        Ok(())
     }
 
     async fn project_loop_position(
@@ -297,7 +382,7 @@ impl Builder<'_> {
         {
             let parts = projection.value.1.iter().flatten().map(|component| projection.base.components[*component]);
             let located = self.append_loop_storage(effect, input, &projection.resource, projection.index, parts).await?;
-            unsafe { record_loop_memory(cursor, LoopMemoryFact::Resource, LoopPosition::Missing, located.into()) };
+            unsafe { record_loop_resource(cursor, located.into()) };
             return Ok(());
         }
         let binding = name.and_then(|name| self.env.get(name));

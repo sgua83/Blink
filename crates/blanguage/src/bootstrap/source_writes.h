@@ -145,9 +145,20 @@ extern "C" LoopProjectionRequest advance_loop_projection(inout LoopProjectionCur
     requires nonzero(host.write) requires nonzero(host.contents);
 
 enum LoopPosition:u32 { Missing=0; Local=1; Reference=2; Other=3; };
-enum LoopMemoryFact:u32 { Unresolved=0; Resource=1; OtherResource=2; Owner=3; };
-extern "C" void record_loop_memory(inout LoopProjectionCursor cursor, LoopMemoryFact fact,
-    LoopPosition position, u32 present) on cpu;
+struct LoopMemoryCursor { usize next; address origin; u32 located; };
+struct LoopMemoryOrigin { address source; u32 resource; u32 active; };
+struct LoopMemoryOwner { address slots; address components; usize count; LoopPosition position; u32 present; };
+struct LoopMemoryRequest { address origin; address resource; };
+struct LoopMemoryHost {
+    address context;
+    cfn<LoopMemoryOrigin,address,usize> ensures memory(read) origin;
+    cfn<address,address,u32> resource;
+    cfn<LoopMemoryOwner,address> owner;
+};
+extern "C" LoopMemoryRequest advance_loop_memory(inout LoopMemoryCursor cursor, inout LoopProjectionCursor projection,
+    inout OrderedTree locals, usize origins, LoopMemoryHost host, u32 resolved, u32 located) on cpu
+    requires nonzero(host.origin) requires nonzero(host.resource) requires nonzero(host.owner);
+extern "C" void record_loop_resource(inout LoopProjectionCursor cursor, u32 located) on cpu;
 extern "C" void record_loop_position(inout LoopProjectionCursor cursor, LoopPosition position,
     u32 written, u32 has_binding, u32 direct) on cpu;
 enum LoopInvalidation:u32 { Elements=0; Rebind=1; Select=2; Apply=3; Done=4; };

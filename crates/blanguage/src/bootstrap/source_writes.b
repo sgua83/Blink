@@ -120,19 +120,59 @@ extern "C" LoopProjectionRequest advance_loop_projection(inout LoopProjectionCur
     return LoopProjectionRequest(0u64, LoopProjectionAction::Done);
 }
 
-extern "C" void record_loop_memory(inout LoopProjectionCursor cursor, LoopMemoryFact fact,
-    LoopPosition position, u32 present) on cpu {
-    if (fact == LoopMemoryFact::Unresolved) {
-        cursor.unknown_storage = 1;
-        cursor.external = 1;
-    } else if (fact == LoopMemoryFact::Resource) {
-        cursor.unknown_storage |= u32(present == 0);
-    } else if (fact == LoopMemoryFact::OtherResource) {
-        cursor.unknown_storage |= present;
-    } else if (present != 0 && position != LoopPosition::Local) {
-        cursor.unknown_storage = 1;
-        cursor.external |= u32(position == LoopPosition::Reference);
+extern "C" void record_loop_resource(inout LoopProjectionCursor cursor, u32 located) on cpu {
+    cursor.unknown_storage |= u32(located == 0);
+}
+
+extern "C" LoopMemoryRequest advance_loop_memory(inout LoopMemoryCursor cursor, inout LoopProjectionCursor projection,
+    inout OrderedTree locals, usize origins, LoopMemoryHost host, u32 resolved, u32 located) on cpu
+    requires nonzero(host.origin) requires nonzero(host.resource) requires nonzero(host.owner) {
+    if (resolved == 0) {
+        projection.unknown_storage = 1;
+        projection.external = 1;
+        return LoopMemoryRequest(address(), address());
     }
+
+    if (cursor.origin != address()) {
+        cursor.located |= located;
+        let input = host.resource(host.context, 0);
+        if (input != address()) { return LoopMemoryRequest(cursor.origin, input); }
+        record_loop_resource(projection, cursor.located);
+        cursor.origin = address();
+    }
+    while (cursor.next < origins) {
+        let origin = host.origin(host.context, cursor.next);
+        cursor.next += 1u64;
+        if (origin.resource == 0) {
+            projection.unknown_storage |= origin.active;
+            continue;
+        }
+        let input = host.resource(host.context, 1);
+        if (input != address()) {
+            cursor.origin = origin.source;
+            cursor.located = 0;
+            return LoopMemoryRequest(cursor.origin, input);
+        }
+        record_loop_resource(projection, 0);
+    }
+
+    while (true) {
+        let owner = host.owner(host.context);
+        if (owner.present == 0) { break; }
+        if (owner.position == LoopPosition::Local) {
+            usize index = 0u64;
+            while (index < owner.count) {
+                let component = unsafe_position<usize>(unsafe_address(address_bits(owner.components) + index * size_of<usize>()));
+                let slot = unsafe_position<usize>(unsafe_address(address_bits(owner.slots) + component * size_of<usize>()));
+                insert_loop_slot(locals, slot);
+                index += 1u64;
+            }
+        } else if (owner.count != 0u64) {
+            projection.unknown_storage = 1;
+            projection.external |= u32(owner.position == LoopPosition::Reference);
+        }
+    }
+    return LoopMemoryRequest(address(), address());
 }
 
 extern "C" void record_loop_position(inout LoopProjectionCursor cursor, LoopPosition position,
