@@ -2742,8 +2742,9 @@ impl<'g> Query<'g> {
             let mut content = ContentAtRead::default();
             let mut delayed = false;
             let ready = self.replay_writes(frame, |write| {
-                let yes = write.when.assume(&path, true);
-                if !yes.possible() { return WriteReplay::Continue; }
+                let Some(yes) = bounds::Clause::select_read_path(&path, write.when.path(true), false) else {
+                    return WriteReplay::Continue;
+                };
                 let not_written = std::cell::LazyCell::new(|| write.when.assume(&path, false));
                 let mut decision = WriteReplay::Continue;
                 let matches = write.fields.as_deref().filter(|fields| !fields.is_empty()).and_then(|fields| {
@@ -2777,10 +2778,13 @@ impl<'g> Query<'g> {
                 }
                 let targets = self.node(write.target);
                 if targets.empty() { return WriteReplay::Stop; }
-                let mut hit=bounds::Clause::impossible();let mut miss=bounds::Clause::impossible();let mut incoming=Borrow::default();
-                for(target,selected)in targets.sources.entries(){
-                    let selected=bounds::Clause::both(&yes,&selected);if !selected.possible(){continue;}
-                    let mut complete=false;let mut possible=false;
+                let mut miss = bounds::Clause::impossible();
+                let mut incoming = Borrow::default();
+                for (target, selected) in targets.sources.entries() {
+                    let Some(selected) = bounds::Clause::select_read_path(&yes, &selected, true) else {
+                        continue;
+                    };
+                    let mut complete = false;
                     if let Origin::Position(target)=target{
                         if let Some(fields)=&write.fields{
                             for (field,value)in fields{
@@ -2793,7 +2797,6 @@ impl<'g> Query<'g> {
                                         break;
                                     }
                                     incoming.sources.union_restricted(&v.sources, &selected);
-                                    possible = true;
                                     complete |= full;
                                 } else if origin.symbolic_input() || target.symbolic_input()
                                     || matches!(origin.root, address::Root::Parameter(_))
@@ -2802,12 +2805,13 @@ impl<'g> Query<'g> {
                                     delayed = true;
                                 }
                             }
-                        }else if position.as_ref().is_some_and(|p|address::MemoryEffect::of(&Borrow::source(Origin::Position(target.clone())).restricted(&selected),super::super::Access::Write,None).written_bytes(p,Scalar::U64,None)!=0){possible=true;incoming.sources.union_when(Origin::External, &selected);}
-                    }else if matches!(target,Origin::External){possible=true;incoming.sources.union_when(Origin::External, &selected);}
-                    if possible{hit=bounds::Clause::either(&hit,&selected);}if !complete{miss=bounds::Clause::either(&miss,&selected);}
+                        }else if position.as_ref().is_some_and(|p|address::MemoryEffect::of(&Borrow::source(Origin::Position(target.clone())).restricted(&selected),super::super::Access::Write,None).written_bytes(p,Scalar::U64,None)!=0){incoming.sources.union_when(Origin::External, &selected);}
+                    }else if matches!(target,Origin::External){incoming.sources.union_when(Origin::External, &selected);}
+                    if !complete { miss = bounds::Clause::either(&miss, &selected); }
                 }
                 let no = bounds::Clause::either(&not_written, &miss);
-                content.write(&incoming, &bounds::Condition::paths(hit, no), true);
+                // Each incoming source already has its matching write path.
+                content.fold(&incoming, None, Some(&no));
                 decision
             });
             let value=if !ready{Borrow::default()}else if delayed{self.deferred(id)}else if content.earlier.as_ref().is_some_and(|p|!p.possible()){content.with_initial(Borrow::default())}else if origin.symbolic_input(){self.deferred(id)}else{

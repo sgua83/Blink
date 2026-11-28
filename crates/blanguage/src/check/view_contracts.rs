@@ -814,21 +814,53 @@ struct ContentAtRead {
     earlier: Option<bounds::Clause>,
 }
 
+#[repr(C)]
+struct ReadWritePaths {
+    written: *mut std::ffi::c_void,
+    unwritten: *mut std::ffi::c_void,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.relation_order::fold_read_write"]
+    fn fold_read_write(
+        remaining: *mut std::ffi::c_void,
+        paths: ReadWritePaths,
+        context: *mut std::ffi::c_void,
+        conflict: unsafe extern "C" fn(*const std::ffi::c_void) -> u32,
+        accept: unsafe extern "C" fn(*mut std::ffi::c_void, Option<&bounds::Clause>),
+    ) -> *mut std::ffi::c_void;
+}
+
 impl ContentAtRead {
     fn write(&mut self, incoming: &Borrow, when: &bounds::Condition, complete: bool) {
-        let selected=when.assume(&bounds::Clause::default(),true);
-        let visible = self.earlier.as_ref().map_or_else(
-            || selected.clone(),
-            |earlier| bounds::Clause::both(earlier, &selected),
-        );
-        self.writes.union_restricted(incoming, &visible);
-        if complete {
-            let unchanged = when.assume(&bounds::Clause::default(), false);
-            self.earlier = Some(match self.earlier.take() {
-                Some(earlier) => bounds::Clause::both(&earlier, &unchanged),
-                None => unchanged,
-            });
+        self.fold(incoming, Some(when.path(true)), complete.then(|| when.path(false)));
+    }
+
+    fn fold(&mut self, incoming: &Borrow, written: Option<&bounds::Clause>, unwritten: Option<&bounds::Clause>) {
+        struct Contribution<'a> {
+            output: &'a mut Borrow,
+            incoming: &'a Borrow,
         }
+        unsafe extern "C" fn accept(context: *mut std::ffi::c_void, path: Option<&bounds::Clause>) {
+            let contribution = unsafe { &mut *context.cast::<Contribution<'_>>() };
+            if let Some(path) = path {
+                contribution.output.union_restricted(contribution.incoming, path);
+            } else {
+                contribution.output.union(contribution.incoming);
+            }
+        }
+
+        let paths = ReadWritePaths {
+            written: written.map_or(std::ptr::null_mut(), bounds::Clause::raw),
+            unwritten: unwritten.map_or(std::ptr::null_mut(), bounds::Clause::raw),
+        };
+        let remaining = self.earlier.take().map_or(std::ptr::null_mut(), bounds::Clause::into_raw);
+        let mut contribution = Contribution { output: &mut self.writes, incoming };
+        let remaining = unsafe {
+            fold_read_write(remaining, paths, std::ptr::from_mut(&mut contribution).cast(),
+                bounds::clause_conflict, accept)
+        };
+        self.earlier = std::ptr::NonNull::new(remaining).map(|path| unsafe { bounds::Clause::from_raw(path) });
     }
 
     fn write_with_history(&mut self, incoming: &Borrow, when: &bounds::Condition, complete: bool,

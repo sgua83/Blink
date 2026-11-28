@@ -13,6 +13,7 @@ mod internal_conflicts;
 mod common_facts;
 mod task_sources;
 mod combination;
+pub(super) use combination::conflict as clause_conflict;
 mod canonical;
 mod equality;
 use equality::Roots as EqualityRoots;
@@ -2252,11 +2253,14 @@ impl Clause {
         }
     }
 
-    fn raw(&self) -> *mut std::ffi::c_void {
+    pub(super) fn raw(&self) -> *mut std::ffi::c_void {
         self.0.as_ptr().cast()
     }
-    fn into_raw(self) -> *mut std::ffi::c_void {
+    pub(super) fn into_raw(self) -> *mut std::ffi::c_void {
         ManuallyDrop::new(self).raw()
+    }
+    pub(super) unsafe fn from_raw(payload: std::ptr::NonNull<std::ffi::c_void>) -> Self {
+        Self(payload.cast())
     }
     fn same_node(&self, other: &Self) -> bool {
         self.raw() == other.raw()
@@ -2296,6 +2300,29 @@ impl Clause {
             ),
         }
     }
+    pub(super) fn select_read_path(left: &Self, right: &Self, left_proven: bool) -> Option<Self> {
+        use std::{ffi::c_void, ptr::NonNull};
+        unsafe extern "C" {
+            #[link_name = "bootstrap.relation_order::select_read_path"]
+            fn select(
+                left: *const c_void, right: *const c_void, left_proven: u32,
+                conflict: unsafe extern "C" fn(*const c_void) -> u32,
+                required: unsafe extern "C" fn(&Clause, u32) -> u32,
+            ) -> *mut c_void;
+        }
+        unsafe extern "C" fn required(clause: &Clause, shared: u32) -> u32 {
+            let empty = Facts::new();
+            let evaluate = || clause.calculate_required(&empty);
+            u32::from(if shared == 0 {
+                evaluate().is_some()
+            } else {
+                required_roots::possible(clause, &empty, evaluate)
+            })
+        }
+        let selected = unsafe { select(left.raw(), right.raw(), u32::from(left_proven), clause_conflict, required) };
+        NonNull::new(selected).map(|path| unsafe { Self::from_raw(path) })
+    }
+
     pub(super) fn impossible() -> Self {
         Self(unsafe { std::ptr::NonNull::new_unchecked(clause_impossible()) })
     }
@@ -2698,7 +2725,8 @@ impl Condition {
         let cases=Clause::output_bounds(&self.cases,bindings);
         Self{cases:std::array::from_fn(|i|cases[i].clone())}
     }
-    pub(super) fn assume(&self,path:&Clause,truth:bool)->Clause{Clause::both(path,&self.cases[usize::from(truth)])}
+    pub(super) fn path(&self, truth: bool) -> &Clause { &self.cases[usize::from(truth)] }
+    pub(super) fn assume(&self,path:&Clause,truth:bool)->Clause{Clause::both(path,self.path(truth))}
     pub(super) fn truth_in(&self,path:&Clause)->Option<bool>{
         if !self.assume(path,false).possible(){Some(true)}else if !self.assume(path,true).possible(){Some(false)}else{None}
     }

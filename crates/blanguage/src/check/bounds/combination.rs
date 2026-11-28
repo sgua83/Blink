@@ -8,7 +8,7 @@ fn borrowed<T>(value: &T) -> Borrowed {
     ptr::from_ref(value).cast()
 }
 
-pub(super) unsafe extern "C" fn conflict(source: Borrowed) -> u32 {
+pub(in crate::check) unsafe extern "C" fn conflict(source: Borrowed) -> u32 {
     u32::from(contradictory(unsafe { &*source.cast::<Facts>() }))
 }
 
