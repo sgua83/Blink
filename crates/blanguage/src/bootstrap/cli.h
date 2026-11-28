@@ -183,21 +183,22 @@ extern "C" void finish_object_command(address command, u64 arguments, address co
     requires nonzero(report) requires nonzero(complete);
 
 enum CodeInput:u32 { Entry=0; Image=1; Object=2; };
+enum CodeQuery:u32 { Code=0; Source=1; };
+enum CodeSelector:u32 { Sections=0; Section=1; Function=2; };
 
 struct CodeCommandLine {
     CodeInput input;
+    CodeQuery query;
     CompileError error;
+    CodeSelector selector;
     u64 source_index;
     u64 observations_index;
-    u64 function_index;
-    u64 section;
+    u64 selected;
     u64 range_start;
     u64 range_end;
-    bool has_section;
-    bool has_range;
 };
 
-// Returns indices into the original arguments for paths and the exact function name.
+// A Function selection borrows an original argument index. Section holds a section number.
 extern "C" CodeCommandLine parse_code_arguments(address arguments, u64 count) on cpu;
 
 struct IrCommandLine {

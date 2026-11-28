@@ -1,27 +1,42 @@
-use super::{Argument, CompileError};
+use super::{Argument, CompileError, parsed_text};
 use blanguage::object::{CodeSelection, code_facts, code_facts_with_observations, source_facts};
 use std::{ffi::OsString, fs, ops::Range, path::Path};
 
 #[derive(PartialEq, Eq)]
 #[repr(u32)]
+#[expect(dead_code, reason = "B produces the artifact kind")]
 enum CodeInput {
     Entry,
     Image,
     Object,
 }
 
+#[repr(u32)]
+#[expect(dead_code, reason = "B produces the query kind")]
+enum CodeQuery {
+    Code,
+    Source,
+}
+
+#[repr(u32)]
+#[expect(dead_code, reason = "B produces the object selection")]
+enum CodeSelector {
+    Sections,
+    Section,
+    Function,
+}
+
 #[repr(C)]
 struct CodeCommandLine {
     input: CodeInput,
+    query: CodeQuery,
     error: CompileError,
+    selector: CodeSelector,
     source_index: usize,
     observations_index: usize,
-    function_index: usize,
-    section: usize,
+    selected: usize,
     range_start: usize,
     range_end: usize,
-    has_section: u32,
-    has_range: u32,
 }
 
 unsafe extern "C" {
@@ -35,15 +50,16 @@ pub(super) fn print(args: &[OsString], arguments: &[Argument]) -> Result<(), Box
     line.error.result(args, line.source_index)?;
     let source = Path::new(&args[line.source_index]);
     let observations = args.get(line.observations_index).map(Path::new);
-    let range = (line.has_range != 0).then_some(line.range_start..line.range_end);
+    let range = match line.query {
+        CodeQuery::Code => None,
+        CodeQuery::Source => Some(line.range_start..line.range_end),
+    };
     let facts = if line.input == CodeInput::Object {
-        let selection = if let Some(name) = args.get(line.function_index) {
-            // B returns a function index only for an argument marked as UTF-8 text.
-            CodeSelection::Function(unsafe { std::str::from_utf8_unchecked(name.as_encoded_bytes()) })
-        } else if line.has_section != 0 {
-            CodeSelection::Section(line.section)
-        } else {
-            CodeSelection::CodeSections
+        let selection = match line.selector {
+            CodeSelector::Sections => CodeSelection::CodeSections,
+            CodeSelector::Section => CodeSelection::Section(line.selected),
+            // B selects Function only for an argument marked as UTF-8 text.
+            CodeSelector::Function => CodeSelection::Function(unsafe { parsed_text(&args[line.selected]) }),
         };
         object(source, observations, selection, range)?
     } else {

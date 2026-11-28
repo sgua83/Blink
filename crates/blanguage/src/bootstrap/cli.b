@@ -790,8 +790,8 @@ extern "C" void run_program_command(CompileCommand command, u64 arguments, u64 e
 
 extern "C" CodeCommandLine parse_code_arguments(address arguments, u64 count) on cpu {
     CodeCommandLine line = CodeCommandLine(
-        CodeInput::Entry, CompileError::CodeUsage,
-        1u64, count, count, 0u64, 0u64, 0u64, false, false);
+        CodeInput::Entry, CodeQuery::Code, CompileError::CodeUsage, CodeSelector::Sections,
+        1u64, count, 0u64, 0u64, 0u64);
     if (count <= 1u64) { return line; }
     CliArgument input = argument_at(arguments, 1u64);
     if (is_token(input, "--object")) {
@@ -812,7 +812,7 @@ extern "C" CodeCommandLine parse_code_arguments(address arguments, u64 count) on
         CliArgument value = argument_at(arguments, operand);
         if (is_token(option, "--observations") && line.observations_index == count) {
             line.observations_index = operand;
-        } else if (is_token(option, "--source-range") && !line.has_range) {
+        } else if (is_token(option, "--source-range") && line.query == CodeQuery::Code) {
             if (value.text == 0u64) { return line; }
             u64 colon = 0u64;
             while (colon < value.length) {
@@ -832,8 +832,8 @@ extern "C" CodeCommandLine parse_code_arguments(address arguments, u64 count) on
             }
             line.range_start = start.value;
             line.range_end = end.value;
-            line.has_range = true;
-        } else if (line.input == CodeInput::Object && !line.has_section && line.function_index == count) {
+            line.query = CodeQuery::Source;
+        } else if (line.input == CodeInput::Object && line.selector == CodeSelector::Sections) {
             if (value.text == 0u64) { return line; }
             if (is_token(option, "--section")) {
                 ParsedNumber section = unsigned_number<10>(value.bytes, 0u64, value.length, 18446744073709551615u64);
@@ -841,10 +841,11 @@ extern "C" CodeCommandLine parse_code_arguments(address arguments, u64 count) on
                     line.error = compile_number_error(section.error);
                     return line;
                 }
-                line.section = section.value;
-                line.has_section = true;
+                line.selected = section.value;
+                line.selector = CodeSelector::Section;
             } else if (is_token(option, "--function")) {
-                line.function_index = operand;
+                line.selected = operand;
+                line.selector = CodeSelector::Function;
             } else {
                 return line;
             }
