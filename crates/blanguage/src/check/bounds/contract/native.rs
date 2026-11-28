@@ -1,7 +1,7 @@
 //! The original normalizer owns every typed map, work item and result.
 //! B receives only synchronous field values and primitive container operations.
 use super::super::facts;
-use super::super::{condition_graph, fact_fields};
+use super::super::fact_fields;
 use super::*;
 use std::{ffi::c_void, mem::MaybeUninit, ptr};
 type Slot = *mut c_void;
@@ -604,9 +604,6 @@ unsafe extern "C" fn all_unary(facts: Borrowed) -> u32 {
         )
     }
 }
-unsafe extern "C" fn source(source: Borrowed) -> condition_graph::SourceNode {
-    condition_graph::source_node(unsafe { &*source.cast::<Clause>() })
-}
 
 #[derive(Default)]
 struct OrderedOperands<'a> {
@@ -676,7 +673,6 @@ struct OperandsHost {
     push: unsafe extern "C" fn(Slot, Borrowed),
     seen: unsafe extern "C" fn(Slot, Borrowed) -> u32,
     imported: unsafe extern "C" fn(Slot, Borrowed) -> u32,
-    inspect: unsafe extern "C" fn(Borrowed) -> condition_graph::SourceNode,
     all_unary: unsafe extern "C" fn(Borrowed) -> u32,
     emit: unsafe extern "C" fn(Slot, Borrowed, u32),
 }
@@ -700,7 +696,6 @@ fn operands<'a>(normal: &Normalizer, root: &'a Clause, or: bool) -> OrderedOpera
                 push: operand_push,
                 seen: operand_seen,
                 imported: operand_imported,
-                inspect: source,
                 all_unary,
                 emit: operand_emit,
             },
@@ -855,7 +850,6 @@ struct ImportHost {
     start: unsafe extern "C" fn(Slot, Borrowed, u32, usize),
     resume: unsafe extern "C" fn(Slot, Borrowed, u32, usize, usize),
     lookup: unsafe extern "C" fn(Slot, Borrowed) -> Index,
-    inspect: unsafe extern "C" fn(Borrowed) -> condition_graph::SourceNode,
     begin: unsafe extern "C" fn(Slot, Borrowed),
     next: unsafe extern "C" fn(Slot) -> fact_fields::Fields,
     predicate: unsafe extern "C" fn(Borrowed) -> fact_fields::PredicateView,
@@ -886,7 +880,6 @@ pub(super) fn import(normal: &mut Normalizer, root: &Clause) -> usize {
                 start: import_start,
                 resume: import_resume,
                 lookup: import_lookup,
-                inspect: source,
                 begin: import_begin,
                 next: import_next,
                 predicate: fact_fields::predicate,
@@ -993,9 +986,8 @@ unsafe extern "C" fn emit_negate(s: Slot) {
         p.write(value)
     };
 }
-unsafe extern "C" fn emit_guard_node(s: Slot) -> condition_graph::SourceNode {
-    let p = unsafe { frame::<Emit>(s) }.guard;
-    condition_graph::source_node(unsafe { &*p })
+unsafe extern "C" fn emit_guard_clause(s: Slot) -> Borrowed {
+    unsafe { frame::<Emit>(s) }.guard.cast()
 }
 unsafe extern "C" fn emit_child(s: Slot, index: usize) {
     let c = unsafe { frame::<Emit>(s) };
@@ -1048,7 +1040,7 @@ struct EmitHost {
     guard: unsafe extern "C" fn(Slot, End, End),
     atom: unsafe extern "C" fn(Slot, fact_fields::Fields),
     negate: unsafe extern "C" fn(Slot),
-    guard_node: unsafe extern "C" fn(Slot) -> condition_graph::SourceNode,
+    guard_clause: unsafe extern "C" fn(Slot) -> Borrowed,
     child: unsafe extern "C" fn(Slot, usize),
     both: unsafe extern "C" fn(Slot, usize),
     first: unsafe extern "C" fn(Slot),
@@ -1088,7 +1080,7 @@ pub(super) fn emit(normal: &mut Normalizer, root: usize) -> Clause {
                 guard: emit_guard,
                 atom: emit_atom,
                 negate: emit_negate,
-                guard_node: emit_guard_node,
+                guard_clause: emit_guard_clause,
                 child: emit_child,
                 both: emit_both,
                 first: emit_first,

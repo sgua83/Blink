@@ -19,6 +19,27 @@ address payload_fields(address payload) on cpu {
     return unsafe_address(address_bits(payload) + size_of<StoredClause>());
 }
 
+SourceNode clause_source(address clause) on cpu {
+    address payload = unsafe_position<address>(clause);
+    StoredClause node = unsafe_position<StoredClause>(payload);
+    address fields = payload_fields(payload);
+    if (node.kind == StoredClauseKind::Impossible) {
+        return SourceNode(0,address(),address(),address(),0,0,address());
+    }
+    if (node.kind == StoredClauseKind::Facts) {
+        u32 empty = u32(unsafe_position<OrderedTree>(fields).count == 0u64);
+        return SourceNode(1,fields,address(),address(),0,empty,address());
+    }
+    address left = address_of(unsafe_position<ClausePair>(fields).first);
+    address right = address_of(unsafe_position<ClausePair>(fields).second);
+    if (node.kind == StoredClauseKind::Branch) {
+        address cases = payload_fields(unsafe_position<address>(right));
+        return SourceNode(4,left,address_of(unsafe_position<ClausePair>(cases).second),
+                          address_of(unsafe_position<ClausePair>(cases).first),node.truth,0,right);
+    }
+    return SourceNode(u32(node.kind),left,right,address(),0,0,address());
+}
+
 address allocate_clause(StoredClauseKind kind,u32 truth,u64 bytes) on cpu {
     address header = HeapAlloc(GetProcessHeap(),0,size_of<ClauseHeader>() + size_of<StoredClause>() + bytes);
     if (header == address()) { abort(); }
@@ -142,4 +163,151 @@ extern "C" void clause_release(address payload) on cpu {
         if (current == address()) { current = pop_clause(pending); }
     }
     if (pending.records != address()) { HeapFree(GetProcessHeap(),0,pending.records); }
+}
+
+address retain_payload(address payload) on cpu {
+    clause_retain(payload);
+    return payload;
+}
+
+address pair_of(StoredClauseKind kind,u32 truth,address left,address right) on cpu {
+    return clause_pair(kind,truth,retain_payload(left),retain_payload(right));
+}
+
+StoredClause clause_header(address payload) on cpu {
+    return unsafe_position<StoredClause>(payload);
+}
+
+ClausePair clause_edges(address payload) on cpu {
+    return unsafe_position<ClausePair>(payload_fields(payload));
+}
+
+address selected_case(address condition,u32 truth) on cpu {
+    ClausePair cases=clause_edges(condition);
+    return truth==0 ? cases.first : cases.second;
+}
+
+bool contains_conjunct(StoredClause source,address payload,address other) on cpu {
+    if(source.kind!=StoredClauseKind::Both&&source.kind!=StoredClauseKind::Branch){return false;}
+    ClausePair pair=clause_edges(payload);
+    address right=source.kind==StoredClauseKind::Branch ? selected_case(pair.second,source.truth) : pair.second;
+    return pair.first==other||right==other;
+}
+
+address complementary_parent(address left,address right) on cpu {
+    StoredClause a=clause_header(left);
+    StoredClause b=clause_header(right);
+    if(a.kind==StoredClauseKind::Branch&&b.kind==StoredClauseKind::Branch&&a.truth!=b.truth){
+        ClausePair x=clause_edges(left);
+        ClausePair y=clause_edges(right);
+        if(x.first==y.first&&x.second==y.second){return x.first;}
+    }
+    return address();
+}
+
+// The caller transfers this tree. A contradictory tree is released here.
+extern "C" address checked_clause_facts(address facts,cfn<u32,address> conflict) on cpu
+ requires nonzero(conflict) {
+    if(conflict(facts)!=0){
+        fact_tree_clear(facts);
+        return clause_impossible();
+    }
+    return clause_facts(facts);
+}
+
+address unite_facts(address left,address right,cfn<u32,address> conflict) on cpu
+ requires nonzero(conflict) {
+    array<FactCursor,2> cursors=array<FactCursor,2>(fact_tree_cursor(left),fact_tree_cursor(right));
+    OrderedTree facts=OrderedTree(address(),0u64,0u64,0u64);
+    fact_tree_collect_merge(left,right,address_of(cursors[0]),0,address_of(facts));
+    return checked_clause_facts(address_of(facts),conflict);
+}
+
+extern "C" address combine_clause_both(address left,address right,cfn<u32,address> conflict) on cpu
+ requires nonzero(conflict) {
+    StoredClause a=clause_header(left);
+    StoredClause b=clause_header(right);
+    if(a.kind==StoredClauseKind::Impossible||b.kind==StoredClauseKind::Impossible){return clause_impossible();}
+    if(a.kind==StoredClauseKind::Facts&&unsafe_position<OrderedTree>(payload_fields(left)).count==0u64){
+        return retain_payload(right);
+    }
+    if(b.kind==StoredClauseKind::Facts&&unsafe_position<OrderedTree>(payload_fields(right)).count==0u64){
+        return retain_payload(left);
+    }
+    if(a.kind==StoredClauseKind::Facts&&b.kind==StoredClauseKind::Facts){
+        return unite_facts(payload_fields(left),payload_fields(right),conflict);
+    }
+    if(left==right||contains_conjunct(a,left,right)){return retain_payload(left);}
+    if(contains_conjunct(b,right,left)){return retain_payload(right);}
+    return pair_of(StoredClauseKind::Both,0,left,right);
+}
+
+extern "C" address combine_clause_either(address left,address right,cfn<u32,address> conflict) on cpu
+ requires nonzero(conflict) {
+    address parent=complementary_parent(left,right);
+    if(parent!=address()){return retain_payload(parent);}
+    StoredClause a=clause_header(left);
+    StoredClause b=clause_header(right);
+    if(a.kind==StoredClauseKind::Either){
+        ClausePair pair=clause_edges(left);
+        parent=complementary_parent(pair.second,right);
+        if(parent!=address()){return combine_clause_either(pair.first,parent,conflict);}
+        parent=complementary_parent(pair.first,right);
+        if(parent!=address()){return combine_clause_either(parent,pair.second,conflict);}
+    }
+    if(b.kind==StoredClauseKind::Either){
+        ClausePair pair=clause_edges(right);
+        parent=complementary_parent(left,pair.first);
+        if(parent!=address()){return combine_clause_either(parent,pair.second,conflict);}
+        parent=complementary_parent(left,pair.second);
+        if(parent!=address()){return combine_clause_either(pair.first,parent,conflict);}
+    }
+    if(a.kind==StoredClauseKind::Impossible){return retain_payload(right);}
+    if(b.kind==StoredClauseKind::Impossible){return retain_payload(left);}
+    if(a.kind==StoredClauseKind::Facts&&unsafe_position<OrderedTree>(payload_fields(left)).count==0u64){
+        return retain_payload(left);
+    }
+    if(b.kind==StoredClauseKind::Facts&&unsafe_position<OrderedTree>(payload_fields(right)).count==0u64){
+        return retain_payload(right);
+    }
+    if(a.kind==StoredClauseKind::Facts&&b.kind==StoredClauseKind::Facts){
+        address x=payload_fields(left);
+        address y=payload_fields(right);
+        if(fact_tree_relation(x,y,1)!=0){return retain_payload(left);}
+        if(fact_tree_relation(y,x,1)!=0){return retain_payload(right);}
+    }
+    if(left==right){return retain_payload(left);}
+    if(contains_conjunct(a,left,right)){return retain_payload(right);}
+    if(contains_conjunct(b,right,left)){return retain_payload(left);}
+    if(a.kind==StoredClauseKind::Both&&b.kind==StoredClauseKind::Both){
+        ClausePair x=clause_edges(left);
+        ClausePair y=clause_edges(right);
+        address common=address();
+        address first=address();
+        address second=address();
+        if(x.first==y.first){
+            common=x.first;first=x.second;second=y.second;
+        }else if(x.first==y.second){
+            common=x.first;first=x.second;second=y.first;
+        }else if(x.second==y.first){
+            common=x.second;first=x.first;second=y.second;
+        }else if(x.second==y.second){
+            common=x.second;first=x.first;second=y.first;
+        }
+        if(common!=address()){
+            address nested=combine_clause_either(first,second,conflict);
+            address result=combine_clause_both(common,nested,conflict);
+            clause_release(nested);
+            return result;
+        }
+    }
+    return pair_of(StoredClauseKind::Either,0,left,right);
+}
+
+extern "C" address combine_clause_branch(address parent,address condition,u32 truth) on cpu {
+    if(clause_header(parent).kind==StoredClauseKind::Impossible||
+       clause_header(selected_case(condition,truth)).kind==StoredClauseKind::Impossible){
+        return clause_impossible();
+    }
+    return pair_of(StoredClauseKind::Branch,truth,parent,condition);
 }

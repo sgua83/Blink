@@ -1,6 +1,6 @@
 //! B projects facts directly from original proof/value fields into the result.
 use super::*;
-use std::{collections::btree_set,ffi::c_void,ptr};
+use std::{ffi::c_void,ptr};
 type Slot=*mut c_void;
 type Borrowed=*const c_void;
 #[repr(C)]
@@ -14,7 +14,7 @@ struct Bounds {lower:u64,upper:u64}
 struct Domain {fields:index_domains::Fields,known_bits:u32}
 struct Context<'a,'b> {
     proof:&'a Proof,value:Option<&'a Value>,component:usize,
-    domains:btree_set::Iter<'a,IndexDomain>,facts:&'b mut Facts,
+    domains:super::domain_store::Iter<'a>,facts:&'b mut Facts,
     output: Option<Output<'a>>,
     mapped_domain: IndexDomain,
 }
@@ -97,7 +97,7 @@ fn fields(proof:&Proof,value:Option<&Value>,component:usize,scalar:&Scalar,prima
 }
 fn append(facts:&mut Facts,proof:&Proof,value:Option<&Value>,component:usize,scalar:&Scalar,primary:Option<&ValueIdentity>,mode:u32,numeric_only:bool) {
     let input = fields(proof, value, component, scalar, primary, mode, numeric_only);
-    let mut context=Context{proof,value,component,domains:btree_set::Iter::default(),facts,output:None,mapped_domain:IndexDomain::Tile};
+    let mut context=Context{proof,value,component,domains:Default::default(),facts,output:None,mapped_domain:IndexDomain::Tile};
     unsafe{project((&mut context as *mut Context<'_,'_>).cast(),input,HOST)};
 }
 pub(super) fn collect(proof:&Proof,ty:&Ty)->Facts {
@@ -196,7 +196,7 @@ pub(super) fn output_aliases(proof: &Proof, registers: &[Reg], types: &[Scalar],
     let mut values = Facts::new();
     let mut primary = std::mem::MaybeUninit::uninit();
     let mut context = Context {
-        proof, value: None, component: 0, domains: btree_set::Iter::default(),
+        proof, value: None, component: 0, domains: Default::default(),
         facts: &mut values, output: Some(output), mapped_domain: IndexDomain::Tile,
     };
     unsafe {

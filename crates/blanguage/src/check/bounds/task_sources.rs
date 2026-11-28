@@ -1,7 +1,7 @@
 //! B evaluates task-return source sets. This synchronous query owns the original
 //! node results; the final set moves back to the original native consumer.
 use super::facts;
-use super::{Clause, ClauseNode, Facts, Scalar, ValueIdentity, condition_graph, fact_fields};
+use super::{Clause, ClauseNode, Facts, Scalar, ValueIdentity, fact_fields};
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::c_void,
@@ -21,8 +21,8 @@ unsafe fn context<'a, 'b>(slot: Slot) -> &'a mut Context<'b> {
 unsafe extern "C" fn count(slot: Slot) -> usize {
     unsafe { context(slot) }.nodes.len()
 }
-unsafe extern "C" fn inspect(slot: Slot, index: usize) -> condition_graph::SourceNode {
-    condition_graph::source_node(unsafe { context(slot) }.nodes[index])
+unsafe extern "C" fn source_at(slot: Slot, index: usize) -> Borrowed {
+    ptr::from_ref(unsafe { context(slot) }.nodes[index]).cast()
 }
 unsafe extern "C" fn begin(slot: Slot, index: usize) {
     let context = unsafe { context(slot) };
@@ -105,7 +105,7 @@ unsafe extern "C" fn union(slot: Slot, index: usize, left: Borrowed, right: Borr
 #[repr(C)]
 struct Host {
     count: unsafe extern "C" fn(Slot) -> usize,
-    inspect: unsafe extern "C" fn(Slot, usize) -> condition_graph::SourceNode,
+    node: unsafe extern "C" fn(Slot, usize) -> Borrowed,
     begin: unsafe extern "C" fn(Slot, usize),
     next: unsafe extern "C" fn(Slot) -> fact_fields::Fields,
     contains: unsafe extern "C" fn(Slot, fact_fields::Fields) -> u32,
@@ -138,7 +138,7 @@ pub(super) fn query(root: &Clause, component: usize) -> Option<BTreeSet<u32>> {
             (&mut context as *mut Context<'_>).cast(),
             Host {
                 count,
-                inspect,
+                node: source_at,
                 begin,
                 next,
                 contains,

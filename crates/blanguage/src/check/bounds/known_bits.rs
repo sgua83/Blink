@@ -2,7 +2,7 @@
 use super::facts;
 use super::{Bits, Fact, Facts, IndexDomain, KnownBits, Scalar, ValueIdentity};
 use crate::ir::scalar_ranges::{self, BitRange as Range};
-use std::{collections::btree_set, ffi::c_void, slice};
+use std::{ffi::c_void, slice};
 
 #[derive(Clone, Copy)]
 #[repr(u32)]
@@ -74,8 +74,6 @@ unsafe extern "C" {
         first_required: usize,
         value: Pattern,
     ) -> Pattern;
-    #[link_name = "bootstrap.scalar_fold::known_common"]
-    fn common_value(target_mask: Bits, a: Pattern, bm: Bits, sign_b: Bits, b: Pattern) -> Pattern;
     #[link_name = "bootstrap.scalar_fold::known_bitwise"]
     fn binary(operation: Operation, a: Pattern, b: Pattern) -> Pattern;
     #[link_name = "bootstrap.scalar_fold::known_proof"]
@@ -135,17 +133,6 @@ pub(super) fn cast_path<const N: usize>(
     })
 }
 
-pub(super) fn common(a: KnownBits, b: KnownBits) -> Option<KnownBits> {
-    present(a.scalar, unsafe {
-        common_value(
-            a.scalar.bit_mask(),
-            a.into(),
-            b.scalar.bit_mask(),
-            b.scalar.order_bias(),
-            b.into(),
-        )
-    })
-}
 pub(super) fn bitwise(
     scalar: Scalar,
     operation: Operation,
@@ -162,7 +149,7 @@ pub(super) fn bitwise(
     })
 }
 unsafe extern "C" fn next_domain(context: *mut c_void) -> KnownDomain {
-    let domains = unsafe { &mut *context.cast::<btree_set::Iter<'_, IndexDomain>>() };
+    let domains = unsafe { &mut *context.cast::<super::domain_store::Iter<'_>>() };
     for domain in domains {
         if let IndexDomain::KnownBits(scalar, mask, value) = *domain {
             return KnownDomain::new(scalar, mask, value);
@@ -174,7 +161,7 @@ unsafe extern "C" fn next_domain(context: *mut c_void) -> KnownDomain {
 pub(super) fn from_proof(
     scalar: Scalar,
     ranges: &[Range],
-    domains: btree_set::Iter<'_, IndexDomain>,
+    domains: super::domain_store::Iter<'_>,
 ) -> Option<KnownBits> {
     read_ranges(scalar, ranges.as_ptr().cast(), ranges.len(), super::range_sets::read_record, domains)
 }
@@ -182,7 +169,7 @@ pub(super) fn from_proof(
 pub(super) fn from_pairs(
     scalar: Scalar,
     ranges: &[(Bits, Bits)],
-    domains: btree_set::Iter<'_, IndexDomain>,
+    domains: super::domain_store::Iter<'_>,
 ) -> Option<KnownBits> {
     read_ranges(scalar, std::ptr::from_ref(&ranges).cast(), ranges.len(), scalar_ranges::interval, domains)
 }
@@ -192,7 +179,7 @@ fn read_ranges(
     ranges: *const c_void,
     count: usize,
     read: Reader,
-    mut domains: btree_set::Iter<'_, IndexDomain>,
+    mut domains: super::domain_store::Iter<'_>,
 ) -> Option<KnownBits> {
     present(scalar, unsafe {
         read_proof(

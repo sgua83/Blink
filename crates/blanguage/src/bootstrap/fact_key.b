@@ -378,3 +378,14 @@ PredicateKey make_key_predicate(NumericPredicate source) on cpu {
         make_key_operand(source.left),make_key_operand(source.right));
 }
 
+InternalUpper inspect_fact_upper(address source) on cpu {
+    if(unsafe_position<DomainKind>(source)!=DomainKind::Upper){return InternalUpper(address(),0,0);}
+    return InternalUpper(field(source,8u64),unsafe_position<u32>(field(source,40u64)),1);
+}
+
+void write_domain_upper(address output,address identity,u32 distance) on cpu {
+    unsafe_position<DomainKind>(output)=DomainKind::Upper;
+    unsafe_position<IdentityKey>(field(output,8u64))=unsafe_position<IdentityKey>(identity);
+    unsafe_position<u32>(field(output,40u64))=distance;
+}
+

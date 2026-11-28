@@ -144,7 +144,7 @@ unsafe extern "C" {
 unsafe extern "C" fn next<'a, T: 'a, I: Iterator<Item = &'a T>>(iterator: Slot) -> Address {
     unsafe { &mut *iterator.cast::<I>() }.next().map_or(ptr::null(), address)
 }
-unsafe fn write_iter<'a, T: Native + 'a, I: Iterator<Item = &'a T>>(
+pub(crate) unsafe fn write_iter<'a, T: Native + 'a, I: Iterator<Item = &'a T>>(
     mut iterator: I, count: usize, output: Slot,
 ) {
     unsafe {

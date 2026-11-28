@@ -12,6 +12,9 @@ enum StoredClauseKind : u32 {
 
 struct StoredClause { StoredClauseKind kind; u32 truth; };
 
+struct SourceNode { u32 kind; address left; address right; address no; u32 truth; u32 empty; address condition; };
+SourceNode clause_source(address clause) on cpu;
+
 extern "C" address clause_impossible() on cpu;
 extern "C" address clause_facts(address facts) on cpu;
 extern "C" address clause_pair(StoredClauseKind kind, u32 truth, address first, address second) on cpu;
@@ -19,3 +22,11 @@ extern "C" void clause_retain(address payload) on cpu;
 extern "C" void clause_retain_identity(address payload) on cpu;
 extern "C" void clause_release_identity(address payload) on cpu;
 extern "C" void clause_release(address payload) on cpu;
+
+extern "C" address checked_clause_facts(address facts,cfn<u32,address> conflict) on cpu
+ requires nonzero(conflict);
+extern "C" address combine_clause_both(address left,address right,cfn<u32,address> conflict) on cpu
+ requires nonzero(conflict);
+extern "C" address combine_clause_either(address left,address right,cfn<u32,address> conflict) on cpu
+ requires nonzero(conflict);
+extern "C" address combine_clause_branch(address parent,address condition,u32 truth) on cpu;

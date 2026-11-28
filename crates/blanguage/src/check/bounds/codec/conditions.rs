@@ -167,7 +167,7 @@ pub(in super::super) fn node_ids<'a>(
     graph
 }
 
-pub(in crate::check::bounds) enum Conditions<'a>{Components(&'a [Option<Box<Condition>>]),One(&'a Condition)}
+pub(in crate::check::bounds) enum Conditions<'a>{Components(&'a [Option<SharedCondition>]),One(&'a Condition)}
 impl<'a> Conditions<'a>{fn len(&self)->usize{match self{Self::Components(v)=>v.len(),Self::One(_)=>1}}fn at(&self,index:usize)->Option<&'a Condition>{match self{Self::Components(v)=>v[index].as_deref(),Self::One(v)=>Some(*v)}}}
 #[repr(C)]
 struct WriteHost {
@@ -301,7 +301,7 @@ fn checked(status: ReadStatus) -> Result<()> {
         None => Ok(()),
     }
 }
-pub(in crate::check::bounds) unsafe fn read_borrowed(context:crate::codec::contracts::Slot)->Result<Vec<Option<Box<Condition>>>>{
+pub(in crate::check::bounds) unsafe fn read_borrowed(context:crate::codec::contracts::Slot)->Result<ConditionSlots>{
     let (bytes, position) = unsafe { contracts::input(context) };
     {
         let mut present = 0;
@@ -321,7 +321,7 @@ pub(in crate::check::bounds) unsafe fn read_borrowed(context:crate::codec::contr
             )
         })?;
         if present == 0 {
-            return Ok(Vec::new());
+            return Ok(ConditionSlots::new());
         }
         fn node(nodes: &[Clause], index: usize) -> Result<Clause> {
             nodes
@@ -351,9 +351,9 @@ pub(in crate::check::bounds) unsafe fn read_borrowed(context:crate::codec::contr
             .map(|roots| {
                 roots
                     .map(|[a, b]| {
-                        Ok(Box::new(Condition {
+                        Ok(Condition {
                             cases: [node(&nodes, a)?, node(&nodes, b)?],
-                        }))
+                        }.shared())
                     })
                     .transpose()
             })

@@ -1,7 +1,7 @@
 //! Single-fact control lives in B. This synchronous frame borrows the original
 //! fact and input proofs; only transformed keys and the final Clause are owned.
 use super::*;
-use std::{collections::btree_set, ffi::c_void, ptr};
+use std::{ffi::c_void, ptr};
 
 type Slot = *mut c_void;
 type Borrowed = *const c_void;
@@ -22,7 +22,7 @@ struct Converted { lower: u64, upper: u64, contains_zero: u32, known: u32, value
 struct Origin { original: Borrowed, element: u32 }
 struct Frame<'a, P> {
     bindings: &'a P,
-    domains: btree_set::Iter<'a, IndexDomain>,
+    domains: super::domain_store::Iter<'a>,
     domain: Option<IndexDomain>,
     facts: Facts, clause: Option<Clause>,
 }
@@ -191,7 +191,7 @@ unsafe extern "C" {
 }
 impl Proof {
     pub(super) fn call_fact<P: CallBindings>(value: Fact, bindings: &P) -> Option<Clause> {
-        let mut c = Frame { bindings, domains: btree_set::Iter::default(), domain: None, facts: Facts::new(), clause: None };
+        let mut c = Frame { bindings, domains: Default::default(), domain: None, facts: Facts::new(), clause: None };
         unsafe { project(ptr::from_mut(&mut c).cast(), fact_fields::Fields::from(&value), Host {
             input: input::<P>, range, boolean, select_case: case, include: include::<P>, include_cases: include_cases::<P>,
             impossible: impossible::<P>, emit: emit::<P>, commit: commit::<P>, count: count::<P>, below: below::<P>,
@@ -219,7 +219,7 @@ struct ProofFrame<'a, P> {
     output: Proof,
     component: usize,
     origins: std::slice::Iter<'a, ValueIdentity>,
-    domains: btree_set::Iter<'a, IndexDomain>,
+    domains: super::domain_store::Iter<'a>,
 }
 
 unsafe fn proof_frame<'a, 'b, P>(slot: Slot) -> &'a mut ProofFrame<'b, P> {
@@ -270,11 +270,8 @@ unsafe extern "C" fn proof_merge_input<P>(slot: Slot, input: Borrowed) {
     output.domains[index].extend(value.domains.first().into_iter().flatten().copied());
     // An incoming condition is already in the caller's identities.
     if let Some(condition) = value.component_condition(0) {
-        output.conditions.resize_with(output.conditions.len().max(index + 1), || None);
-        let current = output.conditions[index].get_or_insert_with(|| Box::new(Condition::default()));
-        for (case, incoming) in current.cases.iter_mut().zip(&condition.cases) {
-            *case = Clause::both(case, incoming);
-        }
+        output.conditions.resize(output.conditions.len().max(index + 1));
+        output.conditions.merge(index, condition);
     }
 }
 
@@ -393,7 +390,7 @@ pub(super) fn project_proof<P: CallBindings>(
         Clause::at_calls(&roots, bindings, || false, Clause::required)
     }.into_iter();
     let conditions = conditions.map(|condition| condition.map(|_| {
-        Box::new(Condition { cases: [rewritten.next().unwrap(), rewritten.next().unwrap()] })
+        Condition { cases: [rewritten.next().unwrap(), rewritten.next().unwrap()] }.shared()
     })).collect();
     let output = Proof {
         origins: super::OriginRows::new(),

@@ -361,9 +361,8 @@ unsafe extern "C" fn refinement_scalar(scalar: Borrowed) -> ScalarEncoding {
 unsafe extern "C" fn deny_condition(context: Slot, branch: u32) {
     let state = unsafe { &mut *context.cast::<Refinement<'_>>() };
     let conditions = &mut state.proof.conditions;
-    conditions.resize_with(conditions.len().max(state.component + 1), || None);
-    let condition = conditions[state.component].get_or_insert_with(|| Box::new(Condition::default()));
-    condition.cases[branch as usize] = Clause::impossible();
+    conditions.resize(conditions.len().max(state.component + 1));
+    conditions.deny(state.component, branch);
 }
 
 unsafe extern "C" fn restrict_range(context: Slot, lower: u64, upper: u64) {

@@ -1,6 +1,6 @@
 //! B owns graph negation; original containers own source borrows and Clause results.
 use super::facts;
-use super::{Clause, ClauseNode, condition_graph::SourceNode, fact_fields};
+use super::{Clause, ClauseNode, fact_fields};
 use std::{
     collections::{BTreeMap},
     ffi::c_void,
@@ -27,9 +27,6 @@ unsafe fn context<'a, 'b>(slot: Slot) -> &'a mut Context<'b> {
 }
 unsafe fn clause<'a>(value: Borrowed) -> &'a Clause {
     unsafe { &*value.cast::<Clause>() }
-}
-unsafe extern "C" fn inspect(value: Borrowed) -> SourceNode {
-    super::condition_graph::source_node(unsafe { clause(value) })
 }
 unsafe extern "C" fn push(slot: Slot, value: Borrowed, ready: u32) {
     unsafe { context(slot) }
@@ -107,7 +104,6 @@ unsafe extern "C" fn both(slot: Slot, source: Borrowed, left: Borrowed, right: B
 
 #[repr(C)]
 struct Host {
-    inspect: unsafe extern "C" fn(Borrowed) -> SourceNode,
     push: unsafe extern "C" fn(Slot, Borrowed, u32),
     pop: unsafe extern "C" fn(Slot) -> Pending,
     has_result: unsafe extern "C" fn(Slot, Borrowed) -> u32,
@@ -136,7 +132,6 @@ pub(super) fn negate(root: &Clause) -> Clause {
             ptr::from_ref(root).cast(),
             (&mut context as *mut Context<'_>).cast(),
             Host {
-                inspect,
                 push,
                 pop,
                 has_result,

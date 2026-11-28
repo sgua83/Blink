@@ -59,18 +59,18 @@ extern "C" void clause_postorder_start(inout TraversalStack stack,address contex
 }
 
 extern "C" address clause_postorder_next(inout TraversalStack stack,address context,
-    cfn<PostorderChildren,address,address> inspect) on cpu requires nonzero(inspect) {
+    cfn<u32,address,address> completed) on cpu requires nonzero(completed) {
     while(stack.length!=0u64){
         PostorderFrame frame=stack_pop<PostorderFrame>(stack);
         // Descendants finish before this frame and cannot visit their ancestor.
         if(frame.expanded!=0){return frame.source;}
-        PostorderChildren children=inspect(context,frame.source);
-        if(children.visited==0){
-            if(children.first==address()){return frame.source;}
-            stack_push(stack,PostorderFrame(frame.source,1));
-            stack_push(stack,PostorderFrame(children.second,0));
-            stack_push(stack,PostorderFrame(children.first,0));
-        }
+        if(completed(context,frame.source)!=0){continue;}
+        SourceNode source=clause_source(frame.source);
+        if(source.kind<2){return frame.source;}
+        address right=source.kind==4&&source.truth==0 ? source.no : source.right;
+        stack_push(stack,PostorderFrame(frame.source,1));
+        stack_push(stack,PostorderFrame(right,0));
+        stack_push(stack,PostorderFrame(source.left,0));
     }
     return address();
 }
@@ -81,11 +81,12 @@ extern "C" void traversal_stack_drop(inout TraversalStack stack) on cpu {
 }
 
 extern "C" address next_fact_block(address walk,FactWalkHost host) on cpu
- requires nonzero(host.inspect) requires nonzero(host.push) requires nonzero(host.pop) {
+ requires nonzero(host.visit) requires nonzero(host.push) requires nonzero(host.pop) {
  while(true){
   address clause=host.pop(walk);
   if(address_bits(clause)==0u64){return address();}
-  SourceNode source=host.inspect(walk,clause);
+  if(host.visit(walk,clause)==0){continue;}
+  SourceNode source=clause_source(clause);
   if(source.kind==1){return source.left;}
   if(source.kind>=2){
    address right=source.kind==4&&source.truth==0 ? source.no : source.right;
@@ -96,7 +97,7 @@ extern "C" address next_fact_block(address walk,FactWalkHost host) on cpu
 }
 
 extern "C" u32 condition_inputs(address walk,address input,ConditionInputHost host) on cpu
- requires nonzero(host.graph.inspect) requires nonzero(host.graph.push) requires nonzero(host.graph.pop)
+ requires nonzero(host.graph.visit) requires nonzero(host.graph.push) requires nonzero(host.graph.pop)
  requires nonzero(host.begin) requires nonzero(host.next) requires nonzero(host.predicate)
  requires nonzero(host.accept) {
  while(true){
@@ -759,23 +760,23 @@ extern "C" void project_call_graph(address context,CallProjectionHost host) on c
  requires nonzero(host.next) requires nonzero(host.impossible) requires nonzero(host.facts)
  requires nonzero(host.both) requires nonzero(host.either) {
  while(true){
-  CallProjectionNode next=host.next(context);
-  if(address_bits(next.original)==0u64){return;}
-  SourceNode source=next.node;
-  if(source.kind==0){host.impossible(context,next.original);}
+  address next=host.next(context);
+  if(address_bits(next)==0u64){return;}
+  SourceNode source=clause_source(next);
+  if(source.kind==0){host.impossible(context,next);}
   else if(source.kind==1){
-   host.facts(context,next.original,source.left);
+   host.facts(context,next,source.left);
   }else if(source.kind==3){
-   host.either(context,next.original,source.left,source.right);
+   host.either(context,next,source.left,source.right);
   }else{
    address right=source.kind==4&&source.truth==0 ? source.no : source.right;
-   host.both(context,next.original,source.left,right);
+   host.both(context,next,source.left,right);
   }
  }
 }
 
 extern "C" void negate_graph(address root,address context,NegateHost host) on cpu
- requires nonzero(host.inspect) requires nonzero(host.push) requires nonzero(host.pop)
+ requires nonzero(host.push) requires nonzero(host.pop)
  requires nonzero(host.has_result) requires nonzero(host.unconstrained) requires nonzero(host.impossible)
  requires nonzero(host.begin_facts) requires nonzero(host.next_fact) requires nonzero(host.either_fact)
  requires nonzero(host.either) requires nonzero(host.both) requires nonzero(host.facts.compare) {
@@ -783,7 +784,7 @@ extern "C" void negate_graph(address root,address context,NegateHost host) on cp
  while(true){
   NegatePending pending=host.pop(context);if(pending.present==0){return;}
   if(host.has_result(context,pending.source)!=0){continue;}
-  SourceNode source=host.inspect(pending.source);address right=source.right;
+  SourceNode source=clause_source(pending.source);address right=source.right;
   if(source.kind==4&&source.truth==0){right=source.no;}
   if(pending.ready==0&&source.kind>=2){
    host.push(context,pending.source,1);host.push(context,right,0);host.push(context,source.left,0);continue;
@@ -1013,7 +1014,7 @@ extern "C" void common_facts(address context,CommonHost host) on cpu
 }
 
 extern "C" void task_return_sources(address context,TaskSourceHost host) on cpu
- requires nonzero(host.count) requires nonzero(host.inspect) requires nonzero(host.begin)
+ requires nonzero(host.count) requires nonzero(host.node) requires nonzero(host.begin)
  requires nonzero(host.next) requires nonzero(host.contains) requires nonzero(host.lookup)
  requires nonzero(host.unknown) requires nonzero(host.empty) requires nonzero(host.single)
  requires nonzero(host.copy) requires nonzero(host.intersection) requires nonzero(host.union)
@@ -1022,7 +1023,7 @@ extern "C" void task_return_sources(address context,TaskSourceHost host) on cpu
  usize at=0u64;
  while(at<count){
   usize index=at;at+=1u64;
-  SourceNode node=host.inspect(context,index);
+  SourceNode node=clause_source(host.node(context,index));
   if(node.kind==0){host.empty(context,index);continue;}
   if(node.kind==1){
    host.begin(context,index);u32 found=0;u32 value=0;
@@ -1052,81 +1053,6 @@ extern "C" void task_return_sources(address context,TaskSourceHost host) on cpu
    else{host.unknown(context,index);}
   }
  }
-}
-
-bool clause_direct(SourceNode source,address other,cfn<u32,address,address> ensures memory(read) same) on cpu
- requires nonzero(same) {
- if(source.kind!=2&&source.kind!=4){return false;}
- address right=source.right;if(source.kind==4&&source.truth==0){right=source.no;}
- return same(source.left,other)!=0||same(right,other)!=0;
-}
-address clause_joined(address left,address right,
- cfn<SourceNode,address> ensures memory(read) inspect,
- cfn<u32,address,address> ensures memory(read) same,
- cfn<u32,address,address> ensures memory(read) same_condition) on cpu
- requires nonzero(inspect) requires nonzero(same) requires nonzero(same_condition) {
- SourceNode a=inspect(left);SourceNode b=inspect(right);
- if(a.kind==4&&b.kind==4&&a.truth!=b.truth
-    &&same(a.left,b.left)!=0&&same_condition(a.condition,b.condition)!=0){return a.left;}
- return address();
-}
-extern "C" void clause_facts(address facts,address output,ClauseLeafHost host) on cpu
- requires nonzero(host.conflict) requires nonzero(host.impossible) requires nonzero(host.make) {
- if(host.conflict(facts)!=0){host.impossible(output);}else{host.make(output,facts);}
-}
-extern "C" void clause_both(address left,address right,address output,ClauseBothHost host) on cpu
- requires nonzero(host.inspect) requires nonzero(host.same) requires nonzero(host.unite)
- requires nonzero(host.impossible) requires nonzero(host.copy) requires nonzero(host.make) {
- SourceNode a=host.inspect(left);SourceNode b=host.inspect(right);
- if(a.kind==0||b.kind==0){host.impossible(output);return;}
- if(a.kind==1&&a.empty!=0){host.copy(output,right);return;}
- if(b.kind==1&&b.empty!=0){host.copy(output,left);return;}
- if(a.kind==1&&b.kind==1){host.unite(output,a.left,b.left);return;}
- if(host.same(left,right)!=0||clause_direct(a,right,host.same)){host.copy(output,left);return;}
- if(clause_direct(b,left,host.same)){host.copy(output,right);return;}
- host.make(output,left,right);
-}
-extern "C" void clause_either(address left,address right,address output,ClauseEitherHost host) on cpu
- requires nonzero(host.inspect) requires nonzero(host.same) requires nonzero(host.same_condition)
- requires nonzero(host.subset) requires nonzero(host.copy) requires nonzero(host.make) requires nonzero(host.factor) {
- address parent=clause_joined(left,right,host.inspect,host.same,host.same_condition);
- if(parent!=address()){host.copy(output,parent);return;}
- SourceNode a=host.inspect(left);SourceNode b=host.inspect(right);
- if(a.kind==3){
-  parent=clause_joined(a.right,right,host.inspect,host.same,host.same_condition);
-  if(parent!=address()){clause_either(a.left,parent,output,host);return;}
-  parent=clause_joined(a.left,right,host.inspect,host.same,host.same_condition);
-  if(parent!=address()){clause_either(parent,a.right,output,host);return;}
- }
- if(b.kind==3){
-  parent=clause_joined(left,b.left,host.inspect,host.same,host.same_condition);
-  if(parent!=address()){clause_either(parent,b.right,output,host);return;}
-  parent=clause_joined(left,b.right,host.inspect,host.same,host.same_condition);
-  if(parent!=address()){clause_either(b.left,parent,output,host);return;}
- }
- if(a.kind==0){host.copy(output,right);return;}
- if(b.kind==0){host.copy(output,left);return;}
- if(a.kind==1&&a.empty!=0){host.copy(output,left);return;}
- if(b.kind==1&&b.empty!=0){host.copy(output,right);return;}
- if(a.kind==1&&b.kind==1){
-  if(host.subset(a.left,b.left)!=0){host.copy(output,left);return;}
-  if(host.subset(b.left,a.left)!=0){host.copy(output,right);return;}
- }
- if(host.same(left,right)!=0){host.copy(output,left);return;}
- if(clause_direct(a,right,host.same)){host.copy(output,right);return;}
- if(clause_direct(b,left,host.same)){host.copy(output,left);return;}
- if(a.kind==2&&b.kind==2){
-  if(host.same(a.left,b.left)!=0){host.factor(output,a.left,a.right,b.right);return;}
-  if(host.same(a.left,b.right)!=0){host.factor(output,a.left,a.right,b.left);return;}
-  if(host.same(a.right,b.left)!=0){host.factor(output,a.right,a.left,b.right);return;}
-  if(host.same(a.right,b.right)!=0){host.factor(output,a.right,a.left,b.left);return;}
- }
- host.make(output,left,right);
-}
-extern "C" void clause_branch(address parent,address condition,u32 truth,address output,ClauseBranchHost host) on cpu
- requires nonzero(host.inspect) requires nonzero(host.case) requires nonzero(host.impossible) requires nonzero(host.make) {
- if(host.inspect(parent).kind==0||host.inspect(host.case(condition,truth)).kind==0){host.impossible(output);return;}
- host.make(output,parent,condition,truth);
 }
 
 extern "C" u32 equality_extend(address context,EqualityHost host) on cpu
@@ -1313,13 +1239,13 @@ extern "C" void canonical_product(address context,CanonicalProductHost host) on 
  }
 }
 extern "C" void canonical_graph(address context,CanonicalGraphHost host) on cpu
- requires nonzero(host.count) requires nonzero(host.inspect) requires nonzero(host.lookup)
+ requires nonzero(host.count) requires nonzero(host.node) requires nonzero(host.lookup)
  requires nonzero(host.empty) requires nonzero(host.leaf) requires nonzero(host.either) requires nonzero(host.both) {
  usize count=host.count(context);
  usize at=0u64;
  while(at<count){
   usize index=at;at+=1u64;
-  SourceNode node=host.inspect(context,index);
+  SourceNode node=clause_source(host.node(context,index));
   if(node.kind==0){host.empty(context,index);continue;}
   if(node.kind==1){host.leaf(context,index,node.left);continue;}
   address right=node.right;if(node.kind==4&&node.truth==0){right=node.no;}
@@ -1536,9 +1462,9 @@ extern "C" u32 contract_all_unary(address context,cfn<FactView,address> next,cfn
 }
 
 extern "C" void contract_operands(address context,u32 either,ContractOperandsHost host) on cpu
- requires nonzero(host.pop) requires nonzero(host.push) requires nonzero(host.seen) requires nonzero(host.imported) requires nonzero(host.inspect) requires nonzero(host.all_unary) requires nonzero(host.emit) {
+ requires nonzero(host.pop) requires nonzero(host.push) requires nonzero(host.seen) requires nonzero(host.imported) requires nonzero(host.all_unary) requires nonzero(host.emit) {
  while(true){address clause=host.pop(context);if(clause==address()){return;}if(host.seen(context,clause)==0){continue;}
-  SourceNode node=host.inspect(clause);
+  SourceNode node=clause_source(clause);
   bool flatten=(either==0&&(node.kind==2||node.kind==4))||(either!=0&&node.kind==3);
   if(flatten&&host.imported(context,clause)==0){
    host.push(context,node.kind==4&&node.truth==0 ? node.no : node.right);
@@ -1552,11 +1478,11 @@ extern "C" void contract_operands(address context,u32 either,ContractOperandsHos
 }
 
 extern "C" usize contract_import(address context,address root,ContractImportHost host) on cpu
- requires nonzero(host.pop) requires nonzero(host.visit) requires nonzero(host.start) requires nonzero(host.resume) requires nonzero(host.lookup) requires nonzero(host.inspect) requires nonzero(host.begin) requires nonzero(host.next) requires nonzero(host.predicate) requires nonzero(host.domain) requires nonzero(host.fact) requires nonzero(host.operation) requires nonzero(host.operand) requires nonzero(host.remember) {
+ requires nonzero(host.pop) requires nonzero(host.visit) requires nonzero(host.start) requires nonzero(host.resume) requires nonzero(host.lookup) requires nonzero(host.begin) requires nonzero(host.next) requires nonzero(host.predicate) requires nonzero(host.domain) requires nonzero(host.fact) requires nonzero(host.operation) requires nonzero(host.operand) requires nonzero(host.remember) {
  host.visit(context,root);
  while(true){ContractImport work=host.pop(context);if(work.present==0){break;}
   if(work.fold==0){
-   if(host.lookup(context,work.clause).present!=0){continue;}SourceNode node=host.inspect(work.clause);usize result=0u64;
+   if(host.lookup(context,work.clause).present!=0){continue;}SourceNode node=clause_source(work.clause);usize result=0u64;
    if(node.kind==1){result=1u64;u32 phase=0;while(phase<2){host.begin(context,node.left);
     while(true){FactView fact=host.next(context);if(fact.present==0){break;}
      if(contract_unary(fact,host.predicate,host.domain)==(phase==0 ? 1 : 0)){result=host.operation(context,result,host.fact(context,fact),0);}
@@ -1576,7 +1502,7 @@ extern "C" usize contract_import(address context,address root,ContractImportHost
 }
 
 extern "C" void contract_emit(address context,usize root,ContractEmitHost host) on cpu
- requires nonzero(host.pop) requires nonzero(host.push) requires nonzero(host.known) requires nonzero(host.load) requires nonzero(host.variable) requires nonzero(host.count) requires nonzero(host.cell) requires nonzero(host.bound) requires nonzero(host.guard) requires nonzero(host.atom) requires nonzero(host.negate) requires nonzero(host.guard_node) requires nonzero(host.child) requires nonzero(host.both) requires nonzero(host.first) requires nonzero(host.either) requires nonzero(host.remember) requires nonzero(host.release) {
+ requires nonzero(host.pop) requires nonzero(host.push) requires nonzero(host.known) requires nonzero(host.load) requires nonzero(host.variable) requires nonzero(host.count) requires nonzero(host.cell) requires nonzero(host.bound) requires nonzero(host.guard) requires nonzero(host.atom) requires nonzero(host.negate) requires nonzero(host.guard_clause) requires nonzero(host.child) requires nonzero(host.both) requires nonzero(host.first) requires nonzero(host.either) requires nonzero(host.remember) requires nonzero(host.release) {
  host.push(context,root,0);
  while(true){ContractPending work=host.pop(context);if(work.present==0){return;}if(host.known(context,work.index)!=0){continue;}
   host.load(context,work.index);usize count=host.count(context);
@@ -1589,7 +1515,7 @@ extern "C" void contract_emit(address context,usize root,ContractEmitHost host) 
      if(!contract_end_equal(cell.end,variable.end)){FactView upper=variable.fact;upper.kind=FactKind::Maximum;upper.value=cell.end.low-1u64;host.bound(context,upper);}
      host.guard(context,begin,cell.end);
     }else{host.atom(context,variable.fact);if(begin.low==0u64&&begin.high==0u64){host.negate(context);}}
-    if(cell.value!=1u64){SourceNode guard=host.guard_node(context);
+    if(cell.value!=1u64){SourceNode guard=clause_source(host.guard_clause(context));
      if(guard.kind==1&&guard.empty!=0){host.child(context,cell.value);}else{host.both(context,cell.value);}
     }
     if(found==0){host.first(context);found=1;}else{host.either(context);}
@@ -2184,13 +2110,13 @@ extern "C" void numeric_bounds(address context,NumericBoundsHost host) on cpu
 }
 
 extern "C" void execution_condition(address root,address context,ExecutionHost host) on cpu
- requires nonzero(host.inspect) requires nonzero(host.push) requires nonzero(host.pop)
+ requires nonzero(host.push) requires nonzero(host.pop)
  requires nonzero(host.has_result) requires nonzero(host.impossible) requires nonzero(host.guard) requires nonzero(host.compose) {
  host.push(context,root,0);
  while(true){
   NegatePending pending=host.pop(context);if(pending.present==0){return;}
   if(host.has_result(context,pending.source)!=0){continue;}
-  SourceNode node=host.inspect(pending.source);
+  SourceNode node=clause_source(pending.source);
   if(pending.ready==0&&node.kind>=2){
    host.push(context,pending.source,1);
    if(node.kind!=4){host.push(context,node.right,0);}
@@ -2447,7 +2373,7 @@ extern "C" void call_fact(address context,FactView fact,CallFactHost host) on cp
 }
 
 extern "C" void rename_output_graph(address context,OutputRenameHost host) on cpu
- requires nonzero(host.root) requires nonzero(host.inspect) requires nonzero(host.push)
+ requires nonzero(host.root) requires nonzero(host.push)
  requires nonzero(host.pop) requires nonzero(host.status) requires nonzero(host.begin_facts)
  requires nonzero(host.map_fact) requires nonzero(host.same_facts)
  requires nonzero(host.build) requires nonzero(host.emit) {
@@ -2459,7 +2385,7 @@ extern "C" void rename_output_graph(address context,OutputRenameHost host) on cp
    NegatePending pending=host.pop(context);
    if(pending.present==0){break;}
    if(host.status(context,pending.source)!=OutputStatus::Pending){continue;}
-   SourceNode node=host.inspect(pending.source);
+   SourceNode node=clause_source(pending.source);
    if(pending.ready==0&&node.kind>=2){
     host.push(context,pending.source,1);
     host.push(context,node.right,0);
@@ -2578,51 +2504,6 @@ extern "C" void join_proof_conditions(address context,usize width,u32 selected,C
   index+=1u64;
  }
 }
-
-struct UpperGroup { UpperRow limit; UpperRow following; };
-
-UpperGroup upper_group(address context,u32 side,UpperRow first,DomainJoinHost host) on cpu
- requires nonzero(host.next) requires nonzero(host.compare) {
- u32 strongest=first.distance;
- UpperRow following=host.next(context,side);
- while(following.identity!=address()&&host.compare(first.identity,following.identity)==0) {
-  // Each typed set orders equal-identity rows by ascending distance.
-  strongest=following.distance;
-  following=host.next(context,side);
- }
- return UpperGroup(UpperRow(first.identity,strongest),following);
-}
-
-extern "C" u32 join_proof_domains(address context,u32 bits,DomainJoinHost host) on cpu
- requires nonzero(host.next) requires nonzero(host.compare) requires nonzero(host.origin)
- requires nonzero(host.upper) requires nonzero(host.bits) {
- UpperRow left=host.next(context,0);
- UpperRow right=host.next(context,1);
- while(left.identity!=address()||right.identity!=address()) {
-  i32 order=i32(0);
-  if(left.identity==address()){order=i32(1);}
-  else if(right.identity==address()){order=-i32(1);}
-  else{order=host.compare(left.identity,right.identity);}
-  if(order<0) {
-   UpperGroup a=upper_group(context,0,left,host);
-   if(host.origin(context,1,a.limit.identity)!=0){host.upper(context,a.limit.identity,0);}
-   left=a.following;
-  }else if(order>0) {
-   UpperGroup b=upper_group(context,1,right,host);
-   if(host.origin(context,0,b.limit.identity)!=0){host.upper(context,b.limit.identity,0);}
-   right=b.following;
-  }else{
-   UpperGroup a=upper_group(context,0,left,host);
-   UpperGroup b=upper_group(context,1,right,host);
-   u32 common=a.limit.distance<b.limit.distance?a.limit.distance:b.limit.distance;
-   host.upper(context,a.limit.identity,common);
-   left=a.following;
-   right=b.following;
-  }
- }
- return bits!=0?host.bits(context):u32(0);
-}
-
 
 extern "C" void join_proof_numeric(address context,usize width,NumericJoinHost host) on cpu
  requires nonzero(host.domains) requires nonzero(host.store) {

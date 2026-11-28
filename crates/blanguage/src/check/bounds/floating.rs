@@ -137,7 +137,7 @@ struct ArithmeticHost {
 struct ArithmeticDomains<'a, 'program> {
     builder: &'a Builder<'program>,
     inputs: [&'a Domains; 2],
-    iterators: [std::collections::btree_set::Iter<'a, IndexDomain>; 2],
+    iterators: [domain_store::Iter<'a>; 2],
     result: Domains,
 }
 

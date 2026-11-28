@@ -2,7 +2,7 @@
 //! typed sets and iterators until their synchronous last consumer.
 use super::facts;
 use super::{
-    Clause, Facts, Scalar, ValueIdentity, condition_graph, contradictory, fact_fields, numeric_bounds,
+    Clause, Facts, Scalar, ValueIdentity, contradictory, fact_fields, numeric_bounds,
 };
 use std::{
     collections::{BTreeMap, BTreeSet, btree_map, btree_set},
@@ -330,8 +330,8 @@ unsafe fn graph<'a, 'b>(slot: Slot) -> &'a mut Graph<'b> {
 unsafe extern "C" fn count(slot: Slot) -> usize {
     unsafe { graph(slot) }.nodes.len()
 }
-unsafe extern "C" fn inspect(slot: Slot, index: usize) -> condition_graph::SourceNode {
-    condition_graph::source_node(unsafe { graph(slot) }.nodes[index])
+unsafe extern "C" fn source_at(slot: Slot, index: usize) -> Borrowed {
+    ptr::from_ref(unsafe { graph(slot) }.nodes[index]).cast()
 }
 unsafe extern "C" fn lookup(slot: Slot, source: Borrowed) -> Borrowed {
     let key = unsafe { &*source.cast::<Clause>() }.key();
@@ -398,7 +398,7 @@ unsafe extern "C" fn both(slot: Slot, index: usize, left: Borrowed, right: Borro
 #[repr(C)]
 struct GraphHost {
     count: unsafe extern "C" fn(Slot) -> usize,
-    inspect: unsafe extern "C" fn(Slot, usize) -> condition_graph::SourceNode,
+    node: unsafe extern "C" fn(Slot, usize) -> Borrowed,
     lookup: unsafe extern "C" fn(Slot, Borrowed) -> Borrowed,
     empty: unsafe extern "C" fn(Slot, usize),
     leaf: unsafe extern "C" fn(Slot, usize, Borrowed),
@@ -615,7 +615,7 @@ pub(super) fn canonical(root: &Clause) -> Clause {
                 (&mut c as *mut Graph<'_>).cast(),
                 GraphHost {
                     count,
-                    inspect,
+                    node: source_at,
                     lookup,
                     empty,
                     leaf,

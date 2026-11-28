@@ -2,7 +2,7 @@
 //! its physical containers and borrows immutable Clause/Fact fields until return.
 use super::facts;
 use super::{
-    CallBindings, Clause, ClauseNode, ClausePostorder, Condition, SharedCondition, EncodedClause, Fact, Facts, IndexDomain, OutputBindings, Proof, Value, ValueIdentity,
+    CallBindings, Clause, ClausePostorder, Condition, ConditionSlots, SharedCondition, EncodedClause, Fact, Facts, IndexDomain, OutputBindings, Proof, Value, ValueIdentity,
     TraversalStack, internal_conflicts, map_domain, output_identity,
 };
 use std::{
@@ -20,9 +20,8 @@ struct Span {
     data: *const usize,
     count: usize,
 }
-#[derive(Default)]
 #[repr(C)]
-pub(super) struct SourceNode {
+struct SourceNode {
     kind: u32,
     left: Borrowed,
     right: Borrowed,
@@ -47,19 +46,15 @@ impl<'a> FactWalk<'a> {
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct FactWalkHost {
-    inspect: unsafe extern "C" fn(Slot, Borrowed) -> SourceNode,
+    visit: unsafe extern "C" fn(Slot, Borrowed) -> u32,
     push: unsafe extern "C" fn(Slot, Borrowed),
     pop: unsafe extern "C" fn(Slot) -> Borrowed,
 }
 
-unsafe extern "C" fn inspect_fact_clause(walk: Slot, clause: Borrowed) -> SourceNode {
+unsafe extern "C" fn visit_fact_clause(walk: Slot, clause: Borrowed) -> u32 {
     let walk = unsafe { &mut *walk.cast::<FactWalk<'_>>() };
     let clause = unsafe { &*clause.cast::<Clause>() };
-    if walk.seen.insert(clause.key()) {
-        source_node(clause)
-    } else {
-        SourceNode::default()
-    }
+    u32::from(walk.seen.insert(clause.key()))
 }
 
 unsafe extern "C" fn push_fact_clause(walk: Slot, clause: Borrowed) {
@@ -72,7 +67,7 @@ unsafe extern "C" fn pop_fact_clause(walk: Slot) -> Borrowed {
 }
 
 const FACT_WALK: FactWalkHost = FactWalkHost {
-    inspect: inspect_fact_clause,
+    visit: visit_fact_clause,
     push: push_fact_clause,
     pop: pop_fact_clause,
 };
@@ -288,37 +283,6 @@ unsafe extern "C" fn allocate_parents(slot: Slot, count: usize) -> *mut usize {
     parents.as_mut_ptr()
 }
 
-pub(super) fn source_node(clause: &Clause) -> SourceNode {
-    let mut out = SourceNode::default();
-    match clause.view() {
-        ClauseNode::Impossible => {}
-        ClauseNode::Facts(facts) => {
-            out.kind = 1;
-            out.left = std::ptr::from_ref(facts).cast();
-            out.empty = u32::from(facts.is_empty());
-        }
-        ClauseNode::Both(a, b) => {
-            out.kind = 2;
-            out.left = std::ptr::from_ref(a).cast();
-            out.right = std::ptr::from_ref(b).cast();
-        }
-        ClauseNode::Either(a, b) => {
-            out.kind = 3;
-            out.left = std::ptr::from_ref(a).cast();
-            out.right = std::ptr::from_ref(b).cast();
-        }
-        ClauseNode::Branch(parent, condition, truth) => {
-            out.kind = 4;
-            out.left = std::ptr::from_ref(parent).cast();
-            out.right = std::ptr::from_ref(&condition.cases[1]).cast();
-            out.no = std::ptr::from_ref(&condition.cases[0]).cast();
-            out.truth = u32::from(truth);
-            out.condition = std::ptr::from_ref(condition).cast();
-        }
-    }
-    out
-}
-
 // Source roots keep the borrowed addresses valid until the synchronous walk returns.
 struct OutputRename<'a, 'out> {
     bindings: &'a OutputBindings,
@@ -374,9 +338,6 @@ unsafe extern "C" fn output_root(slot: Slot) -> Borrowed {
     ptr::from_ref(root).cast()
 }
 
-unsafe extern "C" fn output_inspect(source: Borrowed) -> SourceNode {
-    source_node(unsafe { source_clause(source) })
-}
 
 unsafe extern "C" fn output_push(slot: Slot, source: Borrowed, ready: u32) {
     unsafe { output_rename(slot) }.pending.push((unsafe { source_clause(source) }, ready != 0));
@@ -457,7 +418,6 @@ unsafe extern "C" fn output_emit(slot: Slot, source: Borrowed) {
 #[repr(C)]
 struct OutputRenameHost {
     root: unsafe extern "C" fn(Slot) -> Borrowed,
-    inspect: unsafe extern "C" fn(Borrowed) -> SourceNode,
     push: unsafe extern "C" fn(Slot, Borrowed, u32),
     pop: unsafe extern "C" fn(Slot) -> OutputPending,
     status: unsafe extern "C" fn(Slot, Borrowed) -> OutputStatus,
@@ -498,7 +458,6 @@ fn rename_output_roots<'a>(
     unsafe {
         rename_output_graph(ptr::from_mut(&mut ctx).cast(), OutputRenameHost {
             root: output_root,
-            inspect: output_inspect,
             push: output_push,
             pop: output_pop,
             status: output_status,
@@ -576,8 +535,8 @@ unsafe extern "C" fn bind_output_conditions(slot: Slot) {
     let ctx = unsafe { &mut *slot.cast::<ProofOutput<'_>>() };
     if let Some(value) = ctx.capture {
         let source: Vec<_> = (0..value.regs.len())
-            .map(|component| Proof::captured_condition(value, component)).collect();
-        bind_output_condition_slots(source.iter().map(Option::as_ref), ctx.bindings, &mut ctx.result.conditions);
+            .map(|component| Proof::value_condition(value, component)).collect();
+        bind_output_condition_slots(source.iter().map(Option::as_deref), ctx.bindings, &mut ctx.result.conditions);
     } else {
         bind_output_condition_slots(ctx.source.conditions.iter().map(Option::as_deref),
             ctx.bindings, &mut ctx.result.conditions);
@@ -587,7 +546,7 @@ unsafe extern "C" fn bind_output_conditions(slot: Slot) {
 fn bind_output_condition_slots<'a>(
     source: impl ExactSizeIterator<Item = Option<&'a Condition>>,
     bindings: &'a OutputBindings,
-    output: &mut Vec<Option<Box<Condition>>>,
+    output: &mut ConditionSlots,
 ) {
     let width = source.len();
     let roots = source.enumerate()
@@ -596,13 +555,13 @@ fn bind_output_condition_slots<'a>(
     let mut first = None;
     rename_output_roots(roots, bindings, |index, case| {
         if let Some(first) = first.take() {
-            output.resize_with(index, || None);
-            output.push(Some(Box::new(Condition { cases: [first, case] })));
+            output.resize(index);
+            output.push(Some(Condition { cases: [first, case] }.shared()));
         } else {
             first = Some(case);
         }
     });
-    output.resize_with(width, || None);
+    output.resize(width);
 }
 
 pub(super) fn bind_output_proof(source: &Proof, capture: Option<&Value>, bindings: &OutputBindings) -> Proof {
@@ -623,7 +582,7 @@ pub(super) fn bind_output_proof(source: &Proof, capture: Option<&Value>, binding
         views: Vec::with_capacity(shape.views),
         origins: super::OriginRows::new(),
         domains: Vec::with_capacity(shape.domains),
-        conditions: Vec::with_capacity(capture.map_or(source.conditions.len(), |value| value.regs.len())),
+        conditions: ConditionSlots::new(),
     };
     let mut ctx = ProofOutput { source, capture, bindings, result };
     unsafe {
@@ -638,27 +597,17 @@ pub(super) fn bind_output_proof(source: &Proof, capture: Option<&Value>, binding
     ctx.result
 }
 
-#[derive(Default)]
-#[repr(C)]
-struct CallProjectionNode {
-    original: Borrowed,
-    node: SourceNode,
-}
-
 struct CallProjection<'a, P> {
     pending: ClausePostorder<'a>,
     bindings: &'a P,
     results: HashMap<usize, (Clause, bool)>,
 }
 
-unsafe extern "C" fn call_next<P>(slot: Slot) -> CallProjectionNode {
+unsafe extern "C" fn call_next<P>(slot: Slot) -> Borrowed {
     let ctx = unsafe { &mut *slot.cast::<CallProjection<'_, P>>() };
     let results = &ctx.results;
     ctx.pending.next(|key| results.contains_key(&key))
-        .map_or_else(CallProjectionNode::default, |clause| CallProjectionNode {
-            original: std::ptr::from_ref(clause).cast(),
-            node: source_node(clause),
-        })
+        .map_or(ptr::null(), |clause| ptr::from_ref(clause).cast())
 }
 
 unsafe fn call_key(source: Borrowed) -> usize {
@@ -686,7 +635,7 @@ unsafe extern "C" fn call_pair<P, const EITHER: bool>(slot: Slot, source: Borrow
 
 #[repr(C)]
 struct CallProjectionHost {
-    next: unsafe extern "C" fn(Slot) -> CallProjectionNode,
+    next: unsafe extern "C" fn(Slot) -> Borrowed,
     impossible: unsafe extern "C" fn(Slot, Borrowed),
     facts: unsafe extern "C" fn(Slot, Borrowed, Borrowed),
     both: unsafe extern "C" fn(Slot, Borrowed, Borrowed, Borrowed),
@@ -730,12 +679,9 @@ impl CallBounds<'_> {
         self.indices[&key] * self.words
     }
 }
-unsafe extern "C" fn bound_next(slot: Slot) -> CallProjectionNode {
+unsafe extern "C" fn bound_next(slot: Slot) -> Borrowed {
     let ctx = unsafe { &mut *slot.cast::<CallBounds<'_>>() };
-    ctx.ordered.next().map_or_else(CallProjectionNode::default, |&clause| CallProjectionNode {
-        original: std::ptr::from_ref(clause).cast(),
-        node: source_node(clause),
-    })
+    ctx.ordered.next().map_or(ptr::null(), |&clause| ptr::from_ref(clause).cast())
 }
 unsafe extern "C" fn bound_impossible(slot: Slot, source: Borrowed) {
     let ctx = unsafe { &mut *slot.cast::<CallBounds<'_>>() };

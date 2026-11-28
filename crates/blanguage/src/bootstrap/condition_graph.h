@@ -3,31 +3,29 @@ import codec.scalar_ranges;
 import bootstrap.scalar_fold;
 import bootstrap.fact_key;
 import bootstrap.condition_index;
+import bootstrap.clause_storage;
 
 // These descriptors borrow the original Clause query and its physical buffers.
 // They are private native fields, not a stored condition or public graph format.
 struct Span { address data; usize count; };
 struct TraversalStack { address records; u64 length; u64 capacity; };
-struct PostorderChildren { address first; address second; u32 visited; };
 
 extern "C" void clause_postorder_start(inout TraversalStack stack,address context,cfn<address,address> next) on cpu
     requires nonzero(next);
 extern "C" address clause_postorder_next(inout TraversalStack stack,address context,
-    cfn<PostorderChildren,address,address> inspect) on cpu requires nonzero(inspect);
+    cfn<u32,address,address> completed) on cpu requires nonzero(completed);
 extern "C" void traversal_stack_drop(inout TraversalStack stack) on cpu;
 
-struct SourceNode { u32 kind; address left; address right; address no; u32 truth; u32 empty; address condition; };
 struct FactWalkHost {
- cfn<SourceNode,address,address> inspect;
+ cfn<u32,address,address> visit;
  cfn<void,address,address> push;
  cfn<address,address> pop;
 };
 extern "C" address next_fact_block(address walk,FactWalkHost host) on cpu
- requires nonzero(host.inspect) requires nonzero(host.push) requires nonzero(host.pop);
+ requires nonzero(host.visit) requires nonzero(host.push) requires nonzero(host.pop);
 
-struct CallProjectionNode { address original; SourceNode node; };
 struct CallProjectionHost {
- cfn<CallProjectionNode,address> next;
+ cfn<address,address> next;
  cfn<void,address,address> impossible;
  cfn<void,address,address,address> facts;
  cfn<void,address,address,address,address> both;
@@ -142,7 +140,6 @@ extern "C" FactView negated_fact(FactView value,FactHost host) on cpu
 
 struct NegatePending { u32 present; u32 ready; address source; };
 struct NegateHost {
- cfn<SourceNode,address> ensures memory(read) inspect;
  cfn<void,address,address,u32> push;
  cfn<NegatePending,address> pop;
  cfn<u32,address,address> ensures memory(read) has_result;
@@ -156,7 +153,7 @@ struct NegateHost {
  FactHost facts;
 };
 extern "C" void negate_graph(address root,address context,NegateHost host) on cpu
- requires nonzero(host.inspect) requires nonzero(host.push) requires nonzero(host.pop)
+ requires nonzero(host.push) requires nonzero(host.pop)
  requires nonzero(host.has_result) requires nonzero(host.unconstrained) requires nonzero(host.impossible)
  requires nonzero(host.begin_facts) requires nonzero(host.next_fact) requires nonzero(host.either_fact)
  requires nonzero(host.either) requires nonzero(host.both) requires nonzero(host.facts.compare);
@@ -172,7 +169,7 @@ struct ConditionInputHost {
  cfn<u32,address,address> accept;
 };
 extern "C" u32 condition_inputs(address walk,address input,ConditionInputHost host) on cpu
- requires nonzero(host.graph.inspect) requires nonzero(host.graph.push) requires nonzero(host.graph.pop)
+ requires nonzero(host.graph.visit) requires nonzero(host.graph.push) requires nonzero(host.graph.pop)
  requires nonzero(host.begin) requires nonzero(host.next) requires nonzero(host.predicate)
  requires nonzero(host.accept);
 
@@ -223,7 +220,7 @@ extern "C" void common_facts(address context,CommonHost host) on cpu
 struct TaskSourceSet { u32 known; address values; };
 struct TaskSourceHost {
  cfn<usize,address> ensures memory(read) count;
- cfn<SourceNode,address,usize> ensures memory(read) inspect;
+ cfn<address,address,usize> ensures memory(read) node;
  cfn<void,address,usize> begin;
  cfn<FactView,address> next;
  cfn<u32,address,FactView> ensures memory(read) contains;
@@ -239,51 +236,11 @@ struct TaskSourceHost {
  FactHost facts;
 };
 extern "C" void task_return_sources(address context,TaskSourceHost host) on cpu
- requires nonzero(host.count) requires nonzero(host.inspect) requires nonzero(host.begin)
+ requires nonzero(host.count) requires nonzero(host.node) requires nonzero(host.begin)
  requires nonzero(host.next) requires nonzero(host.contains) requires nonzero(host.lookup)
  requires nonzero(host.unknown) requires nonzero(host.empty) requires nonzero(host.single)
  requires nonzero(host.copy) requires nonzero(host.intersection) requires nonzero(host.union)
  requires nonzero(host.same_scalar) requires nonzero(host.facts.compare);
-
-// Synchronous typed Clause outputs and the original container primitives.
-struct ClauseLeafHost {
- cfn<u32,address> conflict;
- cfn<void,address> impossible;
- cfn<void,address,address> make;
-};
-struct ClauseBothHost {
- cfn<SourceNode,address> ensures memory(read) inspect;
- cfn<u32,address,address> ensures memory(read) same;
- cfn<void,address,address,address> unite;
- cfn<void,address> impossible;
- cfn<void,address,address> copy;
- cfn<void,address,address,address> make;
-};
-struct ClauseEitherHost {
- cfn<SourceNode,address> ensures memory(read) inspect;
- cfn<u32,address,address> ensures memory(read) same;
- cfn<u32,address,address> ensures memory(read) same_condition;
- cfn<u32,address,address> ensures memory(read) subset;
- cfn<void,address,address> copy;
- cfn<void,address,address,address> make;
- cfn<void,address,address,address,address> factor;
-};
-struct ClauseBranchHost {
- cfn<SourceNode,address> ensures memory(read) inspect;
- cfn<address,address,u32> ensures memory(read) case;
- cfn<void,address> impossible;
- cfn<void,address,address,address,u32> make;
-};
-extern "C" void clause_facts(address facts,address output,ClauseLeafHost host) on cpu
- requires nonzero(host.conflict) requires nonzero(host.impossible) requires nonzero(host.make);
-extern "C" void clause_both(address left,address right,address output,ClauseBothHost host) on cpu
- requires nonzero(host.inspect) requires nonzero(host.same) requires nonzero(host.unite)
- requires nonzero(host.impossible) requires nonzero(host.copy) requires nonzero(host.make);
-extern "C" void clause_either(address left,address right,address output,ClauseEitherHost host) on cpu
- requires nonzero(host.inspect) requires nonzero(host.same) requires nonzero(host.same_condition)
- requires nonzero(host.subset) requires nonzero(host.copy) requires nonzero(host.make) requires nonzero(host.factor);
-extern "C" void clause_branch(address parent,address condition,u32 truth,address output,ClauseBranchHost host) on cpu
- requires nonzero(host.inspect) requires nonzero(host.case) requires nonzero(host.impossible) requires nonzero(host.make);
 
 struct EqualityLookup { u32 present; address root; };
 struct EqualityHost {
@@ -407,7 +364,7 @@ extern "C" void canonical_product(address context,CanonicalProductHost host) on 
  requires nonzero(host.left) requires nonzero(host.reset) requires nonzero(host.right) requires nonzero(host.union);
 struct CanonicalGraphHost {
  cfn<usize,address> ensures memory(read) count;
- cfn<SourceNode,address,usize> ensures memory(read) inspect;
+ cfn<address,address,usize> ensures memory(read) node;
  cfn<address,address,address> ensures memory(read) lookup;
  cfn<void,address,usize> empty;
  cfn<void,address,usize,address> leaf;
@@ -415,7 +372,7 @@ struct CanonicalGraphHost {
  cfn<void,address,usize,address,address> both;
 };
 extern "C" void canonical_graph(address context,CanonicalGraphHost host) on cpu
- requires nonzero(host.count) requires nonzero(host.inspect) requires nonzero(host.lookup)
+ requires nonzero(host.count) requires nonzero(host.node) requires nonzero(host.lookup)
  requires nonzero(host.empty) requires nonzero(host.leaf) requires nonzero(host.either) requires nonzero(host.both);
 struct CanonicalConsensusHost {
  cfn<CanonicalTerm,address> left;
@@ -512,7 +469,6 @@ struct ContractOperandsHost {
  cfn<void,address,address> push;
  cfn<u32,address,address> seen;
  cfn<u32,address,address> ensures memory(read) imported;
- cfn<SourceNode,address> ensures memory(read) inspect;
  cfn<u32,address> all_unary;
  cfn<void,address,address,u32> emit;
 };
@@ -522,7 +478,6 @@ struct ContractImportHost {
  cfn<void,address,address,u32,usize> start;
  cfn<void,address,address,u32,usize,usize> resume;
  cfn<ContractIndex,address,address> ensures memory(read) lookup;
- cfn<SourceNode,address> ensures memory(read) inspect;
  cfn<void,address,address> begin;
  cfn<FactView,address> next;
  cfn<InternalPredicate,address> ensures memory(read) predicate;
@@ -544,7 +499,7 @@ struct ContractEmitHost {
  cfn<void,address,ContractEnd,ContractEnd> guard;
  cfn<void,address,FactView> atom;
  cfn<void,address> negate;
- cfn<SourceNode,address> ensures memory(read) guard_node;
+ cfn<address,address> ensures memory(read) guard_clause;
  cfn<void,address,usize> child;
  cfn<void,address,usize> both;
  cfn<void,address> first;
@@ -581,13 +536,13 @@ extern "C" u32 contract_all_unary(address context,cfn<FactView,address> next,cfn
  requires nonzero(next) requires nonzero(predicate) requires nonzero(domain);
 
 extern "C" void contract_operands(address context,u32 either,ContractOperandsHost host) on cpu
- requires nonzero(host.pop) requires nonzero(host.push) requires nonzero(host.seen) requires nonzero(host.imported) requires nonzero(host.inspect) requires nonzero(host.all_unary) requires nonzero(host.emit);
+ requires nonzero(host.pop) requires nonzero(host.push) requires nonzero(host.seen) requires nonzero(host.imported) requires nonzero(host.all_unary) requires nonzero(host.emit);
 
 extern "C" usize contract_import(address context,address root,ContractImportHost host) on cpu
- requires nonzero(host.pop) requires nonzero(host.visit) requires nonzero(host.start) requires nonzero(host.resume) requires nonzero(host.lookup) requires nonzero(host.inspect) requires nonzero(host.begin) requires nonzero(host.next) requires nonzero(host.predicate) requires nonzero(host.domain) requires nonzero(host.fact) requires nonzero(host.operation) requires nonzero(host.operand) requires nonzero(host.remember);
+ requires nonzero(host.pop) requires nonzero(host.visit) requires nonzero(host.start) requires nonzero(host.resume) requires nonzero(host.lookup) requires nonzero(host.begin) requires nonzero(host.next) requires nonzero(host.predicate) requires nonzero(host.domain) requires nonzero(host.fact) requires nonzero(host.operation) requires nonzero(host.operand) requires nonzero(host.remember);
 
 extern "C" void contract_emit(address context,usize root,ContractEmitHost host) on cpu
- requires nonzero(host.pop) requires nonzero(host.push) requires nonzero(host.known) requires nonzero(host.load) requires nonzero(host.variable) requires nonzero(host.count) requires nonzero(host.cell) requires nonzero(host.bound) requires nonzero(host.guard) requires nonzero(host.atom) requires nonzero(host.negate) requires nonzero(host.guard_node) requires nonzero(host.child) requires nonzero(host.both) requires nonzero(host.first) requires nonzero(host.either) requires nonzero(host.remember) requires nonzero(host.release);
+ requires nonzero(host.pop) requires nonzero(host.push) requires nonzero(host.known) requires nonzero(host.load) requires nonzero(host.variable) requires nonzero(host.count) requires nonzero(host.cell) requires nonzero(host.bound) requires nonzero(host.guard) requires nonzero(host.atom) requires nonzero(host.negate) requires nonzero(host.guard_clause) requires nonzero(host.child) requires nonzero(host.both) requires nonzero(host.first) requires nonzero(host.either) requires nonzero(host.remember) requires nonzero(host.release);
 
 extern "C" void contract_union(address context,ContractUnionHost host) on cpu
  requires nonzero(host.case) requires nonzero(host.import) requires nonzero(host.operation) requires nonzero(host.emit);
@@ -824,7 +779,6 @@ extern "C" void numeric_bounds(address context,NumericBoundsHost host) on cpu
 struct ExecutionCase {address source;u32 truth;u32 original;};
 struct ExecutionJoin {ExecutionCase left;ExecutionCase right;u32 any;};
 struct ExecutionHost {
- cfn<SourceNode,address> ensures memory(read) inspect;
  cfn<void,address,address,u32> push;
  cfn<NegatePending,address> pop;
  cfn<u32,address,address> ensures memory(read) has_result;
@@ -833,7 +787,7 @@ struct ExecutionHost {
  cfn<void,address,address,ExecutionJoin,ExecutionJoin> compose;
 };
 extern "C" void execution_condition(address root,address context,ExecutionHost host) on cpu
- requires nonzero(host.inspect) requires nonzero(host.push) requires nonzero(host.pop)
+ requires nonzero(host.push) requires nonzero(host.pop)
  requires nonzero(host.has_result) requires nonzero(host.impossible) requires nonzero(host.guard) requires nonzero(host.compose);
 
 struct ProofFactsInput {
@@ -912,7 +866,6 @@ enum OutputStatus : u32 { Pending=0; Original=1; Replaced=2; };
 enum OutputBuild : u32 { Original=0; Facts=1; Both=2; Either=3; Branch=4; MappedBranch=5; };
 struct OutputRenameHost {
  cfn<address,address> root;
- cfn<SourceNode,address> ensures memory(read) inspect;
  cfn<void,address,address,u32> push;
  cfn<NegatePending,address> pop;
  cfn<OutputStatus,address,address> ensures memory(read) status;
@@ -923,7 +876,7 @@ struct OutputRenameHost {
  cfn<void,address,address> emit;
 };
 extern "C" void rename_output_graph(address context,OutputRenameHost host) on cpu
- requires nonzero(host.root) requires nonzero(host.inspect) requires nonzero(host.push)
+ requires nonzero(host.root) requires nonzero(host.push)
  requires nonzero(host.pop) requires nonzero(host.status) requires nonzero(host.begin_facts)
  requires nonzero(host.map_fact) requires nonzero(host.same_facts)
  requires nonzero(host.build) requires nonzero(host.emit);
@@ -984,19 +937,6 @@ struct ConditionJoinHost {
 };
 extern "C" void join_proof_conditions(address context,usize width,u32 selected,ConditionJoinHost host) on cpu
  requires nonzero(host.present) requires nonzero(host.empty) requires nonzero(host.common) requires nonzero(host.selected);
-
-struct UpperRow { address identity; u32 distance; };
-struct DomainJoinHost {
- cfn<UpperRow,address,u32> next;
- cfn<i32,address,address> compare;
- cfn<u32,address,u32,address> origin;
- cfn<void,address,address,u32> upper;
- cfn<u32,address> bits;
-};
-extern "C" u32 join_proof_domains(address context,u32 bits,DomainJoinHost host) on cpu
- requires nonzero(host.next) requires nonzero(host.compare) requires nonzero(host.origin)
- requires nonzero(host.upper) requires nonzero(host.bits);
-
 
 struct NumericJoinFacts { u32 left_nonzero; u32 right_nonzero; u32 bits_nonzero; };
 struct NumericJoinHost {

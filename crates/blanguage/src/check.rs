@@ -189,7 +189,7 @@ enum IndexDomain {
     KnownBits(Scalar,Bits,Bits),
     Floating(bounds::FloatingBound),
 }
-type Domains = BTreeSet<IndexDomain>;
+use bounds::domain_store::Domains;
 #[derive(Clone)]
 struct Value {
     proof: bounds::Proof,

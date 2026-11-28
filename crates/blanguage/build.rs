@@ -144,8 +144,10 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
                 "capture_inputs" => &["declarations"],
                 "output_bindings" => &["fact_key", "proof_facts"],
                 "proof_origins" => &["fact_key", "proof_facts"],
-                "condition_graph" => &["condition_index"],
+                "proof_domain_join" => &["proof_facts", "fact_key", "scalar_fold"],
+                "condition_graph" => &["condition_index", "clause_storage"],
                 "contract_codec" => &["value_format", "condition_index", "fact_key", "proof_facts", "scalar_fold"],
+                "condition_slots" => &["clause_storage", "proof_facts"],
                 "host_sdk" => {
                     job.arguments.extend(["-I".into(), "../../library".into()]);
                     &["path_core", "ast_storage", "coff", "bindings", "names", "metadata", "native_select"]
@@ -321,6 +323,8 @@ const MODULES: &[&str] = &[
     "clause_storage",
     "contract_codec",
     "condition_graph",
+    "proof_domain_join",
+    "condition_slots",
     "stack_report",
 ];
 

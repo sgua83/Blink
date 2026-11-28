@@ -1,206 +1,45 @@
-//! B chooses the complete Clause composition. Rust owns the original typed
-//! output and necessary intermediate slots; borrowed inputs remain pinned.
-use super::{Clause, Condition, SharedCondition, Domains, Fact, Facts, IndexDomain, Proof, Scalar, Ty, ValueIdentity, condition_graph, contradictory, fact_fields};
-use std::{ffi::c_void, mem::MaybeUninit, ptr};
+//! The B Clause owner composes the original immutable nodes.
+use super::{Clause, Condition, ConditionSlots, SharedCondition, StoredClause, Domains, Fact, Facts, Proof, Scalar, Ty, ValueIdentity, contradictory};
+use std::{ffi::c_void, mem::ManuallyDrop, ptr::{self, NonNull}};
 type Slot = *mut c_void;
 type Borrowed = *const c_void;
+
 fn borrowed<T>(value: &T) -> Borrowed {
     ptr::from_ref(value).cast()
 }
-unsafe extern "C" fn inspect(source: Borrowed) -> condition_graph::SourceNode {
-    condition_graph::source_node(unsafe { &*source.cast::<Clause>() })
-}
-unsafe extern "C" fn same(left: Borrowed, right: Borrowed) -> u32 {
-    u32::from(unsafe { (*left.cast::<Clause>()).same_node(&*right.cast::<Clause>()) })
-}
-unsafe extern "C" fn same_condition(left: Borrowed, right: Borrowed) -> u32 {
-    u32::from(unsafe {
-        (&*left.cast::<SharedCondition>()).same_node(&*right.cast::<SharedCondition>())
-    })
-}
-unsafe extern "C" fn subset(left: Borrowed, right: Borrowed) -> u32 {
-    u32::from(unsafe { (&*left.cast::<Facts>()).is_subset(&*right.cast::<Facts>()) })
-}
-unsafe extern "C" fn copy(output: Slot, source: Borrowed) {
-    unsafe {
-        output
-            .cast::<Clause>()
-            .write((&*source.cast::<Clause>()).clone())
-    };
-}
-unsafe extern "C" fn impossible(output: Slot) {
-    unsafe { output.cast::<Clause>().write(Clause::impossible()) };
-}
-unsafe extern "C" fn make_both(output: Slot, left: Borrowed, right: Borrowed) {
-    let value = Clause::both_node(
-        unsafe { (&*left.cast::<Clause>()).clone() },
-        unsafe { (&*right.cast::<Clause>()).clone() },
-    );
-    unsafe { output.cast::<Clause>().write(value) };
-}
-unsafe extern "C" fn make_either(output: Slot, left: Borrowed, right: Borrowed) {
-    let value = Clause::either_node(
-        unsafe { (&*left.cast::<Clause>()).clone() },
-        unsafe { (&*right.cast::<Clause>()).clone() },
-    );
-    unsafe { output.cast::<Clause>().write(value) };
-}
-unsafe extern "C" fn conflict(source: Borrowed) -> u32 {
+
+pub(super) unsafe extern "C" fn conflict(source: Borrowed) -> u32 {
     u32::from(contradictory(unsafe { &*source.cast::<Facts>() }))
 }
-unsafe extern "C" fn make_facts(output: Slot, source: Slot) {
-    let value = Clause::raw_facts(std::mem::take(unsafe {
-        &mut *source.cast::<Facts>()
-    }));
-    unsafe { output.cast::<Clause>().write(value) };
-}
-#[repr(C)]
-struct LeafHost {
-    conflict: unsafe extern "C" fn(Borrowed) -> u32,
-    impossible: unsafe extern "C" fn(Slot),
-    make: unsafe extern "C" fn(Slot, Slot),
-}
-fn leaf_host() -> LeafHost {
-    LeafHost {
-        conflict,
-        impossible,
-        make: make_facts,
-    }
-}
-unsafe extern "C" fn unite(output: Slot, left: Borrowed, right: Borrowed) {
-    let (left, right) = unsafe { (&*left.cast::<Facts>(), &*right.cast::<Facts>()) };
-    let mut facts = left.union(right).into_facts();
-    unsafe { b_facts((&mut facts as *mut Facts).cast(), output, leaf_host()) };
-}
-#[repr(C)]
-struct BothHost {
-    inspect: unsafe extern "C" fn(Borrowed) -> condition_graph::SourceNode,
-    same: unsafe extern "C" fn(Borrowed, Borrowed) -> u32,
-    unite: unsafe extern "C" fn(Slot, Borrowed, Borrowed),
-    impossible: unsafe extern "C" fn(Slot),
-    copy: unsafe extern "C" fn(Slot, Borrowed),
-    make: unsafe extern "C" fn(Slot, Borrowed, Borrowed),
-}
-fn both_host() -> BothHost {
-    BothHost {
-        inspect,
-        same,
-        unite,
-        impossible,
-        copy,
-        make: make_both,
-    }
-}
-unsafe extern "C" fn factor(output: Slot, shared: Borrowed, left: Borrowed, right: Borrowed) {
-    // This is the actual temporary Clause required by B's selected factoring.
-    // Its two recursive operations both enter the B implementation; no logical
-    // decision or second graph is kept in the native stack frame.
-    let nested = either(unsafe { &*left.cast::<Clause>() }, unsafe {
-        &*right.cast::<Clause>()
-    });
-    unsafe { b_both(shared, borrowed(&nested), output, both_host()) };
-}
-#[repr(C)]
-struct EitherHost {
-    inspect: unsafe extern "C" fn(Borrowed) -> condition_graph::SourceNode,
-    same: unsafe extern "C" fn(Borrowed, Borrowed) -> u32,
-    same_condition: unsafe extern "C" fn(Borrowed, Borrowed) -> u32,
-    subset: unsafe extern "C" fn(Borrowed, Borrowed) -> u32,
-    copy: unsafe extern "C" fn(Slot, Borrowed),
-    make: unsafe extern "C" fn(Slot, Borrowed, Borrowed),
-    factor: unsafe extern "C" fn(Slot, Borrowed, Borrowed, Borrowed),
-}
-fn either_host() -> EitherHost {
-    EitherHost {
-        inspect,
-        same,
-        same_condition,
-        subset,
-        copy,
-        make: make_either,
-        factor,
-    }
-}
-unsafe extern "C" fn case(condition: Borrowed, truth: u32) -> Borrowed {
-    borrowed(&unsafe { &*condition.cast::<SharedCondition>() }.cases[truth as usize])
-}
-unsafe extern "C" fn make_branch(output: Slot, parent: Borrowed, condition: Borrowed, truth: u32) {
-    let value = Clause::branch_node(
-        unsafe { (&*parent.cast::<Clause>()).clone() },
-        unsafe { (&*condition.cast::<SharedCondition>()).clone() },
-        truth != 0,
-    );
-    unsafe { output.cast::<Clause>().write(value) };
-}
-#[repr(C)]
-struct BranchHost {
-    inspect: unsafe extern "C" fn(Borrowed) -> condition_graph::SourceNode,
-    case: unsafe extern "C" fn(Borrowed, u32) -> Borrowed,
-    impossible: unsafe extern "C" fn(Slot),
-    make: unsafe extern "C" fn(Slot, Borrowed, Borrowed, u32),
-}
+
+type Conflict = unsafe extern "C" fn(Borrowed) -> u32;
+
 unsafe extern "C" {
-    #[link_name = "bootstrap.condition_graph::clause_facts"]
-    fn b_facts(facts: Slot, output: Slot, host: LeafHost);
-    #[link_name = "bootstrap.condition_graph::clause_both"]
-    fn b_both(left: Borrowed, right: Borrowed, output: Slot, host: BothHost);
-    #[link_name = "bootstrap.condition_graph::clause_either"]
-    fn b_either(left: Borrowed, right: Borrowed, output: Slot, host: EitherHost);
-    #[link_name = "bootstrap.condition_graph::clause_branch"]
-    fn b_branch(parent: Borrowed, condition: Borrowed, truth: u32, output: Slot, host: BranchHost);
+    #[link_name = "bootstrap.clause_storage::checked_clause_facts"]
+    fn checked_facts(value: *mut Facts, conflict: Conflict) -> NonNull<StoredClause>;
+    #[link_name = "bootstrap.clause_storage::combine_clause_both"]
+    fn combine_both(left: Borrowed, right: Borrowed, conflict: Conflict) -> NonNull<StoredClause>;
+    #[link_name = "bootstrap.clause_storage::combine_clause_either"]
+    fn combine_either(left: Borrowed, right: Borrowed, conflict: Conflict) -> NonNull<StoredClause>;
+    #[link_name = "bootstrap.clause_storage::combine_clause_branch"]
+    fn combine_branch(parent: Borrowed, condition: Borrowed, truth: u32) -> NonNull<StoredClause>;
 }
-pub(super) fn facts(mut value: Facts) -> Clause {
-    let mut output = MaybeUninit::<Clause>::uninit();
-    unsafe {
-        b_facts(
-            (&mut value as *mut Facts).cast(),
-            output.as_mut_ptr().cast(),
-            leaf_host(),
-        );
-        output.assume_init()
-    }
+
+pub(super) fn facts(value: Facts) -> Clause {
+    let mut owner = ManuallyDrop::new(value);
+    Clause(unsafe { checked_facts(&mut *owner, conflict) })
 }
+
 pub(super) fn both(left: &Clause, right: &Clause) -> Clause {
-    let mut output = MaybeUninit::<Clause>::uninit();
-    unsafe {
-        b_both(
-            borrowed(left),
-            borrowed(right),
-            output.as_mut_ptr().cast(),
-            both_host(),
-        );
-        output.assume_init()
-    }
+    Clause(unsafe { combine_both(left.raw(), right.raw(), conflict) })
 }
+
 pub(super) fn either(left: &Clause, right: &Clause) -> Clause {
-    let mut output = MaybeUninit::<Clause>::uninit();
-    unsafe {
-        b_either(
-            borrowed(left),
-            borrowed(right),
-            output.as_mut_ptr().cast(),
-            either_host(),
-        );
-        output.assume_init()
-    }
+    Clause(unsafe { combine_either(left.raw(), right.raw(), conflict) })
 }
+
 pub(super) fn branch(parent: &Clause, condition: &SharedCondition, truth: bool) -> Clause {
-    let mut output = MaybeUninit::<Clause>::uninit();
-    unsafe {
-        b_branch(
-            borrowed(parent),
-            borrowed(condition),
-            u32::from(truth),
-            output.as_mut_ptr().cast(),
-            BranchHost {
-                inspect,
-                case,
-                impossible,
-                make: make_branch,
-            },
-        );
-        output.assume_init()
-    }
+    Clause(unsafe { combine_branch(parent.raw(), condition.raw(), u32::from(truth)) })
 }
 
 #[repr(C)]
@@ -223,7 +62,7 @@ struct PathHost {
 struct PathBinding<'a> {
     scalars: &'a [(Scalar, u32)],
     origins: &'a [super::OriginList],
-    conditions: &'a mut [Option<Box<Condition>>],
+    conditions: &'a mut ConditionSlots,
     path: &'a Clause,
 }
 
@@ -249,21 +88,18 @@ unsafe extern "C" fn path_identity(context: Borrowed, index: usize) -> Borrowed 
 
 unsafe extern "C" fn merge_path(context: Slot, index: usize) {
     let binding = unsafe { &mut *context.cast::<PathBinding<'_>>() };
-    let condition = binding.conditions[index].as_mut().unwrap();
-    for case in &mut condition.cases {
-        *case = Clause::both(case, binding.path);
-    }
+    binding.conditions.constrain(index, binding.path);
 }
 
 unsafe extern "C" fn share_path(context: Slot, index: usize) {
     let binding = unsafe { &mut *context.cast::<PathBinding<'_>>() };
     let path = binding.path.clone();
-    binding.conditions[index] = Some(Box::new(Condition::paths(path.clone(), path)));
+    binding.conditions.set(index, Some(Condition::paths(path.clone(), path).shared()));
 }
 
 fn bind_path_facts(binding: &mut PathBinding<'_>, index: usize, facts: [Fact; 2]) {
     let cases = facts.map(|fact| Clause::both(&Clause::facts([fact].into()), binding.path));
-    binding.conditions[index] = Some(Box::new(Condition { cases }));
+    binding.conditions.set(index, Some(Condition { cases }.shared()));
 }
 
 unsafe extern "C" fn bind_path_boolean(context: Slot, index: usize, origin: Borrowed) {
@@ -283,10 +119,10 @@ pub(super) fn bind_proof_path(proof: &mut Proof, ty: &Ty, path: &Clause) {
 }
 
 fn bind_path_conditions(
-    origins: &[super::OriginList], conditions: &mut Vec<Option<Box<Condition>>>,
+    origins: &[super::OriginList], conditions: &mut ConditionSlots,
     ty: &Ty, path: &Clause,
 ) {
-    conditions.resize_with(conditions.len().max(ty.components.len()), || None);
+    conditions.resize(conditions.len().max(ty.components.len()));
     let mut binding = PathBinding { scalars: &ty.components, origins, conditions, path };
     unsafe {
         b_bind_proof_path(
@@ -308,7 +144,7 @@ struct ConditionJoinHost {
 
 struct ConditionOperand<'a> {
     proof: &'a Proof,
-    bound: Option<Vec<Option<Box<Condition>>>>,
+    bound: Option<ConditionSlots>,
 }
 
 impl<'a> ConditionOperand<'a> {
@@ -326,15 +162,14 @@ impl<'a> ConditionOperand<'a> {
     }
 
     fn has_condition(&self, component: usize) -> bool {
-        self.bound.as_deref().unwrap_or(&self.proof.conditions)
+        self.bound.as_ref().unwrap_or(&self.proof.conditions)
             .get(component).is_some_and(Option::is_some)
     }
 
     fn take_condition(&mut self, component: usize) -> Condition {
         self.bound.as_mut()
-            .and_then(|conditions| conditions.get_mut(component))
-            .and_then(Option::take)
-            .map_or_else(|| self.proof.condition_for_join(component), |condition| *condition)
+            .and_then(|conditions| conditions.take(component))
+            .map_or_else(|| self.proof.condition_for_join(component), |condition| (*condition).clone())
     }
 }
 
@@ -342,39 +177,13 @@ struct ConditionJoin<'a> {
     operands: [ConditionOperand<'a>; 2],
     branch: Option<&'a Condition>,
     shared: Option<SharedCondition>,
-    result: Vec<Option<Box<Condition>>>,
+    result: ConditionSlots,
 }
 
-
-#[derive(Clone, Copy)]
-#[repr(C)]
-struct UpperRow {
-    identity: Borrowed,
-    distance: u32,
-}
-
-#[repr(C)]
-struct DomainJoinHost {
-    next: unsafe extern "C" fn(Slot, u32) -> UpperRow,
-    compare: unsafe extern "C" fn(Borrowed, Borrowed) -> i32,
-    origin: unsafe extern "C" fn(Borrowed, u32, Borrowed) -> u32,
-    upper: unsafe extern "C" fn(Slot, Borrowed, u32),
-    bits: unsafe extern "C" fn(Slot) -> u32,
-}
-
-struct DomainJoin<'a> {
-    proofs: [&'a Proof; 2],
-    iterators: [std::collections::btree_set::Iter<'a, IndexDomain>; 2],
-    component: usize,
-    scalar: Option<Scalar>,
-    result: Domains,
-}
 
 unsafe extern "C" {
     #[link_name = "bootstrap.condition_graph::join_proof_conditions"]
     fn b_join_proof_conditions(context: Slot, width: usize, selected: u32, host: ConditionJoinHost);
-    #[link_name = "bootstrap.condition_graph::join_proof_domains"]
-    fn b_join_proof_domains(context: Slot, bits: u32, host: DomainJoinHost) -> u32;
 }
 
 unsafe extern "C" fn condition_at_join(context: Borrowed, component: usize) -> u32 {
@@ -392,7 +201,7 @@ unsafe extern "C" fn common_joined_condition(context: Slot, component: usize) {
     let [left, right] = &mut state.operands;
     let left = left.take_condition(component);
     let right = right.take_condition(component);
-    state.result.push(Some(Box::new(Condition::common(left, right))));
+    state.result.push(Some(Condition::common(left, right).shared()));
 }
 
 unsafe extern "C" fn selected_joined_condition(context: Slot, component: usize) {
@@ -402,16 +211,16 @@ unsafe extern "C" fn selected_joined_condition(context: Slot, component: usize) 
     let right = right.take_condition(component);
     let branch = state.branch.unwrap();
     let shared = state.shared.get_or_insert_with(|| branch.clone().shared());
-    state.result.push(Some(Box::new(Condition::branch_on(shared, left, right))));
+    state.result.push(Some(Condition::branch_on(shared, left, right).shared()));
 }
 
 pub(super) fn join_conditions(
     left: &Proof, right: &Proof, width: usize, branch: Option<&Condition>,
     model: Option<&Ty>,
-) -> Vec<Option<Box<Condition>>> {
+) -> ConditionSlots {
     let mut state = ConditionJoin {
         operands: [ConditionOperand::new(left, model), ConditionOperand::new(right, model)],
-        branch, shared: None, result: Vec::with_capacity(width),
+        branch, shared: None, result: ConditionSlots::new(),
     };
     unsafe {
         b_join_proof_conditions(
@@ -423,60 +232,43 @@ pub(super) fn join_conditions(
     state.result
 }
 
-unsafe extern "C" fn next_upper_row(context: Slot, side: u32) -> UpperRow {
-    let state = unsafe { &mut *context.cast::<DomainJoin<'_>>() };
-    state.iterators[side as usize].find_map(|row| match row {
-        IndexDomain::Upper(identity, distance) => Some(UpperRow {
-            identity: borrowed(identity), distance: *distance,
-        }),
-        _ => None,
-    }).unwrap_or(UpperRow { identity: ptr::null(), distance: 0 })
+#[repr(C)]
+struct ProofDomainOperand<'a> {
+    domains: &'a Domains,
+    origins: *const ValueIdentity,
+    origin_count: usize,
+    ranges: *const super::BitRange,
+    range_count: usize,
 }
 
-unsafe extern "C" fn upper_origin(context: Borrowed, side: u32, identity: Borrowed) -> u32 {
-    let state = unsafe { &*context.cast::<DomainJoin<'_>>() };
-    let limit = unsafe { &*identity.cast::<ValueIdentity>() };
-    u32::from(state.proofs[side as usize].origins.get(state.component)
-        .is_some_and(|origins| origins.contains(limit)))
-}
-
-unsafe extern "C" fn insert_joined_upper(context: Slot, identity: Borrowed, distance: u32) {
-    let state = unsafe { &mut *context.cast::<DomainJoin<'_>>() };
-    state.result.insert(IndexDomain::Upper(unsafe { *identity.cast::<ValueIdentity>() }, distance));
-}
-
-unsafe extern "C" fn join_known_bits(context: Slot) -> u32 {
-    let state = unsafe { &mut *context.cast::<DomainJoin<'_>>() };
-    let scalar = state.scalar.unwrap();
-    let [left, right] = state.proofs;
-    if let Some(bits) = left.known_bits(state.component, scalar)
-        .and_then(|left| left.common(right.known_bits(state.component, scalar)?))
-    {
-        state.result.insert(bits.domain());
-        return u32::from(bits.value != 0);
+impl<'a> ProofDomainOperand<'a> {
+    fn new(proof: &'a Proof, domains: &'a Domains, component: usize) -> Self {
+        let origins = proof.origins.get(component).map(super::OriginList::as_slice).unwrap_or_default();
+        let ranges = proof.interval_source(component);
+        Self {
+            domains,
+            origins: origins.as_ptr(),
+            origin_count: origins.len(),
+            ranges: ranges.as_ptr(),
+            range_count: ranges.len(),
+        }
     }
-    0
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.proof_domain_join::join_proof_domain_sets"]
+    fn join_proof_domain_sets(output: &mut Domains, left: ProofDomainOperand<'_>, right: ProofDomainOperand<'_>) -> u32;
 }
 
 fn join_domains(left: &Proof, right: &Proof, component: usize) -> (Domains, u32) {
     let a = left.domains(component);
     let b = right.domains(component);
-    let scalar = a.union(&b).find_map(|domain| match domain {
-        IndexDomain::KnownBits(scalar, ..) => Some(*scalar),
-        _ => None,
-    });
-    let mut state = DomainJoin {
-        proofs: [left, right], iterators: [a.iter(), b.iter()], component, scalar,
-        result: a.intersection(&b).filter(|domain| !matches!(domain, IndexDomain::KnownBits(..))).copied().collect(),
-    };
+    let mut result = Domains::new();
     let nonzero = unsafe {
-        b_join_proof_domains(
-            ptr::from_mut(&mut state).cast(), u32::from(scalar.is_some()),
-            DomainJoinHost { next: next_upper_row, compare: fact_fields::compare, origin: upper_origin,
-                upper: insert_joined_upper, bits: join_known_bits },
-        )
+        join_proof_domain_sets(&mut result, ProofDomainOperand::new(left, &a, component),
+                              ProofDomainOperand::new(right, &b, component))
     };
-    (state.result, nonzero)
+    (result, nonzero)
 }
 
 #[repr(C)]

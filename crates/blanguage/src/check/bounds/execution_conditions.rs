@@ -1,5 +1,5 @@
 //! B owns execution-condition traversal and formulas; native storage owns cases.
-use super::{Clause, Condition, condition_graph::SourceNode};
+use super::{Clause, Condition};
 use std::{collections::BTreeMap, ffi::c_void, ptr};
 
 type Borrowed = *const c_void;
@@ -33,9 +33,6 @@ unsafe fn context<'a, 'b>(slot: Slot) -> &'a mut Context<'b> {
 }
 unsafe fn clause<'a>(value: Borrowed) -> &'a Clause {
     unsafe { &*value.cast::<Clause>() }
-}
-unsafe extern "C" fn inspect(value: Borrowed) -> SourceNode {
-    super::condition_graph::source_node(unsafe { clause(value) })
 }
 unsafe extern "C" fn push(slot: Slot, value: Borrowed, ready: u32) {
     unsafe { context(slot) }.pending.push((unsafe { clause(value) }, ready != 0));
@@ -74,7 +71,6 @@ unsafe extern "C" fn compose(slot: Slot, source: Borrowed, no: Join, yes: Join) 
 }
 #[repr(C)]
 struct Host {
-    inspect: unsafe extern "C" fn(Borrowed) -> SourceNode,
     push: unsafe extern "C" fn(Slot, Borrowed, u32),
     pop: unsafe extern "C" fn(Slot) -> Pending,
     has_result: unsafe extern "C" fn(Slot, Borrowed) -> u32,
@@ -90,7 +86,7 @@ pub(super) fn execution(root: &Clause) -> Condition {
     let mut context = Context { pending: Vec::new(), values: BTreeMap::new() };
     unsafe {
         evaluate(ptr::from_ref(root).cast(), (&mut context as *mut Context<'_>).cast(),
-            Host { inspect, push, pop, has_result, impossible, guard, compose });
+            Host { push, pop, has_result, impossible, guard, compose });
     }
     context.values.remove(&root.key()).unwrap()
 }

@@ -5,6 +5,8 @@ mod cross_facts;
 mod fact_fields;
 pub(super) mod origin_store;
 use origin_store::{OriginList, OriginRows};
+mod condition_slots;
+use condition_slots::ConditionSlots;
 mod negation;
 mod internal_conflicts;
 mod common_facts;
@@ -23,6 +25,7 @@ mod proof_facts;
 mod output_bindings;
 pub(super) use output_bindings::{Entries as OutputBindingEntries, OutputBindings};
 mod facts;
+pub(super) mod domain_store;
 mod fact_key;
 mod call_projection;
 mod range_sets;
@@ -407,7 +410,7 @@ impl<'a> CallInput<'a> {
         self.proof().map_or(FULL_INTERVALS, |proof| proof.interval_source(0))
     }
 
-    fn domains(self) -> std::collections::btree_set::Iter<'a, IndexDomain> {
+    fn domains(self) -> domain_store::Iter<'a> {
         self.proof().and_then(|proof| proof.domains.first()).map(Domains::iter).unwrap_or_default()
     }
 
@@ -556,14 +559,13 @@ impl KnownBits {
         let operation=match operation {IntegerOperation::And=>known_bits::Operation::And,IntegerOperation::Or=>known_bits::Operation::Or,IntegerOperation::Xor=>known_bits::Operation::Xor,_=>return None};
         known_bits::bitwise(scalar,operation,a,b)
     }
-    fn common(self,other:Self)->Option<Self> {known_bits::common(self,other)}
     fn shifted(self,left:bool,counts:ScalarRanges)->Option<Self> {known_bits::shifted(self,left,&counts.0)}
 }
 #[derive(Clone, Default)]
 pub(crate) struct Proof {
     // 首项是实际来源，其余是当前路径已经证明相等的快照。
     pub(super) origins: OriginRows,
-    conditions: Vec<Option<Box<Condition>>>,
+    conditions: ConditionSlots,
     // 标量按数值次序编码；整数符号偏置和可逆浮点有序位复用同一区间集合。
     ranges: Vec<ScalarRanges>,
     nonzero: Vec<bool>,
@@ -694,21 +696,21 @@ impl Proof {
         self.origins.resize(width);
         self.ranges.resize_with(width, ScalarRanges::default);
         self.domains.resize_with(width, Domains::new);
-        self.conditions.resize_with(width, || None);
+        self.conditions.resize(width);
         self.nonzero.resize(width,false);
         for (source, &component) in components.iter().enumerate() {
             self.nonzero[component]=fresh.nonzero.get(source)==Some(&true);
             self.origins[component] = fresh.origins.get(source).cloned().unwrap_or_default();
             self.ranges[component] = fresh.range_set(source).into_owned();
             self.domains[component] = fresh.domains(source).into_owned();
-            self.conditions[component] = fresh.conditions.get(source).cloned().flatten();
+            self.conditions.set(component, fresh.conditions.get(source).cloned().flatten());
         }
     }
     pub(super) fn constrain_common_ranges(&mut self, other: &Self, width: usize) {
         self.nonzero.resize(width, false);
         self.domains.resize_with(width, Domains::new);
         self.ranges.resize_with(width, ScalarRanges::default);
-        self.conditions.resize_with(width,||None);
+        self.conditions.resize(width);
         for component in 0..width {
             self.nonzero[component] |= other.nonzero.get(component) == Some(&true);
             for domain in other.domains(component).iter().copied() {self.mark_domain(component,domain);}
@@ -716,8 +718,7 @@ impl Proof {
                 self.interval_source(component), other.interval_source(component),
             );
             if let Some(incoming)=other.component_condition(component){
-                let condition=self.conditions[component].get_or_insert_with(||Box::new(Condition::default()));
-                for(target,incoming)in condition.cases.iter_mut().zip(&incoming.cases){*target=Clause::both(target,incoming);}
+                self.conditions.merge(component, incoming);
             }
         }
     }
@@ -1061,14 +1062,14 @@ impl Proof {
         } else {
             self.views.resize_with(width, view::Borrow::default);
             self.origins.resize(width);
-            self.conditions.resize_with(width, || None);
+            self.conditions.resize(width);
             self.nonzero.resize(width, false);
             self.ranges.resize_with(width, ScalarRanges::default);
             self.domains.resize_with(width, Domains::new);
             if !self.addresses.is_empty() { self.addresses.resize_with(width, || None); }
             for &component in components {
                 self.origins[component].clear();
-                self.conditions[component] = None;
+                self.conditions.set(component, None);
                 self.nonzero[component] = false;
                 self.ranges[component] = ScalarRanges::default();
                 self.domains[component].clear();
@@ -1092,7 +1093,7 @@ impl Proof {
         } else {
             self.views.resize_with(width, view::Borrow::default);
             self.origins.resize(width);
-            self.conditions.resize_with(width, || None);
+            self.conditions.resize(width);
             self.nonzero.resize(width, false);
             self.ranges.resize_with(width, ScalarRanges::default);
             self.domains.resize(width, Domains::new());
@@ -1108,7 +1109,7 @@ impl Proof {
                 if !self.addresses.is_empty(){self.addresses[i]=addresses.next().flatten();}
                 self.views[i] = views.next().unwrap_or_default();
                 self.origins[i] = origins.next().unwrap_or_default();
-                self.conditions[i] = conditions.next().flatten();
+                self.conditions.set(i, conditions.next().flatten());
                 self.nonzero[i] = nonzero.next().unwrap_or(false);
                 self.ranges[i] = ranges.next().unwrap_or_default();
                 self.domains[i] = domains.next().unwrap_or_default();
@@ -1149,7 +1150,7 @@ impl Proof {
     }
 
     pub(super) fn set_loop_condition(&mut self, condition: Option<Condition>) {
-        self.conditions = vec![condition.map(Box::new)];
+        self.conditions = [condition.map(Condition::shared)].into();
     }
 
     pub(super) fn join_fields(&mut self, other: &Self, width: usize, branch: Option<&Condition>) {
@@ -1186,7 +1187,7 @@ impl Proof {
     }
     pub(super) fn condition(condition: Condition) -> Self {
         Self {
-            conditions: vec![Some(Box::new(condition))],
+            conditions: [Some(condition.shared())].into(),
             ..Self::default()
         }
     }
@@ -1247,16 +1248,12 @@ impl Proof {
     pub(super) fn component_condition(&self, component: usize) -> Option<&Condition> {
         self.conditions.get(component)?.as_deref()
     }
-    fn value_condition(value: &Value, component: usize) -> Option<Box<Condition>> {
-        Self::captured_condition(value, component).map(Box::new)
-    }
-
-    fn captured_condition(value: &Value, component: usize) -> Option<Condition> {
+    fn value_condition(value: &Value, component: usize) -> Option<SharedCondition> {
         let scalar = value.ty.components[component].0;
         if scalar == Scalar::Bool || scalar.is_integer() {
-            Some(Condition::component(value, component))
+            Some(Condition::component(value, component).shared())
         } else {
-            value.proof.component_condition(component).cloned()
+            value.proof.conditions.get(component).cloned().flatten()
         }
     }
     fn range_set(&self, component: usize) -> Cow<'_, ScalarRanges> {
@@ -1274,7 +1271,7 @@ impl Proof {
             ranges: Vec::with_capacity(width),
             nonzero: Vec::with_capacity(width),
             origins: OriginRows::new(),
-            conditions: Vec::with_capacity(width),
+            conditions: ConditionSlots::new(),
             domains: vec![Domains::new(); value.proof.domains.len()],
             views: value.proof.views.clone(),
             addresses: value.proof.addresses.clone(),
@@ -1348,11 +1345,12 @@ impl Proof {
         for(component,(scalar,_))in a.ty.components.iter().enumerate(){
             if scalar.is_integer(){
                 for((target,aliases),source)in [&mut proof,&mut other].into_iter().zip(&aliases).zip([a,b]){
-                    for condition in target.conditions[component].iter_mut(){
-                        for case in &mut condition.cases{*case=Clause::both(case,aliases);}
+                    if let Some(original)=target.component_condition(component){
+                        let mut condition=Condition { cases: original.cases.each_ref().map(|case| Clause::both(case, aliases)) };
                         if let Some(regs)=outputs{
-                            **condition=condition.output_bound(&OutputBindings::from([(source.component_identity(component),ValueIdentity::Register(regs[component]))]));
+                            condition=condition.output_bound(&OutputBindings::from([(source.component_identity(component),ValueIdentity::Register(regs[component]))]));
                         }
+                        target.conditions.set(component, Some(condition.shared()));
                     }
                 }
             }
@@ -1379,11 +1377,11 @@ impl Proof {
         Self {
             conditions: (0..width)
                 .map(|i| {
-                    Some(Box::new(Condition::comparison(
+                    Some(Condition::comparison(
                         op,
                         &component(a, i),
                         &component(b, i),
-                    )))
+                    ).shared())
                 })
                 .collect(),
             ..Self::default()
@@ -1411,9 +1409,9 @@ impl Proof {
         };
         if proof.conditions.iter().any(Option::is_some) {
             let facts = Clause::facts(environment_facts(environment));
-            for condition in proof.conditions.iter_mut().flatten() {
-                for case in &mut condition.cases {
-                    *case = Clause::both(case, &facts);
+            for component in 0..proof.conditions.len() {
+                if proof.conditions[component].is_some() {
+                    proof.conditions.constrain(component, &facts);
                 }
             }
         }
@@ -1443,7 +1441,7 @@ impl Proof {
     pub fn splat(&mut self, width: usize) {
         if !self.addresses.is_empty(){self.addresses=vec![self.addresses[0].clone();width];}
         self.views = vec![self.view_borrow(0); width];
-        self.conditions = vec![self.conditions.first().cloned().flatten(); width];
+        self.conditions = std::iter::repeat(self.conditions.first().cloned().flatten()).take(width).collect();
         let origins = self.origins[0].clone();
         self.origins = std::iter::repeat(origins).take(width).collect();
         self.nonzero = vec![self.nonzero[0]; width];
@@ -1616,8 +1614,8 @@ impl Value {
         if matches!(required.view(), ClauseNode::Facts(facts) if facts.is_empty()) { return; }
         let mut condition = Condition::component(self, 0);
         for case in &mut condition.cases { *case = Clause::both(case, &required); }
-        self.proof.conditions.resize_with(self.regs.len(), || None);
-        self.proof.conditions[0] = Some(Box::new(condition));
+        self.proof.conditions.resize(self.regs.len());
+        self.proof.conditions.set(0, Some(condition.shared()));
     }
     pub(super) fn minimum(&self) -> u32 {
         if self.ty != Ty::scalar(Scalar::U32) {
@@ -1793,9 +1791,6 @@ impl SharedCondition {
         self.raw() as usize
     }
 
-    fn same_node(&self, other: &Self) -> bool {
-        self.0 == other.0
-    }
 }
 
 impl std::ops::Deref for SharedCondition {
@@ -2078,20 +2073,13 @@ struct ClausePostorder<'a> {
     roots: std::marker::PhantomData<&'a Clause>,
 }
 
-#[repr(C)]
-struct PostorderChildren {
-    first: *const std::ffi::c_void,
-    second: *const std::ffi::c_void,
-    visited: u32,
-}
-
 unsafe extern "C" {
     #[link_name = "bootstrap.condition_graph::clause_postorder_start"]
     fn postorder_start(stack: &mut TraversalStack, context: *mut std::ffi::c_void,
                        next: unsafe extern "C" fn(*mut std::ffi::c_void) -> *const std::ffi::c_void);
     #[link_name = "bootstrap.condition_graph::clause_postorder_next"]
     fn postorder_next(stack: &mut TraversalStack, context: *const std::ffi::c_void,
-                      inspect: unsafe extern "C" fn(*const std::ffi::c_void, *const std::ffi::c_void) -> PostorderChildren)
+                      completed: unsafe extern "C" fn(*const std::ffi::c_void, *const std::ffi::c_void) -> u32)
                       -> *const std::ffi::c_void;
     #[link_name = "bootstrap.condition_graph::traversal_stack_drop"]
     fn traversal_stack_drop(stack: &mut TraversalStack);
@@ -2111,21 +2099,17 @@ impl<'a> ClausePostorder<'a> {
     }
 
     fn next<F: Fn(usize) -> bool>(&mut self, completed: F) -> Option<&'a Clause> {
-        unsafe extern "C" fn inspect<F: Fn(usize) -> bool>(
+        unsafe extern "C" fn is_complete<F: Fn(usize) -> bool>(
             context: *const std::ffi::c_void,
             clause: *const std::ffi::c_void,
-        ) -> PostorderChildren {
+        ) -> u32 {
             let clause = unsafe { &*clause.cast::<Clause>() };
             let completed = unsafe { &*context.cast::<F>() };
-            let visited = completed(clause.key());
-            if !visited && let Some((first, second, _)) = clause.query_inputs() {
-                return PostorderChildren { first: std::ptr::from_ref(first).cast(), second: std::ptr::from_ref(second).cast(), visited: 0 };
-            }
-            PostorderChildren { first: std::ptr::null(), second: std::ptr::null(), visited: u32::from(visited) }
+            u32::from(completed(clause.key()))
         }
         // Every stored and returned pointer borrows one of the original roots
         // or its immutable children for the complete stack lifetime.
-        unsafe { postorder_next(&mut self.stack, std::ptr::from_ref(&completed).cast(), inspect::<F>).cast::<Clause>().as_ref() }
+        unsafe { postorder_next(&mut self.stack, std::ptr::from_ref(&completed).cast(), is_complete::<F>).cast::<Clause>().as_ref() }
     }
 }
 
@@ -2327,10 +2311,6 @@ impl Clause {
 
     fn either_node(first: Clause, second: Clause) -> Self {
         Self(Self::pair_node(StoredClauseKind::Either, false, first.into_raw(), second.into_raw()))
-    }
-
-    fn branch_node(parent: Clause, condition: SharedCondition, truth: bool) -> Self {
-        Self(Self::pair_node(StoredClauseKind::Branch, truth, parent.into_raw(), condition.into_raw()))
     }
 
     fn view(&self) -> ClauseNode<'_> {
@@ -2654,7 +2634,7 @@ impl Proof{
             Operand::Value(id)=>Condition::guard(Clause::facts([Fact::NonZero(id)].into())),
             Operand::Constant(_,bits)=>Condition::constant(bits!=0),
         };
-        proof.conditions=vec![Some(Box::new(condition))];proof
+        proof.conditions=[Some(condition.shared())].into();proof
     }
     pub(super) fn scope_element_indices(&self,depth:usize)->Self{
         let shifts=self.scalar_identities().iter().filter_map(|id|if let ValueIdentity::ElementIndex(index)=id{Some((*id,ValueIdentity::ElementIndex(index+depth)))}else{None}).collect();
@@ -3682,16 +3662,24 @@ impl Builder<'_> {
             }
         }
         for((environment,names),alias)in [&mut self.env,&mut other].into_iter().zip(&names).zip(&mut aliases){
-            let cases=environment.values_mut().filter_map(|binding|match binding{
-                Binding::Value(value)=>Some(&mut value.proof),
-                binding=>binding.proof_storage().map(|(proof,_,_)|proof),
-            }).flat_map(|proof|proof.conditions.iter_mut().flatten())
-                .flat_map(|condition|condition.cases.iter_mut()).collect::<Vec<_>>();
-            // Keep all source roots alive while the shared graph is renamed once.
-            let roots=std::iter::once(alias.clone()).chain(cases.iter().map(|case|(**case).clone())).collect::<Vec<_>>();
-            let bound=bounds::Clause::output_bounds(&roots,names);
-            *alias=bounds::Clause::both(alias,&bound[0]);
-            for(case,bound)in cases.into_iter().zip(bound.into_iter().skip(1)){*case=bound;}
+            let slots=environment.values_mut().filter_map(|binding|match binding{
+                Binding::Value(value)=>Some(&mut value.proof.conditions),
+                binding=>binding.proof_storage().map(|(proof,_,_)|&mut proof.conditions),
+            }).collect::<Vec<_>>();
+            // The original slot owners remain alive for the shared output walk.
+            let cases=slots.iter().flat_map(|slots| slots.iter().flatten())
+                .flat_map(|condition| condition.cases.iter().cloned());
+            let roots=std::iter::once(alias.clone()).chain(cases).collect::<Vec<_>>();
+            let mut bound=bounds::Clause::output_bounds(&roots,names).into_iter();
+            *alias=bounds::Clause::both(alias,&bound.next().unwrap());
+            for slots in slots {
+                for component in 0..slots.len() {
+                    if slots[component].is_some() {
+                        let cases=std::array::from_fn(|_| bound.next().unwrap());
+                        slots.set(component, Some(bounds::Condition { cases }.shared()));
+                    }
+                }
+            }
         }
         if !bounds::Condition::paths(aliases[0].clone(),aliases[1].clone()).unconstrained(){
             self.path=bounds::Clause::both(&self.path,&bounds::Clause::either(&choice.assume(&aliases[0],true),&choice.assume(&aliases[1],false)));
@@ -4048,7 +4036,7 @@ const _: () = {
         unsafe {
             codec::conditions::write_borrowed(
                 codec::conditions::Conditions::Components(
-                    &*source.cast::<Vec<Option<Box<Condition>>>>(),
+                    &*source.cast::<ConditionSlots>(),
                 ),
                 &mut *output.cast::<crate::codec::Writer>(),
             )
@@ -4060,7 +4048,7 @@ const _: () = {
             contracts::finish(
                 context,
                 result,
-                &mut *output.cast::<Vec<Option<Box<Condition>>>>(),
+                &mut *output.cast::<ConditionSlots>(),
             )
         }
     }
@@ -4134,7 +4122,7 @@ const _: () = {
             }
             match proof.conditions.into_iter().next().flatten() {
                 Some(value) => {
-                    *output = *value;
+                    *output = (*value).clone();
                     ReadStatus::Success
                 }
                 None => unsafe { contracts::fail(context, "模块资源位置缺少条件合同") },
@@ -4172,7 +4160,7 @@ const _: () = {
         }
         unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
             let mut origins = <OriginRows as Native>::empty();
-            let mut conditions = <Vec<Option<Box<Condition>>> as Native>::empty();
+            let mut conditions = ConditionSlots::new();
             let mut ranges = <Vec<ScalarRanges> as Native>::empty();
             let mut nonzero = <Vec<bool> as Native>::empty();
             let mut domains = <Vec<Domains> as Native>::empty();

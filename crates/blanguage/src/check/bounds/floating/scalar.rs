@@ -1,6 +1,6 @@
 //! Synchronous POD numerical calls; Proof, Value and ScalarRanges stay native.
 use super::*;
-use std::{collections::btree_set, ffi::c_void, ptr};
+use std::{ffi::c_void, ptr};
 use crate::ast::TextureFormat;
 use crate::builtin_types::ScalarBinaryOp;
 #[repr(C)]
@@ -103,7 +103,7 @@ pub(in crate::check::bounds) struct CastEffect {
 struct FloatCast<'a> {
     source: Scalar,
     component: usize,
-    relations: btree_set::Iter<'a, IndexDomain>,
+    relations: domain_store::Iter<'a>,
     domains: &'a mut Vec<Domains>,
 }
 

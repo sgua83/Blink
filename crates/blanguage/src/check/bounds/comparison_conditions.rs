@@ -1,7 +1,7 @@
 //! B produces comparison cases from original values and borrowed proof domains.
 //! Native types and containers own identities, facts and final clauses.
 use super::*;
-use std::{collections::btree_set, ffi::c_void, mem::MaybeUninit, ptr};
+use std::{ffi::c_void, mem::MaybeUninit, ptr};
 type Slot = *mut c_void;
 type Borrowed = *const c_void;
 unsafe fn frame<'a, T>(slot: Slot) -> &'a mut T {
@@ -32,7 +32,7 @@ struct State<'a> {
     ids: [ValueIdentity; 2],
     scalar: Scalar,
     empty: &'a Domains,
-    input: btree_set::Iter<'a, IndexDomain>,
+    input: super::domain_store::Iter<'a>,
     facts: [Facts; 2],
     cases: [MaybeUninit<Clause>; 2],
     ordered: [MaybeUninit<Clause>; 2],
@@ -125,7 +125,7 @@ struct Constraint<'a> {
     facts: &'a mut Facts,
     ids: [ValueIdentity; 2],
     scalar: Scalar,
-    input: btree_set::Iter<'a, IndexDomain>,
+    input: super::domain_store::Iter<'a>,
 }
 unsafe extern "C" fn constraint_emit(s: Slot, kind: ConstraintOutput, value: u64) {
     let c = unsafe { frame::<Constraint<'_>>(s) };

@@ -29,3 +29,15 @@ extern "C" address fact_tree_merge(address left, address right, address cursors,
 extern "C" void fact_tree_collect_merge(address left,address right,address cursors,u32 operation,address output) on cpu;
 extern "C" i32 fact_tree_compare(address left, address right) on cpu;
 extern "C" u32 fact_tree_relation(address left, address right, u32 subset) on cpu;
+
+extern "C" void domain_tree_copy(address original,address output) on cpu;
+extern "C" u32 domain_tree_insert(address owner,address key) on cpu;
+extern "C" u32 domain_tree_contains(address owner,address key) on cpu;
+extern "C" u32 domain_tree_contains_range(address owner,address start,address end) on cpu;
+extern "C" void domain_tree_append(address owner,address incoming) on cpu;
+extern "C" void domain_tree_retain(address owner,address context,cfn<u32,address,address> keep) on cpu
+    requires nonzero(keep);
+extern "C" FactCursor domain_tree_cursor(address owner) on cpu;
+extern "C" address domain_tree_next(address owner,address cursor,u32 reverse) on cpu;
+extern "C" address domain_tree_merge(address left,address right,address left_cursor,address right_cursor,u32 operation) on cpu;
+extern "C" i32 domain_tree_compare(address left,address right) on cpu;

@@ -12,6 +12,7 @@ struct NumericPredicate { ComparisonKind operation; BuiltinScalar scalar; Numeri
 struct FactView { u32 present; FactKind kind; address first; address second; address payload; address scalar; u64 value; u64 mask; u32 flag; u32 fixed; };
 
 struct FactKey { array<u64,18> words; };
+struct IndexDomainKey { array<u64,13> words; };
 
 extern "C" i32 order_identity(address left, address right) on cpu;
 extern "C" i32 order_domain(address left, address right) on cpu;
@@ -46,3 +47,7 @@ extern "C" void materialize_fact(FactView source, address output) on cpu;
 extern "C" NumericIdentity capture_key_identity(address source) on cpu;
 extern "C" NumericOperand capture_key_operand(address source) on cpu;
 extern "C" NumericPredicate capture_key_predicate(address source) on cpu;
+
+struct InternalUpper { address identity; u32 distance; u32 present; };
+InternalUpper inspect_fact_upper(address source) on cpu;
+void write_domain_upper(address output,address identity,u32 distance) on cpu;

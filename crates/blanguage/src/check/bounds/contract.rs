@@ -66,7 +66,12 @@ impl Normalizer {
     pub(in crate::check) fn condition(&mut self,value:&Condition)->Condition { Condition {cases:value.cases.each_ref().map(|case|self.clause(case))} }
     pub(in crate::check) fn union(&mut self,a:&Condition,b:&Condition)->Condition {native::union(self,a,b)}
     pub(in crate::check) fn proof(&mut self,proof:&mut Proof) {
-        for condition in proof.conditions.iter_mut().flatten(){**condition=self.condition(condition);}
+        for component in 0..proof.conditions.len() {
+            if let Some(condition) = proof.component_condition(component) {
+                let normalized = self.condition(condition);
+                proof.conditions.set(component, Some(normalized.shared()));
+            }
+        }
         for borrow in &mut proof.views{borrow.normalize_contract(self);}
         for identity in proof.addresses.iter_mut().flatten(){if let super::super::address::Identity::Storage(borrow)=identity{borrow.normalize_contract(self);}}
     }

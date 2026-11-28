@@ -1,6 +1,6 @@
 //! B selects live value cases and facts; original Proof and Clause own their data.
 use super::*;
-use std::{collections::btree_set, ffi::c_void, mem::MaybeUninit, ptr};
+use std::{ffi::c_void, mem::MaybeUninit, ptr};
 type Slot = *mut c_void;
 type Borrowed = *const c_void;
 #[repr(C)]
@@ -42,7 +42,7 @@ struct Context<'a> {
     scalar: Scalar,
     identity: ValueIdentity,
     base: Option<&'a Condition>,
-    domains: btree_set::Iter<'a, IndexDomain>,
+    domains: super::domain_store::Iter<'a>,
     facts: [Facts; 2],
     cases: [MaybeUninit<Clause>; 2],
 }

@@ -1,7 +1,7 @@
 //! B selects index-domain projections and arithmetic relations. Inputs borrow
 //! the original immutable Proof; only the actual result and max lookup are owned.
 use super::*;
-use std::{collections::btree_set, ffi::c_void, mem::MaybeUninit, ptr};
+use std::{ffi::c_void, mem::MaybeUninit, ptr};
 type Slot = *mut c_void;
 type Borrowed = *const c_void;
 fn borrow<T>(value: &T) -> Borrowed {
@@ -133,7 +133,7 @@ pub(super) unsafe fn materialize(kind: Output, v: Fields) -> IndexDomain {
 }
 struct LengthRelation<'a> {
     origins: [&'a [ValueIdentity]; 2],
-    inputs: [btree_set::Iter<'a, IndexDomain>; 2],
+    inputs: [super::domain_store::Iter<'a>; 2],
     index: &'a Domains,
     length: &'a Domains,
 }
@@ -183,7 +183,7 @@ unsafe extern "C" fn length_relation_range(
     let state = unsafe { &*context.cast::<LengthRelation<'_>>() };
     let start = unsafe { materialize(kind, Fields { distance: u64::from(min), ..row }) };
     let end = unsafe { materialize(kind, Fields { distance: u64::from(max), ..row }) };
-    u32::from(state.index.range(start..=end).next().is_some())
+    u32::from(state.index.contains_range(&start, &end))
 }
 
 unsafe extern "C" fn length_relation_sum(context: Borrowed, left: Borrowed, right: Borrowed) -> u32 {
@@ -221,7 +221,7 @@ pub(super) fn length_relation(
 
 
 struct Below<'a> {
-    input: btree_set::Iter<'a, IndexDomain>,
+    input: super::domain_store::Iter<'a>,
     output: Domains,
 }
 unsafe extern "C" fn below_next(s: Slot) -> Fields {
@@ -275,7 +275,7 @@ struct Arithmetic<'a> {
     values: [&'a Value; 2],
     components: [usize; 2],
     inputs: [&'a Domains; 2],
-    input: Option<btree_set::Iter<'a, IndexDomain>>,
+    input: Option<super::domain_store::Iter<'a>>,
     identities: [*mut ValueIdentity; 2],
     output: Domains,
     left: Domains,
