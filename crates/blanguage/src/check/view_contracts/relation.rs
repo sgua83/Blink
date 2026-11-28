@@ -2562,11 +2562,11 @@ impl<'g> Query<'g> {
             Cow::Borrowed(node) => node.seeds.sources.clone(),
             Cow::Owned(node) => std::mem::take(&mut node.seeds.sources),
         };
-        for edge in &definition.edges {
+        sources.merge_evaluated(definition.edges.len(), |index| {
+            let edge = &definition.edges[index];
             let from = self.node(edge.from);
-            let incoming = self.apply(id, edge.from, &edge.op, from, evaluation);
-            sources.union_restricted(&incoming.sources, edge.when.path());
-        }
+            (edge.when.path(), self.apply(id, edge.from, &edge.op, from, evaluation))
+        });
         Borrow { sources, ..Borrow::default() }
     }
     fn deferred(&self,id:usize)->Borrow{Borrow::source(Origin::Relation(self.relation.clone(),id))}

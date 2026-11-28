@@ -378,6 +378,21 @@ extern "C" void merge_borrow_output(inout address remaining, ReadWritePaths path
     requires nonzero(host.clauses.canonical) requires nonzero(host.clauses.normalized)
     requires nonzero(conflict);
 
+struct EvaluatedBorrowEdge {
+    address path;
+    address borrowed;
+    OrderedTree owned;
+};
+
+extern "C" void merge_evaluated_borrow_edges(BorrowEdgeGroup output,usize count,address context,
+    BorrowEdgeMerge host,cfn<EvaluatedBorrowEdge,address,usize> evaluate,cfn<void,address,address> move_key,
+    cfn<void,address> release_key) on cpu
+    requires nonzero(output.stride)
+    requires nonzero(host.compare) requires nonzero(host.key) requires nonzero(host.clauses.both)
+    requires nonzero(host.clauses.either) requires nonzero(host.clauses.canonical)
+    requires nonzero(host.clauses.normalized)
+    requires nonzero(evaluate) requires nonzero(move_key) requires nonzero(release_key);
+
 extern "C" void replay_borrow_sources(BorrowEdgeGroup output,BorrowEdgeGroup source,address context,
     BorrowEdgeMerge host,cfn<OrderedTree,address,address,address> read,cfn<void,address> release_key) on cpu
     requires nonzero(output.stride)

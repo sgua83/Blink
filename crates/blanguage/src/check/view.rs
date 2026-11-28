@@ -665,7 +665,20 @@ unsafe extern "C" {
     );
 }
 
+#[repr(C)]
+struct EvaluatedBorrowEdge {
+    path: *const bounds::Clause,
+    borrowed: *const OrderedEdgeTree,
+    owned: OrderedEdgeTree,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::merge_evaluated_borrow_edges"]
+    fn merge_evaluated_borrow_edges(
+        output: BorrowEdgeGroup, count: usize, context: *mut std::ffi::c_void,
+        host: BorrowEdgeMerge, evaluate: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> EvaluatedBorrowEdge,
+        move_key: EdgeKey, release_key: unsafe extern "C" fn(*mut Source),
+    );
     #[link_name = "bootstrap.call_arguments::replay_borrow_sources"]
     fn replay_borrow_sources(
         output: BorrowEdgeGroup, source: BorrowEdgeGroup, context: *mut std::ffi::c_void,
@@ -676,6 +689,32 @@ unsafe extern "C" {
 }
 
 impl Edges<Source> {
+    unsafe extern "C" fn release_key(source: *mut Source) {
+        unsafe { source.drop_in_place() };
+    }
+
+    pub(super) fn merge_evaluated<'a, F>(&mut self, count: usize, mut evaluate: F)
+    where F: FnMut(usize) -> (&'a bounds::Clause, std::borrow::Cow<'a, Borrow>) {
+        unsafe extern "C" fn edge<'a, F>(context: *mut std::ffi::c_void, index: usize) -> EvaluatedBorrowEdge
+        where F: FnMut(usize) -> (&'a bounds::Clause, std::borrow::Cow<'a, Borrow>) {
+            let evaluate = unsafe { &mut *context.cast::<F>() };
+            let (path, value) = evaluate(index);
+            match value {
+                std::borrow::Cow::Borrowed(borrow) => EvaluatedBorrowEdge {
+                    path, borrowed: &borrow.sources.0.tree, owned: OrderedEdgeTree::default(),
+                },
+                std::borrow::Cow::Owned(mut borrow) => EvaluatedBorrowEdge {
+                    path, borrowed: std::ptr::null(), owned: std::mem::take(&mut borrow.sources.0.tree),
+                },
+            }
+        }
+        unsafe {
+            merge_evaluated_borrow_edges(BorrowEdgeGroup::writable(self), count, std::ptr::from_mut(&mut evaluate).cast(),
+                BorrowEdgeMerge::new::<Source>(clone_edge_key::<Source>, std::ptr::null_mut()), edge::<F>,
+                move_edge_key::<Source>, Self::release_key);
+        }
+    }
+
     pub(super) fn replay_reads<F>(&self, mut read: F) -> Self
     where F: FnMut(&Source, &bounds::Clause) -> Option<Borrow> {
         unsafe extern "C" fn read_source<F>(
@@ -688,14 +727,10 @@ impl Edges<Source> {
             })
         }
 
-        unsafe extern "C" fn release_key(source: *mut Source) {
-            unsafe { source.drop_in_place() };
-        }
-
         let mut output = Self::default();
         unsafe {
             replay_borrow_sources(BorrowEdgeGroup::writable(&mut output), self.into(), std::ptr::from_mut(&mut read).cast(),
-                BorrowEdgeMerge::new::<Source>(move_edge_key::<Source>, std::ptr::null_mut()), read_source::<F>, release_key);
+                BorrowEdgeMerge::new::<Source>(move_edge_key::<Source>, std::ptr::null_mut()), read_source::<F>, Self::release_key);
         }
         output
     }
