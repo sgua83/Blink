@@ -318,6 +318,8 @@ usize connect(Input input, Workspace work) on cpu {
 
 const u8 FIXED_INPUT = u8(1);
 const u8 DIRECT_READ = u8(2);
+const u8 RESOLVED_NODE = u8(4);
+const u8 BOUND_NODE = u8(8);
 
 void prepare_schedule(Input input, Workspace work, Output output) on cpu {
     usize input_index = 0u64;
@@ -328,9 +330,10 @@ void prepare_schedule(Input input, Workspace work, Output output) on cpu {
         Dependencies source = input_row(input, id);
         u64 kind = source.flags & (REACHABLE | VARIABLE | READS);
         if (kind == (REACHABLE | READS)) {
-            unsafe_position<u8>(cell(output.schedule_flags, id, 1u64)) = DIRECT_READ;
+            unsafe_position<u8>(cell(output.schedule_flags, id, 1u64)) |= DIRECT_READ;
         }
         if ((kind & (REACHABLE | VARIABLE)) != (REACHABLE | VARIABLE)) { continue; }
+        unsafe_position<u8>(cell(output.schedule_flags, id, 1u64)) = BOUND_NODE;
         unsafe_position<usize>(cell(output.inputs, input_index, 8u64)) = id;
         input_index += 1u64;
         if ((kind & READS) != 0u64) { continue; }
@@ -344,7 +347,7 @@ void prepare_schedule(Input input, Workspace work, Output output) on cpu {
             edge += 1u64;
         }
         if (edge == source.end) {
-            unsafe_position<u8>(cell(output.schedule_flags, id, 1u64)) = FIXED_INPUT;
+            unsafe_position<u8>(cell(output.schedule_flags, id, 1u64)) |= FIXED_INPUT;
         }
     }
 }
@@ -383,6 +386,7 @@ extern "C" OrderCount plan(Input input, Workspace work, Output output) on cpu {
         usize id = unsafe_position<usize>(cell(work.ready, ready, 8u64));
         State row = state(work, id);
         if (materialize) {
+            unsafe_position<u8>(cell(output.schedule_flags, id, 1u64)) = RESOLVED_NODE;
             if (row.changes == 0u64) {
                 unsafe_position<usize>(cell(output.ordered, stable, 8u64)) = id;
                 stable += 1u64;
@@ -711,9 +715,6 @@ extern "C" usize import_relation(address graph, address destination, usize root,
     return relation_node_index(map,root);
 }
 
-const u32 RESOLVED_NODE = 1;
-const u32 BOUND_NODE = 2;
-
 void mark_project_frames(address graph, usize id, address marks, RelationSource source) on cpu
     requires nonzero(source.edges) requires nonzero(source.edge) requires nonzero(source.frame)
 {
@@ -731,45 +732,52 @@ void mark_project_frames(address graph, usize id, address marks, RelationSource 
     }
 }
 
-extern "C" void project_return(address graph, address context, usize nodes, address frame_marks,
-    usize frame_count, address schedule_flags, RelationSource source, ResidualOutput output) on cpu
+extern "C" void project_return(address graph, address context, WalkLimits limits,
+    address schedule_flags, RelationSource source, ResidualOutput output) on cpu
     requires nonzero(source.edges) requires nonzero(source.edge) requires nonzero(source.frame)
     requires nonzero(source.write) requires nonzero(source.field)
-    requires nonzero(output.node_facts) requires nonzero(output.node) requires nonzero(output.keep)
-    requires nonzero(output.write) requires nonzero(output.field)
+    requires nonzero(output.node) requires nonzero(output.keep)
+    requires nonzero(output.writes) requires nonzero(output.field)
 {
+    address frame_marks = plan_cells(limits.frames,1u64);
     usize id = 0u64;
-    while (id < nodes) {
-        u32 facts = output.node_facts(context,id);
-        if (facts != 0) { mark_project_frames(graph,id,frame_marks,source); }
-        u32 resolved = facts & RESOLVED_NODE;
-        bool publishes = (facts & BOUND_NODE) != 0
-            || (resolved != 0 && (unsafe_position<u8>(cell(schedule_flags,id,1u64)) & DIRECT_READ) != u8(0));
-        output.node(context,id,resolved,publishes ? 1 : 0);
+    while (id < limits.nodes) {
+        u8 flags = unsafe_position<u8>(cell(schedule_flags,id,1u64));
+        bool resolved = (flags & RESOLVED_NODE) != u8(0);
+        bool bound = (flags & BOUND_NODE) != u8(0);
+        if (resolved || bound) { mark_project_frames(graph,id,frame_marks,source); }
+        bool publishes = bound || (resolved && (flags & DIRECT_READ) != u8(0));
+        output.node(context,id,resolved ? 1 : 0,publishes ? 1 : 0);
         id += 1u64;
     }
 
     usize index = 0u64;
-    while (index < frame_count) {
+    while (index < limits.frames) {
         usize frame_id = index;
         index += 1u64;
         if (unsafe_position<u8>(cell(frame_marks,frame_id,1u64)) == u8(0)) { continue; }
         WalkFrame frame = source.frame(graph,frame_id);
+        usize first = 0u64;
         usize item = 0u64;
+        bool changed = false;
         while (item < frame.writes.count) {
             WalkWrite write = source.write(frame.writes.data,item);
-            u32 keep = output.keep(context,write.target);
-            output.write(context,frame_id,item,keep);
-            if (keep != 0) {
+            if (output.keep(context,write.target) != 0) {
                 usize field = 0u64;
                 while (field < write.fields.count) {
                     output.field(context,source.field(write.fields.data,field));
                     field += 1u64;
                 }
+            } else {
+                if (!changed || first < item) { output.writes(context,frame_id,first,item); }
+                first = item + 1u64;
+                changed = true;
             }
             item += 1u64;
         }
+        if (changed && first < item) { output.writes(context,frame_id,first,item); }
     }
+    free(frame_marks);
 }
 
 extern "C" u32 expand_initial_definition(address context, usize count, InitialDefinitionHost host) on cpu

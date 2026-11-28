@@ -134,19 +134,18 @@ extern "C" void compact(address graph, address destination, RelationSelection se
     requires nonzero(output.frame) requires nonzero(output.write) requires nonzero(output.field);
 
 struct ResidualOutput {
-    cfn<u32,address,usize> node_facts;
     cfn<void,address,usize,u32,u32> node;
     cfn<u32,address,usize> keep;
-    cfn<void,address,usize,usize,u32> write;
+    cfn<void,address,usize,usize,usize> writes;
     cfn<void,address,usize> field;
 };
 
-extern "C" void project_return(address graph, address context, usize nodes, address frame_marks,
-    usize frame_count, address schedule_flags, RelationSource source, ResidualOutput output) on cpu
+extern "C" void project_return(address graph, address context, WalkLimits limits,
+    address schedule_flags, RelationSource source, ResidualOutput output) on cpu
     requires nonzero(source.edges) requires nonzero(source.edge) requires nonzero(source.frame)
     requires nonzero(source.write) requires nonzero(source.field)
-    requires nonzero(output.node_facts) requires nonzero(output.node) requires nonzero(output.keep)
-    requires nonzero(output.write) requires nonzero(output.field);
+    requires nonzero(output.node) requires nonzero(output.keep)
+    requires nonzero(output.writes) requires nonzero(output.field);
 
 struct InitialDefinitionHost {
     cfn<u32,address,usize> initial;

@@ -2170,13 +2170,12 @@ impl Graph {
         !self.references(source) && Borrow::source_has_local(source)
     }
     fn residual(&self, query: &Query<'_>, plan: &EvaluationPlan) -> ResidualRelation {
-        let mut frame_marks = vec![0u8; self.frames.len()];
         let graph = RelationView { base: self, tail: &[], residual: None };
         let mut projection = ResidualProjection { query, result: ResidualRelation::default() };
         unsafe {
             project_relation_return(
                 ptr::from_ref(&graph).cast(), ptr::from_mut(&mut projection).cast(),
-                self.nodes.len(), frame_marks.as_mut_ptr(), frame_marks.len(), plan.schedule_flags.as_ptr(),
+                graph.limits(), plan.schedule_flags.as_ptr(),
                 RelationSource::GRAPH, ResidualProjection::OUTPUT,
             );
         }
@@ -2368,18 +2367,17 @@ impl ResidualNode {
 
 #[repr(C)]
 struct ResidualOutput {
-    node_facts: unsafe extern "C" fn(Slot, usize) -> u32,
     node: unsafe extern "C" fn(Slot, usize, u32, u32),
     keep: unsafe extern "C" fn(Slot, usize) -> u32,
-    write: unsafe extern "C" fn(Slot, usize, usize, u32),
+    writes: unsafe extern "C" fn(Slot, usize, usize, usize),
     field: unsafe extern "C" fn(Slot, usize),
 }
 
 unsafe extern "C" {
     #[link_name = "bootstrap.relation_order::project_return"]
     fn project_relation_return(
-        graph: Borrowed, output: Slot, nodes: usize, frame_marks: *mut u8, frame_count: usize,
-        schedule_flags: *const u8, source: RelationSource, host: ResidualOutput,
+        graph: Borrowed, output: Slot, limits: WalkLimits, schedule_flags: *const u8,
+        source: RelationSource, host: ResidualOutput,
     );
 }
 
@@ -2390,16 +2388,8 @@ struct ResidualProjection<'q, 'g> {
 
 impl ResidualProjection<'_, '_> {
     const OUTPUT: ResidualOutput = ResidualOutput {
-        node_facts: Self::node_facts, node: Self::node, keep: Self::keep,
-        write: Self::write, field: Self::field,
+        node: Self::node, keep: Self::keep, writes: Self::writes, field: Self::field,
     };
-
-    unsafe extern "C" fn node_facts(context: Slot, id: usize) -> u32 {
-        let query = unsafe { &*context.cast::<Self>() }.query;
-        let resolved = u32::from(query.values.contains_key(&id));
-        let bound = u32::from(query.variables.contains_key(&id));
-        resolved | (bound << 1)
-    }
 
     unsafe extern "C" fn node(context: Slot, id: usize, expand: u32, publish: u32) {
         let projection = unsafe { &mut *context.cast::<Self>() };
@@ -2439,15 +2429,10 @@ impl ResidualProjection<'_, '_> {
             .any(|(source, when)| when.possible() && !query.graph.private(source)))
     }
 
-    unsafe extern "C" fn write(context: Slot, frame: usize, index: usize, keep: u32) {
+    unsafe extern "C" fn writes(context: Slot, frame: usize, first: usize, end: usize) {
         let projection = unsafe { &mut *context.cast::<Self>() };
         let original = &projection.query.graph.frames[frame].writes;
-        let writes = &mut projection.result.writes;
-        if keep == 0 {
-            writes.entry(frame).or_insert_with(|| original[..index].to_vec());
-        } else if let Some(selected) = writes.get_mut(&frame) {
-            selected.push(original[index].clone());
-        }
+        projection.result.writes.entry(frame).or_default().extend_from_slice(&original[first..end]);
     }
 
     unsafe extern "C" fn field(context: Slot, id: usize) {
