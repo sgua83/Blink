@@ -18,3 +18,14 @@ extern "C" usize read_snapshot(SnapshotSource source, SnapshotHost host, usize r
     requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.definition) requires nonzero(host.writes_local)
     requires nonzero(host.truth) requires nonzero(host.writes_load) requires nonzero(host.same_load);
+
+enum WriteQueryKind:u32 { Local=0; Indexed=1; Condition=2; };
+enum WriteEffectKind:u32 { Call=0; Store=1; Reference=2; };
+struct WriteQuery { address context; usize slot; WriteQueryKind kind; u32 has_slot; };
+struct WriteEffect { address node; address component; WriteEffectKind kind; };
+struct WriteHost { Host ir; cfn<u32,address,WriteEffect> overlaps; };
+
+extern "C" u32 application_instruction_writes(address item, WriteQuery query, WriteHost host) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.overlaps);
+extern "C" u32 application_block_writes(Span code, WriteQuery query, WriteHost host) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.overlaps);

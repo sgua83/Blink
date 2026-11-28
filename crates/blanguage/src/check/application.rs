@@ -517,17 +517,11 @@ impl ApplicationLoads<'_, '_> {
             _=>true,
         }
     }
-    fn writes_local(&self,inst:&Inst,slot:usize)->bool {
-        if inst.local_writes().any(|written| written == slot){return true;}
-        if let InstKind::Call(call)=&inst.kind {
-            return self.call_memory_writes(call,false,|borrow|self.0.address_write_positions(borrow).is_none_or(|positions|positions.iter().any(|written|owned_presence::Presence::selected(written,&Position::Local(slot))!=owned_presence::Presence::None)));
-        }
-        match &inst.kind {
-            InstKind::If{yes,no,..}=>yes.iter().chain(no).any(|inst|self.writes_local(inst,slot)),
-            InstKind::Loop{condition,body,..}=>condition.iter().chain(body).any(|inst|self.writes_local(inst,slot)),
-            InstKind::Scope(body)=>body.iter().any(|inst|self.writes_local(inst,slot)),
-            _=>false,
-        }
+    fn writes_local(&self, inst: &Inst, slot: usize) -> bool {
+        let context = LocalWrite { loads: self, slot };
+        let query = WriteQuery::of(&context, WriteQueryKind::Local, Some(slot));
+        let host = WriteHost { ir: dataflow::HOST, overlaps: local_call_write };
+        unsafe { source_instruction_writes(ptr::from_ref(inst).cast(), query, host) != 0 }
     }
     fn writes(&self,inst:&Inst,load:&Inst)->bool {
         match &load.kind {
@@ -536,38 +530,11 @@ impl ApplicationLoads<'_, '_> {
             _=>false,
         }
     }
-    fn writes_indexed(&self,inst:&Inst,read:&IndexedSource,word:u32,scalar:Scalar)->bool {
-        match &inst.kind {
-            InstKind::Store{binding,index,word:at_word,value}=>self.store_overlaps(read,word,scalar,&IndexedSource::Data{binding:*binding,index:*index},None,*at_word,self.0.registers[*value]),
-            InstKind::StoreIndexed{source,offset,word:at_word,value}=>self.store_overlaps(read,word,scalar,source,Some(*offset),*at_word,self.0.registers[*value]),
-            InstKind::Call(call)=>{
-                if call.arguments.iter().any(|argument|match argument {
-                    CallArgument::Reference{ty,access,address,..}if access.writes()=>match &address.storage {
-                        ir::CallStorage::Indexed(source)=>ty.components.iter().any(|(written_scalar,written_word)|self.store_overlaps(read,word,scalar,source,address.offset,address.word+written_word,*written_scalar)),
-                        ir::CallStorage::Local{..}=>false,
-                    },
-                    _=>false,
-                }){return true;}
-                let allocated=matches!(read,IndexedSource::View{address,..}if self.frame_root(*address).is_some_and(|root|self.allocated(root)));
-                self.call_memory_writes(call,false,|borrow|{
-                    if let CallTarget::Defined(name)=&call.target
-                        && call.memory_use.is_some_and(|memory| self.0.view_model.call_at_memory(memory, false).is_some())
-                        && self.0.functions.writes_only_references(name) {
-                        return call.memory.iter().any(|effect|effect.access.writes());
-                    }
-                    if borrow.pending()||address::external_memory(borrow){return true;}
-                    borrow.sources.entries().any(|(source,when)|when.possible()&&match source{
-                        view::Source::Position(origin)if allocated&&matches!(origin.root,address::Root::Local{..})=>false,
-                        _=>true,
-                    })
-                })
-            },
-            InstKind::If{yes,no,..}=>yes.iter().chain(no).any(|inst|self.writes_indexed(inst,read,word,scalar)),
-            InstKind::Loop{condition,body,..}=>condition.iter().chain(body).any(|inst|self.writes_indexed(inst,read,word,scalar)),
-            InstKind::Scope(body)=>body.iter().any(|inst|self.writes_indexed(inst,read,word,scalar)),
-            InstKind::Atomic(_)|InstKind::Append(_)=>true,
-            _=>false,
-        }
+    fn writes_indexed(&self, inst: &Inst, read: &IndexedSource, word: u32, scalar: Scalar) -> bool {
+        let context = IndexedWrite { loads: self, read, word, scalar };
+        let query = WriteQuery::of(&context, WriteQueryKind::Indexed, None);
+        let host = WriteHost { ir: dataflow::HOST, overlaps: indexed_write };
+        unsafe { source_instruction_writes(ptr::from_ref(inst).cast(), query, host) != 0 }
     }
     // Query the original loop IR and scoped facts; no store-value history is retained.
     fn same_frame(&self, root: Reg, data: &Data, writes: &effects::LoopWrites) -> bool {
@@ -697,24 +664,16 @@ impl ApplicationLoads<'_, '_> {
 
 }
 impl Builder<'_> {
-    pub(super) fn application_condition_writes(&self,code:&[Inst],place:&Place,component:usize)->bool {
-        let(positions,index)=self.value_memory_location(place);
-        let position=positions.get(component);
-        fn writes(loads:&ApplicationLoads<'_, '_>,code:&[Inst],position:Option<&Position>,scalar:Scalar,index:Option<bounds::Operand>)->bool {
-            code.iter().any(|inst|match &inst.kind {
-                InstKind::If{yes,no,..}=>writes(loads,yes,position,scalar,index)||writes(loads,no,position,scalar,index),
-                InstKind::Loop{condition,body,..}=>writes(loads,condition,position,scalar,index)||writes(loads,body,position,scalar,index),
-                InstKind::Scope(body)|InstKind::Cleanup{body,..}=>writes(loads,body,position,scalar,index),
-                InstKind::Call(call)=>{
-                    let affected=|borrow:&view::Borrow|borrow.pending()||position.is_none_or(|position|address::MemoryEffect::of(borrow,Access::InOut,None).written_bytes(position,scalar,index)!=0);
-                    position.is_some_and(|p|matches!(p,Position::Local(slot)if inst.local_writes().any(|written| written == *slot)))
-                        ||loads.call_memory_writes(call,true,affected)
-                },
-                InstKind::Store{..}|InstKind::StoreIndexed{..}|InstKind::Atomic(_)|InstKind::Append(_)=>true,
-                _=>position.is_some_and(|p|matches!(p,Position::Local(slot)if inst.local_writes().any(|written| written == *slot))),
-            })
-        }
-        writes(&ApplicationLoads(self),code,position,place.ty().components[component].0,index)
+    pub(super) fn application_condition_writes(&self, code: &[Inst], place: &Place, component: usize) -> bool {
+        let (positions, index) = self.value_memory_location(place);
+        let position = positions.get(component);
+        let slot = position.and_then(|p| match p { Position::Local(slot) => Some(*slot), _ => None });
+        let loads = ApplicationLoads(self);
+        let scalar = place.ty().components[component].0;
+        let context = ConditionWrite { loads: &loads, position, scalar, index };
+        let query = WriteQuery::of(&context, WriteQueryKind::Condition, slot);
+        let host = WriteHost { ir: dataflow::HOST, overlaps: condition_call_write };
+        unsafe { source_block_writes(dataflow::Span::slice(code), query, host) != 0 }
     }
     pub(super) fn application_iteration_interference<'s>(&self, data: &DataReference, index: &Value, proof: &mut bounds::Proof, states: impl Iterator<Item=&'s flow::LoopState>+Clone, controls: &BTreeMap<Reg, Value>, writes: &effects::LoopWrites) {
         let loads = ApplicationLoads(self);
@@ -763,6 +722,143 @@ impl Builder<'_> {
             unsafe { source_read_snapshot(source, SNAPSHOT_HOST, reg) }
         }
     }
+}
+
+#[repr(u32)]
+enum WriteQueryKind { Local, Indexed, Condition }
+#[repr(u32)]
+enum WriteEffectKind { Call, Store, Reference }
+
+#[repr(C)]
+struct WriteQuery {
+    context: *const c_void,
+    slot: usize,
+    kind: WriteQueryKind,
+    has_slot: u32,
+}
+
+impl WriteQuery {
+    fn of<T>(context: &T, kind: WriteQueryKind, slot: Option<usize>) -> Self {
+        Self {
+            context: ptr::from_ref(context).cast(),
+            slot: slot.unwrap_or_default(),
+            kind,
+            has_slot: u32::from(slot.is_some()),
+        }
+    }
+}
+
+#[repr(C)]
+struct WriteEffect {
+    node: *const c_void,
+    component: *const c_void,
+    kind: WriteEffectKind,
+}
+
+#[repr(C)]
+struct WriteHost {
+    ir: dataflow::Host,
+    overlaps: unsafe extern "C" fn(*const c_void, WriteEffect) -> u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.application_snapshot::application_instruction_writes"]
+    fn source_instruction_writes(inst: *const c_void, query: WriteQuery, host: WriteHost) -> u32;
+    #[link_name = "bootstrap.application_snapshot::application_block_writes"]
+    fn source_block_writes(code: dataflow::Span, query: WriteQuery, host: WriteHost) -> u32;
+}
+
+struct LocalWrite<'a, 'builder, 'world> {
+    loads: &'a ApplicationLoads<'builder, 'world>,
+    slot: usize,
+}
+
+unsafe extern "C" fn local_call_write(context: *const c_void, effect: WriteEffect) -> u32 {
+    let input = unsafe { &*context.cast::<LocalWrite<'_, '_, '_>>() };
+    let call = unsafe { &*effect.node.cast::<Call>() };
+    let location = Position::Local(input.slot);
+    u32::from(input.loads.call_memory_writes(call, false, |borrow| {
+        input.loads.0.address_write_positions(borrow).is_none_or(|positions| {
+            positions.iter().any(|written| owned_presence::Presence::selected(written, &location)
+                != owned_presence::Presence::None)
+        })
+    }))
+}
+
+struct ConditionWrite<'a, 'builder, 'world> {
+    loads: &'a ApplicationLoads<'builder, 'world>,
+    position: Option<&'a Position>,
+    scalar: Scalar,
+    index: Option<bounds::Operand>,
+}
+
+unsafe extern "C" fn condition_call_write(context: *const c_void, effect: WriteEffect) -> u32 {
+    let input = unsafe { &*context.cast::<ConditionWrite<'_, '_, '_>>() };
+    let call = unsafe { &*effect.node.cast::<Call>() };
+    u32::from(input.loads.call_memory_writes(call, true, |borrow| {
+        borrow.pending() || input.position.is_none_or(|position| {
+            address::MemoryEffect::of(borrow, Access::InOut, None)
+                .written_bytes(position, input.scalar, input.index) != 0
+        })
+    }))
+}
+
+struct IndexedWrite<'a, 'builder, 'world> {
+    loads: &'a ApplicationLoads<'builder, 'world>,
+    read: &'a IndexedSource,
+    word: u32,
+    scalar: Scalar,
+}
+
+impl IndexedWrite<'_, '_, '_> {
+    fn store_overlaps(&self, source: &IndexedSource, offset: Option<Reg>, word: u32, scalar: Scalar) -> bool {
+        self.loads.store_overlaps(self.read, self.word, self.scalar, source, offset, word, scalar)
+    }
+
+    fn call_overlaps(&self, call: &Call) -> bool {
+        let loads = self.loads;
+        let allocated = matches!(self.read, IndexedSource::View { address, .. }
+            if loads.frame_root(*address).is_some_and(|root| loads.allocated(root)));
+        loads.call_memory_writes(call, false, |borrow| {
+            if let CallTarget::Defined(name) = &call.target
+                && call.memory_use.is_some_and(|memory| loads.0.view_model.call_at_memory(memory, false).is_some())
+                && loads.0.functions.writes_only_references(name) {
+                return call.memory.iter().any(|effect| effect.access.writes());
+            }
+            if borrow.pending() || address::external_memory(borrow) { return true; }
+            borrow.sources.entries().any(|(source, when)| {
+                when.possible() && !matches!(source, view::Source::Position(origin)
+                    if allocated && matches!(origin.root, address::Root::Local { .. }))
+            })
+        })
+    }
+}
+
+unsafe extern "C" fn indexed_write(context: *const c_void, effect: WriteEffect) -> u32 {
+    let input = unsafe { &*context.cast::<IndexedWrite<'_, '_, '_>>() };
+    let written = match effect.kind {
+        WriteEffectKind::Call => input.call_overlaps(unsafe { &*effect.node.cast::<Call>() }),
+        WriteEffectKind::Store => {
+            let inst = unsafe { &*effect.node.cast::<Inst>() };
+            match &inst.kind {
+                InstKind::Store { binding, index, word, value } => input.store_overlaps(
+                    &IndexedSource::Data { binding: *binding, index: *index }, None, *word,
+                    input.loads.0.registers[*value],
+                ),
+                InstKind::StoreIndexed { source, offset, word, value } => input.store_overlaps(
+                    source, Some(*offset), *word, input.loads.0.registers[*value],
+                ),
+                _ => unreachable!(),
+            }
+        }
+        WriteEffectKind::Reference => {
+            let reference = unsafe { &*effect.node.cast::<ir::CallReference>() };
+            let &(scalar, word) = unsafe { &*effect.component.cast::<(Scalar, u32)>() };
+            let ir::CallStorage::Indexed(source) = &reference.storage else { unreachable!() };
+            input.store_overlaps(source, reference.offset, reference.word + word, scalar)
+        }
+    };
+    u32::from(written)
 }
 
 struct SnapshotContext<'a, 'w> {

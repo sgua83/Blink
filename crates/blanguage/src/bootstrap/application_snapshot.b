@@ -128,3 +128,70 @@ extern "C" usize read_snapshot(SnapshotSource source, SnapshotHost host, usize r
     }
     return instruction(read, host.ir).a;
 }
+
+bool writes_slot(address item, usize slot, Host ir) on cpu requires nonzero(ir.inspect) {
+    Locals written = locals(Node(item, N_INSTRUCTION), 1, ir);
+    Word current = next_local(written, ir);
+    while (current.present != 0) {
+        if (current.value == slot) { return true; }
+        current = next_local(written, ir);
+    }
+    return false;
+}
+
+bool reference_writes(Span arguments, WriteQuery query, WriteHost host) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.overlaps) {
+    usize index = 0u64;
+    while (index < arguments.count) {
+        View argument = host.ir.inspect(Node(item_at(arguments, index), N_ARGUMENT));
+        index += 1u64;
+        if (argument.tag != ARGUMENT_REFERENCE || !accessed(argument.a, 1)) { continue; }
+        View reference = host.ir.inspect(argument.left);
+        View storage = host.ir.inspect(reference.left);
+        if (storage.tag != STORAGE_INDEXED) { continue; }
+        usize part = 0u64;
+        while (part < argument.second.count) {
+            address component = item_at(argument.second, part);
+            if (host.overlaps(query.context, WriteEffect(argument.left.data, component, WriteEffectKind::Reference)) != 0) {
+                return true;
+            }
+            part += 1u64;
+        }
+    }
+    return false;
+}
+
+extern "C" u32 application_instruction_writes(address item, WriteQuery query, WriteHost host) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.overlaps) {
+    View inst = instruction(item, host.ir);
+    if (query.has_slot != 0 && writes_slot(item, query.slot, host.ir)) { return 1; }
+    if (inst.tag == OP_BRANCH || inst.tag == OP_LOOP_VALUE) {
+        if (application_block_writes(inst.first, query, host) != 0) { return 1; }
+        return application_block_writes(inst.second, query, host);
+    }
+    if (inst.tag == OP_SCOPE || (inst.tag == OP_CLEANUP && query.kind == WriteQueryKind::Condition)) {
+        return application_block_writes(inst.first, query, host);
+    }
+    if (inst.tag == OP_INVOKE) {
+        if (query.kind == WriteQueryKind::Indexed &&
+            reference_writes(host.ir.inspect(inst.left).first, query, host)) { return 1; }
+        return host.overlaps(query.context, WriteEffect(inst.left.data, address(), WriteEffectKind::Call));
+    }
+    if (query.kind == WriteQueryKind::Local) { return 0; }
+    if (inst.tag == OP_ATOMIC || inst.tag == OP_APPEND) { return 1; }
+    if (inst.tag == OP_STORE || inst.tag == OP_STORE_INDEXED) {
+        if (query.kind == WriteQueryKind::Condition) { return 1; }
+        return host.overlaps(query.context, WriteEffect(item, address(), WriteEffectKind::Store));
+    }
+    return 0;
+}
+
+extern "C" u32 application_block_writes(Span code, WriteQuery query, WriteHost host) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.overlaps) {
+    usize index = 0u64;
+    while (index < code.count) {
+        if (application_instruction_writes(item_at(code, index), query, host) != 0) { return 1; }
+        index += 1u64;
+    }
+    return 0;
+}
