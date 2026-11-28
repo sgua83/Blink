@@ -1219,19 +1219,40 @@ struct RequiredHost {
 }
 unsafe extern "C" {
     #[link_name = "bootstrap.condition_graph::required_prepare"]
-    fn prepare_required(graph: RequiredGraph);
+    fn prepare_required(graph: RequiredGraph, pending: &mut TraversalStack);
     #[link_name = "bootstrap.condition_graph::required_evaluate"]
     fn evaluate_required(graph: RequiredGraph, pending: &mut TraversalStack, context: Slot, host: RequiredHost);
 }
 impl<'a> RequiredQuery<'a> {
     pub(super) fn new(root: &'a Clause) -> Self {
-        let mut index = super::codec::conditions::node_ids([root], true);
-        let root = index.index(root.key());
+        let (mut query, root) = Self::indexed([root], |index| index.index(root.key()));
+        query.select(root);
+        query
+    }
+
+    pub(super) fn for_roots(
+        roots: impl Iterator<Item = &'a Clause> + Clone,
+    ) -> (Self, Vec<usize>) {
+        Self::indexed(roots.clone(), |index| {
+            roots.map(|root| index.index(root.key())).collect()
+        })
+    }
+
+    fn indexed<R>(
+        roots: impl IntoIterator<Item = &'a Clause>,
+        root_indices: impl FnOnce(&super::codec::conditions::CanonicalGraph<'a>) -> R,
+    ) -> (Self, R) {
+        let mut index = super::codec::conditions::node_ids(roots, true);
+        let roots = root_indices(&index);
         let topology = index.seal();
         let nodes = (0..index.len()).map(|_| RequiredResult::default()).collect();
-        let mut query = Self { _index: index, topology, nodes, root, pending: TraversalStack::default() };
-        unsafe { prepare_required(query.graph()) };
-        query
+        (Self { _index: index, topology, nodes, root: 0, pending: TraversalStack::default() }, roots)
+    }
+
+    pub(super) fn select(&mut self, root: usize) {
+        self.root = root;
+        let graph = self.graph();
+        unsafe { prepare_required(graph, &mut self.pending); }
     }
 
     fn graph(&mut self) -> RequiredGraph {

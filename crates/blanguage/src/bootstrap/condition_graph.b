@@ -609,17 +609,33 @@ u32 required_consume(address slot) on compute {
 RequiredState required_state(u32 present) on compute {
  return present!=0 ? RequiredState::Ready : RequiredState::Impossible;
 }
-extern "C" void required_prepare(RequiredGraph graph) on cpu {
- usize index=0u64;
- while(index<graph.nodes.count){
-  NodeFields node=required_node(graph.nodes,index);
-  if(node.kind==NodeKind::Both||node.kind==NodeKind::Either){
-   unsafe_position<RequiredSlot>(required_slot(graph,node.first)).users+=1u64;
-   unsafe_position<RequiredSlot>(required_slot(graph,node.second)).users+=1u64;
-  }
-  index+=1u64;
+void required_add_user(RequiredGraph graph,inout TraversalStack pending,usize id) on cpu {
+ address slot=required_slot(graph,id);
+ usize users=unsafe_position<RequiredSlot>(slot).users;
+ if(users==0u64){stack_push(pending,id);}
+ unsafe_position<RequiredSlot>(slot).users=users+1u64;
+}
+
+extern "C" void required_prepare(RequiredGraph graph,inout TraversalStack pending) on cpu {
+ // The prefix is the previous root's reachable nodes. The solver has consumed their values.
+ usize at=0u64;
+ while(at<pending.length){
+  usize id=word_at(Span(pending.records,pending.length),at);
+  unsafe_position<RequiredSlot>(required_slot(graph,id)).users=0u64;
+  at+=1u64;
  }
- unsafe_position<RequiredSlot>(required_slot(graph,graph.root)).users+=1u64;
+ pending.length=0u64;
+ required_add_user(graph,pending,graph.root);
+ at=0u64;
+ while(at<pending.length){
+  usize id=word_at(Span(pending.records,pending.length),at);
+  NodeFields node=required_node(graph.nodes,id);
+  if(node.kind==NodeKind::Both||node.kind==NodeKind::Either){
+   required_add_user(graph,pending,node.first);
+   required_add_user(graph,pending,node.second);
+  }
+  at+=1u64;
+ }
 }
 RequiredState required_additions(address slot,address context,RequiredHost host,usize id) on cpu
  requires nonzero(host.valid_additions) {
@@ -650,16 +666,19 @@ void required_abandon(RequiredGraph graph,inout TraversalStack pending,address c
 extern "C" void required_evaluate(RequiredGraph graph,inout TraversalStack pending,address context,RequiredHost host) on cpu
  requires nonzero(host.leaf) requires nonzero(host.union) requires nonzero(host.common)
  requires nonzero(host.valid_additions) requires nonzero(host.discard) {
+ // Evaluation uses the suffix and leaves the reachable prefix for the next environment.
+ usize prepared=pending.length;
  usize at=0u64;
- while(at<graph.nodes.count){
-  address slot=required_slot(graph,at);
+ while(at<prepared){
+  usize id=word_at(Span(pending.records,prepared),at);
+  address slot=required_slot(graph,id);
   unsafe_position<RequiredSlot>(slot).remaining=unsafe_position<RequiredSlot>(slot).users;
   unsafe_position<RequiredSlot>(slot).state=RequiredState::Pending;
   unsafe_position<RequiredSlot>(slot).additions=RequiredState::Pending;
   at+=1u64;
  }
  stack_push(pending,graph.root);
- while(pending.length!=0u64){
+ while(pending.length>prepared){
   usize id=stack_pop<usize>(pending);
   address slot=required_slot(graph,id);
   if(unsafe_position<RequiredSlot>(slot).state!=RequiredState::Pending){continue;}
@@ -2483,10 +2502,9 @@ extern "C" u32 proof_length_relation(address context,u32 strict,LengthRelationHo
 
 extern "C" void project_call_proof(address context,ProofCallWidths widths,ProofCallHost host) on cpu
  requires nonzero(host.begin) requires nonzero(host.input) requires nonzero(host.merge_input) requires nonzero(host.keep_origin)
- requires nonzero(host.domain) requires nonzero(host.direct) requires nonzero(host.common) requires nonzero(host.derived)
- requires nonzero(host.false_case) requires nonzero(host.possible) requires nonzero(host.nonzero) {
+ requires nonzero(host.domain) requires nonzero(host.direct) requires nonzero(host.common) requires nonzero(host.derived) {
  usize component=0u64;
- while(component<widths.origins||component<widths.domains||component<widths.conditions) {
+ while(component<widths.origins||component<widths.domains) {
   bool has_origins=component<widths.origins;
   bool has_domains=component<widths.domains;
   host.begin(context,component,has_origins?1:0,(has_origins||has_domains)?1:0);
@@ -2507,8 +2525,6 @@ extern "C" void project_call_proof(address context,ProofCallWidths widths,ProofC
     next=host.domain(context);
    }
   }
-  address clause=host.false_case(context);
-  if(clause!=address()&&host.possible(clause)==0){host.nonzero(context);}
   component+=1u64;
  }
 }

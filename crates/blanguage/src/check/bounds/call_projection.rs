@@ -204,7 +204,7 @@ impl Proof {
 }
 
 #[repr(C)]
-struct ProofWidths { origins: usize, domains: usize, conditions: usize }
+struct ProofWidths { origins: usize, domains: usize }
 
 #[repr(C)]
 struct ProofDomain {
@@ -338,24 +338,6 @@ unsafe extern "C" fn proof_derived<P: CallBindings>(slot: Slot, domain: Borrowed
     }
 }
 
-unsafe extern "C" fn proof_false_case<P>(slot: Slot) -> Borrowed {
-    let state = unsafe { proof_frame::<P>(slot) };
-    if state.output.nonzero.get(state.component) == Some(&true) {
-        return ptr::null();
-    }
-    state.output.component_condition(state.component)
-        .map_or(ptr::null(), |condition| ptr::from_ref(&condition.cases[0]).cast())
-}
-
-unsafe extern "C" fn proof_possible(clause: Borrowed) -> u32 {
-    u32::from(unsafe { &*clause.cast::<Clause>() }.possible())
-}
-
-unsafe extern "C" fn proof_nonzero<P>(slot: Slot) {
-    let state = unsafe { proof_frame::<P>(slot) };
-    state.output.mark_nonzero(state.component);
-}
-
 #[repr(C)]
 struct ProofHost {
     begin: unsafe extern "C" fn(Slot, usize, u32, u32),
@@ -366,9 +348,6 @@ struct ProofHost {
     direct: unsafe extern "C" fn(Slot, Borrowed),
     common: unsafe extern "C" fn(Slot, Borrowed),
     derived: unsafe extern "C" fn(Slot, Borrowed),
-    false_case: unsafe extern "C" fn(Slot) -> Borrowed,
-    possible: unsafe extern "C" fn(Borrowed) -> u32,
-    nonzero: unsafe extern "C" fn(Slot),
 }
 unsafe extern "C" {
     #[link_name = "bootstrap.condition_graph::project_call_proof"]
@@ -381,10 +360,9 @@ pub(super) fn project_proof<P: CallBindings>(
     let count = |width| components.map_or(width, |selected| selected.len());
     let widths = ProofWidths {
         origins: count(proof.origins.len()), domains: count(proof.domains.len()),
-        conditions: count(proof.conditions.len()),
     };
     let source = |component| components.map_or(component, |selected| selected[component]);
-    let conditions = (0..widths.conditions).map(|i| proof.component_condition(source(i)));
+    let conditions = (0..count(proof.conditions.len())).map(|i| proof.component_condition(source(i)));
     let roots: Vec<_> = conditions.clone().flatten().flat_map(|condition| condition.cases.iter()).collect();
     let mut rewritten = if roots.is_empty() { Vec::new() } else {
         Clause::at_calls(&roots, bindings, || false, Clause::required)
@@ -411,8 +389,38 @@ pub(super) fn project_proof<P: CallBindings>(
     unsafe { b_project_proof(ptr::from_mut(&mut state).cast(), widths, ProofHost {
         begin: proof_begin::<P>, input: proof_input::<P>, merge_input: proof_merge_input::<P>, keep_origin: proof_keep_origin::<P>,
         domain: proof_domain::<P>, direct: proof_direct::<P>, common: proof_common::<P>, derived: proof_derived::<P>,
-        false_case: proof_false_case::<P>, possible: proof_possible, nonzero: proof_nonzero::<P>,
     }) };
+    complete_nonzero(&mut state.output);
     state.output
+}
+
+fn complete_nonzero(output: &mut Proof) {
+    // Each condition already includes the input facts for its output component.
+    let mut proved = Vec::new();
+    let mut zero_cases = Vec::new();
+    for (component, condition) in output.conditions.iter().enumerate() {
+        let Some(condition) = condition else { continue };
+        if output.nonzero.get(component) == Some(&true) {
+            continue;
+        }
+        let zero = &condition.cases[0];
+        match zero.view() {
+            ClauseNode::Impossible => proved.push(component),
+            ClauseNode::Facts(_) => {},
+            _ => zero_cases.push((component, zero)),
+        }
+    }
+    if !zero_cases.is_empty() {
+        let roots = zero_cases.iter().map(|(_, root)| *root);
+        let (mut query, indices) = super::condition_graph::RequiredQuery::for_roots(roots);
+        for ((component, clause), index) in zero_cases.into_iter().zip(indices) {
+            if !clause.possible_numbered(&mut query, index) {
+                proved.push(component);
+            }
+        }
+    }
+    for component in proved {
+        output.mark_nonzero(component);
+    }
 }
 

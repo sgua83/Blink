@@ -2402,11 +2402,29 @@ impl Clause {
         required_roots::possible(self, environment, || self.calculate_required(environment))
     }
     fn calculate_required<'a>(&'a self, environment: &'a Facts) -> Option<RequiredFacts> {
-        let mut environment_roots = equality_roots(environment);
+        let environment_roots = equality_roots(environment);
         if contradictory_with_roots(environment, &environment_roots) {
             return None;
         }
         let mut query = condition_graph::RequiredQuery::new(self);
+        Self::calculate_required_on(environment, environment_roots, &mut query)
+    }
+
+    fn possible_numbered<'a>(
+        &'a self, query: &mut condition_graph::RequiredQuery<'a>, root: usize,
+    ) -> bool {
+        let environment = Facts::new();
+        required_roots::possible(self, &environment, || {
+            query.select(root);
+            Self::calculate_required_on(&environment, EqualityRoots::new(), query)
+        })
+    }
+
+    fn calculate_required_on<'a, 'graph: 'a>(
+        environment: &'a Facts,
+        mut environment_roots: EqualityRoots,
+        query: &mut condition_graph::RequiredQuery<'graph>,
+    ) -> Option<RequiredFacts> {
         let mut environment: Cow<'a, Facts> = Cow::Borrowed(environment);
         let unexpanded = EqualityRoots::new();
         loop {

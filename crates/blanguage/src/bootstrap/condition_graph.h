@@ -117,7 +117,7 @@ struct RequiredHost {
 };
 
 extern "C" void missing_call_bounds(ConditionNodes nodes,usize root,address candidates,address covered,address missing) on cpu;
-extern "C" void required_prepare(RequiredGraph graph) on cpu;
+extern "C" void required_prepare(RequiredGraph graph,inout TraversalStack pending) on cpu;
 extern "C" void required_evaluate(RequiredGraph graph,inout TraversalStack pending,address context,RequiredHost host) on cpu
  requires nonzero(host.leaf) requires nonzero(host.union) requires nonzero(host.common)
  requires nonzero(host.valid_additions) requires nonzero(host.discard);
@@ -855,7 +855,7 @@ struct NumericJoinHost {
 extern "C" void join_proof_numeric(address context,usize width,NumericJoinHost host) on cpu
  requires nonzero(host.domains) requires nonzero(host.store);
 
-struct ProofCallWidths { usize origins; usize domains; usize conditions; };
+struct ProofCallWidths { usize origins; usize domains; };
 struct ProofCallDomain { address original; u32 kind; };
 struct ProofCallHost {
  cfn<void,address,usize,u32,u32> begin;
@@ -866,14 +866,10 @@ struct ProofCallHost {
  cfn<void,address,address> direct;
  cfn<void,address,address> common;
  cfn<void,address,address> derived;
- cfn<address,address> false_case;
- cfn<u32,address> possible;
- cfn<void,address> nonzero;
 };
 extern "C" void project_call_proof(address context,ProofCallWidths widths,ProofCallHost host) on cpu
  requires nonzero(host.begin) requires nonzero(host.input) requires nonzero(host.merge_input) requires nonzero(host.keep_origin)
- requires nonzero(host.domain) requires nonzero(host.direct) requires nonzero(host.common) requires nonzero(host.derived)
- requires nonzero(host.false_case) requires nonzero(host.possible) requires nonzero(host.nonzero);
+ requires nonzero(host.domain) requires nonzero(host.direct) requires nonzero(host.common) requires nonzero(host.derived);
 
 struct CaptureProofHost {
  cfn<void,address> all;
