@@ -448,6 +448,50 @@ extern "C" u32 project_memory_regions(address origin, usize parts, u32 parent_si
     return 1;
 }
 
+u8 scalar_write_mask(u32 width) on cpu {
+    return u8((1 << width) - 1);
+}
+
+extern "C" u8 region_written_bytes(RegionWriteFacts facts, u32 width) on cpu {
+    if (facts.kind == RegionWriteKind::Unrelated) { return u8(0); }
+    if (facts.kind == RegionWriteKind::Selected) { return scalar_write_mask(width); }
+    i64 offset = i64(facts.offset);
+    if (facts.kind == RegionWriteKind::Resource) {
+        offset += i64(facts.word) - i64(facts.target);
+    }
+    let first = max(offset, i64(0));
+    let end = min(offset + i64(facts.size), i64(width));
+    if (first >= end) { return u8(0); }
+    let mask = (1 << u32(end - first)) - 1;
+    return u8(mask << u32(first));
+}
+
+extern "C" u8 project_address_write_bytes(address position, u32 width, WriteProjectionHost host) on cpu
+    requires nonzero(host.distinct_element) requires nonzero(host.position) requires nonzero(host.child)
+    requires nonzero(host.regions) requires nonzero(host.region) {
+    if (host.distinct_element(host.context, position) != 0) { return u8(0); }
+    let view = host.position(host.context, position);
+    if (view.kind == WritePositionKind::None) { return u8(0); }
+    if (view.kind == WritePositionKind::All) { return scalar_write_mask(width); }
+    u8 bytes = u8(0);
+    if (view.kind == WritePositionKind::Composite) {
+        usize index = 0u64;
+        while (index < view.children) {
+            bytes |= project_address_write_bytes(host.child(position, index), width, host);
+            index += 1u64;
+        }
+    } else {
+        let regions = host.regions(host.context);
+        if (regions.present == 0) { return scalar_write_mask(width); }
+        usize index = 0u64;
+        while (index < regions.count) {
+            bytes |= region_written_bytes(host.region(regions.data, position, index), width);
+            index += 1u64;
+        }
+    }
+    return bytes;
+}
+
 extern "C" u32 address_tail(address context,u64 count,u32 size,u32 first,AddressTailHost host) on cpu
  requires nonzero(host.offset) requires nonzero(host.append) {
  u64 i=0u64;while(i<count){u32 at=host.offset(context,i);if(at>=first){host.append(context,i,at-first);}i+=1u64;}return size-first;

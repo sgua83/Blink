@@ -247,20 +247,127 @@ fn same_loop_resource(a:&view::Borrow,b:&view::Borrow)->bool {
     let mut a=a.inputs.iter();let mut b=b.inputs.iter();
     matches!((a.next(),b.next(),a.next(),b.next()),(Some(a),Some(b),None,None)if a==b)
 }
-impl MemoryRegion {
-    pub(super) fn written_bytes(&self,position:&Position,scalar:Scalar)->u8 {
-        let offset=match (&self.position,position) {
-            (Position::Borrowed(other,base,word),Position::Borrowed(borrow,layout,at)) if base==layout=>{
-                if !same_loop_resource(other,borrow)&&!borrow.sources.entries().any(|(source,when)|other.overlaps_source(source,&when)){return 0;}
-                i64::from(*word)+i64::from(self.offset)-i64::from(*at)
-            },
-            (written,position) if written==position=>i64::from(self.offset),
-            (written,position) if owned_presence::Presence::selected(written,position)!=owned_presence::Presence::None=>return ((1u16<<scalar.size())-1) as u8,
-            _=>return 0,
+#[repr(u32)]
+enum RegionWriteKind { Unrelated, Position, Resource, Selected }
+
+#[repr(C)]
+struct RegionWriteFacts { kind: RegionWriteKind, word: u32, target: u32, offset: u32, size: u32 }
+
+#[repr(u32)]
+enum WritePositionKind { None, Ranges, All, Composite }
+
+#[repr(C)]
+struct WritePositionView { children: usize, kind: WritePositionKind }
+
+#[repr(C)]
+struct WriteRegions { data: *const std::ffi::c_void, count: usize, present: u32 }
+
+#[repr(C)]
+struct WriteProjectionHost {
+    context: *const std::ffi::c_void,
+    distinct_element: unsafe extern "C" fn(*const std::ffi::c_void, *const std::ffi::c_void) -> u32,
+    position: unsafe extern "C" fn(*const std::ffi::c_void, *const std::ffi::c_void) -> WritePositionView,
+    child: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> *const std::ffi::c_void,
+    regions: unsafe extern "C" fn(*const std::ffi::c_void) -> WriteRegions,
+    region: unsafe extern "C" fn(*const std::ffi::c_void, *const std::ffi::c_void, usize) -> RegionWriteFacts,
+}
+
+struct WriteProjection<'a, 'r> {
+    origin: &'a Origin,
+    when: &'a bounds::Clause,
+    index: Option<bounds::Operand>,
+    regions: &'a dyn Fn() -> Option<&'r [MemoryRegion]>,
+}
+
+impl WriteProjection<'_, '_> {
+    unsafe extern "C" fn distinct_element(context: *const std::ffi::c_void, position: *const std::ffi::c_void) -> u32 {
+        let input = unsafe { &*context.cast::<Self>() };
+        let position = unsafe { &*position.cast::<Position>() };
+        (MemoryEffect::same_element(input.origin, input.when, position, input.index) == Some(false)).into()
+    }
+
+    unsafe extern "C" fn position(context: *const std::ffi::c_void, position: *const std::ffi::c_void) -> WritePositionView {
+        let input = unsafe { &*context.cast::<Self>() };
+        let position = unsafe { &*position.cast::<Position>() };
+        let (kind, children) = match position {
+            Position::Initialized => (WritePositionKind::None, 0),
+            Position::Local(_) => (WritePositionKind::Ranges, 0),
+            Position::Element(binding, _) => {
+                let aliases = input.origin.aliases_when(
+                    &|alias| matches!(alias, MemoryAlias::Data(actual) if actual == binding), || true);
+                let kind = if aliases.is_empty() { WritePositionKind::None } else { WritePositionKind::All };
+                (kind, 0)
+            }
+            Position::Borrowed(borrow, _, _) if matches!(&input.origin.root,
+                Root::Resource { borrow: source, .. } | Root::Dataset { borrow: source, .. }
+                    if same_loop_resource(source, borrow))
+                || !borrow.pending() && !borrow.unresolved() && !external_memory(borrow)
+                    && !borrow.sources.iter().any(|source| matches!(source, view::Source::Parameter(..))) =>
+                (WritePositionKind::Ranges, 0),
+            Position::Both(..) | Position::Conditional(..) => (WritePositionKind::Composite, 2),
+            Position::Indexed(positions, _) => (WritePositionKind::Composite, positions.len()),
+            _ => (WritePositionKind::All, 0),
         };
-        let begin=offset.max(0);let end=(offset+i64::from(self.size)).min(i64::from(scalar.size()));
-        if begin>=end{return 0;}
-        (((1u16<<(end-begin))-1)<<begin) as u8
+        WritePositionView { children, kind }
+    }
+
+    unsafe extern "C" fn child(position: *const std::ffi::c_void, index: usize) -> *const std::ffi::c_void {
+        let position = unsafe { &*position.cast::<Position>() };
+        let child = match position {
+            Position::Both(a, b) | Position::Conditional(_, a, b) => [a.as_ref(), b.as_ref()][index],
+            Position::Indexed(positions, _) => &positions[index],
+            _ => unreachable!(),
+        };
+        std::ptr::from_ref(child).cast()
+    }
+
+    unsafe extern "C" fn regions(context: *const std::ffi::c_void) -> WriteRegions {
+        let input = unsafe { &*context.cast::<Self>() };
+        match (input.regions)() {
+            Some(regions) => WriteRegions { data: regions.as_ptr().cast(), count: regions.len(), present: 1 },
+            None => WriteRegions { data: std::ptr::null(), count: 0, present: 0 },
+        }
+    }
+
+    unsafe extern "C" fn region(data: *const std::ffi::c_void, position: *const std::ffi::c_void, index: usize) -> RegionWriteFacts {
+        let region = unsafe { &*data.cast::<MemoryRegion>().add(index) };
+        region.write_facts(unsafe { &*position.cast::<Position>() })
+    }
+
+    fn bytes(&self, position: &Position, width: u32) -> u8 {
+        let host = WriteProjectionHost { context: std::ptr::from_ref(self).cast(),
+            distinct_element: Self::distinct_element, position: Self::position, child: Self::child,
+            regions: Self::regions, region: Self::region };
+        unsafe { project_address_write_bytes(std::ptr::from_ref(position).cast(), width, host) }
+    }
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::project_address_write_bytes"]
+    fn project_address_write_bytes(position: *const std::ffi::c_void, width: u32, host: WriteProjectionHost) -> u8;
+    #[link_name = "bootstrap.call_arguments::region_written_bytes"]
+    fn region_written_bytes(facts: RegionWriteFacts, width: u32) -> u8;
+}
+
+impl MemoryRegion {
+    fn write_facts(&self, position: &Position) -> RegionWriteFacts {
+        let (kind, word, target) = match (&self.position, position) {
+            (Position::Borrowed(other, base, word), Position::Borrowed(borrow, layout, target)) if base == layout => {
+                let aliases = same_loop_resource(other, borrow)
+                    || borrow.sources.entries().any(|(source, when)| other.overlaps_source(source, &when));
+                let kind = if aliases { RegionWriteKind::Resource } else { RegionWriteKind::Unrelated };
+                (kind, *word, *target)
+            }
+            (written, position) if written == position => (RegionWriteKind::Position, 0, 0),
+            (written, position) if owned_presence::Presence::selected(written, position) != owned_presence::Presence::None =>
+                (RegionWriteKind::Selected, 0, 0),
+            _ => (RegionWriteKind::Unrelated, 0, 0),
+        };
+        RegionWriteFacts { kind, word, target, offset: self.offset, size: self.size }
+    }
+
+    pub(super) fn written_bytes(&self, position: &Position, scalar: Scalar) -> u8 {
+        unsafe { region_written_bytes(self.write_facts(position), scalar.size()) }
     }
 }
 impl Origin {
@@ -672,29 +779,7 @@ impl MemoryEffect {
         origin: &Origin, when: &bounds::Clause, position: &Position, scalar: Scalar,
         index: Option<bounds::Operand>, regions: &impl Fn() -> Option<&'a [MemoryRegion]>,
     ) -> u8 {
-        if Self::same_element(origin,when,position,index)==Some(false){return 0;}
-        let all=((1u16<<scalar.size())-1) as u8;
-        let known = || regions().map_or(all, |regions| regions.iter().fold(0, |bytes, region| {
-            bytes | region.written_bytes(position, scalar)
-        }));
-        match position{
-            Position::Initialized=>0,
-            Position::Local(_)=>known(),
-            Position::Element(binding, _) => {
-                let aliases = origin.aliases_when(&|alias| matches!(alias, MemoryAlias::Data(actual) if actual == binding), || true);
-                if aliases.is_empty() { 0 } else { all }
-            },
-            Position::Borrowed(borrow,_,_) if matches!(&origin.root,
-                Root::Resource{borrow:source,..}|Root::Dataset{borrow:source,..}if same_loop_resource(source,borrow))
-                ||!borrow.pending()&&!borrow.unresolved()&&!external_memory(borrow)&&!borrow.sources.iter().any(|source|matches!(source,view::Source::Parameter(..)))=>known(),
-            Position::Both(a, b) | Position::Conditional(_, a, b) =>
-                Self::project_written_bytes(origin, when, a, scalar, index, regions)
-                | Self::project_written_bytes(origin, when, b, scalar, index, regions),
-            Position::Indexed(positions, _) => positions.iter().fold(0, |bytes, position| {
-                bytes | Self::project_written_bytes(origin, when, position, scalar, index, regions)
-            }),
-            _=>all,
-        }
+        WriteProjection { origin, when, index, regions }.bytes(position, scalar.size())
     }
     pub(super) fn access_conflicts(held:&view::Borrow,accessed:&view::Borrow,access:Access,path:&bounds::Clause)->bool {
         accessed.sources.entries().any(|(source,when)| {

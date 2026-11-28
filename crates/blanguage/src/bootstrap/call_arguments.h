@@ -128,6 +128,25 @@ extern "C" u32 project_memory_regions(address origin, usize parts, u32 parent_si
     RegionHost host) on cpu
     requires nonzero(host.part) requires nonzero(host.region) requires nonzero(host.emit) requires nonzero(host.finish);
 
+enum RegionWriteKind:u32 { Unrelated=0; Position=1; Resource=2; Selected=3; };
+struct RegionWriteFacts { RegionWriteKind kind; u32 word; u32 target; u32 offset; u32 size; };
+extern "C" u8 region_written_bytes(RegionWriteFacts facts, u32 width) on cpu;
+
+enum WritePositionKind:u32 { None=0; Ranges=1; All=2; Composite=3; };
+struct WritePositionView { usize children; WritePositionKind kind; };
+struct WriteRegions { address data; usize count; u32 present; };
+struct WriteProjectionHost {
+    address context;
+    cfn<u32,address,address> distinct_element;
+    cfn<WritePositionView,address,address> position;
+    cfn<address,address,usize> child;
+    cfn<WriteRegions,address> regions;
+    cfn<RegionWriteFacts,address,address,usize> region;
+};
+extern "C" u8 project_address_write_bytes(address position, u32 width, WriteProjectionHost host) on cpu
+    requires nonzero(host.distinct_element) requires nonzero(host.position) requires nonzero(host.child)
+    requires nonzero(host.regions) requires nonzero(host.region);
+
 extern "C" u32 address_tail(address context,u64 count,u32 size,u32 first,AddressTailHost host) on cpu
  requires nonzero(host.offset) requires nonzero(host.append);
 // explicit_type: 0 is not one type, 1 is a type, 2 is a root dataset.
