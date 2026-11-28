@@ -171,6 +171,20 @@ struct AddressLayoutHost {
 extern "C" u32 address_layout_valid(AddressLayoutHost host) on cpu
     requires nonzero(host.next) requires nonzero(host.validate);
 
+enum AddressOriginRoot:u32 { External=0; Derived=1; Dataset=2; Stored=3; };
+enum AddressOriginQuery:u32 { Storage=0; Symbolic=1; };
+enum AddressOriginSource:u32 { End=0; Position=1; Symbolic=2; Relation=3; Other=4; };
+struct AddressOriginHost {
+    address context;
+    cfn<AddressOriginSource,address> next;
+    cfn<u32,address> follow;
+    cfn<u32,address> symbolic_relation;
+    cfn<u32,address> possible;
+};
+extern "C" u32 query_address_origin(AddressOriginRoot root, AddressOriginQuery query, AddressOriginHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.follow)
+    requires nonzero(host.symbolic_relation) requires nonzero(host.possible);
+
 struct AddressRequirements { u32 writable; u32 initialized; u32 atomic; };
 enum AddressViolation:u32 { None=0; Inactive=1; Layout=2; Atomic=3; ReadOnly=4; Uninitialized=5; };
 struct AddressRequirementHost {

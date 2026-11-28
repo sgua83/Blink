@@ -77,8 +77,9 @@ impl<K:Ord+Clone> Edges<K>{
     pub fn is_empty(&self) -> bool { self.0.is_empty() }
     pub fn iter(&self) -> std::collections::btree_map::Keys<'_, K, bounds::Clause> { self.0.keys() }
     pub(super) fn paths(&self) -> impl Iterator<Item = &bounds::Clause> { self.0.values() }
+    pub(super) fn borrowed_entries(&self) -> impl DoubleEndedIterator<Item = (&K, &bounds::Clause)> { self.0.iter() }
     pub fn entries(&self) -> impl DoubleEndedIterator<Item = (&K, bounds::Clause)> {
-        self.0.iter().map(|(key, when)| (key, when.clone()))
+        self.borrowed_entries().map(|(key, when)| (key, when.clone()))
     }
     pub fn into_entries(self) -> impl Iterator<Item = (K, bounds::Clause)> { self.0.into_iter() }
     pub fn when(&self, key: &K) -> bounds::Clause {

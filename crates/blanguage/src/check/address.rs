@@ -763,6 +763,77 @@ impl<'a, I: Iterator<Item = &'a view::Source>> AddressLayout<'a, I> {
     }
 }
 
+#[repr(u32)]
+enum AddressOriginRoot { External, Derived, Dataset, Stored }
+
+#[repr(u32)]
+enum AddressOriginQuery { Storage, Symbolic }
+
+#[repr(u32)]
+enum AddressOriginSource { End, Position, Symbolic, Relation, Other }
+
+#[repr(C)]
+struct AddressOriginHost {
+    context: *mut std::ffi::c_void,
+    next: unsafe extern "C" fn(*mut std::ffi::c_void) -> AddressOriginSource,
+    follow: unsafe extern "C" fn(*const std::ffi::c_void) -> u32,
+    symbolic_relation: unsafe extern "C" fn(*const std::ffi::c_void) -> u32,
+    possible: unsafe extern "C" fn(*const std::ffi::c_void) -> u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::query_address_origin"]
+    fn b_query_address_origin(root: AddressOriginRoot, query: AddressOriginQuery, host: AddressOriginHost) -> u32;
+}
+
+struct AddressOriginSources<'a, I> {
+    sources: I,
+    path: Option<&'a bounds::Clause>,
+    current: Option<(&'a view::Source, &'a bounds::Clause)>,
+}
+
+impl<'a, I: Iterator<Item = (&'a view::Source, &'a bounds::Clause)>> AddressOriginSources<'a, I> {
+    unsafe extern "C" fn next(context: *mut std::ffi::c_void) -> AddressOriginSource {
+        let source = unsafe { &mut *context.cast::<Self>() };
+        source.current = source.sources.next();
+        use AddressOriginSource as Kind;
+        match source.current.map(|(entry, _)| entry) {
+            None => Kind::End,
+            Some(view::Source::Position(_)) => Kind::Position,
+            Some(view::Source::Relation(..)) => Kind::Relation,
+            Some(view::Source::Parameter(ValueIdentity::Register(_) | ValueIdentity::ParameterContent(..)
+                | ValueIdentity::DatasetContent(..), _) | view::Source::Contents { .. }) => Kind::Symbolic,
+            Some(_) => Kind::Other,
+        }
+    }
+
+    unsafe extern "C" fn follow(context: *const std::ffi::c_void) -> u32 {
+        let source = unsafe { &*context.cast::<Self>() };
+        let (view::Source::Position(parent), edge) = source.current.unwrap() else { unreachable!() };
+        match source.path {
+            Some(path) => parent.has_blink_storage(&bounds::Clause::both(path, edge)),
+            None => parent.symbolic_input(),
+        }.into()
+    }
+
+    unsafe extern "C" fn symbolic_relation(context: *const std::ffi::c_void) -> u32 {
+        let (view::Source::Relation(graph, root), _) = unsafe { &*context.cast::<Self>() }.current.unwrap()
+            else { unreachable!() };
+        graph.symbolic(*root).into()
+    }
+
+    unsafe extern "C" fn possible(context: *const std::ffi::c_void) -> u32 {
+        unsafe { &*context.cast::<Self>() }.path.unwrap().possible().into()
+    }
+
+    fn query(mut self, root: AddressOriginRoot) -> bool {
+        let query = if self.path.is_some() { AddressOriginQuery::Storage } else { AddressOriginQuery::Symbolic };
+        let host = AddressOriginHost { context: std::ptr::from_mut(&mut self).cast(), next: Self::next,
+            follow: Self::follow, symbolic_relation: Self::symbolic_relation, possible: Self::possible };
+        unsafe { b_query_address_origin(root, query, host) != 0 }
+    }
+}
+
 impl Origin {
     pub(super) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self {
         let mut origin=self.clone();
@@ -780,27 +851,23 @@ impl Origin {
         origin
     }
 
-    pub fn symbolic_input(&self)->bool {
-        match &self.root {
-            Root::Derived(borrow)|Root::Dataset{borrow,..}=>borrow.sources.iter().any(|source|match source {
-                view::Source::Parameter(ValueIdentity::Register(_)|ValueIdentity::ParameterContent(..)|ValueIdentity::DatasetContent(..),_)
-                |view::Source::Contents{..}=>true,
-                view::Source::Position(origin)=>origin.symbolic_input(),
-                view::Source::Relation(graph,root)=>graph.symbolic(*root),
-                _=>false,
-            }),
-            _=>false,
-        }
+    fn query_address_origin(&self, path: Option<&bounds::Clause>) -> bool {
+        use AddressOriginRoot as Kind;
+        let (root, borrow) = match &self.root {
+            Root::External(_) => (Kind::External, None),
+            Root::Derived(borrow) => (Kind::Derived, Some(borrow)),
+            Root::Dataset { borrow, .. } => (Kind::Dataset, Some(borrow)),
+            _ => (Kind::Stored, None),
+        };
+        let sources = borrow.into_iter().flat_map(|borrow| borrow.sources.borrowed_entries());
+        AddressOriginSources { sources, path, current: None }.query(root)
+    }
+
+    pub fn symbolic_input(&self) -> bool {
+        self.query_address_origin(None)
     }
     pub(super) fn has_blink_storage(&self, when: &bounds::Clause) -> bool {
-        match &self.root {
-            Root::External(_) => false,
-            Root::Derived(borrow) => borrow.sources.entries().any(|(source, edge)| {
-                matches!(source, view::Source::Position(parent)
-                    if parent.has_blink_storage(&bounds::Clause::both(when, &edge)))
-            }),
-            _ => when.possible(),
-        }
+        self.query_address_origin(Some(when))
     }
     pub fn layout_valid(&self) -> bool {
         let (Root::Derived(borrow) | Root::Dataset { borrow, .. }) = &self.root else { return true };

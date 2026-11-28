@@ -529,6 +529,27 @@ extern "C" u32 address_layout_valid(AddressLayoutHost host) on cpu
     }
 }
 
+extern "C" u32 query_address_origin(AddressOriginRoot root, AddressOriginQuery query, AddressOriginHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.follow)
+    requires nonzero(host.symbolic_relation) requires nonzero(host.possible) {
+    if (query == AddressOriginQuery::Storage) {
+        if (root == AddressOriginRoot::External) { return 0; }
+        if (root != AddressOriginRoot::Derived) { return host.possible(host.context); }
+    } else if (root != AddressOriginRoot::Derived && root != AddressOriginRoot::Dataset) {
+        return 0;
+    }
+    while (true) {
+        let source = host.next(host.context);
+        if (source == AddressOriginSource::End) { return 0; }
+        if (source == AddressOriginSource::Position) {
+            if (host.follow(host.context) != 0) { return 1; }
+        } else if (query == AddressOriginQuery::Symbolic) {
+            if (source == AddressOriginSource::Symbolic) { return 1; }
+            if (source == AddressOriginSource::Relation && host.symbolic_relation(host.context) != 0) { return 1; }
+        }
+    }
+}
+
 extern "C" AddressViolation validate_address_requirements(AddressRequirements required, AddressRequirementHost host) on cpu
     requires nonzero(host.next) requires nonzero(host.valid_layout) requires nonzero(host.blink_storage)
     requires nonzero(host.writable) requires nonzero(host.initialized) requires nonzero(host.possible)
