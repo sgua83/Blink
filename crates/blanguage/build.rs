@@ -113,6 +113,16 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
         }
         jobs.push(compile(name, &format!("../../{source}.b"), "../../library", object(name)));
     }
+    let source = "library/blink/windows/cpu_collective";
+    for extension in ["b", "h"] {
+        println!("cargo:rerun-if-changed=../../{source}.{extension}");
+    }
+    let mut collective = compile(
+        "cpu_collective", &format!("../../{source}.b"), "../../library", object("cpu_collective"),
+    );
+    collective.arguments.extend(["-I".into(), "src".into()]);
+    collective.inputs.push(jobs.iter().position(|job| job.name == "builtin_type").unwrap());
+    jobs.push(collective);
     let compiler_start = jobs.len();
     let compiler = env::var_os("CARGO_FEATURE_COMPILER").is_some();
     if compiler {

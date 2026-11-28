@@ -1,4 +1,5 @@
 pub use crate::texture::{TextureInput, CpuTextureBinding, CpuTextures};
+mod collective;
 mod dataset;
 mod image;
 use image::{Allocation, LoadedCode};
@@ -11,12 +12,12 @@ use crate::bindings::{self, DomainRelations, StorageSlots};
 use crate::application::{FrameArguments, ResidentData};
 use blanguage::{
     ExecutableProgram, TemplateProgram,
-    ir::{Bits, CollectiveOperator, ExecutionPlan as Program, Scalar, Ty},
+    ir::{ExecutionPlan as Program, Ty},
     native::{BufferAddress, RangeEntry, RangeResult},
 };
 pub use dataset::CpuDataset;
 pub use observation::{CpuRangeCall, CpuRangeTiming, CpuRangeTimings, CpuThreadTime, CpuTimePoint};
-use std::{ffi::c_void, mem::MaybeUninit, sync::Arc};
+use std::{ffi::c_void, sync::Arc};
 
 struct RangeWork<'a> {
     frame: Option<(&'a Arc<crate::application::Definitions>, usize, usize, &'a [CpuBuffer<'a>], Option<&'a Arc<Vec<crate::DomainRelation>>>)>,
@@ -180,47 +181,6 @@ extern "C" fn print_float(bits: u64, width: u32) -> u32 {
     }
     write_stdout(&text[..count as usize])
 }
-// A summary word may contain both initialized field bytes and padding.
-// The selected scalar must be within the row and initialized by the producer.
-unsafe fn collective_bits(scalar: Scalar, words: &[MaybeUninit<u32>], byte: usize) -> Bits {
-    let mut bytes = [0; 8];
-    unsafe { std::ptr::copy_nonoverlapping(words.as_ptr().cast::<u8>().add(byte), bytes.as_mut_ptr(), scalar.size() as usize); }
-    Bits::from_ne_bytes(bytes)
-}
-unsafe fn store_collective_bits(scalar: Scalar, words: &mut [MaybeUninit<u32>], byte: usize, bits: Bits) {
-    unsafe { std::ptr::copy_nonoverlapping(bits.to_ne_bytes().as_ptr(), words.as_mut_ptr().cast::<u8>().add(byte), scalar.size() as usize); }
-}
-fn collective_pair(scalar: Scalar, operator: CollectiveOperator, a: Bits, b: Bits) -> Bits {
-    scalar.truncate(match (scalar, operator) {
-        (_, CollectiveOperator::BitAnd) => a & b,
-        (_, CollectiveOperator::BitOr) => a | b,
-        (_, CollectiveOperator::BitXor) => a ^ b,
-        (Scalar::F64, CollectiveOperator::Sum) => (f64::from_bits(a)+f64::from_bits(b)).to_bits(),
-        (Scalar::F64, CollectiveOperator::Min) => if f64::from_bits(a)<f64::from_bits(b) { a } else { b },
-        (Scalar::F64, CollectiveOperator::Max) => if f64::from_bits(a)>f64::from_bits(b) { a } else { b },
-        (Scalar::F32, CollectiveOperator::Sum) => Bits::from((f32::from_bits(a as u32) + f32::from_bits(b as u32)).to_bits()),
-        (Scalar::F32, CollectiveOperator::Min) => {
-            if f32::from_bits(a as u32) < f32::from_bits(b as u32) {
-                a
-            } else {
-                b
-            }
-        }
-        (Scalar::F32, CollectiveOperator::Max) => {
-            if f32::from_bits(a as u32) > f32::from_bits(b as u32) {
-                a
-            } else {
-                b
-            }
-        }
-        (_, CollectiveOperator::Sum) => a.wrapping_add(b),
-        (_, CollectiveOperator::Min) if scalar.is_signed() => if scalar.signed(a) < scalar.signed(b) {a} else {b},
-        (_, CollectiveOperator::Max) if scalar.is_signed() => if scalar.signed(a) > scalar.signed(b) {a} else {b},
-        (_, CollectiveOperator::Min) => a.min(b),
-        (_, CollectiveOperator::Max) => a.max(b),
-    })
-}
-
 enum Continuation {
     Apply(*mut c_void),
     Scan {
@@ -817,19 +777,12 @@ impl CpuCode {
                     };
                     // On success every range has written the fields and metadata consumed below.
                     self.execute(&mut ranges, &mut errors, &mut timings)?;
+                    let summaries = collective::SummaryRows::new(partials, range_count, result.words());
                     if let blanguage::ir::Operation::Reduce(reduction) = &stage.operation {
-                        for (scalar, offset) in &reduction.ty.components {
-                            let total = partials
-                                .chunks_exact(result.words())
-                                .map(|p| unsafe { collective_bits(*scalar, p, *offset as usize) })
-                                .fold(reduction.operator.identity(*scalar), |a, b| {
-                                    collective_pair(*scalar, reduction.operator, a, b)
-                                });
-                            unsafe {
-                                std::ptr::copy_nonoverlapping(total.to_ne_bytes().as_ptr(),
-                                    buffers[reduction.fields.target].pointer.cast::<u8>().add((reduction.fields.target_word + offset) as usize),
-                                    scalar.size() as usize);
-                            }
+                        unsafe {
+                            let output = buffers[reduction.fields.target].pointer.cast::<u8>()
+                                .add(reduction.fields.target_word as usize);
+                            summaries.reduce(&reduction.ty, reduction.operator, output);
                         }
                     }
                     if let Some(continuation) = continuation {
@@ -879,70 +832,23 @@ impl CpuCode {
                                     unsafe {crate::application::take_errors([failure])}?;
                                     None
                                 } else {
-                                    if let blanguage::ir::Operation::SegmentedReduce(reduction) =
-                                        &stage.operation
-                                    {
+                                    if let blanguage::ir::Operation::SegmentedReduce(reduction) = &stage.operation {
                                         let values = &reduction.values;
-                                        let k = values.ty.size.div_ceil(4) as usize;
-                                        let mut prefix: Vec<_> = values.ty.components.iter().map(|(scalar,_)| values.operator.identity(*scalar)).collect();
-                                        let mut segments = 0u32;
-                                        for total in partials.chunks_mut(reduction.summary_words()) {
-                                            let reset = unsafe { total[k].assume_init() } != 0;
-                                            let next_segments = segments + unsafe { total[k + 1].assume_init() };
-                                            for (prefix, (scalar, offset)) in prefix.iter_mut().zip(&values.ty.components) {
-                                                let word = *offset as usize;
-                                                let bits = unsafe { collective_bits(*scalar, total, word) };
-                                                let next = if reset {
-                                                    bits
-                                                } else {
-                                                    collective_pair(*scalar, values.operator, *prefix, bits)
-                                                };
-                                                unsafe { store_collective_bits(*scalar, total, word, *prefix) };
-                                                *prefix = next;
-                                            }
-                                            total[k].write(count);
-                                            total[k + 1].write(segments);
-                                            segments = next_segments;
-                                        }
                                         unsafe {
-                                            buffers[reduction.count.binding]
-                                                .pointer.cast::<u8>()
-                                                .add(reduction.count.word as usize).cast::<u32>()
-                                                .write(segments);
+                                            let output = buffers[reduction.count.binding].pointer.cast::<u8>()
+                                                .add(reduction.count.word as usize);
+                                            summaries.segmented_reduce(&values.ty, values.operator, count, output);
                                         }
-                                    } else if let blanguage::ir::Operation::ScanExclusive(scan) =
-                                        &stage.operation
-                                    {
-                                        let mut prefix: Vec<_> = scan.ty.components.iter().map(|(scalar,_)| scan.operator.identity(*scalar)).collect();
-                                        let k = scan.ty.size.div_ceil(4) as usize;
-                                        for total in partials.chunks_mut(scan.summary_words()) {
-                                            let reset = scan.head_word.is_some() && unsafe { total[k].assume_init() } != 0;
-                                            for (prefix, (scalar, offset)) in prefix.iter_mut().zip(&scan.ty.components) {
-                                                let word = *offset as usize;
-                                                let bits = unsafe { collective_bits(*scalar, total, word) };
-                                                let next = if reset {
-                                                    bits
-                                                } else {
-                                                    collective_pair(*scalar, scan.operator, *prefix, bits)
-                                                };
-                                                unsafe { store_collective_bits(*scalar, total, word, *prefix) };
-                                                *prefix = next;
-                                            }
-                                        }
+                                    } else if let blanguage::ir::Operation::ScanExclusive(scan) = &stage.operation {
+                                        unsafe { summaries.scan(&scan.ty, scan.operator, scan.head_word.is_some()) };
                                     } else {
-                                        let mut prefix = 0u32;
-                                        for total in partials.chunks_mut(result.words()) {
-                                            let next = prefix.wrapping_add(unsafe { total[0].assume_init() });
-                                            total[0].write(prefix);
-                                            prefix = next;
-                                        }
-                                        if let blanguage::ir::Operation::Compact(c) = &stage.operation {
-                                            unsafe {
-                                                buffers[c.count]
-                                                    .pointer.cast::<u8>()
-                                                    .add(c.count_word as usize).cast::<u32>()
-                                                    .write(prefix);
-                                            }
+                                        unsafe {
+                                            let output = match &stage.operation {
+                                                blanguage::ir::Operation::Compact(compaction) => buffers[compaction.count]
+                                                    .pointer.cast::<u8>().add(compaction.count_word as usize),
+                                                _ => std::ptr::null_mut(),
+                                            };
+                                            collective::compact_prefix(summaries, output);
                                         }
                                     }
                                     Some(next)
