@@ -258,13 +258,7 @@ impl effects::StorageWrite {
 // no loaded-value or memory-version state is retained beside IR and Proof.
 struct ApplicationLoads<'a,'w>(&'a Builder<'w>);
 
-#[repr(C)]
-struct RegisterDefinition { instruction: *const c_void, top: usize }
-
 impl ApplicationLoads<'_, '_> {
-    fn code(&self)->impl DoubleEndedIterator<Item=&Inst> {
-        self.0.loop_contexts.iter().flat_map(|context|context.outer.iter()).chain(self.0.code.iter())
-    }
     fn len(&self)->usize {self.0.loop_contexts.iter().map(|context|context.outer.len()).sum::<usize>()+self.0.code.len()}
     fn storage_writes(&self, writes: &effects::LoopWrites, root: Option<Reg>, range: Option<std::ops::Range<u128>>) -> bool {
         let bytes = range.as_ref().map(Into::into).unwrap_or_default();
@@ -283,11 +277,6 @@ impl ApplicationLoads<'_, '_> {
         }
     }
 
-    fn definition(&self, reg: Reg) -> Option<(usize, &Inst)> {
-        let found = unsafe { source_register_definition(self.register_source(), REGISTER_HOST, reg) };
-        // The result borrows a definition from the Builder's original IR.
-        unsafe { found.instruction.cast::<Inst>().as_ref() }.map(|inst| (found.top, inst))
-    }
     fn constant(&self, reg: Reg) -> Option<Bits> {
         let value = unsafe { source_register_constant(self.register_source(), REGISTER_HOST, reg) };
         (value.present != 0).then_some(value.value as Bits)
@@ -296,7 +285,6 @@ impl ApplicationLoads<'_, '_> {
     fn same(&self, left: Reg, right: Reg) -> bool {
         unsafe { source_register_equal(self.register_source(), REGISTER_HOST, left, right) != 0 }
     }
-    fn stride(&self,value:ElementStride)->Option<u64>{match value{ElementStride::Constant(bytes)=>Some(bytes),ElementStride::Value(parts)=>Some(self.constant(parts[0])?|(self.constant(parts[1])?<<32))}}
     fn frame_root(&self, address: [Reg; 2]) -> Option<Reg> {
         unsafe { source_frame_root(self.register_source(), REGISTER_HOST, address.into()) }.option()
     }
@@ -326,28 +314,11 @@ impl ApplicationLoads<'_, '_> {
                     effects::StorageWrite::Frame{root,..}=>root,
                 };
                 let Some(index)=index else{storage.push((effects::StorageWrite::Descendants{root},element,DataLayout::Declared));continue;};
-                let index_equal=|at|{
-                    let actual=match self.constant(at){Some(value)=>bounds::Operand::Constant(Scalar::U32,value),None=>bounds::Operand::Value(ValueIdentity::Register(at))};
-                    let actual=self.0.element_index_operand(actual,(&self.0.path,&self.0.env));
-                    bounds::Selector::Direct(actual).equality(*index,&self.0.path)==Some(true)
-                };
-                let mut at=self.len();
-                let loaded=self.code().rev().find_map(|inst|{
-                    at-=1;
-                    let InstKind::ViewLoad{dst,address,index,stride,word:offset}=&inst.kind else{return None;};
-                    if *offset!=word||self.0.registers[*dst]!=Scalar::U32{return None;}
-                    let selected=match &layout {
-                        DataLayout::Declared=>self.stride(*stride)==Some(u64::from(ir::align_up(ty.size,ty.align)))
-                            && self.frame_root(*address).is_some_and(|actual|self.same(actual,root))&&index_equal(*index),
-                        DataLayout::Parameter{stride:step,offset:field,..}=>self.constant(*index)==Some(0)&&self.stride(*stride)==Some(0)
-                            && self.offset_position(*address).is_some_and(|(base,index,stride,offset)|{
-                                let same_root=if self.0.registers[root]==Scalar::U64{self.split_address(base).is_some_and(|actual|self.same(actual,root))}
-                                    else{self.frame_root(base).is_some_and(|actual|self.same(actual,root))};
-                                same_root&&self.same(stride,step.regs[0])&&self.same(offset,field.regs[0])&&index_equal(index)
-                            }),
-                    };
-                    (selected&&!self.code().skip(at+1).any(|later|self.writes(later,inst))).then_some(*dst)
-                });
+                let context = NestedFrameIndex { loads: self, selector: *index };
+                let index = FrameIndex { context: ptr::from_ref(&context).cast(), matches: nested_frame_index_matches };
+                let layout = DatasetFrameLayout::new(root, &ty, &layout, self.0.registers[root] == Scalar::U64);
+                let query = NestedFrameLoad { layout, word, scalar: Scalar::U32 as u32 };
+                let loaded = unsafe { source_nested_frame(self.register_source(), REGISTER_HOST, query, index) }.option();
                 let root=match loaded{Some(root)=>effects::StorageWrite::Frame{root,range:None},None=>effects::StorageWrite::Descendants{root}};
                 storage.push((root,element,DataLayout::Declared));
             }
@@ -400,47 +371,12 @@ impl ApplicationLoads<'_, '_> {
         let host = WriteHost { ir: dataflow::HOST, overlaps: indexed_write };
         unsafe { source_instruction_writes(ptr::from_ref(inst).cast(), query, host) != 0 }
     }
-    // Query the original loop IR and scoped facts; no store-value history is retained.
-    fn same_frame(&self, root: Reg, data: &Data, writes: &effects::LoopWrites) -> bool {
-        if let Some(place) = &data.place {
-            let Place::Local(_, slots, _) = place.storage() else { return false; };
-            if writes.external || writes.unknown_storage || slots.iter().any(|slot| writes.locals.contains(slot)) { return false; }
-            if matches!(self.definition(root), Some((_, Inst { kind: InstKind::LoadLocal(_, slot), .. })) if *slot == slots[0]) { return true; }
-        }
-        self.same(root, data.root.regs[0])
-    }
     fn index_equal(&self, reg: Reg, index: &Value, path: &bounds::Clause, env: &BTreeMap<String, Binding>) -> bool {
         if self.same(reg, index.regs[0]) { return true; }
         let ty = Ty::scalar(Scalar::U32);
         let proof = bounds::scoped_proof(&ty, bounds::Proof::default().with_identity(ValueIdentity::Register(reg)), path, env);
         let value = Value { ty, regs: vec![reg], proof, literal: false, uniform: false, constant: self.constant(reg).map(|value| vec![value]) };
         bounds::Condition::comparison(Comparison::Equal, &value, index).truth_in(path) == Some(true)
-    }
-    fn split_address(&self, address: [Reg; 2]) -> Option<Reg> {
-        unsafe { source_split_address(self.register_source(), REGISTER_HOST, address.into()) }.option()
-    }
-
-    fn offset_position(&self, address: [Reg; 2]) -> Option<([Reg; 2], Reg, Reg, Reg)> {
-        let result = unsafe { source_offset_position(self.register_source(), REGISTER_HOST, address.into()) };
-        (result.present != 0).then_some((result.base.parts(), result.index, result.stride, result.offset))
-    }
-
-    fn dataset_position(&self, source: &IndexedSource, data: &Data, index: &Value, state: &flow::LoopState, writes: &effects::LoopWrites) -> bool {
-        let IndexedSource::View { address, index: at, stride } = source else { return false; };
-        if self.constant(*at) == Some(0) && self.stride(*stride) == Some(0)
-            && let Some((base, at, step, offset)) = self.offset_position(*address) {
-            let root = if data.root.ty == Ty::scalar(Scalar::U64) {
-                self.split_address(base).is_some_and(|root| self.same(root, data.root.regs[0]))
-            } else { self.frame_root(base).is_some_and(|root| self.same_frame(root, data, writes)) };
-            let layout = match &data.layout {
-                DataLayout::Declared => self.constant(step) == Some(u64::from(ir::align_up(data.ty.size, data.ty.align))) && self.constant(offset) == Some(0),
-                DataLayout::Parameter { stride, offset: field, .. } => self.same(step, stride.regs[0]) && self.same(offset, field.regs[0]),
-            };
-            return root && layout && self.index_equal(at, index, &state.path, &state.env);
-        }
-        self.stride(*stride) == Some(u64::from(ir::align_up(data.ty.size, data.ty.align)))
-            && self.frame_root(*address).is_some_and(|root| self.same_frame(root, data, writes))
-            && self.index_equal(*at, index, &state.path, &state.env)
     }
     fn same_position(&self, a: &IndexedSource, b: &IndexedSource, exact_index: bool) -> bool {
         unsafe {
@@ -603,21 +539,67 @@ fn application_byte_range(index: u64, stride: u64, word: u32, width: u32) -> std
 #[repr(C)]
 struct OriginalAddress { low: Reg, high: Reg }
 
-impl OriginalAddress {
-    fn parts(self) -> [Reg; 2] { [self.low, self.high] }
-}
-
 impl From<[Reg; 2]> for OriginalAddress {
     fn from([low, high]: [Reg; 2]) -> Self { Self { low, high } }
 }
 
 #[repr(C)]
-struct OffsetPosition {
-    present: u32,
-    base: OriginalAddress,
-    index: Reg,
-    stride: Reg,
-    offset: Reg,
+struct DatasetFrameLayout {
+    root: Reg,
+    declared_stride: usize,
+    parameter_stride: Reg,
+    parameter_offset: Reg,
+    parameter: u32,
+    wide: u32,
+}
+
+impl DatasetFrameLayout {
+    fn new(root: Reg, ty: &Ty, layout: &DataLayout, wide: bool) -> Self {
+        let (parameter_stride, parameter_offset, parameter) = match layout {
+            DataLayout::Declared => (0, 0, 0),
+            DataLayout::Parameter { stride, offset, .. } => (stride.regs[0], offset.regs[0], 1),
+        };
+        Self {
+            root, declared_stride: ir::align_up(ty.size, ty.align) as usize,
+            parameter_stride, parameter_offset, parameter, wide: u32::from(wide),
+        }
+    }
+}
+
+#[repr(C)]
+struct NestedFrameLoad { layout: DatasetFrameLayout, word: u32, scalar: u32 }
+
+#[repr(C)]
+struct FrameIndex {
+    context: *const c_void,
+    matches: unsafe extern "C" fn(*const c_void, Reg) -> u32,
+}
+
+struct NestedFrameIndex<'a, 'b, 'w> {
+    loads: &'a ApplicationLoads<'b, 'w>,
+    selector: bounds::Selector,
+}
+
+unsafe extern "C" fn nested_frame_index_matches(context: *const c_void, at: Reg) -> u32 {
+    let query = unsafe { &*context.cast::<NestedFrameIndex<'_, '_, '_>>() };
+    let loads = query.loads;
+    let actual = match loads.constant(at) {
+        Some(value) => bounds::Operand::Constant(Scalar::U32, value),
+        None => bounds::Operand::Value(ValueIdentity::Register(at)),
+    };
+    let actual = loads.0.element_index_operand(actual, (&loads.0.path, &loads.0.env));
+    u32::from(bounds::Selector::Direct(actual).equality(query.selector, &loads.0.path) == Some(true))
+}
+
+#[repr(u32)]
+enum DatasetFramePlace { Value, Local, Other }
+
+#[repr(C)]
+struct StoredDatasetFrame {
+    layout: DatasetFrameLayout,
+    writes: LoopEffects,
+    slots: dataflow::Span,
+    place: DatasetFramePlace,
 }
 
 #[repr(C)]
@@ -649,10 +631,10 @@ unsafe extern "C" {
     fn source_frame_root(source: SnapshotSource, host: RegisterHost, address: OriginalAddress) -> AddressWord;
     #[link_name = "bootstrap.application_snapshot::application_allocated"]
     fn source_allocated(source: SnapshotSource, host: RegisterHost, root: Reg) -> u32;
-    #[link_name = "bootstrap.application_snapshot::application_split_address"]
-    fn source_split_address(source: SnapshotSource, host: RegisterHost, address: OriginalAddress) -> AddressWord;
-    #[link_name = "bootstrap.application_snapshot::application_offset_position"]
-    fn source_offset_position(source: SnapshotSource, host: RegisterHost, address: OriginalAddress) -> OffsetPosition;
+    #[link_name = "bootstrap.application_snapshot::application_nested_frame"]
+    fn source_nested_frame(source: SnapshotSource, host: RegisterHost, query: NestedFrameLoad, index: FrameIndex) -> AddressWord;
+    #[link_name = "bootstrap.application_snapshot::application_dataset_position"]
+    fn source_dataset_position(source: SnapshotSource, host: RegisterHost, node: dataflow::Node, frame: StoredDatasetFrame, index: FrameIndex) -> u32;
     #[link_name = "bootstrap.application_snapshot::application_same_position"]
     fn source_same_position(source: SnapshotSource, host: RegisterHost, a: dataflow::Node, b: dataflow::Node,
         exact_index: u32) -> u32;
@@ -891,8 +873,6 @@ struct SnapshotHost {
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.application_snapshot::application_register_definition"]
-    fn source_register_definition(source: SnapshotSource, host: RegisterHost, register: Reg) -> RegisterDefinition;
     #[link_name = "bootstrap.application_snapshot::application_register_constant"]
     fn source_register_constant(source: SnapshotSource, host: RegisterHost, register: Reg) -> AddressWord;
     #[link_name = "bootstrap.application_snapshot::application_register_equal"]
@@ -993,7 +973,22 @@ unsafe extern "C" fn stored_zero_offset(context: *const c_void, reg: Reg) -> u32
 unsafe extern "C" fn stored_matches_position(context: *const c_void, source: *const IndexedSource) -> u32 {
     let query = unsafe { &*context.cast::<StoredPositionQuery<'_, '_>>() };
     let source = unsafe { &*source };
-    u32::from(ApplicationLoads(query.builder).dataset_position(source, query.data, query.index, query.state, query.writes))
+    let data = query.data;
+    let (place, slots) = match data.place.as_ref().map(Place::storage) {
+        None => (DatasetFramePlace::Value, dataflow::Span::EMPTY),
+        Some(Place::Local(_, slots, _)) => (DatasetFramePlace::Local, dataflow::Span::slice(slots)),
+        Some(_) => (DatasetFramePlace::Other, dataflow::Span::EMPTY),
+    };
+    let layout = DatasetFrameLayout::new(data.root.regs[0], &data.ty, &data.layout, data.root.ty == Ty::scalar(Scalar::U64));
+    let frame = StoredDatasetFrame { layout, writes: query.writes.into(), slots, place };
+    let index = FrameIndex { context, matches: stored_dataset_index_matches };
+    unsafe { source_dataset_position(ApplicationLoads(query.builder).register_source(), REGISTER_HOST,
+        dataflow::Node::indexed(source), frame, index) }
+}
+
+unsafe extern "C" fn stored_dataset_index_matches(context: *const c_void, reg: Reg) -> u32 {
+    let query = unsafe { &*context.cast::<StoredPositionQuery<'_, '_>>() };
+    u32::from(ApplicationLoads(query.builder).index_equal(reg, query.index, &query.state.path, &query.state.env))
 }
 
 #[derive(Default)]

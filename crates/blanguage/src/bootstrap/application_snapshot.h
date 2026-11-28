@@ -20,8 +20,7 @@ struct SnapshotHost {
     cfn<SnapshotTruth,address,usize> truth;
 };
 
-extern "C" RegisterDefinition application_register_definition(SnapshotSource source, RegisterHost host, usize reg) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.block);
+
 extern "C" Word application_register_constant(SnapshotSource source, RegisterHost host, usize reg) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local) requires nonzero(host.cast);
@@ -62,22 +61,36 @@ struct LoopEffects { address locals; Span storage; u32 external; u32 unknown_sto
 struct LoopStorage { usize root; ApplicationByteRange range; u32 descendants; u32 has_range; };
 struct OriginalAddress { usize low; usize high; };
 struct IndexedByteAccess { Node source; u32 word; u32 width; };
-struct OffsetPosition { u32 present; OriginalAddress base; usize index; usize stride; usize offset; };
+struct DatasetFrameLayout {
+    usize root;
+    usize declared_stride;
+    usize parameter_stride;
+    usize parameter_offset;
+    u32 parameter;
+    u32 wide;
+};
+struct NestedFrameLoad { DatasetFrameLayout layout; u32 word; u32 scalar; };
+struct FrameIndex { address context; cfn<u32,address,usize> matches; };
+enum DatasetFramePlace:u32 { Value=0; Local=1; Other=2; };
+struct StoredDatasetFrame { DatasetFrameLayout layout; LoopEffects writes; Span slots; DatasetFramePlace place; };
+
+extern "C" Word application_nested_frame(SnapshotSource source, RegisterHost host, NestedFrameLoad query, FrameIndex index) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
+    requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
+    requires nonzero(host.writes_load) requires nonzero(index.matches);
+extern "C" u32 application_dataset_position(SnapshotSource source, RegisterHost host, Node source_node, StoredDatasetFrame frame, FrameIndex index) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
+    requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
+    requires nonzero(host.writes_load) requires nonzero(index.matches);
 
 extern "C" Word application_frame_root(SnapshotSource source, RegisterHost host, OriginalAddress address_parts) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.block);
 extern "C" u32 application_allocated(SnapshotSource source, RegisterHost host, usize root) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.block);
-extern "C" Word application_split_address(SnapshotSource source, RegisterHost host, OriginalAddress address_parts) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.block)
-    requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
-    requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
-    requires nonzero(host.writes_load);
-extern "C" OffsetPosition application_offset_position(SnapshotSource source, RegisterHost host, OriginalAddress address_parts) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.block)
-    requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
-    requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
-    requires nonzero(host.writes_load);
+
+
 extern "C" u32 application_same_position(SnapshotSource source, RegisterHost host, Node left, Node right, u32 exact_index) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)

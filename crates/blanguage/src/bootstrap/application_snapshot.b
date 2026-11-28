@@ -32,7 +32,7 @@ bool has_candidate(Span code, Span registers, View read, Host ir) on cpu
     return false;
 }
 
-extern "C" RegisterDefinition application_register_definition(SnapshotSource source, RegisterHost host, usize reg) on cpu
+RegisterDefinition application_register_definition(SnapshotSource source, RegisterHost host, usize reg) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.block) {
     usize block = source.blocks;
     usize end = source.instructions;
@@ -757,7 +757,7 @@ bool register_is(SnapshotSource source, RegisterHost host, usize reg, usize valu
     return constant.present != 0 && constant.value == value;
 }
 
-extern "C" Word application_split_address(SnapshotSource source, RegisterHost host, OriginalAddress address_parts) on cpu
+Word application_split_address(SnapshotSource source, RegisterHost host, OriginalAddress address_parts) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
     requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
@@ -771,7 +771,9 @@ extern "C" Word application_split_address(SnapshotSource source, RegisterHost ho
     return Word(u32(matched), low.value);
 }
 
-extern "C" OffsetPosition application_offset_position(SnapshotSource source, RegisterHost host, OriginalAddress address_parts) on cpu
+struct OffsetPosition { u32 present; OriginalAddress base; usize index; usize stride; usize offset; };
+
+OffsetPosition application_offset_position(SnapshotSource source, RegisterHost host, OriginalAddress address_parts) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
     requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
@@ -805,6 +807,149 @@ bool zero_stride(SnapshotSource source, RegisterHost host, Node stride) on cpu
     requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local) requires nonzero(host.cast) {
     Word value = register_stride(source, host, host.ir.inspect(stride));
     return value.present != 0 && value.value == 0u64;
+}
+
+OffsetPosition dataset_offset(SnapshotSource source, RegisterHost host, OriginalAddress address_parts,
+    usize index, Node stride) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
+    requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
+    requires nonzero(host.writes_load) {
+    if (register_is(source, host, index, 0u64) && zero_stride(source, host, stride)) {
+        return application_offset_position(source, host, address_parts);
+    }
+    return OffsetPosition(0, OriginalAddress(0u64, 0u64), 0u64, 0u64, 0u64);
+}
+
+Word direct_dataset_frame(SnapshotSource source, RegisterHost host, OriginalAddress address_parts,
+    Node stride, usize expected) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
+    requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
+    requires nonzero(host.writes_load) {
+    Word actual = register_stride(source, host, host.ir.inspect(stride));
+    if (actual.present == 0 || actual.value != expected) { return Word(0, 0u64); }
+    return application_frame_root(source, host, address_parts);
+}
+
+Word offset_dataset_frame(SnapshotSource source, RegisterHost host, OffsetPosition position, u32 wide) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
+    requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
+    requires nonzero(host.writes_load) {
+    if (wide != 0) { return application_split_address(source, host, position.base); }
+    return application_frame_root(source, host, position.base);
+}
+
+bool offset_layout_matches(SnapshotSource source, RegisterHost host,
+    DatasetFrameLayout layout, OffsetPosition position) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
+    requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
+    requires nonzero(host.writes_load) {
+    if (layout.parameter != 0) {
+        return application_register_equal(source, host, position.stride, layout.parameter_stride) != 0
+            && application_register_equal(source, host, position.offset, layout.parameter_offset) != 0;
+    }
+    return register_is(source, host, position.stride, layout.declared_stride)
+        && register_is(source, host, position.offset, 0u64);
+}
+
+bool nested_load_matches(SnapshotSource source, RegisterHost host,
+    DatasetFrameLayout layout, View load, FrameIndex index) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
+    requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
+    requires nonzero(host.writes_load) requires nonzero(index.matches) {
+    OriginalAddress address_parts = original_address(load.first);
+    Word root;
+    usize at = load.b;
+    if (layout.parameter != 0) {
+        OffsetPosition position = dataset_offset(source, host, address_parts, at, load.left);
+        if (position.present == 0) { return false; }
+        root = offset_dataset_frame(source, host, position, layout.wide);
+        if (root.present == 0 || !offset_layout_matches(source, host, layout, position)) { return false; }
+        at = position.index;
+    } else {
+        root = direct_dataset_frame(source, host, address_parts, load.left, layout.declared_stride);
+    }
+    return root.present != 0 && application_register_equal(source, host, root.value, layout.root) != 0
+        && index.matches(index.context, at) != 0;
+}
+
+extern "C" Word application_nested_frame(SnapshotSource source, RegisterHost host, NestedFrameLoad query, FrameIndex index) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
+    requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
+    requires nonzero(host.writes_load) requires nonzero(index.matches) {
+    usize block = source.blocks;
+    usize end = source.instructions;
+    while (block != 0u64) {
+        block -= 1u64;
+        Span code = host.block(source.context, block);
+        usize start = end - code.count;
+        usize at = code.count;
+        while (at != 0u64) {
+            at -= 1u64;
+            address item = item_at(code, at);
+            View load = instruction(item, host.ir);
+            if (load.tag == OP_VIEW_LOAD && load.c == u64(query.word)
+                && u32(register_scalar(source.registers, load.a)) == query.scalar
+                && nested_load_matches(source, host, query.layout, load, index)
+                && !intervening_write(source, host, start + at + 1u64, source.instructions, item, load)) {
+                return Word(1, load.a);
+            }
+        }
+        end = start;
+    }
+    return Word(0, 0u64);
+}
+
+bool same_dataset_frame(SnapshotSource source, RegisterHost host, StoredDatasetFrame frame, usize root) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
+    requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
+    requires nonzero(host.writes_load) {
+    if (frame.place == DatasetFramePlace::Other) { return false; }
+    if (frame.place == DatasetFramePlace::Local) {
+        if (frame.writes.external != 0 || frame.writes.unknown_storage != 0) { return false; }
+        usize slot = 0u64;
+        while (slot < frame.slots.count) {
+            if (host.loop_local(frame.writes.locals, register_at(frame.slots, slot)) != 0) { return false; }
+            slot += 1u64;
+        }
+        RegisterDefinition definition = application_register_definition(source, host, root);
+        if (definition.instruction != address()) {
+            View origin = instruction(definition.instruction, host.ir);
+            if (origin.tag == OP_LOAD_LOCAL && origin.b == register_at(frame.slots, 0u64)) {
+                return true;
+            }
+        }
+    }
+    return application_register_equal(source, host, root, frame.layout.root) != 0;
+}
+
+extern "C" u32 application_dataset_position(SnapshotSource source, RegisterHost host, Node source_node, StoredDatasetFrame frame, FrameIndex index) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
+    requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
+    requires nonzero(host.writes_load) requires nonzero(index.matches) {
+    View target = host.ir.inspect(source_node);
+    if (target.tag != INDEXED_VIEW) { return 0; }
+    OriginalAddress address_parts = original_address(target.first);
+    OffsetPosition position = dataset_offset(source, host, address_parts, target.a, target.left);
+    if (position.present != 0) {
+        Word root = offset_dataset_frame(source, host, position, frame.layout.wide);
+        if (root.present == 0) { return 0; }
+        bool same = frame.layout.wide != 0
+            ? application_register_equal(source, host, root.value, frame.layout.root) != 0
+            : same_dataset_frame(source, host, frame, root.value);
+        return u32(same && offset_layout_matches(source, host, frame.layout, position)
+            && index.matches(index.context, position.index) != 0);
+    }
+    Word root = direct_dataset_frame(source, host, address_parts, target.left, frame.layout.declared_stride);
+    return u32(root.present != 0 && same_dataset_frame(source, host, frame, root.value)
+        && index.matches(index.context, target.a) != 0);
 }
 
 extern "C" u32 application_same_position(SnapshotSource source, RegisterHost host, Node left, Node right, u32 exact_index) on cpu
