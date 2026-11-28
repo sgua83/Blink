@@ -1254,46 +1254,68 @@ impl Builder<'_> {
             self.scope.module(),
             self.scope.imports(),
         )).await }?;
-        let mut value = if let Some(data) = unsafe { self.world.call(self.application_reference(&args.at(0))).await }? {
-        if !data.permits(Access::Read) {
-            return self.fail(span, "B214", "原子dataset不能转换为普通只读view");
+        enum Input {
+            Dataset(application::DataReference),
+            Value(Value),
         }
-        let element = ty.view.as_deref().unwrap();
-        let actual = data.element_layout().1;
-        if !element.same_layout(actual) {
-            return self.fail(span, "B124", format!("类型不匹配：需要 {}，实际为 {}", element.name, actual.name));
-        }
-        self.require_application_reference_initialized(&data, span)?;
-        let(stride,_)=self.application_reference_layout(&data);
-        let stride_parts=self.application_stride_parts(&stride);
-        self.application_cpu(&data, span)?;
-        let address = self.application_projection_address(&data,span)?;
-        let mut proof = bounds::Proof::default();
-        let pointer = Value {
-            proof: bounds::Proof::default(),
-            literal: false,
-            ty: Ty::vector(Scalar::U32, 2),
-            regs: address.to_vec(),
-            uniform: false,
-            constant: None,
+        let argument = args.at(0);
+        let input = match unsafe { self.world.call(self.application_reference(&argument)).await }? {
+            Some(data) => Input::Dataset(data),
+            None => match unsafe { self.world.call(self.evaluate_returned(&argument, None)).await }? {
+                Some(returns::Returned::Dataset(data)) => {
+                    self.hold_binding(Binding::ApplicationData(data.clone()));
+                    Input::Dataset(application::DataReference::direct(data))
+                }
+                returned => {
+                    let Some(value) = self.returned_expression(returned, argument.span(), false)? else {
+                        return Ok(None);
+                    };
+                    Input::Value(value)
+                }
+            },
         };
-        proof.append(&pointer);
-        proof.append(&data.length);
-        let stride=Value{ty:Ty::vector(Scalar::U32,2),regs:stride_parts.to_vec(),proof:bounds::Proof::default(),literal:false,uniform:stride.uniform,constant:None};
-        proof.append(&stride);
-        proof.set_view_borrow(0, self.data_value_borrow(&data.data));
-        Value {
-            proof,
-            literal: false,
-            ty,
-            regs: vec![address[0], address[1], data.length.regs[0],stride_parts[0],stride_parts[1]],
-            uniform: false,
-            constant: None,
-        }
-        } else {
-            let Some(value) = unsafe { self.world.call(self.expr(&args.at(0))).await }? else { return Ok(None); };
-            self.require_same(&ty, &value.ty, args.at(0).span())?;
-            value
+        let mut value = match input {
+            Input::Dataset(data) => {
+                if !data.permits(Access::Read) {
+                    return self.fail(span, "B214", "原子dataset不能转换为普通只读view");
+                }
+                let element = ty.view.as_deref().unwrap();
+                let actual = data.element_layout().1;
+                if !element.same_layout(actual) {
+                    return self.fail(span, "B124", format!("类型不匹配：需要 {}，实际为 {}", element.name, actual.name));
+                }
+                self.require_application_reference_initialized(&data, span)?;
+                let(stride,_)=self.application_reference_layout(&data);
+                let stride_parts=self.application_stride_parts(&stride);
+                self.application_cpu(&data, span)?;
+                let address = self.application_projection_address(&data,span)?;
+                let mut proof = bounds::Proof::default();
+                let pointer = Value {
+                    proof: bounds::Proof::default(),
+                    literal: false,
+                    ty: Ty::vector(Scalar::U32, 2),
+                    regs: address.to_vec(),
+                    uniform: false,
+                    constant: None,
+                };
+                proof.append(&pointer);
+                proof.append(&data.length);
+                let stride=Value{ty:Ty::vector(Scalar::U32,2),regs:stride_parts.to_vec(),proof:bounds::Proof::default(),literal:false,uniform:stride.uniform,constant:None};
+                proof.append(&stride);
+                proof.set_view_borrow(0, self.data_value_borrow(&data.data));
+                Value {
+                    proof,
+                    literal: false,
+                    ty,
+                    regs: vec![address[0], address[1], data.length.regs[0],stride_parts[0],stride_parts[1]],
+                    uniform: false,
+                    constant: None,
+                }
+            }
+            Input::Value(value) => {
+                self.require_same(&ty, &value.ty, argument.span())?;
+                value
+            }
         };
         if args.len() == 3 {
             let held = self.hold_binding(Binding::Value(value.clone()));
