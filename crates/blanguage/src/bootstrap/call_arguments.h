@@ -161,6 +161,20 @@ extern "C" u32 collect_memory_effect_sources(CallAccess request, EffectSourceHos
     requires nonzero(host.next) requires nonzero(host.possible) requires nonzero(host.external)
     requires nonzero(host.record);
 
+enum MemoryIrRowKind:u32 { Local=0; Data=1; };
+enum MemoryIrOutput:u32 { Call=0; Pointer=1; };
+struct MemoryIrRow { MemoryIrRowKind kind; CallAccess access; usize base; usize length; };
+struct MemoryIrLocal { usize end; usize length; };
+struct MemoryIrRows { usize known; usize locals; CallAccess external; u32 external_present; };
+struct MemoryIrRowsHost {
+    address context;
+    cfn<MemoryIrRow,address,usize> ensures memory(read) known;
+    cfn<MemoryIrLocal,address> local;
+    cfn<void,address,MemoryIrRow> emit;
+};
+extern "C" void materialize_ir_memory(MemoryIrRows rows, MemoryIrOutput format, address output, MemoryIrRowsHost host) on cpu
+    requires nonzero(host.known) requires nonzero(host.local) requires nonzero(host.emit);
+
 enum MemoryIrOwner:u32 { Instruction=0; Argument=1; };
 struct MemoryIrHost {
     bootstrap.ir_dataflow::Host ir;

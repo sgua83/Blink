@@ -1,6 +1,7 @@
 module bootstrap.call_arguments;
 import bootstrap.proof_facts;
 import bootstrap.ir_dataflow;
+import bootstrap.names;
 
 extern "C" void RtlMoveMemory(address output, address input, u64 bytes) on cpu from "KERNEL32.dll";
 bool reads(CallAccess access) on cpu {return access==CallAccess::Read||access==CallAccess::InOut||access==CallAccess::Atomic;}
@@ -512,6 +513,60 @@ extern "C" u32 collect_memory_effect_sources(CallAccess request, EffectSourceHos
             host.record(host.context, access, writes(access) ? 1 : 0);
         }
     }
+}
+
+MemoryIrRow memory_ir_row(MemoryIrRows rows, usize at, MemoryIrRowsHost host) on cpu
+    requires nonzero(host.known) requires nonzero(host.local) {
+    if (at < rows.known) { return host.known(host.context, at); }
+    let local = host.local(host.context);
+    return MemoryIrRow(MemoryIrRowKind::Local, rows.external, local.end - local.length, local.length);
+}
+
+bool memory_alias_less(array<u64,3> left, array<u64,3> right) on cpu {
+    if (left[0] != right[0]) { return left[0] < right[0]; }
+    if (left[1] != right[1]) { return left[1] < right[1]; }
+    return left[2] < right[2];
+}
+
+extern "C" bool memory_alias_before(address left, address right, address context) on cpu {
+    return memory_alias_less(unsafe_position<array<u64,3>>(left), unsafe_position<array<u64,3>>(right));
+}
+
+extern "C" void materialize_ir_memory(MemoryIrRows rows, MemoryIrOutput format, address output, MemoryIrRowsHost host) on cpu
+    requires nonzero(host.known) requires nonzero(host.local) requires nonzero(host.emit) {
+    let count = rows.known + (rows.external_present != 0 ? rows.locals : 0u64);
+    if (format == MemoryIrOutput::Call || count < 2u64) {
+        usize at = 0u64;
+        while (at < count) {
+            host.emit(output, memory_ir_row(rows, at, host));
+            at += 1u64;
+        }
+        return;
+    }
+
+    // Sort the actual pointer keys in the original alias-type, allocation and length order.
+    OrderedTree keys = OrderedTree(address(), 0u64, 0u64, 0u64);
+    let width = size_of<array<u64,3>>();
+    usize at = 0u64;
+    while (at < count) {
+        let row = memory_ir_row(rows, at, host);
+        let key = array<u64,3>(row.kind == MemoryIrRowKind::Local ? 0u64 : 1u64, row.base, row.length);
+        push_memory_effect_record(address_of(keys), width, address_of(key));
+        at += 1u64;
+    }
+    sort_rows<array<u64,3>>(keys.records, keys.count, address(), c_function(memory_alias_before));
+    array<u64,3> previous = unsafe_position<array<u64,3>>(keys.records);
+    at = 0u64;
+    while (at < keys.count) {
+        let key = unsafe_position<array<u64,3>>(unsafe_address(address_bits(keys.records) + at * width));
+        if (at == 0u64 || memory_alias_less(previous, key)) {
+            let kind = key[0] == 0u64 ? MemoryIrRowKind::Local : MemoryIrRowKind::Data;
+            host.emit(output, MemoryIrRow(kind, CallAccess::Value, key[1], key[2]));
+            previous = key;
+        }
+        at += 1u64;
+    }
+    fact_tree_clear(address_of(keys));
 }
 
 address memory_ir_item(bootstrap.ir_dataflow::Span span, usize index) on cpu {

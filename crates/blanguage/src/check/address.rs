@@ -1373,17 +1373,102 @@ impl MemoryAccesses {
         }
     }
 
-    fn local_effects(&self, locals: &BTreeMap<usize, Ty>) -> Vec<MemoryAccess> {
-        let mut effects = self.known.clone();
-        if let Some(access) = self.external {
-            effects.extend(locals.iter().map(|(end, ty)| MemoryAccess {
-                alias: MemoryAlias::Local { base: *end - ty.components.len(), len: ty.components.len() },
-                access,
-            }));
-        }
-        effects
+    fn call_effects(&self, locals: &BTreeMap<usize, Ty>) -> Vec<MemoryAccess> {
+        let mut output = Vec::new();
+        IrMemoryRows { source: self, locals: locals.iter() }.materialize(
+            MemoryIrOutput::Call, std::ptr::from_mut(&mut output).cast(), IrMemoryRows::effect,
+        );
+        output
+    }
+
+    fn pointer_aliases(&self, locals: &BTreeMap<usize, Ty>) -> Vec<MemoryAlias> {
+        let mut output = Vec::new();
+        IrMemoryRows { source: self, locals: locals.iter() }.materialize(
+            MemoryIrOutput::Pointer, std::ptr::from_mut(&mut output).cast(), IrMemoryRows::alias,
+        );
+        output
     }
 }
+
+#[repr(u32)]
+enum MemoryIrRowKind { Local, Data }
+
+#[repr(u32)]
+enum MemoryIrOutput { Call, Pointer }
+
+#[repr(C)]
+struct MemoryIrRow { kind: MemoryIrRowKind, access: Access, base: usize, length: usize }
+
+impl MemoryIrRow {
+    fn alias(&self) -> MemoryAlias {
+        match self.kind {
+            MemoryIrRowKind::Local => MemoryAlias::Local { base: self.base, len: self.length },
+            MemoryIrRowKind::Data => MemoryAlias::Data(self.base),
+        }
+    }
+}
+
+#[repr(C)]
+struct MemoryIrLocal { end: usize, length: usize }
+
+#[repr(C)]
+struct MemoryIrRows { known: usize, locals: usize, external: Access, external_present: u32 }
+
+#[repr(C)]
+struct MemoryIrRowsHost {
+    context: *mut std::ffi::c_void,
+    known: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> MemoryIrRow,
+    local: unsafe extern "C" fn(*mut std::ffi::c_void) -> MemoryIrLocal,
+    emit: unsafe extern "C" fn(*mut std::ffi::c_void, MemoryIrRow),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::materialize_ir_memory"]
+    fn b_materialize_ir_memory(rows: MemoryIrRows, format: MemoryIrOutput, output: *mut std::ffi::c_void, host: MemoryIrRowsHost);
+}
+
+struct IrMemoryRows<'a> {
+    source: &'a MemoryAccesses,
+    locals: std::collections::btree_map::Iter<'a, usize, Ty>,
+}
+
+impl IrMemoryRows<'_> {
+    unsafe extern "C" fn known(context: *mut std::ffi::c_void, index: usize) -> MemoryIrRow {
+        let input = unsafe { &*context.cast::<Self>() };
+        let MemoryAccess { alias, access } = input.source.known[index];
+        match alias {
+            MemoryAlias::Local { base, len } => MemoryIrRow { kind: MemoryIrRowKind::Local, access, base, length: len },
+            MemoryAlias::Data(base) => MemoryIrRow { kind: MemoryIrRowKind::Data, access, base, length: 0 },
+        }
+    }
+
+    unsafe extern "C" fn local(context: *mut std::ffi::c_void) -> MemoryIrLocal {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let (&end, ty) = input.locals.next().unwrap();
+        MemoryIrLocal { end, length: ty.components.len() }
+    }
+
+    unsafe extern "C" fn effect(output: *mut std::ffi::c_void, row: MemoryIrRow) {
+        unsafe { &mut *output.cast::<Vec<MemoryAccess>>() }.push(MemoryAccess { alias: row.alias(), access: row.access });
+    }
+
+    unsafe extern "C" fn alias(output: *mut std::ffi::c_void, row: MemoryIrRow) {
+        unsafe { &mut *output.cast::<Vec<MemoryAlias>>() }.push(row.alias());
+    }
+
+    fn materialize(mut self, format: MemoryIrOutput, output: *mut std::ffi::c_void, emit: unsafe extern "C" fn(*mut std::ffi::c_void, MemoryIrRow)) {
+        let rows = MemoryIrRows {
+            known: self.source.known.len(),
+            locals: self.locals.len(),
+            external: self.source.external.unwrap_or(Access::Value),
+            external_present: u32::from(self.source.external.is_some()),
+        };
+        let host = MemoryIrRowsHost { context: std::ptr::from_mut(&mut self).cast(), known: Self::known, local: Self::local, emit };
+        // The selected emitter writes the actual IR field's element type through this call only.
+        unsafe { b_materialize_ir_memory(rows, format, output, host) }
+    }
+}
+
 #[repr(u32)]
 enum MemoryIrOwner { Instruction, Argument }
 
@@ -1411,7 +1496,7 @@ impl MemoryPublication<'_> {
         let instruction = unsafe { &mut *owner.cast::<Inst>() };
         let InstKind::Call(call) = &mut instruction.kind else { unreachable!() };
         call.memory = call.memory_use.and_then(|usage| input.memory.get(&MemoryTarget::Call(usage)))
-            .map(|effect| effect.local_effects(input.locals)).unwrap_or_default();
+            .map(|effect| effect.call_effects(input.locals)).unwrap_or_default();
         dataflow::Span::mutable(&mut call.arguments)
     }
 
@@ -1441,9 +1526,8 @@ impl MemoryPublication<'_> {
             }
         };
         let IndexedSource::Pointer { aliases, .. } = source else { unreachable!() };
-        *aliases = input.memory.get(&MemoryTarget::Value(register)).into_iter()
-            .flat_map(|effect| effect.local_effects(input.locals)).map(|effect| effect.alias)
-            .collect::<BTreeSet<_>>().into_iter().collect();
+        *aliases = input.memory.get(&MemoryTarget::Value(register))
+            .map(|effect| effect.pointer_aliases(input.locals)).unwrap_or_default();
     }
 
     unsafe extern "C" fn child(owner: *mut std::ffi::c_void, index: u32) -> dataflow::Span {
