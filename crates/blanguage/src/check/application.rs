@@ -265,10 +265,6 @@ struct ApplicationLoads<'a,'w>(&'a Builder<'w>);
 #[repr(C)]
 struct RegisterDefinition { instruction: *const c_void, top: usize }
 
-unsafe extern "C" {
-    #[link_name = "bootstrap.ir_dataflow::register_definition"]
-    fn source_register_definition(code: dataflow::Span, reg: Reg, host: dataflow::Host) -> RegisterDefinition;
-}
 impl ApplicationLoads<'_, '_> {
     fn code(&self)->impl DoubleEndedIterator<Item=&Inst> {
         self.0.loop_contexts.iter().flat_map(|context|context.outer.iter()).chain(self.0.code.iter())
@@ -301,19 +297,19 @@ impl ApplicationLoads<'_, '_> {
             }
         })
     }
-    fn definition(&self, reg: Reg) -> Option<(usize, &Inst)> {
-        let mut end = self.len();
-        let blocks = std::iter::once(self.0.code.as_slice())
-            .chain(self.0.loop_contexts.iter().rev().map(|context| context.outer.as_slice()));
-        for code in blocks {
-            end -= code.len();
-            let found = unsafe { source_register_definition(dataflow::Span::slice(code), reg, dataflow::HOST) };
-            // The returned instruction borrows this block, and top is its enclosing position.
-            if let Some(inst) = unsafe { found.instruction.cast::<Inst>().as_ref() } {
-                return Some((end + found.top, inst));
-            }
+    fn register_source(&self) -> SnapshotSource {
+        SnapshotSource {
+            context: ptr::from_ref(self).cast(),
+            blocks: self.0.loop_contexts.len() + 1,
+            instructions: self.len(),
+            registers: dataflow::Span::slice(&self.0.registers),
         }
-        None
+    }
+
+    fn definition(&self, reg: Reg) -> Option<(usize, &Inst)> {
+        let found = unsafe { source_register_definition(self.register_source(), REGISTER_HOST, reg) };
+        // The result borrows a definition from the Builder's original IR.
+        unsafe { found.instruction.cast::<Inst>().as_ref() }.map(|inst| (found.top, inst))
     }
     fn pointer_call(call:&Call)->Option<Reg> {
         let CallTarget::External(name)=&call.target else{return None;};
@@ -324,74 +320,19 @@ impl ApplicationLoads<'_, '_> {
         }
         match call.arguments.get(1) {Some(CallArgument::Value{values,..})=>values.first().copied(),_=>None}
     }
-    fn local_source(&self,at:usize,read:&Inst)->Option<Reg> {
-        let InstKind::LoadLocal(_,slot)=&read.kind else{return None;};
-        if self.writes_local(self.code().nth(at)?,*slot){return None;}
-        let(distance,write)=self.code().rev().skip(self.len()-at).enumerate().find(|(_,inst)|self.writes_local(inst,*slot))?;
-        if self.loop_writes(at-distance-1,at,read){return None;}
-        match &write.kind {InstKind::StoreLocal(_,value)=>Some(*value),_=>None}
+    fn constant(&self, reg: Reg) -> Option<Bits> {
+        let value = unsafe { source_register_constant(self.register_source(), REGISTER_HOST, reg) };
+        (value.present != 0).then_some(value.value as Bits)
     }
-    fn constant(&self,reg:Reg)->Option<Bits> {
-        let(at,inst)=self.definition(reg)?;
-        match &inst.kind {
-            InstKind::Constant(_,_,bits)=>Some(*bits),
-            InstKind::Cast{src,..}=>constant::cast(self.0.registers[*src],self.0.registers[reg],self.constant(*src)?),
-            InstKind::LoadLocal(..)=>self.local_source(at,inst).and_then(|value|self.constant(value)),
-            _=>None,
-        }
-    }
-    fn same(&self,a:Reg,b:Reg)->bool {
-        if a==b{return true;}
-        if self.0.registers[a]!=self.0.registers[b]{return false;}
-        let a_definition=self.definition(a);let b_definition=self.definition(b);
-        if let Some((at,inst))=a_definition && let Some(value)=self.local_source(at,inst){return self.same(value,b);}
-        if let Some((at,inst))=b_definition && let Some(value)=self.local_source(at,inst){return self.same(a,value);}
-        let(Some((ai,a_inst)),Some((bi,b_inst)))=(a_definition,b_definition)else{return false;};
-        match (&a_inst.kind,&b_inst.kind) {
-            (InstKind::Constant(_,sa,a),InstKind::Constant(_,sb,b))=>sa==sb&&a==b,
-            (InstKind::Cast{src:a,..},InstKind::Cast{src:b,..})=>self.same(*a,*b),
-            (InstKind::Unary{op:a_op,a,..},InstKind::Unary{op:b_op,a:b,..})=>a_op==b_op&&self.same(*a,*b),
-            (InstKind::Binary{op:a_op,a:aa,b:ab,..},InstKind::Binary{op:b_op,a:ba,b:bb,..})=>a_op==b_op&&self.same(*aa,*ba)&&self.same(*ab,*bb),
-            (InstKind::Math{op:a_op,args:a,..},InstKind::Math{op:b_op,args:b,..})=>a_op==b_op&&a.len()==b.len()&&a.iter().zip(b).all(|(a,b)|self.same(*a,*b)),
-            (InstKind::LoadLocal(_,a_slot),InstKind::LoadLocal(_,b_slot))=>{
-                let direct=self.code().nth(ai).unwrap().results().any(|reg|reg==a)&&self.code().nth(bi).unwrap().results().any(|reg|reg==b);
-                let range=if direct{ai.min(bi)+1..ai.max(bi)}else{ai.min(bi)..ai.max(bi)+1};
-                a_slot==b_slot&&!self.loop_writes(ai,bi,a_inst)
-                    &&!self.code().skip(range.start).take(range.len()).any(|inst|self.writes_local(inst,*a_slot))
-            },
-            (InstKind::Call(a_call),InstKind::Call(b_call))=>{
-                let(Some(a_root),Some(b_root))=(Self::pointer_call(a_call),Self::pointer_call(b_call))else{return false;};
-                a_call.values.iter().position(|r|*r==a)==b_call.values.iter().position(|r|*r==b)
-                    &&self.same(a_root,b_root)
-                    &&match(a_call.arguments.first(),b_call.arguments.first()) {
-                        (Some(CallArgument::Value{values:a,..}),Some(CallArgument::Value{values:b,..}))=>a.len()==b.len()&&a.iter().zip(b).all(|(a,b)|self.same(*a,*b)),_=>false,
-                    }
-            },
-            (InstKind::Load{..},InstKind::Load{..})|(InstKind::ViewLoad{..},InstKind::ViewLoad{..})=>{
-                let direct=self.code().nth(ai).unwrap().results().any(|reg|reg==a)&&self.code().nth(bi).unwrap().results().any(|reg|reg==b);
-                let range=if direct{ai.min(bi)+1..ai.max(bi)}else{ai.min(bi)..ai.max(bi)+1};
-                self.same_load(a_inst,b_inst)&&!self.code().skip(range.start).take(range.len()).any(|inst|self.writes(inst,a_inst))
-            },
-            _=>false,
-        }
+
+    fn same(&self, left: Reg, right: Reg) -> bool {
+        unsafe { source_register_equal(self.register_source(), REGISTER_HOST, left, right) != 0 }
     }
     fn stride(&self,value:ElementStride)->Option<u64>{match value{ElementStride::Constant(bytes)=>Some(bytes),ElementStride::Value(parts)=>Some(self.constant(parts[0])?|(self.constant(parts[1])?<<32))}}
     fn same_stride(&self,a:ElementStride,b:ElementStride)->bool{
         match (a,b){(ElementStride::Value(a),ElementStride::Value(b))=>self.same_address(a,b),_=>matches!((self.stride(a),self.stride(b)),(Some(a),Some(b))if a==b)}
     }
     fn same_address(&self,a:[Reg;2],b:[Reg;2])->bool {a.into_iter().zip(b).all(|(a,b)|self.same(a,b))}
-    fn same_load(&self,a_inst:&Inst,b_inst:&Inst)->bool {
-        match (&a_inst.kind,&b_inst.kind) {
-            (InstKind::Load{dst:a_dst,binding:a,index:ai,word:aw},InstKind::Load{dst:b_dst,binding:b,index:bi,word:bw})=>
-                self.0.registers[*a_dst]==self.0.registers[*b_dst]&&a==b&&aw==bw
-                    &&!self.loop_writes(self.definition(*a_dst).unwrap().0,self.definition(*b_dst).unwrap().0,a_inst)&&self.same(*ai,*bi),
-            (InstKind::ViewLoad{dst:a_dst,address:a,index:ai,stride:as_,word:aw},InstKind::ViewLoad{dst:b_dst,address:b,index:bi,stride:bs,word:bw})=>
-                self.0.registers[*a_dst]==self.0.registers[*b_dst]&&self.same_stride(*as_,*bs)&&aw==bw
-                    &&!self.loop_writes(self.definition(*a_dst).unwrap().0,self.definition(*b_dst).unwrap().0,a_inst)
-                    &&self.same_address(*a,*b)&&self.same(*ai,*bi),
-            _=>false,
-        }
-    }
     fn frame_root(&self,address:[Reg;2])->Option<Reg> {
         let(a,first)=self.definition(address[0])?;let(b,_)=self.definition(address[1])?;
         if a!=b{return None;}
@@ -682,15 +623,12 @@ impl Builder<'_> {
     }
     pub(super) fn application_read_snapshots(&self) -> impl FnMut(Reg) -> Reg + '_ {
         let loads = ApplicationLoads(self);
-        let blocks = self.loop_contexts.len() + 1;
-        let instructions = loads.len();
-        let registers = dataflow::Span::slice(&self.registers);
-        let mut context = SnapshotContext { loads, branches: BTreeMap::new() };
+        let mut truths = SnapshotTruthContext { builder: self, branches: BTreeMap::new() };
         move |reg| {
-            let source = SnapshotSource {
-                context: std::ptr::from_mut(&mut context).cast(), blocks, instructions, registers,
+            let host = SnapshotHost {
+                registers: REGISTER_HOST, truth_context: ptr::from_mut(&mut truths).cast(), truth: snapshot_truth,
             };
-            unsafe { source_read_snapshot(source, SNAPSHOT_HOST, reg) }
+            unsafe { source_read_snapshot(loads.register_source(), host, reg) }
         }
     }
 }
@@ -942,66 +880,92 @@ unsafe extern "C" fn indexed_write(context: *const c_void, effect: WriteEffect) 
     u32::from(written)
 }
 
-struct SnapshotContext<'a, 'w> {
-    loads: ApplicationLoads<'a, 'w>,
+struct SnapshotTruthContext<'a, 'w> {
+    builder: &'a Builder<'w>,
     branches: BTreeMap<Reg, Option<bool>>,
 }
 
 #[repr(C)]
 struct SnapshotSource {
-    context: *mut c_void,
+    context: *const c_void,
     blocks: usize,
     instructions: usize,
     registers: dataflow::Span,
 }
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct RegisterHost {
+    ir: dataflow::Host,
+    block: unsafe extern "C" fn(*const c_void, usize) -> dataflow::Span,
+    writes_local: unsafe extern "C" fn(*const c_void, *const c_void, usize) -> u32,
+    writes_load: unsafe extern "C" fn(*const c_void, *const c_void, *const c_void) -> u32,
+    loop_writes: unsafe extern "C" fn(*const c_void, usize, usize, *const c_void) -> u32,
+    cast: unsafe extern "C" fn(*const c_void, Reg, Reg, usize) -> AddressWord,
+    pointer_root: unsafe extern "C" fn(*const c_void, *const c_void) -> AddressWord,
+}
+
+const REGISTER_HOST: RegisterHost = RegisterHost {
+    ir: dataflow::HOST, block: snapshot_block, writes_local: snapshot_writes_local,
+    writes_load: snapshot_writes_load, loop_writes: snapshot_loop_writes,
+    cast: snapshot_cast, pointer_root: snapshot_pointer_root,
+};
 
 #[repr(u32)]
 enum SnapshotTruth { Unknown, Yes, No }
 
 #[repr(C)]
 struct SnapshotHost {
-    ir: dataflow::Host,
-    block: unsafe extern "C" fn(*const c_void, usize) -> dataflow::Span,
-    definition: unsafe extern "C" fn(*const c_void, Reg) -> RegisterDefinition,
-    writes_local: unsafe extern "C" fn(*const c_void, *const c_void, usize) -> u32,
+    registers: RegisterHost,
+    truth_context: *mut c_void,
     truth: unsafe extern "C" fn(*mut c_void, Reg) -> SnapshotTruth,
-    writes_load: unsafe extern "C" fn(*const c_void, *const c_void, *const c_void) -> u32,
-    same_load: unsafe extern "C" fn(*const c_void, *const c_void, *const c_void) -> u32,
 }
 
-const SNAPSHOT_HOST: SnapshotHost = SnapshotHost {
-    ir: dataflow::HOST, block: snapshot_block, definition: snapshot_definition,
-    writes_local: snapshot_writes_local, truth: snapshot_truth,
-    writes_load: snapshot_writes_load, same_load: snapshot_same_load,
-};
-
 unsafe extern "C" {
+    #[link_name = "bootstrap.application_snapshot::application_register_definition"]
+    fn source_register_definition(source: SnapshotSource, host: RegisterHost, register: Reg) -> RegisterDefinition;
+    #[link_name = "bootstrap.application_snapshot::application_register_constant"]
+    fn source_register_constant(source: SnapshotSource, host: RegisterHost, register: Reg) -> AddressWord;
+    #[link_name = "bootstrap.application_snapshot::application_register_equal"]
+    fn source_register_equal(source: SnapshotSource, host: RegisterHost, left: Reg, right: Reg) -> u32;
     #[link_name = "bootstrap.application_snapshot::read_snapshot"]
     fn source_read_snapshot(source: SnapshotSource, host: SnapshotHost, register: Reg) -> Reg;
 }
 
 unsafe extern "C" fn snapshot_block(context: *const c_void, at: usize) -> dataflow::Span {
-    let builder = unsafe { &*context.cast::<SnapshotContext<'_, '_>>() }.loads.0;
+    let builder = unsafe { &*context.cast::<ApplicationLoads<'_, '_>>() }.0;
     let code = builder.loop_contexts.get(at).map_or(builder.code.as_slice(), |scope| scope.outer.as_slice());
     dataflow::Span::slice(code)
 }
 
-unsafe extern "C" fn snapshot_definition(context: *const c_void, reg: Reg) -> RegisterDefinition {
-    let context = unsafe { &*context.cast::<SnapshotContext<'_, '_>>() };
-    context.loads.definition(reg).map_or(
-        RegisterDefinition { instruction: std::ptr::null(), top: 0 },
-        |(top, instruction)| RegisterDefinition { instruction: std::ptr::from_ref(instruction).cast(), top },
-    )
+unsafe extern "C" fn snapshot_writes_local(context: *const c_void, inst: *const c_void, slot: usize) -> u32 {
+    let loads = unsafe { &*context.cast::<ApplicationLoads<'_, '_>>() };
+    u32::from(loads.writes_local(unsafe { &*inst.cast::<Inst>() }, slot))
 }
 
-unsafe extern "C" fn snapshot_writes_local(context: *const c_void, inst: *const c_void, slot: usize) -> u32 {
-    let context = unsafe { &*context.cast::<SnapshotContext<'_, '_>>() };
-    u32::from(context.loads.writes_local(unsafe { &*inst.cast::<Inst>() }, slot))
+unsafe extern "C" fn snapshot_writes_load(context: *const c_void, inst: *const c_void, load: *const c_void) -> u32 {
+    let loads = unsafe { &*context.cast::<ApplicationLoads<'_, '_>>() };
+    u32::from(loads.writes(unsafe { &*inst.cast::<Inst>() }, unsafe { &*load.cast::<Inst>() }))
+}
+
+unsafe extern "C" fn snapshot_loop_writes(context: *const c_void, a: usize, b: usize, read: *const c_void) -> u32 {
+    let loads = unsafe { &*context.cast::<ApplicationLoads<'_, '_>>() };
+    u32::from(loads.loop_writes(a, b, unsafe { &*read.cast::<Inst>() }))
+}
+
+unsafe extern "C" fn snapshot_cast(context: *const c_void, source: Reg, target: Reg, bits: usize) -> AddressWord {
+    let loads = unsafe { &*context.cast::<ApplicationLoads<'_, '_>>() };
+    let registers = &loads.0.registers;
+    AddressWord::from_option(constant::cast(registers[source], registers[target], bits as Bits).map(|b| b as usize))
+}
+
+unsafe extern "C" fn snapshot_pointer_root(_: *const c_void, call: *const c_void) -> AddressWord {
+    AddressWord::from_option(ApplicationLoads::pointer_call(unsafe { &*call.cast::<Call>() }))
 }
 
 unsafe extern "C" fn snapshot_truth(context: *mut c_void, reg: Reg) -> SnapshotTruth {
-    let context = unsafe { &mut *context.cast::<SnapshotContext<'_, '_>>() };
-    let builder = context.loads.0;
+    let context = unsafe { &mut *context.cast::<SnapshotTruthContext<'_, '_>>() };
+    let builder = context.builder;
     match *context.branches.entry(reg).or_insert_with(|| {
         let value = Value {
             ty: Ty::scalar(Scalar::Bool), regs: vec![reg], proof: bounds::Proof::default(),
@@ -1013,16 +977,6 @@ unsafe extern "C" fn snapshot_truth(context: *mut c_void, reg: Reg) -> SnapshotT
         Some(false) => SnapshotTruth::No,
         None => SnapshotTruth::Unknown,
     }
-}
-
-unsafe extern "C" fn snapshot_writes_load(context: *const c_void, inst: *const c_void, load: *const c_void) -> u32 {
-    let context = unsafe { &*context.cast::<SnapshotContext<'_, '_>>() };
-    u32::from(context.loads.writes(unsafe { &*inst.cast::<Inst>() }, unsafe { &*load.cast::<Inst>() }))
-}
-
-unsafe extern "C" fn snapshot_same_load(context: *const c_void, inst: *const c_void, load: *const c_void) -> u32 {
-    let context = unsafe { &*context.cast::<SnapshotContext<'_, '_>>() };
-    u32::from(context.loads.same_load(unsafe { &*inst.cast::<Inst>() }, unsafe { &*load.cast::<Inst>() }))
 }
 
 struct StoredPositionQuery<'a, 'w> {
