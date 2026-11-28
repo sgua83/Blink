@@ -531,6 +531,44 @@ extern "C" u32 equivalent(usize first,usize second,address plan,address context,
 NodeFields required_node(ConditionNodes nodes,usize index) on compute {
  return unsafe_position<NodeFields>(unsafe_address(address_bits(nodes.fields)+u64(index)*size_of<NodeFields>()));
 }
+extern "C" void missing_call_bounds(ConditionNodes nodes,usize root,address candidates,address covered,address missing) on cpu {
+    FactCursor cursor=fact_tree_cursor(candidates);
+    u64 remaining=unsafe_position<OrderedTree>(candidates).count;
+    while(remaining!=0u64){
+        u64 count=min(remaining,64u64);
+        usize index=0u64;
+        while(index<=root){
+            NodeFields node=required_node(nodes,index);
+            u64 mask=0u64;
+            if(node.kind==NodeKind::Impossible){
+                mask=~0u64;
+            }else if(node.kind==NodeKind::Facts){
+                FactCursor leaf=cursor;
+                u64 bit=0u64;
+                while(bit<count){
+                    address key=fact_tree_next(candidates,address_of(leaf),0);
+                    if(fact_tree_contains(node.facts,key)!=0){mask|=1u64<<bit;}
+                    bit+=1u64;
+                }
+            }else{
+                u64 left=unsafe_position<u64>(stack_slot(covered,node.first,8u64));
+                u64 right=unsafe_position<u64>(stack_slot(covered,node.second,8u64));
+                mask=node.kind==NodeKind::Either ? left&right : left|right;
+            }
+            unsafe_position<u64>(stack_slot(covered,index,8u64))=mask;
+            index+=1u64;
+        }
+        u64 known=unsafe_position<u64>(stack_slot(covered,root,8u64));
+        u64 bit=0u64;
+        while(bit<count){
+            address key=fact_tree_next(candidates,address_of(cursor),0);
+            if((known&(1u64<<bit))==0u64){fact_tree_insert(missing,key);}
+            bit+=1u64;
+        }
+        remaining-=count;
+    }
+}
+
 address required_slot(RequiredGraph graph,usize index) on compute {
  return unsafe_address(address_bits(graph.slots)+u64(index)*u64(graph.stride));
 }

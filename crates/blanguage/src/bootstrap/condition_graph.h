@@ -114,6 +114,8 @@ struct RequiredHost {
  cfn<u32,address,usize> valid_additions;
  cfn<void,address,usize> discard;
 };
+
+extern "C" void missing_call_bounds(ConditionNodes nodes,usize root,address candidates,address covered,address missing) on cpu;
 extern "C" void required_prepare(RequiredGraph graph) on cpu;
 extern "C" void required_evaluate(RequiredGraph graph,inout TraversalStack pending,address context,RequiredHost host) on cpu
  requires nonzero(host.leaf) requires nonzero(host.union) requires nonzero(host.common)

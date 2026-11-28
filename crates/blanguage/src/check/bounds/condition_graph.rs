@@ -649,71 +649,26 @@ pub(super) fn project_call<'a, P: CallBindings>(
     ctx.results
 }
 
-struct CallBounds<'a> {
-    ordered: std::slice::Iter<'a, &'a Clause>,
-    candidates: &'a Facts,
-    indices: HashMap<usize, usize>,
-    words: usize,
-    covered: Vec<u64>,
+unsafe extern "C" {
+    #[link_name = "bootstrap.condition_graph::missing_call_bounds"]
+    fn b_missing_call_bounds(
+        nodes: super::codec::conditions::ConditionNodes,
+        root: usize,
+        candidates: &Facts,
+        covered: *mut u64,
+        missing: &mut Facts,
+    );
 }
-impl CallBounds<'_> {
-    fn offset(&self, key: usize) -> usize {
-        self.indices[&key] * self.words
-    }
-}
-unsafe extern "C" fn bound_next(slot: Slot) -> Borrowed {
-    let ctx = unsafe { &mut *slot.cast::<CallBounds<'_>>() };
-    ctx.ordered.next().map_or(ptr::null(), |&clause| ptr::from_ref(clause).cast())
-}
-unsafe extern "C" fn bound_impossible(slot: Slot, source: Borrowed) {
-    let ctx = unsafe { &mut *slot.cast::<CallBounds<'_>>() };
-    let at = ctx.offset(unsafe { call_key(source) });
-    ctx.covered[at..at + ctx.words].fill(u64::MAX);
-}
-unsafe extern "C" fn bound_leaf(slot: Slot, source: Borrowed, facts: Borrowed) {
-    let ctx = unsafe { &mut *slot.cast::<CallBounds<'_>>() };
-    let at = ctx.offset(unsafe { call_key(source) });
-    let present = unsafe { &*facts.cast::<Facts>() };
-    for (index, fact) in ctx.candidates.iter().enumerate() {
-        if present.contains(fact) {
-            ctx.covered[at + index / 64] |= 1 << (index % 64);
-        }
-    }
-}
-unsafe extern "C" fn bound_pair<const EITHER: bool>(slot: Slot, source: Borrowed, left: Borrowed, right: Borrowed) {
-    let ctx = unsafe { &mut *slot.cast::<CallBounds<'_>>() };
-    let out = ctx.offset(unsafe { call_key(source) });
-    let left = ctx.offset(unsafe { call_key(left) });
-    let right = ctx.offset(unsafe { call_key(right) });
-    for i in 0..ctx.words {
-        let a = ctx.covered[left + i];
-        let b = ctx.covered[right + i];
-        ctx.covered[out + i] = if EITHER { a & b } else { a | b };
-    }
-}
+
 pub(super) fn missing_call_bounds(root: &Clause, candidates: &Facts) -> Facts {
-    let ordered = Clause::ordered([root]);
-    let words = candidates.len().div_ceil(64);
-    let mut ctx = CallBounds {
-        ordered: ordered.iter(),
-        candidates,
-        indices: ordered.iter().enumerate().map(|(i, clause)| (clause.key(), i)).collect(),
-        words,
-        covered: vec![0; ordered.len() * words],
-    };
-    unsafe {
-        project_call_graph(std::ptr::from_mut(&mut ctx).cast(), CallProjectionHost {
-            next: bound_next,
-            impossible: bound_impossible,
-            facts: bound_leaf,
-            both: bound_pair::<false>,
-            either: bound_pair::<true>,
-        });
-    }
-    let at = ctx.offset(root.key());
-    candidates.iter().enumerate().filter_map(|(index, value)| {
-        (ctx.covered[at + index / 64] & (1 << (index % 64)) == 0).then_some(*value)
-    }).collect()
+    let mut index = super::codec::conditions::node_ids([root], false);
+    let root = index.index(root.key());
+    let nodes = index.seal();
+    // Every child has a lower node ID. B writes a batch's slots before reading them.
+    let mut covered = Vec::<u64>::with_capacity(root + 1);
+    let mut missing = Facts::new();
+    unsafe { b_missing_call_bounds(nodes, root, candidates, covered.as_mut_ptr(), &mut missing); }
+    missing
 }
 
 unsafe extern "C" fn pending_push(slot: Slot, id: usize, truth: u32) {
