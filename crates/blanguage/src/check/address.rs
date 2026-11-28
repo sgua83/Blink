@@ -673,7 +673,7 @@ impl<'a, I: Iterator<Item = (&'a view::Source, bounds::Clause)>> PositionAt<'a, 
         if parent.layout != query.origin.base { return 0; }
         let Some(position) = parent.position_at(query.origin.words[slot]) else { return 0; };
         query.current = match query.index {
-            Some(index) => select_dataset_position(position, index),
+            Some(index) => position.dataset_position(index),
             None => Some(position),
         };
         query.current.is_some().into()
@@ -2352,25 +2352,6 @@ pub(super) fn initialized_by_effects(
     position.initialized_by(&known)
 }
 
-fn select_dataset_position(position: Position, index: bounds::Operand) -> Option<Position> {
-    if matches!(position, Position::Initialized | Position::Element(..) | Position::ApplicationElement(..)) {
-        return Some(position);
-    }
-    let selected = match index {
-        bounds::Operand::Constant(Scalar::U32, value) => ownership::ApplicationIndex::Constant(value as u32),
-        bounds::Operand::Value(id @ ValueIdentity::Register(reg)) => ownership::ApplicationIndex::Value(id, reg),
-        _ => return None,
-    };
-    let select = |position| select_dataset_position(position, index);
-    Some(match position {
-        Position::Parameter(scope, word) => Position::ApplicationElement(scope, selected, word as u32),
-        Position::ApplicationInput(input, _, word) => Position::ApplicationInput(input, Some(selected), word),
-        Position::Both(a, b) => Position::both(select(a.as_ref().clone())?, select(b.as_ref().clone())?),
-        Position::Conditional(when, a, b) => Position::selected(when.as_ref().clone(), select(a.as_ref().clone())?, select(b.as_ref().clone())?),
-        Position::Indexed(choices, at) => Position::Indexed(choices.iter().cloned().map(select).collect::<Option<_>>()?, at),
-        _ => return None,
-    })
-}
 #[repr(u32)]
 enum BorrowedPositionMatch { Unavailable, Equal, Different }
 

@@ -129,11 +129,22 @@ struct Host {
     insert_set:unsafe extern "C" fn(Address,Address),
 }
 const HOST:Host=Host{inspect,child,equal,identity_equal,presence_kind,presence_equal,presence_uses_index,contains,contains_parameter,contains_element,contains_input,field_coverage,iterate,next,drop_iterator,fresh_vector,push_vector,vector_count,vector_at,make_position,clone_position,fresh_set,insert_set};
+#[repr(C)]
+struct DatasetPositionCleanup {
+    position: unsafe extern "C" fn(Address),
+    vector: unsafe extern "C" fn(Address),
+}
+
+unsafe extern "C" fn drop_position(value: Address) { drop(unsafe { Box::from_raw(value.cast::<Position>()) }); }
+unsafe extern "C" fn drop_position_vector(value: Address) { drop(unsafe { Box::from_raw(value.cast::<Vec<Position>>()) }); }
+
 unsafe extern "C" {
     #[link_name="bootstrap.ownership_position::select"] fn source_select(when:Address,a:Address,b:Address,equal:EqualPosition,presence_kind:PresenceKind)->u32;
     #[link_name="bootstrap.ownership_position::both"] fn source_both(a:Address,b:Address,equal:EqualPosition,inspect:InspectPosition)->u32;
     #[link_name="bootstrap.ownership_position::index"] fn source_index(values:Address,index:Index,width:u64,host:Host)->Address;
     #[link_name="bootstrap.ownership_position::word"] fn source_word(value:Address,index:Index,word:u32,host:Host)->Address;
+    #[link_name = "bootstrap.ownership_position::dataset_position"]
+    fn source_dataset_position(value: Address, selected: Index, host: Host, cleanup: DatasetPositionCleanup) -> Address;
     #[link_name="bootstrap.ownership_position::ready"] fn source_ready(value:Address,known:Address,host:Host)->u32;
     #[link_name="bootstrap.ownership_position::word_ready"] fn source_word_ready(value:Address,at:Index,word:u32,known:Address,host:Host)->u32;
     #[link_name="bootstrap.ownership_position::prefix_ready"] fn source_prefix(value:Address,length:u32,word:u32,known:Address,host:Host)->u32;
@@ -150,6 +161,16 @@ pub(super) fn selected(when:owned_presence::Presence,a:Position,b:Position)->Pos
 pub(super) fn both(a:Position,b:Position)->Position {match unsafe{source_both(pointer(&a),pointer(&b),equal,inspect)} {0=>a,1=>b,_=>Position::Both(Arc::new(a),Arc::new(b))}}
 pub(super) fn indexed(values:Vec<Position>,at:ApplicationIndex,width:usize)->Vec<Position> {*unsafe{Box::from_raw(source_index(pointer(&values),index(Some(&at)),width as u64,HOST).cast::<Vec<Position>>())}}
 pub(super) fn word(value:&Position,at:Option<ApplicationIndex>,word:u32)->Position {*unsafe{Box::from_raw(source_word(pointer(value),index(at.as_ref()),word,HOST).cast::<Position>())}}
+pub(super) fn dataset_position(value: &Position, operand: bounds::Operand) -> Option<Position> {
+    let selected = match operand {
+        bounds::Operand::Constant(Scalar::U32, value) => Some(ApplicationIndex::Constant(value as u32)),
+        bounds::Operand::Value(id @ ValueIdentity::Register(reg)) => Some(ApplicationIndex::Value(id, reg)),
+        _ => None,
+    };
+    let cleanup = DatasetPositionCleanup { position: drop_position, vector: drop_position_vector };
+    let result = unsafe { source_dataset_position(pointer(value), index(selected.as_ref()), HOST, cleanup) };
+    (!result.is_null()).then(|| *unsafe { Box::from_raw(result.cast::<Position>()) })
+}
 pub(super) fn initialized(value:&Position,known:&BTreeSet<Position>)->bool {unsafe{source_ready(pointer(value),pointer(known),HOST)!=0}}
 pub(super) fn word_initialized(value:&Position,at:Option<ApplicationIndex>,word:u32,known:&BTreeSet<Position>)->bool {
     unsafe{source_word_ready(pointer(value),index(at.as_ref()),word,pointer(known),HOST)!=0}

@@ -55,6 +55,17 @@ extern "C" address word(address value,PositionIndex selected,u32 field,Host host
     requires nonzero(host.push_vector)
     requires nonzero(host.make_position)
     requires nonzero(host.clone_position);
+struct DatasetPositionCleanup {
+    cfn<void,address> position;
+    cfn<void,address> vector;
+};
+extern "C" address dataset_position(address value, PositionIndex selected, Host host,
+    DatasetPositionCleanup cleanup) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.child)
+    requires nonzero(host.equal) requires nonzero(host.presence_kind)
+    requires nonzero(host.fresh_vector) requires nonzero(host.push_vector)
+    requires nonzero(host.make_position) requires nonzero(host.clone_position)
+    requires nonzero(cleanup.position) requires nonzero(cleanup.vector);
 extern "C" u32 ready(address value,address known,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.child)

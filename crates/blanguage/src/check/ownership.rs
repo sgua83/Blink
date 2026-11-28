@@ -45,6 +45,7 @@ impl Position {
     pub(super) fn both(a:Self,b:Self)->Self{position::both(a,b)}
     pub(super) fn initialized_by(&self,initialized:&BTreeSet<Position>)->bool{position::initialized(self,initialized)}
     pub(super) fn application_word(&self,index:Option<ApplicationIndex>,word:u32)->Self{position::word(self,index,word)}
+    pub(super) fn dataset_position(&self, index: bounds::Operand) -> Option<Self> { position::dataset_position(self, index) }
     pub(super) fn application_word_initialized(&self,index:Option<ApplicationIndex>,word:u32,initialized:&BTreeSet<Position>)->bool {
         position::word_initialized(self,index,word,initialized)
     }

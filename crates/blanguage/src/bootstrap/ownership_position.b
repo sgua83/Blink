@@ -284,6 +284,61 @@ extern "C" address word(address value,PositionIndex selected,u32 field,Host host
     requires nonzero(host.push_vector)
     requires nonzero(host.make_position)
     requires nonzero(host.clone_position) { return materialize(Projection(value,2,selected,field),host);}
+
+extern "C" address dataset_position(address value, PositionIndex selected, Host host,
+    DatasetPositionCleanup cleanup) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.child)
+    requires nonzero(host.equal) requires nonzero(host.presence_kind)
+    requires nonzero(host.fresh_vector) requires nonzero(host.push_vector)
+    requires nonzero(host.make_position) requires nonzero(host.clone_position)
+    requires nonzero(cleanup.position) requires nonzero(cleanup.vector) {
+    let absent = address();
+    PositionNode shape = host.inspect(value);
+    if (shape.kind == 0 || shape.kind == 4 || shape.kind == 8) { return host.clone_position(value); }
+    if (selected.kind == 0) { return absent; }
+
+    if (shape.kind == 7 || shape.kind == 9) {
+        if (shape.kind == 7) { shape.kind = 8; }
+        shape.index = selected;
+        return host.make_position(shape, absent, absent, absent);
+    }
+    if (shape.kind == 10) {
+        let choices = host.fresh_vector();
+        u64 slot = 0u64;
+        while (slot < shape.count) {
+            let entry = dataset_position(host.child(value, slot), selected, host, cleanup);
+            if (entry == absent) {
+                cleanup.vector(choices);
+                return absent;
+            }
+            host.push_vector(choices, entry);
+            slot += 1u64;
+        }
+        return host.make_position(shape, absent, absent, choices);
+    }
+    if (shape.kind != 11 && shape.kind != 12) { return absent; }
+
+    let left = dataset_position(host.child(value, 0u64), selected, host, cleanup);
+    if (left == absent) { return absent; }
+    let right = dataset_position(host.child(value, 1u64), selected, host, cleanup);
+    if (right == absent) {
+        cleanup.position(left);
+        return absent;
+    }
+    let choice = shape.kind == 11
+        ? select(shape.condition, left, right, host.equal, host.presence_kind)
+        : both(left, right, host.equal, host.inspect);
+    if (choice == 0) {
+        cleanup.position(right);
+        return left;
+    }
+    if (choice == 1) {
+        cleanup.position(left);
+        return right;
+    }
+    return host.make_position(shape, left, right, absent);
+}
+
 extern "C" u32 ready(address value,address known,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.child)
