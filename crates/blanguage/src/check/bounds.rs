@@ -21,6 +21,7 @@ mod integer_relations;
 mod index_domains;
 mod comparison_conditions;
 mod value_conditions;
+pub(super) use value_conditions::CapturedConditionInput;
 mod index_conditions;
 mod numeric_bounds;
 mod execution_conditions;
@@ -1585,13 +1586,9 @@ impl Value {
         range_sets::project(ranges, projection)
     }
     fn integer_projection(&self, component: usize, scalar: Scalar) -> (&[BitRange], range_sets::Projection) {
-        let mask = scalar.bit_mask();
-        let (lower, upper) = self.constant.as_ref().map_or((0, mask), |bits| {
-            let value = bits[component] ^ scalar.order_bias();
-            (value, value.min(mask))
-        });
         let (ranges, excluded) = self.proof.element_intervals(component, scalar);
-        (ranges, range_sets::Projection::new(lower, upper, excluded))
+        let constant = self.constant.as_ref().map(|bits| bits[component]);
+        (ranges, integer_projection(scalar, constant, excluded))
     }
     fn component_numeric_facts(&self, component: usize) -> (ScalarRanges, bool) {
         let scalar = self.ty.components[component].0;
@@ -1653,6 +1650,15 @@ impl Value {
         }
     }
 }
+fn integer_projection(scalar: Scalar, constant: Option<Bits>, excluded: Option<Bits>) -> range_sets::Projection {
+    let mask = scalar.bit_mask();
+    let (lower, upper) = constant.map_or((0, mask), |bits| {
+        let value = bits ^ scalar.order_bias();
+        (value, value.min(mask))
+    });
+    range_sets::Projection::new(lower, upper, excluded)
+}
+
 #[derive(Clone)]
 #[repr(C)]
 pub(super) struct Condition {

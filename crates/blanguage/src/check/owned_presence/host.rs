@@ -33,23 +33,21 @@ fn comparison(value: u32) -> Comparison {
      Comparison::Greater, Comparison::LessEqual, Comparison::GreaterEqual][value as usize]
 }
 unsafe fn take(value: Address) -> Presence { std::mem::replace(unsafe { &mut *value.cast::<Presence>() }, Presence::None) }
-unsafe extern "C" fn compare_input(a: Address, b: Address) -> i32 {
-    unsafe { &*a.cast::<Value>() }.identity().cmp(&unsafe { &*b.cast::<Value>() }.identity()) as i32
+unsafe extern "C" fn input_mentions(value: Address, identity: Address) -> u32 {
+    let value = unsafe { &*value.cast::<PresenceInput>() };
+    u32::from(value.condition().mentions(unsafe { *identity.cast::<ValueIdentity>() }))
 }
-unsafe extern "C" fn constant_input(value: Address) -> u32 {
-    match unsafe { &*value.cast::<Value>() }.constant.as_deref() { Some([0]) => 1, Some([_]) => 2, _ => 0 }
-}
-unsafe extern "C" fn input_uses_index(value: Address, at: PositionIndex) -> u32 {
-    let value = unsafe { &*value.cast::<Value>() };
-    u32::from(match unsafe { required_index(at) } {
-        ownership::ApplicationIndex::Constant(_) => false,
-        ownership::ApplicationIndex::Value(id, _) => value.identity() == id || bounds::Condition::of(value).mentions(id),
-    })
-}
-unsafe extern "C" fn input(output: Address, value: Address) {
-    let value = unsafe { &*value.cast::<Value>() }.clone();
+
+unsafe extern "C" fn capture_input(output: Address, value: Address) {
+    let value = PresenceInput::capture(unsafe { &*value.cast::<Value>() });
     unsafe { *output.cast::<Presence>() = Presence::Input(value); }
 }
+
+unsafe extern "C" fn clone_input(output: Address, value: Address) {
+    let value = unsafe { &*value.cast::<PresenceInput>() }.clone();
+    unsafe { *output.cast::<Presence>() = Presence::Input(value); }
+}
+
 #[repr(u32)]
 pub(in crate::check) enum SharedNodeKind { Position = 0, Presence = 1 }
 
@@ -67,7 +65,7 @@ pub(in crate::check) unsafe extern "C" fn drop_payload(value: Address, kind: Sha
     unsafe {
         match kind {
             SharedNodeKind::Position => value.cast::<Position>().drop_in_place(),
-            SharedNodeKind::Presence => value.cast::<Value>().drop_in_place(),
+            SharedNodeKind::Presence => value.cast::<PresenceInput>().drop_in_place(),
         }
     }
 }
@@ -162,7 +160,7 @@ unsafe extern "C" fn condition_truth(output: Address, value: u32) {
     unsafe { *output.cast::<ConditionSlot>() = Some(bounds::Condition::constant(value != 0)); }
 }
 unsafe extern "C" fn condition_input(output: Address, value: Address) {
-    let value = bounds::Condition::of(unsafe { &*value.cast::<Value>() });
+    let value = unsafe { &*value.cast::<PresenceInput>() }.condition();
     unsafe { *output.cast::<ConditionSlot>() = Some(value); }
 }
 unsafe extern "C" fn condition_index(output: Address, kind: u32, a: PositionIndex, b: PositionIndex) {
@@ -211,10 +209,8 @@ unsafe extern "C" fn condition_truth_in(value: Address, path: Address) -> u32 {
 #[derive(Clone, Copy)]
 struct Host {
     layout: &'static PresenceView,
-    compare_input: unsafe extern "C" fn(Address, Address) -> i32,
-    constant_input: unsafe extern "C" fn(Address) -> u32,
-    input_uses_index: unsafe extern "C" fn(Address, PositionIndex) -> u32,
-    input: unsafe extern "C" fn(Address, Address),
+    input_mentions: unsafe extern "C" fn(Address, Address) -> u32,
+    clone_input: unsafe extern "C" fn(Address, Address),
     drop_payload: unsafe extern "C" fn(Address, SharedNodeKind),
     children_scope: unsafe extern "C" fn(Address, Address, Host, Children) -> u32,
     clone_scope: unsafe extern "C" fn(Address, Address, Host, Scoped) -> u32,
@@ -232,8 +228,7 @@ struct Host {
     condition_truth_in: unsafe extern "C" fn(Address, Address) -> u32,
 }
 const HOST: Host = Host {
-    layout: &PRESENCE_VIEW, compare_input, constant_input, input_uses_index,
-    input, drop_payload,
+    layout: &PRESENCE_VIEW, input_mentions, clone_input, drop_payload,
     children_scope, clone_scope, truth_scope,
     position_equal,
     condition_scope, condition_clone_scope, condition_truth, condition_input,
@@ -244,7 +239,9 @@ unsafe extern "C" {
     #[link_name = "bootstrap.ownership_presence::relation"] fn source_relation(output: Address, value: Selection, host: Host);
     #[link_name = "bootstrap.ownership_presence::compare"] fn source_compare(a: Address, b: Address, host: Host) -> i32;
     #[link_name = "bootstrap.ownership_presence::uses_index"] fn source_uses_index(value: Address, wanted: PositionIndex, host: Host) -> u32;
-    #[link_name = "bootstrap.ownership_presence::from_value"] fn source_from_value(output: Address, value: Address, host: Host);
+    #[link_name = "bootstrap.ownership_presence::from_value"]
+    fn source_from_value(output: Address, value: Address, constant: u32, layout: &PresenceView,
+        capture: unsafe extern "C" fn(Address, Address), drop_payload: unsafe extern "C" fn(Address, SharedNodeKind));
     #[link_name = "bootstrap.ownership_presence::combine"] fn source_combine(left: Address, right: Address, any: u32, host: Host);
     #[link_name = "bootstrap.ownership_presence::negate"] fn source_negate(value: Address, host: Host);
     #[link_name = "bootstrap.ownership_presence::selected"] fn source_selected(output: Address, position: Address, wanted: Address, host: Host);
@@ -290,7 +287,13 @@ pub(super) fn uses_index(value: &Presence, at: ownership::ApplicationIndex) -> b
     unsafe { source_uses_index(pointer(value), position_index(Some(&at)), HOST) != 0 }
 }
 pub(super) fn from_value(value: &Value) -> Presence {
-    let mut output = Presence::None; unsafe { source_from_value(pointer(&mut output), pointer(value), HOST); } output
+    let constant = match value.constant.as_deref() { Some([0]) => 1, Some([_]) => 2, _ => 0 };
+    let mut output = Presence::None;
+    unsafe {
+        source_from_value(std::ptr::from_mut(&mut output).cast(), pointer(value), constant,
+            &PRESENCE_VIEW, capture_input, drop_payload);
+    }
+    output
 }
 pub(super) fn combine(mut left: Presence, mut right: Presence, any: bool) -> Presence {
     unsafe { source_combine(pointer(&mut left), pointer(&mut right), u32::from(any), HOST); } left
@@ -333,7 +336,6 @@ struct EmitBranch { value: Address, slot: usize, condition: Reg, either: u32 }
 struct EmitHost {
     layout: &'static PresenceView,
     constant: unsafe extern "C" fn(Address, u32, u32) -> Reg,
-    input_register: unsafe extern "C" fn(Address) -> Reg,
     compare: unsafe extern "C" fn(Address, u32, Reg, Reg) -> Reg,
     invert: unsafe extern "C" fn(Address, Reg) -> Reg,
     slot: unsafe extern "C" fn(Address) -> usize,
@@ -346,7 +348,7 @@ struct EmitHost {
 }
 
 const EMITTER: EmitHost = EmitHost {
-    layout: &PRESENCE_VIEW, constant: emit_constant, input_register, compare: emit_compare,
+    layout: &PRESENCE_VIEW, constant: emit_constant, compare: emit_compare,
     invert: emit_invert, slot: bool_slot, store: store_bool, load: load_bool,
     scoped_branch, swap_code, fixed_store, branch: emit_branch,
 };
@@ -388,10 +390,6 @@ unsafe extern "C" fn emit_constant(context: Address, value: u32, index: u32) -> 
     let state = unsafe { &mut *context.cast::<Emission<'_, '_>>() };
     let scalar = if index == 0 { Scalar::Bool } else { Scalar::U32 };
     state.value(scalar, |dst| InstKind::Constant(dst, scalar, Bits::from(value)))
-}
-
-unsafe extern "C" fn input_register(value: Address) -> Reg {
-    unsafe { (&*value.cast::<Value>()).regs[0] }
 }
 
 unsafe extern "C" fn emit_compare(context: Address, operation: u32, a: Reg, b: Reg) -> Reg {

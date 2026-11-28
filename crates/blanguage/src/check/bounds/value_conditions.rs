@@ -36,12 +36,55 @@ enum Finish {
     Base,
     Facts,
 }
-struct Context<'a> {
-    value: &'a Value,
-    component: usize,
+struct Component<'a> {
     scalar: Scalar,
-    identity: ValueIdentity,
+    constant: Option<Bits>,
     base: Option<&'a Condition>,
+    domains: Option<&'a Domains>,
+    intervals: &'a [BitRange],
+    excluded: Option<Bits>,
+}
+
+#[derive(Clone)]
+pub(in crate::check) struct CapturedConditionInput {
+    scalar: Scalar,
+    constant: Option<Bits>,
+    base: Option<SharedCondition>,
+    domains: Domains,
+    ranges: Option<ScalarRanges>,
+    excluded: Option<Bits>,
+}
+
+impl CapturedConditionInput {
+    pub(in crate::check) fn capture(value: &Value, component: usize) -> Self {
+        let scalar = value.ty.components[component].0;
+        let (_, excluded) = value.proof.element_intervals(component, scalar);
+        let ranges = if scalar.is_integer() { value.proof.ranges.get(component).cloned() } else { None };
+        Self {
+            scalar,
+            constant: value.constant.as_ref().map(|bits| bits[component]),
+            base: value.proof.conditions.get(component).cloned().flatten(),
+            domains: value.proof.domains.get(component).cloned().unwrap_or_default(),
+            ranges,
+            excluded,
+        }
+    }
+
+    pub(in crate::check) fn project(&self, identity: ValueIdentity) -> Condition {
+        project(identity, Component {
+            scalar: self.scalar,
+            constant: self.constant,
+            base: self.base.as_deref(),
+            domains: Some(&self.domains),
+            intervals: self.ranges.as_ref().map_or(FULL_INTERVALS, |ranges| ranges.0.as_slice()),
+            excluded: self.excluded,
+        })
+    }
+}
+
+struct Context<'a> {
+    component: Component<'a>,
+    identity: ValueIdentity,
     domains: super::domain_store::Iter<'a>,
     facts: [Facts; 2],
     cases: [MaybeUninit<Clause>; 2],
@@ -70,7 +113,9 @@ unsafe extern "C" fn domain(s: Slot, mask: u32, original: Borrowed) {
 }
 unsafe extern "C" fn bounds(s: Slot) -> Bounds {
     let c = unsafe { frame(s) };
-    let (lower, upper) = c.value.component_range(c.component);
+    let input = &c.component;
+    let projection = integer_projection(input.scalar, input.constant, input.excluded);
+    let (lower, upper) = range_sets::project(input.intervals, projection).hull();
     Bounds { lower, upper }
 }
 unsafe extern "C" fn emit(s: Slot, mask: u32, output: Output, bits: u64) {
@@ -81,8 +126,8 @@ unsafe extern "C" fn emit(s: Slot, mask: u32, output: Output, bits: u64) {
         Output::BooleanTrue => Fact::Boolean(id, true),
         Output::Zero => Fact::Zero(id),
         Output::NonZero => Fact::NonZero(id),
-        Output::Minimum => Fact::Minimum(id, c.scalar, bits),
-        Output::Maximum => Fact::Maximum(id, c.scalar, bits),
+        Output::Minimum => Fact::Minimum(id, c.component.scalar, bits),
+        Output::Maximum => Fact::Maximum(id, c.component.scalar, bits),
     };
     insert(c, mask, fact);
 }
@@ -92,12 +137,12 @@ unsafe extern "C" fn finish(s: Slot, truth: u32, mode: Finish) {
     let clause = match mode {
         Finish::Impossible => Clause::impossible(),
         Finish::Base => c
-            .base
+            .component.base
             .map(|base| base.cases[at].clone())
             .unwrap_or_default(),
         Finish::Facts => {
             let facts = Clause::facts(std::mem::take(&mut c.facts[at]));
-            match c.base {
+            match c.component.base {
                 Some(base) => Clause::both(&base.cases[at], &facts),
                 None => facts,
             }
@@ -119,8 +164,19 @@ unsafe extern "C" {
 }
 pub(super) fn component(value: &Value, component: usize) -> Condition {
     let scalar = value.ty.components[component].0;
-    let base = value.proof.component_condition(component);
-    let base_cases = base
+    let (intervals, excluded) = value.proof.element_intervals(component, scalar);
+    project(value.component_identity(component), Component {
+        scalar,
+        constant: value.constant.as_ref().map(|bits| bits[component]),
+        base: value.proof.component_condition(component),
+        domains: value.proof.domains.get(component),
+        intervals,
+        excluded,
+    })
+}
+
+fn project(identity: ValueIdentity, component: Component<'_>) -> Condition {
+    let base_cases = component.base
         .map(|base| {
             base.cases
                 .iter()
@@ -134,30 +190,20 @@ pub(super) fn component(value: &Value, component: usize) -> Condition {
                 })
         })
         .unwrap_or(3);
-    let constant = value
-        .constant
-        .as_ref()
-        .map(|bits| Constant {
-            present: 1,
-            bits: bits[component],
-        })
-        .unwrap_or(Constant {
-            present: 0,
-            bits: 0,
-        });
+    let constant = component.constant.map_or(
+        Constant { present: 0, bits: 0 },
+        |bits| Constant { present: 1, bits },
+    );
     let input = Input {
-        scalar: unsafe { fact_fields::scalar(ptr::from_ref(&scalar).cast()) },
+        scalar: unsafe { fact_fields::scalar(ptr::from_ref(&component.scalar).cast()) },
         constant,
         base_cases,
     };
-    let empty = Domains::new();
+    let domains = component.domains.map(Domains::iter).unwrap_or_default();
     let mut context = Context {
-        value,
         component,
-        scalar,
-        identity: value.component_identity(component),
-        base,
-        domains: value.proof.domains.get(component).unwrap_or(&empty).iter(),
+        identity,
+        domains,
         facts: std::array::from_fn(|_| Facts::new()),
         cases: std::array::from_fn(|_| MaybeUninit::uninit()),
     };

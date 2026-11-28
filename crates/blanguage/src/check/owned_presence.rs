@@ -2,11 +2,32 @@
 use super::*;
 use application::Ownership;
 use returns::Returned;
+
+#[derive(Clone)]
+#[repr(C)]
+pub(super) struct PresenceInput {
+    identity: ValueIdentity,
+    register: Reg,
+    facts: bounds::CapturedConditionInput,
+}
+
+impl PresenceInput {
+    fn capture(value: &Value) -> Self {
+        Self {
+            identity: value.identity(),
+            register: value.regs[0],
+            facts: bounds::CapturedConditionInput::capture(value, 0),
+        }
+    }
+
+    fn condition(&self) -> bounds::Condition { self.facts.project(self.identity) }
+}
+
 #[repr(C, u32)]
 pub(super) enum Presence {
     None = 0,
     All = 1,
-    Input(Value) = 2,
+    Input(PresenceInput) = 2,
     Selected(Comparison, ownership::ApplicationIndex, ownership::ApplicationIndex) = 3,
     Not(PresenceNode) = 4,
     Both(PresenceNode, PresenceNode) = 5,
