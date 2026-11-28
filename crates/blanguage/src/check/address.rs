@@ -977,6 +977,86 @@ fn merged_external_access(left: Option<Access>, right: Option<Access>) -> Option
         (left, right) => left.or(right),
     }
 }
+#[repr(u32)]
+enum EffectSourceKind { End, Position, External, Other }
+
+#[repr(C)]
+struct EffectSourceView { kind: EffectSourceKind, writable: u32 }
+
+#[repr(C)]
+struct EffectSourceHost {
+    context: *mut std::ffi::c_void,
+    next: unsafe extern "C" fn(*mut std::ffi::c_void) -> EffectSourceView,
+    possible: unsafe extern "C" fn(*mut std::ffi::c_void) -> u32,
+    external: unsafe extern "C" fn(*mut std::ffi::c_void) -> u32,
+    record: unsafe extern "C" fn(*mut std::ffi::c_void, Access, u32),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::collect_memory_effect_sources"]
+    fn b_collect_memory_effect_sources(request: Access, host: EffectSourceHost) -> u32;
+}
+
+struct EffectSources<'a, 'b, I, P, W> {
+    sources: I,
+    path: std::cell::LazyCell<bounds::Clause, P>,
+    written: std::cell::LazyCell<Option<&'b bounds::Proof>, W>,
+    current: Option<(&'a view::Source, bounds::Clause)>,
+    records: MemoryEffectRecords,
+}
+
+impl<'a, 'b, I, P, W> EffectSources<'a, 'b, I, P, W>
+where
+    I: Iterator<Item = (&'a view::Source, bounds::Clause)>,
+    P: FnOnce() -> bounds::Clause,
+    W: FnOnce() -> Option<&'b bounds::Proof>,
+{
+    unsafe extern "C" fn next(context: *mut std::ffi::c_void) -> EffectSourceView {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        input.current = input.sources.next();
+        let (kind, writable) = match input.current.as_ref().map(|(source, _)| *source) {
+            None => (EffectSourceKind::End, false),
+            Some(view::Source::Position(origin)) => (EffectSourceKind::Position, origin.writable),
+            Some(view::Source::External) => (EffectSourceKind::External, false),
+            _ => (EffectSourceKind::Other, false),
+        };
+        EffectSourceView { kind, writable: u32::from(writable) }
+    }
+
+    unsafe extern "C" fn possible(context: *mut std::ffi::c_void) -> u32 {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let (_, when) = input.current.as_mut().unwrap();
+        *when = bounds::Clause::both(when, &input.path);
+        u32::from(when.possible())
+    }
+
+    unsafe extern "C" fn external(context: *mut std::ffi::c_void) -> u32 {
+        let input = unsafe { &*context.cast::<Self>() };
+        let (source, when) = input.current.as_ref().unwrap();
+        u32::from(source_has_external_memory(source, || Some(when)))
+    }
+
+    unsafe extern "C" fn record(context: *mut std::ffi::c_void, access: Access, retain_value: u32) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let (view::Source::Position(origin), when) = input.current.take().unwrap() else { unreachable!() };
+        let written = if retain_value != 0 { input.written.cloned() } else { None };
+        input.records.push((origin.clone(), when, access, written));
+    }
+
+    fn collect(mut self, access: Access) -> MemoryEffect {
+        let host = EffectSourceHost {
+            context: std::ptr::from_mut(&mut self).cast(),
+            next: Self::next,
+            possible: Self::possible,
+            external: Self::external,
+            record: Self::record,
+        };
+        // B advances this borrowed source iterator and publishes only retained records.
+        let external = unsafe { b_collect_memory_effect_sources(access, host) };
+        MemoryEffect { external: (external != 0).then_some(access), known: self.records }
+    }
+}
+
 impl MemoryEffect {
     pub fn of(borrow: &view::Borrow, access: Access, written: Option<&bounds::Proof>) -> Self {
         Self::from_sources(borrow.sources.entries(), bounds::Clause::default, access, || written)
@@ -987,29 +1067,13 @@ impl MemoryEffect {
         access: Access,
         written: impl FnOnce() -> Option<&'b bounds::Proof>,
     ) -> Self {
-        let mut effect = Self::default();
-        let path = std::cell::LazyCell::new(path);
-        let written = std::cell::LazyCell::new(written);
-        for (source, when) in sources {
-            let origin = match source {
-                view::Source::Position(origin) => Some(origin),
-                view::Source::External if effect.external.is_none() => None,
-                _ => continue,
-            };
-            let when = bounds::Clause::both(&when, &path);
-            if !when.possible() {
-                continue;
-            }
-            if effect.external.is_none() && source_has_external_memory(source, || Some(&when)) {
-                effect.external = Some(access);
-            }
-            if let Some(origin) = origin {
-                let access = if origin.writable { access } else { Access::Read };
-                let value = if access.writes() { written.cloned() } else { None };
-                effect.known.push((origin.clone(), when, access, value));
-            }
-        }
-        effect
+        EffectSources {
+            sources,
+            path: std::cell::LazyCell::new(path),
+            written: std::cell::LazyCell::new(written),
+            current: None,
+            records: MemoryEffectRecords::default(),
+        }.collect(access)
     }
 
     pub fn union(&mut self,other:Self) {

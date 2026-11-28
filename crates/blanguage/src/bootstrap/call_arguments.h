@@ -147,6 +147,19 @@ extern "C" u8 project_address_write_bytes(address position, u32 width, WriteProj
     requires nonzero(host.distinct_element) requires nonzero(host.position) requires nonzero(host.child)
     requires nonzero(host.regions) requires nonzero(host.region);
 
+enum EffectSourceKind:u32 { End=0; Position=1; External=2; Other=3; };
+struct EffectSourceView { EffectSourceKind kind; u32 writable; };
+struct EffectSourceHost {
+    address context;
+    cfn<EffectSourceView,address> next;
+    cfn<u32,address> possible;
+    cfn<u32,address> external;
+    cfn<void,address,CallAccess,u32> record;
+};
+extern "C" u32 collect_memory_effect_sources(CallAccess request, EffectSourceHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.possible) requires nonzero(host.external)
+    requires nonzero(host.record);
+
 extern "C" void push_memory_effect_record(address records, usize width, address record) on cpu
     requires nonzero(width);
 extern "C" void append_memory_effect_records(address records, address source, usize width) on cpu

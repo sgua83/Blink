@@ -495,6 +495,24 @@ extern "C" u8 project_address_write_bytes(address position, u32 width, WriteProj
     return bytes;
 }
 
+extern "C" u32 collect_memory_effect_sources(CallAccess request, EffectSourceHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.possible) requires nonzero(host.external)
+    requires nonzero(host.record) {
+    u32 external = 0;
+    while (true) {
+        let source = host.next(host.context);
+        if (source.kind == EffectSourceKind::End) { return external; }
+        if (source.kind != EffectSourceKind::Position &&
+            (source.kind != EffectSourceKind::External || external != 0)) { continue; }
+        if (host.possible(host.context) == 0) { continue; }
+        if (external == 0) { external = host.external(host.context); }
+        if (source.kind == EffectSourceKind::Position) {
+            let access = source.writable != 0 ? request : CallAccess::Read;
+            host.record(host.context, access, writes(access) ? 1 : 0);
+        }
+    }
+}
+
 extern "C" void push_memory_effect_record(address records, usize width, address record) on cpu
     requires nonzero(width) {
     let destination = ordered_tree_prepare(records, width);
