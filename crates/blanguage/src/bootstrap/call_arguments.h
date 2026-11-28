@@ -357,6 +357,37 @@ extern "C" void restrict_borrow_edges(BorrowEdgeGroup group,address path,cfn<add
     requires nonzero(both);
 
 struct BorrowOutputShape { BorrowEdgeGroup inputs; BorrowEdgeGroup calls; BorrowEdgeGroup reads; BorrowEdgeGroup sources; };
+
+enum BorrowInquiry:u32 { Active=0; Pending=1; PendingInPath=2; Content=3; Unresolved=4; Local=5; };
+enum BorrowReachSourceKind:u32 { Other=0; Unresolved=1; Position=2; Contents=3; Relation=4; Child=5; Task=6; TaskOutput=7; };
+enum BorrowReachRoot:u32 { Other=0; Resource=1; Dataset=2; Derived=3; };
+enum BorrowReachChild:u32 { Single=0; Captures=1; Initialized=2; Output=3; };
+enum BorrowReachLeaf:u32 {
+    OriginPending=0; OriginLocal=1; OriginContent=2; OriginUnresolved=3;
+    RelationPending=4; RelationContent=5; RelationUnresolved=6; RelationLocal=7;
+};
+struct BorrowReachSource {
+    BorrowReachSourceKind kind;
+    BorrowReachRoot root;
+    u32 returned;
+    usize outputs;
+};
+struct BorrowReachHost {
+    address context;
+    cfn<address,address> initial;
+    cfn<address,address,address> both;
+    cfn<u32,address> possible;
+    cfn<BorrowReachSource,address> describe;
+    cfn<BorrowOutputShape,address,BorrowReachChild,usize> child;
+    cfn<u32,address,BorrowReachLeaf> leaf;
+};
+extern "C" u32 query_borrow_reachability(BorrowOutputShape shape,BorrowInquiry inquiry,BorrowReachHost host) on cpu
+    requires nonzero(host.initial) requires nonzero(host.both) requires nonzero(host.possible)
+    requires nonzero(host.describe) requires nonzero(host.child) requires nonzero(host.leaf);
+extern "C" u32 query_borrow_source(address source,BorrowInquiry inquiry,BorrowReachHost host) on cpu
+    requires nonzero(host.initial) requires nonzero(host.both) requires nonzero(host.possible)
+    requires nonzero(host.describe) requires nonzero(host.child) requires nonzero(host.leaf);
+
 struct BorrowOutputHost {
     address context;
     cfn<void,address,BorrowCallPart,address> collect;

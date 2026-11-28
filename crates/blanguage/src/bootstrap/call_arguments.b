@@ -5,6 +5,12 @@ import bootstrap.output_bindings;
 import bootstrap.ir_dataflow;
 import bootstrap.names;
 
+extern "C" handle GetProcessHeap() on cpu from "KERNEL32.dll";
+extern "C" address HeapAlloc(handle heap,u32 flags,usize bytes) on cpu from "KERNEL32.dll";
+extern "C" address HeapReAlloc(handle heap,u32 flags,address data,usize bytes) on cpu from "KERNEL32.dll";
+extern "C" i32 HeapFree(handle heap,u32 flags,address data) on cpu from "KERNEL32.dll";
+extern "C" never abort() on cpu from "ucrtbase.dll";
+
 extern "C" void RtlMoveMemory(address output, address input, u64 bytes) on cpu from "KERNEL32.dll";
 bool reads(CallAccess access) on cpu {return access==CallAccess::Read||access==CallAccess::InOut||access==CallAccess::Atomic;}
 bool writes(CallAccess access) on cpu {return access==CallAccess::Write||access==CallAccess::InOut||access==CallAccess::Atomic;}
@@ -898,6 +904,255 @@ extern "C" void restrict_borrow_edges(BorrowEdgeGroup group,address path,cfn<add
         unsafe_position<address>(current) = both(previous,condition);
         clause_release(previous);
     }
+}
+
+enum BorrowReachWorkKind:u32 { Group=0; Children=1; LeavePath=2; };
+
+struct BorrowReachWork {
+    BorrowReachWorkKind kind;
+    BorrowInquiry inquiry;
+    BorrowEdgeGroup group;
+    FactCursor cursor;
+    address source;
+    usize index;
+    usize limit;
+    u32 sources;
+};
+
+struct BorrowReachBuffer { address records; usize count; usize capacity; };
+struct BorrowReachPath { address when; address value; };
+
+struct BorrowReachWalk {
+    BorrowReachBuffer work;
+    BorrowReachBuffer paths;
+    address root;
+    u32 root_ready;
+    usize resolved;
+};
+
+address borrow_reach_slot(BorrowReachBuffer buffer,usize index,usize stride) on cpu {
+    return unsafe_address(address_bits(buffer.records)+index*stride);
+}
+
+address append_borrow_reach_slot(inout BorrowReachBuffer buffer,usize stride) on cpu requires nonzero(stride) {
+    if(buffer.count==buffer.capacity){
+        if(buffer.capacity>9223372036854775807u64/stride/2u64){abort();}
+        usize capacity=buffer.capacity==0u64?8u64:buffer.capacity*2u64;
+        let heap=GetProcessHeap();
+        address records=buffer.records==address()?HeapAlloc(heap,0,capacity*stride):
+            HeapReAlloc(heap,0,buffer.records,capacity*stride);
+        if(records==address()){abort();}
+        buffer.records=records;
+        buffer.capacity=capacity;
+    }
+    let slot=borrow_reach_slot(buffer,buffer.count,stride);
+    buffer.count+=1u64;
+    return slot;
+}
+
+void push_borrow_reach_work(inout BorrowReachWalk walk,BorrowReachWork value) on cpu {
+    let slot=append_borrow_reach_slot(walk.work,size_of<BorrowReachWork>());
+    unsafe_position<BorrowReachWork>(slot)=value;
+}
+
+BorrowReachWork plain_borrow_reach_work(BorrowReachWorkKind kind,BorrowInquiry inquiry,address source) on cpu {
+    return BorrowReachWork(kind,inquiry,BorrowEdgeGroup(address(),0u64,0u64),FactCursor(0u64,0u64),source,0u64,0u64,0);
+}
+
+void push_borrow_reach_path(inout BorrowReachWalk walk,address when) on cpu {
+    let slot=append_borrow_reach_slot(walk.paths,size_of<BorrowReachPath>());
+    unsafe_position<BorrowReachPath>(slot)=BorrowReachPath(when,address());
+}
+
+void pop_borrow_reach_path(inout BorrowReachWalk walk) on cpu {
+    walk.paths.count-=1u64;
+    if(walk.resolved>walk.paths.count){
+        walk.resolved=walk.paths.count;
+        let slot=borrow_reach_slot(walk.paths,walk.paths.count,size_of<BorrowReachPath>());
+        clause_release(unsafe_position<BorrowReachPath>(slot).value);
+    }
+}
+
+address resolve_borrow_reach_path(inout BorrowReachWalk walk,BorrowReachHost host) on cpu
+    requires nonzero(host.initial) requires nonzero(host.both) requires nonzero(host.possible) {
+    if(walk.root_ready==0){
+        let slot=host.initial(host.context);
+        if(slot!=address()){walk.root=unsafe_position<address>(slot);}
+        walk.root_ready=1;
+    }
+    address value=walk.root;
+    if(walk.resolved!=0u64){
+        let previous=borrow_reach_slot(walk.paths,walk.resolved-1u64,size_of<BorrowReachPath>());
+        value=unsafe_position<BorrowReachPath>(previous).value;
+    }
+    while(walk.resolved<walk.paths.count){
+        let slot=borrow_reach_slot(walk.paths,walk.resolved,size_of<BorrowReachPath>());
+        if(value!=address()){
+            value=host.both(value,unsafe_position<BorrowReachPath>(slot).when);
+            if(host.possible(value)==0){clause_release(value);value=address();}
+        }
+        unsafe_position<BorrowReachPath>(slot).value=value;
+        walk.resolved+=1u64;
+    }
+    return value;
+}
+
+void queue_borrow_reach_group(inout BorrowReachWalk walk,BorrowEdgeGroup group,BorrowInquiry inquiry,u32 sources) on cpu {
+    if(unsafe_position<OrderedTree>(group.tree).count==0u64){return;}
+    let cursor=ordered_tree_cursor(group.tree,group.stride);
+    push_borrow_reach_work(walk,BorrowReachWork(BorrowReachWorkKind::Group,inquiry,group,cursor,address(),0u64,0u64,sources));
+}
+
+bool queue_borrow_reach_groups(inout BorrowReachWalk walk,BorrowOutputShape shape,BorrowInquiry inquiry) on cpu {
+    if(inquiry==BorrowInquiry::Pending){
+        if(unsafe_position<OrderedTree>(shape.inputs.tree).count!=0u64||
+            unsafe_position<OrderedTree>(shape.calls.tree).count!=0u64||
+            unsafe_position<OrderedTree>(shape.reads.tree).count!=0u64){return true;}
+    }
+    queue_borrow_reach_group(walk,shape.sources,inquiry,1);
+    if(inquiry==BorrowInquiry::PendingInPath){
+        queue_borrow_reach_group(walk,shape.reads,inquiry,0);
+        queue_borrow_reach_group(walk,shape.calls,inquiry,0);
+        queue_borrow_reach_group(walk,shape.inputs,inquiry,0);
+    }
+    return false;
+}
+
+bool inspect_borrow_reach_source(
+    inout BorrowReachWalk walk,address source,BorrowInquiry inquiry,BorrowReachHost host
+) on cpu
+    requires nonzero(host.initial) requires nonzero(host.both) requires nonzero(host.possible)
+    requires nonzero(host.describe) requires nonzero(host.child) requires nonzero(host.leaf) {
+    let shape=host.describe(source);
+    if(shape.kind==BorrowReachSourceKind::Unresolved){
+        return inquiry==BorrowInquiry::Unresolved&&resolve_borrow_reach_path(walk,host)!=address();
+    }
+    if(shape.kind==BorrowReachSourceKind::Relation){
+        if(inquiry==BorrowInquiry::Pending){return host.leaf(source,BorrowReachLeaf::RelationPending)!=0;}
+        if(inquiry==BorrowInquiry::Content){return host.leaf(source,BorrowReachLeaf::RelationContent)!=0;}
+        let leaf=inquiry==BorrowInquiry::Local?BorrowReachLeaf::RelationLocal:BorrowReachLeaf::RelationUnresolved;
+        return host.leaf(source,leaf)!=0&&resolve_borrow_reach_path(walk,host)!=address();
+    }
+    if(shape.kind==BorrowReachSourceKind::Contents){
+        if(inquiry==BorrowInquiry::Pending){return host.leaf(source,BorrowReachLeaf::OriginPending)!=0;}
+        if(inquiry==BorrowInquiry::Content){return true;}
+        if(inquiry==BorrowInquiry::Unresolved){
+            return (host.leaf(source,BorrowReachLeaf::OriginLocal)!=0||
+                host.leaf(source,BorrowReachLeaf::OriginUnresolved)!=0)&&resolve_borrow_reach_path(walk,host)!=address();
+        }
+        return false;
+    }
+    if(shape.kind==BorrowReachSourceKind::Position){
+        if(inquiry==BorrowInquiry::Pending){return host.leaf(source,BorrowReachLeaf::OriginPending)!=0;}
+        if(inquiry==BorrowInquiry::Content){return host.leaf(source,BorrowReachLeaf::OriginContent)!=0;}
+        if(shape.root==BorrowReachRoot::Dataset||shape.root==BorrowReachRoot::Derived||
+            (inquiry==BorrowInquiry::Unresolved&&shape.root==BorrowReachRoot::Resource)){
+            return queue_borrow_reach_groups(walk,host.child(source,BorrowReachChild::Single,0u64),inquiry);
+        }
+        return inquiry==BorrowInquiry::Local&&host.leaf(source,BorrowReachLeaf::OriginLocal)!=0&&
+            resolve_borrow_reach_path(walk,host)!=address();
+    }
+    if(shape.kind==BorrowReachSourceKind::Task){
+        BorrowReachWork children=plain_borrow_reach_work(BorrowReachWorkKind::Children,inquiry,source);
+        children.limit=shape.outputs+2u64;
+        push_borrow_reach_work(walk,children);
+        return false;
+    }
+    if(shape.kind==BorrowReachSourceKind::TaskOutput){
+        if(inquiry==BorrowInquiry::Pending&&shape.returned==0){return true;}
+        return queue_borrow_reach_groups(walk,host.child(source,BorrowReachChild::Single,0u64),inquiry);
+    }
+    if(shape.kind==BorrowReachSourceKind::Child){
+        return queue_borrow_reach_groups(walk,host.child(source,BorrowReachChild::Single,0u64),inquiry);
+    }
+    return false;
+}
+
+bool run_borrow_reach_walk(inout BorrowReachWalk walk,BorrowReachHost host) on cpu
+    requires nonzero(host.initial) requires nonzero(host.both) requires nonzero(host.possible)
+    requires nonzero(host.describe) requires nonzero(host.child) requires nonzero(host.leaf) {
+    while(walk.work.count!=0u64){
+        walk.work.count-=1u64;
+        let slot=borrow_reach_slot(walk.work,walk.work.count,size_of<BorrowReachWork>());
+        BorrowReachWork pending=unsafe_position<BorrowReachWork>(slot);
+        if(pending.kind==BorrowReachWorkKind::LeavePath){
+            pop_borrow_reach_path(walk);
+            continue;
+        }
+        if(pending.kind==BorrowReachWorkKind::Children){
+            let part=pending.index==0u64?BorrowReachChild::Captures:
+                (pending.index==1u64?BorrowReachChild::Initialized:BorrowReachChild::Output);
+            let index=pending.index<2u64?0u64:pending.index-2u64;
+            pending.index+=1u64;
+            if(pending.index<pending.limit){push_borrow_reach_work(walk,pending);}
+            if(queue_borrow_reach_groups(walk,host.child(pending.source,part,index),pending.inquiry)){return true;}
+            continue;
+        }
+
+        let edge=ordered_tree_step(pending.group.tree,pending.group.stride,address_of(pending.cursor),0);
+        if(edge==address()){continue;}
+        push_borrow_reach_work(walk,pending);
+        if(pending.inquiry==BorrowInquiry::Pending||pending.inquiry==BorrowInquiry::Content){
+            if(inspect_borrow_reach_source(walk,edge,pending.inquiry,host)){return true;}
+            continue;
+        }
+
+        let when=unsafe_position<address>(borrow_edge_condition(pending.group,edge));
+        push_borrow_reach_path(walk,when);
+        if(pending.inquiry==BorrowInquiry::PendingInPath){
+            let found=resolve_borrow_reach_path(walk,host)!=address();
+            pop_borrow_reach_path(walk);
+            if(found&&(pending.sources==0||inspect_borrow_reach_source(walk,edge,BorrowInquiry::Pending,host))){
+                return true;
+            }
+        }else{
+            push_borrow_reach_work(walk,plain_borrow_reach_work(BorrowReachWorkKind::LeavePath,pending.inquiry,address()));
+            if(inspect_borrow_reach_source(walk,edge,pending.inquiry,host)){return true;}
+        }
+    }
+    return false;
+}
+
+bool active_borrow_reach_group(BorrowEdgeGroup group,cfn<u32,address> possible) on cpu requires nonzero(possible) {
+    FactCursor cursor=ordered_tree_cursor(group.tree,group.stride);
+    while(true){
+        let edge=ordered_tree_step(group.tree,group.stride,address_of(cursor),0);
+        if(edge==address()){return false;}
+        if(possible(unsafe_position<address>(borrow_edge_condition(group,edge)))!=0){return true;}
+    }
+}
+
+void release_borrow_reach_walk(inout BorrowReachWalk walk) on cpu {
+    while(walk.paths.count!=0u64){pop_borrow_reach_path(walk);}
+    let heap=GetProcessHeap();
+    if(walk.paths.records!=address()){HeapFree(heap,0,walk.paths.records);}
+    if(walk.work.records!=address()){HeapFree(heap,0,walk.work.records);}
+}
+
+extern "C" u32 query_borrow_reachability(BorrowOutputShape shape,BorrowInquiry inquiry,BorrowReachHost host) on cpu
+    requires nonzero(host.initial) requires nonzero(host.both) requires nonzero(host.possible)
+    requires nonzero(host.describe) requires nonzero(host.child) requires nonzero(host.leaf) {
+    if(inquiry==BorrowInquiry::Active){
+        return active_borrow_reach_group(shape.sources,host.possible)||
+            active_borrow_reach_group(shape.inputs,host.possible)||
+            active_borrow_reach_group(shape.calls,host.possible)||
+            active_borrow_reach_group(shape.reads,host.possible)?1:0;
+    }
+    let empty=BorrowReachBuffer(address(),0u64,0u64);
+    BorrowReachWalk walk=BorrowReachWalk(empty,empty,address(),0,0u64);
+    let found=queue_borrow_reach_groups(walk,shape,inquiry)||run_borrow_reach_walk(walk,host);
+    release_borrow_reach_walk(walk);
+    return found?1:0;
+}
+
+extern "C" u32 query_borrow_source(address source,BorrowInquiry inquiry,BorrowReachHost host) on cpu
+    requires nonzero(host.initial) requires nonzero(host.both) requires nonzero(host.possible)
+    requires nonzero(host.describe) requires nonzero(host.child) requires nonzero(host.leaf) {
+    let empty=BorrowReachBuffer(address(),0u64,0u64);
+    BorrowReachWalk walk=BorrowReachWalk(empty,empty,address(),0,0u64);
+    let found=inspect_borrow_reach_source(walk,source,inquiry,host)||run_borrow_reach_walk(walk,host);
+    release_borrow_reach_walk(walk);
+    return found?1:0;
 }
 
 void visit_borrow_output_group(BorrowEdgeGroup group,BorrowCallPart part,usize offset,address context,
