@@ -161,6 +161,33 @@ extern "C" void borrowed_address_positions(usize fields, BorrowedPositionHost ho
     requires nonzero(host.next) requires nonzero(host.remember) requires nonzero(host.compare)
     requires nonzero(host.forget) requires nonzero(host.publish);
 
+enum AddressLayoutKind:u32 { End=0; Trusted=1; Parent=2; Relation=3; Unknown=4; };
+struct AddressLayoutEntry { AddressLayoutKind kind; u32 fits; };
+struct AddressLayoutHost {
+    address context;
+    cfn<AddressLayoutEntry,address> next;
+    cfn<u32,address> validate;
+};
+extern "C" u32 address_layout_valid(AddressLayoutHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.validate);
+
+struct AddressRequirements { u32 writable; u32 initialized; u32 atomic; };
+enum AddressViolation:u32 { None=0; Inactive=1; Layout=2; Atomic=3; ReadOnly=4; Uninitialized=5; };
+struct AddressRequirementHost {
+    address context;
+    cfn<AddressSourceKind,address> next;
+    cfn<u32,address> valid_layout;
+    cfn<u32,address> blink_storage;
+    cfn<u32,address> writable;
+    cfn<u32,address> initialized;
+    cfn<u32,address> possible;
+    cfn<u32,address> applies;
+};
+extern "C" AddressViolation validate_address_requirements(AddressRequirements required, AddressRequirementHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.valid_layout) requires nonzero(host.blink_storage)
+    requires nonzero(host.writable) requires nonzero(host.initialized) requires nonzero(host.possible)
+    requires nonzero(host.applies);
+
 struct RegionBytes { u32 word; u32 offset; u32 size; };
 enum RegionSeedKind:u32 { Positions=0; Resource=1; External=2; };
 struct RegionSeed { usize parts; usize positions; usize words; RegionSeedKind kind; u32 materialize; };

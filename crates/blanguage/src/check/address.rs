@@ -119,7 +119,7 @@ struct RegionHost {
 }
 
 #[repr(u32)]
-enum AddressSourceKind { End, Position, Inactive, Other }
+pub(super) enum AddressSourceKind { End, Position, Inactive, Other }
 
 #[repr(u32)]
 enum AddressSourceWalk { Write, DerivedRegion }
@@ -707,6 +707,62 @@ impl<'a, I: Iterator<Item = (&'a view::Source, bounds::Clause)>> PositionAt<'a, 
     }
 }
 
+#[repr(u32)]
+enum AddressLayoutKind { End, Trusted, Parent, Relation, Unknown }
+
+#[repr(C)]
+struct AddressLayoutEntry { kind: AddressLayoutKind, fits: u32 }
+
+#[repr(C)]
+struct AddressLayoutHost {
+    context: *mut std::ffi::c_void,
+    next: unsafe extern "C" fn(*mut std::ffi::c_void) -> AddressLayoutEntry,
+    validate: unsafe extern "C" fn(*const std::ffi::c_void) -> u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::address_layout_valid"]
+    fn b_address_layout_valid(host: AddressLayoutHost) -> u32;
+}
+
+struct AddressLayout<'a, I> {
+    base: &'a Layout,
+    sources: I,
+    current: Option<&'a view::Source>,
+}
+
+impl<'a, I: Iterator<Item = &'a view::Source>> AddressLayout<'a, I> {
+    unsafe extern "C" fn next(context: *mut std::ffi::c_void) -> AddressLayoutEntry {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        input.current = input.sources.next();
+        use AddressLayoutKind as Kind;
+        let (kind, fits) = match input.current {
+            None => (Kind::End, false),
+            Some(view::Source::Position(origin)) => (Kind::Parent, origin.layout == *input.base),
+            Some(view::Source::Relation(..)) => (Kind::Relation, false),
+            Some(view::Source::External | view::Source::Parameter(..) | view::Source::Contents { .. }
+                 | view::Source::Inactive) => (Kind::Trusted, false),
+            Some(_) => (Kind::Unknown, false),
+        };
+        AddressLayoutEntry { kind, fits: fits.into() }
+    }
+
+    unsafe extern "C" fn validate(context: *const std::ffi::c_void) -> u32 {
+        let input = unsafe { &*context.cast::<Self>() };
+        match input.current.unwrap() {
+            view::Source::Position(origin) => origin.layout_valid(),
+            view::Source::Relation(graph, root) => graph.symbolic(*root),
+            _ => unreachable!(),
+        }.into()
+    }
+
+    fn valid(mut self) -> bool {
+        let host = AddressLayoutHost { context: std::ptr::from_mut(&mut self).cast(),
+            next: Self::next, validate: Self::validate };
+        unsafe { b_address_layout_valid(host) != 0 }
+    }
+}
+
 impl Origin {
     pub(super) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self {
         let mut origin=self.clone();
@@ -746,16 +802,9 @@ impl Origin {
             _ => when.possible(),
         }
     }
-    pub fn layout_valid(&self)->bool {
-        match &self.root {
-            Root::Derived(borrow)|Root::Dataset{borrow,..}=>borrow.sources.iter().all(|source|match source {
-                view::Source::Position(origin)=>origin.layout==self.base&&origin.layout_valid(),
-                view::Source::External|view::Source::Parameter(..)|view::Source::Contents{..}|view::Source::Inactive=>true,
-                view::Source::Relation(graph,root)=>graph.symbolic(*root),
-                _=>false,
-            }),
-            _=>true,
-        }
+    pub fn layout_valid(&self) -> bool {
+        let (Root::Derived(borrow) | Root::Dataset { borrow, .. }) = &self.root else { return true };
+        AddressLayout { base: &self.base, sources: borrow.sources.iter(), current: None }.valid()
     }
     pub fn position_at(&self,word:u32)->Option<Position> {
         let (kind, borrow, index) = match &self.root {

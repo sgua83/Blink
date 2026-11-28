@@ -517,6 +517,36 @@ extern "C" void borrowed_address_positions(usize fields, BorrowedPositionHost ho
     }
 }
 
+extern "C" u32 address_layout_valid(AddressLayoutHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.validate) {
+    while (true) {
+        let source = host.next(host.context);
+        if (source.kind == AddressLayoutKind::End) { return 1; }
+        if (source.kind == AddressLayoutKind::Trusted) { continue; }
+        if (source.kind == AddressLayoutKind::Unknown) { return 0; }
+        if (source.kind == AddressLayoutKind::Parent && source.fits == 0) { return 0; }
+        if (host.validate(host.context) == 0) { return 0; }
+    }
+}
+
+extern "C" AddressViolation validate_address_requirements(AddressRequirements required, AddressRequirementHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.valid_layout) requires nonzero(host.blink_storage)
+    requires nonzero(host.writable) requires nonzero(host.initialized) requires nonzero(host.possible)
+    requires nonzero(host.applies) {
+    while (true) {
+        let source = host.next(host.context);
+        if (source == AddressSourceKind::End) { return AddressViolation::None; }
+        if (source != AddressSourceKind::Position) { continue; }
+        AddressViolation failure = AddressViolation::None;
+        if (host.valid_layout(host.context) == 0) { failure = AddressViolation::Layout; }
+        else if (required.atomic != 0 && host.blink_storage(host.context) != 0) { failure = AddressViolation::Atomic; }
+        else if (required.writable != 0 && host.writable(host.context) == 0) { failure = AddressViolation::ReadOnly; }
+        else if (required.initialized != 0 && host.initialized(host.context) == 0) { failure = AddressViolation::Uninitialized; }
+        if (failure == AddressViolation::None || host.possible(host.context) == 0) { continue; }
+        return host.applies(host.context) != 0 ? failure : AddressViolation::Inactive;
+    }
+}
+
 extern "C" u32 seed_memory_regions(RegionSeed seed, RegionSeedHost host) on cpu
     requires nonzero(host.part) requires nonzero(host.reserve) requires nonzero(host.emit) {
     if (seed.kind == RegionSeedKind::External) { return 0; }

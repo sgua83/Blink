@@ -862,6 +862,86 @@ pub(super) enum Requirement {
     Initialized {borrow:Borrow,read:address::InitializationRead,code:&'static str,span:Span},
     Nonzero {value:Box<Value>,path:bounds::Clause,span:Span},
 }
+#[repr(C)]
+struct AddressRequirements { writable: u32, initialized: u32, atomic: u32 }
+
+#[repr(u32)]
+enum AddressViolation { None, Inactive, Layout, Atomic, ReadOnly, Uninitialized }
+
+#[repr(C)]
+struct AddressRequirementHost {
+    context: *mut std::ffi::c_void,
+    next: unsafe extern "C" fn(*mut std::ffi::c_void) -> address::AddressSourceKind,
+    valid_layout: unsafe extern "C" fn(*const std::ffi::c_void) -> u32,
+    blink_storage: unsafe extern "C" fn(*const std::ffi::c_void) -> u32,
+    writable: unsafe extern "C" fn(*const std::ffi::c_void) -> u32,
+    initialized: unsafe extern "C" fn(*const std::ffi::c_void) -> u32,
+    possible: unsafe extern "C" fn(*const std::ffi::c_void) -> u32,
+    applies: unsafe extern "C" fn(*const std::ffi::c_void) -> u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::validate_address_requirements"]
+    fn b_validate_address_requirements(required: AddressRequirements, host: AddressRequirementHost) -> AddressViolation;
+}
+
+struct AddressRequirement<'a, I> {
+    sources: I,
+    layout: &'a address::Layout,
+    call_path: Option<&'a bounds::Clause>,
+    current: Option<(&'a address::Origin, bounds::Clause)>,
+}
+
+impl<'a, I: Iterator<Item = (&'a Source, bounds::Clause)>> AddressRequirement<'a, I> {
+    unsafe extern "C" fn next(context: *mut std::ffi::c_void) -> address::AddressSourceKind {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        use address::AddressSourceKind as Kind;
+        match input.sources.next() {
+            Some((Source::Position(origin), when)) => {
+                input.current = Some((origin, when));
+                Kind::Position
+            }
+            Some(_) => Kind::Other,
+            None => Kind::End,
+        }
+    }
+
+    unsafe extern "C" fn valid_layout(context: *const std::ffi::c_void) -> u32 {
+        let input = unsafe { &*context.cast::<Self>() };
+        let origin = input.current.as_ref().unwrap().0;
+        (origin.layout == *input.layout && origin.layout_valid()).into()
+    }
+
+    unsafe extern "C" fn blink_storage(context: *const std::ffi::c_void) -> u32 {
+        let (origin, when) = unsafe { &*context.cast::<Self>() }.current.as_ref().unwrap();
+        origin.has_blink_storage(when).into()
+    }
+
+    unsafe extern "C" fn writable(context: *const std::ffi::c_void) -> u32 {
+        unsafe { &*context.cast::<Self>() }.current.as_ref().unwrap().0.writable.into()
+    }
+
+    unsafe extern "C" fn initialized(context: *const std::ffi::c_void) -> u32 {
+        let origin = unsafe { &*context.cast::<Self>() }.current.as_ref().unwrap().0;
+        (origin.symbolic_input() || origin.initialized.iter().all(|ready| *ready)).into()
+    }
+
+    unsafe extern "C" fn possible(context: *const std::ffi::c_void) -> u32 {
+        unsafe { &*context.cast::<Self>() }.current.as_ref().unwrap().1.possible().into()
+    }
+
+    unsafe extern "C" fn applies(context: *const std::ffi::c_void) -> u32 {
+        unsafe { &*context.cast::<Self>() }.call_path.is_none_or(bounds::Clause::possible).into()
+    }
+
+    fn validate(mut self, required: AddressRequirements) -> AddressViolation {
+        let host = AddressRequirementHost { context: std::ptr::from_mut(&mut self).cast(), next: Self::next,
+            valid_layout: Self::valid_layout, blink_storage: Self::blink_storage, writable: Self::writable,
+            initialized: Self::initialized, possible: Self::possible, applies: Self::applies };
+        unsafe { b_validate_address_requirements(required, host) }
+    }
+}
+
 impl Requirement {
     pub fn borrow(&self)->Option<&Borrow> {match self {Self::Unborrowed{borrow,..}|Self::Return{borrow,..}|Self::Address{borrow,..}|Self::Memory{borrow,..}|Self::Dataset{borrow,..}|Self::Initialized{borrow,..}=>Some(borrow),Self::Nonzero{..}=>None}}
     pub fn pending(&self)->bool {self.borrow().is_some_and(Borrow::pending)||matches!(self,Self::Nonzero{..})||matches!(self,Self::Unborrowed{resource,..}if resource.pending())||matches!(self,Self::Return{owned,..}if owned.pending())}
@@ -892,22 +972,19 @@ impl Requirement {
             return if bounds::integer_divisors(value,path).is_some(){Ok(())}else{source.fail(*span,"B152",bounds::INTEGER_DIVISOR_MESSAGE)};
         }
         if let Self::Address{borrow,layout,writable,initialized,external_atomic,span,..}=self {
-            for (origin_source, when) in borrow.sources.entries() {
-                let Source::Position(origin) = origin_source else { continue; };
-                let violation = if origin.layout != *layout || !origin.layout_valid() {
-                    ("B263", "地址解释的布局与原自有位置不同")
-                } else if *external_atomic && origin.has_blink_storage(&when) {
-                    ("B214", "外部原子位置不能改变已知 Blink 位置的访问权")
-                } else if *writable && !origin.writable {
-                    ("B227", "自有地址不能升级原只读位置的写权限")
-                } else if *initialized && !origin.symbolic_input() && !origin.initialized.iter().all(|ready| *ready) {
-                    ("B142", "地址读取或inout需要原位置已经初始化")
-                } else {
-                    continue;
-                };
-                if when.possible() {
-                    return if applies() { source.fail(*span, violation.0, violation.1) } else { Ok(()) };
-                }
+            let required = AddressRequirements { writable: (*writable).into(), initialized: (*initialized).into(),
+                atomic: (*external_atomic).into() };
+            let check = AddressRequirement { sources: borrow.sources.entries(), layout, call_path, current: None };
+            let diagnostic = match check.validate(required) {
+                AddressViolation::None => None,
+                AddressViolation::Inactive => return Ok(()),
+                AddressViolation::Layout => Some(("B263", "地址解释的布局与原自有位置不同")),
+                AddressViolation::Atomic => Some(("B214", "外部原子位置不能改变已知 Blink 位置的访问权")),
+                AddressViolation::ReadOnly => Some(("B227", "自有地址不能升级原只读位置的写权限")),
+                AddressViolation::Uninitialized => Some(("B142", "地址读取或inout需要原位置已经初始化")),
+            };
+            if let Some((code, message)) = diagnostic {
+                return source.fail(*span, code, message);
             }
         }
         if (self.borrow().is_some_and(Borrow::unresolved)
