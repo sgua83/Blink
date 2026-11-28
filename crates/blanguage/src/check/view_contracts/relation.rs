@@ -2734,22 +2734,21 @@ impl<'g> Query<'g> {
         &self, id: usize, from_id: usize, from: &Borrow, word: u32, epoch: &Epoch, frame: Option<usize>,
         evaluation: &mut BorrowEvaluation<'_>,
     ) -> Borrow {
-        let mut output=Borrow::default();
         let read_location = std::cell::LazyCell::new(|| {
             let (binding, origin) = self.location(from_id)?;
             let (_, word) = content_word(origin, word)?;
             Some((binding, origin, word))
         });
-        for (source, path) in from.sources.entries() {
-            let Origin::Position(origin) = source else { continue; };
+        let sources = from.sources.replay_reads(|source, path| {
+            let Origin::Position(origin) = source else { return None; };
             let position = content_position(origin, word);
             let mut content = ContentAtRead::default();
             let mut delayed = false;
             let ready = self.replay_writes(frame, |write| {
-                let Some(yes) = bounds::Clause::select_read_path(&path, write.when.path(true), false) else {
+                let Some(yes) = bounds::Clause::select_read_path(path, write.when.path(true), false) else {
                     return WriteReplay::Continue;
                 };
-                let not_written = std::cell::LazyCell::new(|| write.when.assume(&path, false));
+                let not_written = std::cell::LazyCell::new(|| write.when.assume(path, false));
                 let mut decision = WriteReplay::Continue;
                 let matches = write.fields.as_deref().filter(|fields| !fields.is_empty()).and_then(|fields| {
                     let (read_binding, read, read_word) = read_location.as_ref()?;
@@ -2827,8 +2826,10 @@ impl<'g> Query<'g> {
                 };
                 let base = initial.unwrap_or_else(|| input_contents(origin, word));
                 if base.sources.iter().any(|s|matches!(s,Origin::Contents{..})){self.deferred(id)}else{content.with_initial(base)}
-            };output.sources.union_restricted(&value.sources, &path);
-        }output
+            };
+            Some(value)
+        });
+        Borrow { sources, ..Borrow::default() }
     }
 }
 

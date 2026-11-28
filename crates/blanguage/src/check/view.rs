@@ -665,6 +665,42 @@ unsafe extern "C" {
     );
 }
 
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::replay_borrow_sources"]
+    fn replay_borrow_sources(
+        output: BorrowEdgeGroup, source: BorrowEdgeGroup, context: *mut std::ffi::c_void,
+        host: BorrowEdgeMerge,
+        read: unsafe extern "C" fn(*mut std::ffi::c_void, *const Source, &bounds::Clause) -> OrderedEdgeTree,
+        release_key: unsafe extern "C" fn(*mut Source),
+    );
+}
+
+impl Edges<Source> {
+    pub(super) fn replay_reads<F>(&self, mut read: F) -> Self
+    where F: FnMut(&Source, &bounds::Clause) -> Option<Borrow> {
+        unsafe extern "C" fn read_source<F>(
+            context: *mut std::ffi::c_void, source: *const Source, path: &bounds::Clause,
+        ) -> OrderedEdgeTree
+        where F: FnMut(&Source, &bounds::Clause) -> Option<Borrow> {
+            let read = unsafe { &mut *context.cast::<F>() };
+            read(unsafe { &*source }, path).map_or_else(OrderedEdgeTree::default, |mut value| {
+                std::mem::take(&mut value.sources.0.tree)
+            })
+        }
+
+        unsafe extern "C" fn release_key(source: *mut Source) {
+            unsafe { source.drop_in_place() };
+        }
+
+        let mut output = Self::default();
+        unsafe {
+            replay_borrow_sources(BorrowEdgeGroup::writable(&mut output), self.into(), std::ptr::from_mut(&mut read).cast(),
+                BorrowEdgeMerge::new::<Source>(move_edge_key::<Source>, std::ptr::null_mut()), read_source::<F>, release_key);
+        }
+        output
+    }
+}
+
 #[repr(u32)]
 enum BorrowInquiry { Active, Pending, PendingInPath, Content, Unresolved, Local }
 

@@ -935,6 +935,38 @@ extern "C" void merge_borrow_output(inout address remaining, ReadWritePaths path
     }
 }
 
+extern "C" void replay_borrow_sources(BorrowEdgeGroup output,BorrowEdgeGroup source,address context,
+    BorrowEdgeMerge host,cfn<OrderedTree,address,address,address> read,cfn<void,address> release_key) on cpu
+    requires nonzero(output.stride)
+    requires nonzero(host.compare) requires nonzero(host.key) requires nonzero(host.clauses.both)
+    requires nonzero(host.clauses.either) requires nonzero(host.clauses.canonical)
+    requires nonzero(host.clauses.normalized)
+    requires nonzero(read) requires nonzero(release_key)
+{
+    FactCursor input = ordered_tree_cursor(source.tree,source.stride);
+    while (true) {
+        address origin = ordered_tree_step(source.tree,source.stride,address_of(input),0);
+        if (origin == address()) { return; }
+        address path = borrow_edge_condition(source,origin);
+        OrderedTree value = read(context,origin,path);
+        address owner = address_of(value);
+        FactCursor rows = ordered_tree_cursor(owner,output.stride);
+        u64 position = 0u64;
+        while (true) {
+            address edge = ordered_tree_step(owner,output.stride,address_of(rows),0);
+            if (edge == address()) { break; }
+            address found = unsafe_position<address>(borrow_edge_condition(output,edge));
+            address matched = host.clauses.both(found,unsafe_position<address>(path));
+            clause_release(found);
+            OrderedPlace place = ordered_tree_seek_next(output.tree,output.stride,edge,position,host.compare);
+            if (write_borrow_edge(output,place,edge,matched,BorrowEdgeMode::Union,host) == 0) {
+                release_key(edge);
+            }
+        }
+        fact_tree_clear(owner);
+    }
+}
+
 void restrict_borrow_edges(BorrowEdgeGroup group,address condition,cfn<address,address,address> both) on cpu
     requires nonzero(both) {
     FactCursor cursor = ordered_tree_cursor(group.tree,group.stride);
