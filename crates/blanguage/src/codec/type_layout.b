@@ -15,21 +15,26 @@ extern "C" MipExtent mip_extent(MipExtent base, u32 level) on cpu {
         max(base.depth >> level, 1));
 }
 
-extern "C" u64 tile_scratch_bytes(u32 width, address context, TileScratchHost host) on cpu
-    requires nonzero(host.next) requires nonzero(host.scalar_bytes) {
+extern "C" u64 tile_scratch_bytes(u32 width, StageSpan code, address registers,
+    cfn<StageInstructionFields,StageSpan,usize> ensures memory(read) inspect,
+    cfn<u32,address,StageSpan,usize> ensures memory(read) scalar_bytes) on cpu
+    requires nonzero(inspect) requires nonzero(scalar_bytes) {
     u32 lane_bytes = 0;
-    TileScratchGroup group = host.next(context);
-    while (group.count != 0u64) {
-        u32 bytes = 0;
-        u64 index = 0u64;
-        while (index < group.count) {
-            u32 size = host.scalar_bytes(context, group.results, index);
-            u32 field = ((size + 3) / 4) * 4;
-            bytes = group.operation == CollectiveOperation::Sum ? max(bytes, field) : bytes + field;
-            index += 1u64;
+    usize at = 0u64;
+    while (at < code.count) {
+        StageInstructionFields instruction = inspect(code, at);
+        if (instruction.kind == StageInstruction::Collective) {
+            u32 bytes = 0;
+            usize index = 0u64;
+            while (index < instruction.first.count) {
+                u32 size = scalar_bytes(registers, instruction.first, index);
+                u32 field = ((size + 3) / 4) * 4;
+                bytes = instruction.operand == u32(CollectiveOperation::Sum) ? max(bytes, field) : bytes + field;
+                index += 1u64;
+            }
+            lane_bytes = max(lane_bytes, bytes);
         }
-        lane_bytes = max(lane_bytes, bytes);
-        group = host.next(context);
+        at += 1u64;
     }
     u64 lanes = 1u64;
     while (lanes < u64(width)) { lanes = lanes * 2u64; }
@@ -360,8 +365,8 @@ extern "C" ExecutionBuffers device_slots(address stages, usize count, usize buff
     return ExecutionBuffers(buffers + summary, auxiliary);
 }
 
-extern "C" u32 tile_uses(StageCode code, u32 has_tiles,
-    cfn<StageInstructionFields,StageCode,usize> ensures memory(read) inspect,
+extern "C" u32 tile_uses(StageSpan code, u32 has_tiles,
+    cfn<StageInstructionFields,StageSpan,usize> ensures memory(read) inspect,
     address output, cfn<void,address,usize> include) on cpu
     requires nonzero(inspect) requires nonzero(include) {
     bool collect = output != address();
@@ -380,7 +385,7 @@ extern "C" u32 tile_uses(StageCode code, u32 has_tiles,
         }
         if (uses && !collect) { return 1; }
         if (collect && (kind == StageInstruction::Storage
-            || (kind == StageInstruction::Collective && instruction.operand != 0))) {
+            || (kind == StageInstruction::Collective && instruction.first.count != 0u64))) {
             include(output, instruction.index);
         }
         found = found || uses;
@@ -404,8 +409,8 @@ extern "C" SubgroupFlags subgroup_flags(u32 used) on cpu {
   u32((used&SUBGROUP_EXTENDED)!=0));
 }
 
-extern "C" u32 subgroup_uses(StageCode code, address registers, u32 initial,
-    cfn<StageInstructionFields,StageCode,usize> ensures memory(read) inspect,
+extern "C" u32 subgroup_uses(StageSpan code, address registers, u32 initial,
+    cfn<StageInstructionFields,StageSpan,usize> ensures memory(read) inspect,
     cfn<u32,address,usize> ensures memory(read) scalar_bytes) on cpu
     requires nonzero(inspect) requires nonzero(scalar_bytes) {
     u32 used = initial;

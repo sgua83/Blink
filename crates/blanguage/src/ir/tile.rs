@@ -226,12 +226,17 @@ impl Stage {
         words as u64 * u64::from(width) * 4
     }
     pub fn tile_scratch_bytes(&self) -> u64 {
-        self.tile_scratch_bytes_for(self.workgroup_width())
+        // A stage with a contributing collective uses the original tile width.
+        let width = self.tiles.first().map_or(Self::DEFAULT_WORKGROUP_WIDTH, |tile| tile.width);
+        self.tile_scratch_bytes_for(width)
     }
     pub(super) fn tile_scratch_bytes_for(&self, width: u32) -> u64 {
-        let mut input = TileScratchInput { code: self.code.iter(), registers: &self.registers };
-        let host = TileScratchHost { next: next_scratch_group, scalar_bytes: scratch_field_bytes };
-        unsafe { tile_scratch_bytes(width, std::ptr::from_mut(&mut input).cast(), host) }
+        unsafe {
+            tile_scratch_bytes(
+                width, StageSpan::borrow(&self.code), std::ptr::from_ref(&self.registers).cast(),
+                stage_instruction, scratch_field_bytes,
+            )
+        }
     }
     #[cfg(feature = "compiler")]
     pub fn tile_bytes(&self) -> u64 {
@@ -243,13 +248,13 @@ impl Stage {
 pub(super) fn inspect_tile_uses(code: &[Inst], has_tiles: bool, output: Option<&mut BTreeSet<usize>>) -> bool {
     let output = output.map_or(std::ptr::null_mut(), |set| std::ptr::from_mut(set).cast());
     // Both the original code and the optional set are lent through this synchronous query.
-    unsafe { b_tile_uses(StageCode::borrow(code), u32::from(has_tiles), stage_instruction, output, include_tile) != 0 }
+    unsafe { b_tile_uses(StageSpan::borrow(code), u32::from(has_tiles), stage_instruction, output, include_tile) != 0 }
 }
 
 unsafe extern "C" {
     #[link_name = "codec.type_layout::tile_uses"]
-    fn b_tile_uses(code: StageCode, has_tiles: u32,
-        inspect: unsafe extern "C" fn(StageCode, usize) -> StageInstructionFields, output: *mut c_void,
+    fn b_tile_uses(code: StageSpan, has_tiles: u32,
+        inspect: unsafe extern "C" fn(StageSpan, usize) -> StageInstructionFields, output: *mut c_void,
         include: unsafe extern "C" fn(*mut c_void, usize)) -> u32;
 }
 
@@ -257,49 +262,21 @@ unsafe extern "C" fn include_tile(output: *mut c_void, tile: usize) {
     unsafe { &mut *output.cast::<BTreeSet<usize>>() }.insert(tile);
 }
 
-#[repr(C)]
-struct TileScratchGroup {
-    results: *const c_void,
-    count: usize,
-    operation: CollectiveOperator,
-}
-
-#[repr(C)]
-struct TileScratchHost {
-    next: unsafe extern "C" fn(*mut c_void) -> TileScratchGroup,
-    scalar_bytes: unsafe extern "C" fn(*const c_void, *const c_void, usize) -> u32,
-}
-
-struct TileScratchInput<'a> {
-    code: std::slice::Iter<'a, Inst>,
-    registers: &'a [Scalar],
-}
-
 unsafe extern "C" {
     #[link_name = "codec.type_layout::tile_scratch_bytes"]
-    fn tile_scratch_bytes(width: u32, context: *mut c_void, host: TileScratchHost) -> u64;
-}
-
-unsafe extern "C" fn next_scratch_group(context: *mut c_void) -> TileScratchGroup {
-    let input = unsafe { &mut *context.cast::<TileScratchInput<'_>>() };
-    for inst in input.code.by_ref() {
-        if let InstKind::TileCollective(collective) = &inst.kind && !collective.results.is_empty() {
-            return TileScratchGroup {
-                results: collective.results.as_ptr().cast(),
-                count: collective.results.len(),
-                operation: collective.op.operator(),
-            };
-        }
-    }
-    TileScratchGroup { results: std::ptr::null(), count: 0, operation: CollectiveOperator::Sum }
+    fn tile_scratch_bytes(
+        width: u32, code: StageSpan, registers: *const c_void,
+        inspect: unsafe extern "C" fn(StageSpan, usize) -> StageInstructionFields,
+        scalar_bytes: unsafe extern "C" fn(*const c_void, StageSpan, usize) -> u32,
+    ) -> u64;
 }
 
 unsafe extern "C" fn scratch_field_bytes(
-    context: *const c_void, results: *const c_void, index: usize,
+    registers: *const c_void, results: StageSpan, index: usize,
 ) -> u32 {
-    let input = unsafe { &*context.cast::<TileScratchInput<'_>>() };
-    let (_, reg) = unsafe { *results.cast::<(u32, Reg)>().add(index) };
-    input.registers[reg].size()
+    let registers = unsafe { &*registers.cast::<Vec<Scalar>>() };
+    let (_, reg) = unsafe { *results.data.cast::<(u32, Reg)>().add(index) };
+    registers[reg].size()
 }
 
 impl Inst {

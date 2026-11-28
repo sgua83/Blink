@@ -1356,14 +1356,16 @@ const SUBGROUP_OPERATIONS: [SubgroupOp; 23] = [
 ];
 #[derive(Clone, Copy)]
 #[repr(C)]
-struct StageCode {
-    instructions: *const c_void,
+struct StageSpan {
+    data: *const c_void,
     count: usize,
 }
 
-impl StageCode {
-    fn borrow(code: &[Inst]) -> Self {
-        Self { instructions: code.as_ptr().cast(), count: code.len() }
+impl StageSpan {
+    const EMPTY: Self = Self { data: std::ptr::null(), count: 0 };
+
+    fn borrow<T>(items: &[T]) -> Self {
+        Self { data: items.as_ptr().cast(), count: items.len() }
     }
 }
 
@@ -1372,22 +1374,22 @@ enum StageInstruction {
     Ordinary, Tile, Append, Storage, Collective, Block, Subgroup,
 }
 
-// The kind selects the original fields: collective result presence or subgroup opcode,
-// and the referenced tile or subgroup result register.
+// The kind selects the original fields. A collective lends its results in first;
+// a block lends its instruction spans. Operand carries the collective or subgroup opcode.
 #[repr(C)]
 struct StageInstructionFields {
     kind: StageInstruction,
     operand: u32,
     index: usize,
-    first: StageCode,
-    second: StageCode,
+    first: StageSpan,
+    second: StageSpan,
 }
 
-unsafe extern "C" fn stage_instruction(code: StageCode, index: usize) -> StageInstructionFields {
-    let inst = unsafe { &*code.instructions.cast::<Inst>().add(index) };
+unsafe extern "C" fn stage_instruction(code: StageSpan, index: usize) -> StageInstructionFields {
+    let inst = unsafe { &*code.data.cast::<Inst>().add(index) };
     let mut fields = StageInstructionFields {
         kind: StageInstruction::Ordinary, operand: 0, index: 0,
-        first: StageCode::borrow(&[]), second: StageCode::borrow(&[]),
+        first: StageSpan::EMPTY, second: StageSpan::EMPTY,
     };
     match &inst.kind {
         InstKind::TileLength(_) | InstKind::TileLane(_) | InstKind::TilePublish(_) | InstKind::TileBarrier =>
@@ -1407,16 +1409,17 @@ unsafe extern "C" fn stage_instruction(code: StageCode, index: usize) -> StageIn
         InstKind::TileCollective(collective) => {
             fields.kind = StageInstruction::Collective;
             fields.index = collective.tile;
-            fields.operand = u32::from(!collective.results.is_empty());
+            fields.operand = collective.op.operator() as u32;
+            fields.first = StageSpan::borrow(&collective.results);
         }
         InstKind::Scope(body) => {
             fields.kind = StageInstruction::Block;
-            fields.first = StageCode::borrow(body);
+            fields.first = StageSpan::borrow(body);
         }
         InstKind::If { yes, no, .. } | InstKind::Loop { condition: yes, body: no, .. } => {
             fields.kind = StageInstruction::Block;
-            fields.first = StageCode::borrow(yes);
-            fields.second = StageCode::borrow(no);
+            fields.first = StageSpan::borrow(yes);
+            fields.second = StageSpan::borrow(no);
         }
         _ => {}
     }
@@ -1670,7 +1673,7 @@ impl SubgroupCapabilities {
 fn subgroup_uses(code: &[Inst], registers: Option<&[Scalar]>, used: u32) -> u32 {
     let registers = registers.map_or(std::ptr::null(), |values| values.as_ptr().cast());
     // The stage and its register layout remain borrowed through the call.
-    unsafe { b_subgroup_uses(StageCode::borrow(code), registers, used, stage_instruction, subgroup_scalar_bytes) }
+    unsafe { b_subgroup_uses(StageSpan::borrow(code), registers, used, stage_instruction, subgroup_scalar_bytes) }
 }
 
 fn subgroup_flags(used: u32) -> SubgroupCapabilities {
@@ -1683,8 +1686,8 @@ unsafe extern "C" fn subgroup_scalar_bytes(registers: *const c_void, result: usi
 
 unsafe extern "C" {
     #[link_name = "codec.type_layout::subgroup_uses"]
-    fn b_subgroup_uses(code: StageCode, registers: *const c_void, used: u32,
-        inspect: unsafe extern "C" fn(StageCode, usize) -> StageInstructionFields,
+    fn b_subgroup_uses(code: StageSpan, registers: *const c_void, used: u32,
+        inspect: unsafe extern "C" fn(StageSpan, usize) -> StageInstructionFields,
         scalar_bytes: unsafe extern "C" fn(*const c_void, usize) -> u32) -> u32;
     #[link_name = "codec.type_layout::subgroup_flags"]
     fn b_subgroup_flags(used: u32) -> SubgroupFlags;

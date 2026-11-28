@@ -6,14 +6,6 @@ struct MipExtent { u32 width; u32 height; u32 depth; };
 extern "C" u32 mip_level_count(MipExtent base) on cpu;
 extern "C" MipExtent mip_extent(MipExtent base, u32 level) on cpu;
 
-struct TileScratchGroup { address results; u64 count; CollectiveOperation operation; };
-struct TileScratchHost {
-    cfn<TileScratchGroup,address> next;
-    cfn<u32,address,address,u64> ensures memory(read) scalar_bytes;
-};
-extern "C" u64 tile_scratch_bytes(u32 width, address context, TileScratchHost host) on cpu
-    requires nonzero(host.next) requires nonzero(host.scalar_bytes);
-
 struct VectorLayout {
     u64 size;
     u32 alignment;
@@ -138,17 +130,23 @@ struct ExecutionBuffers { usize indirect; usize auxiliary; };
 extern "C" ExecutionBuffers device_slots(address stages, usize count, usize buffers,
     cfn<StageSlots,address,usize> ensures memory(read) stage) on cpu requires nonzero(stage);
 
-struct StageCode { address instructions; usize count; };
+struct StageSpan { address data; usize count; };
 enum StageInstruction : u32 { Ordinary = 0; Tile = 1; Append = 2; Storage = 3; Collective = 4; Block = 5; Subgroup = 6; };
+// Collective uses operand for the operator and first for the original results.
+// Block uses first and second for the original instruction spans.
 struct StageInstructionFields {
     StageInstruction kind;
     u32 operand;
     usize index;
-    StageCode first;
-    StageCode second;
+    StageSpan first;
+    StageSpan second;
 };
-extern "C" u32 tile_uses(StageCode code, u32 has_tiles,
-    cfn<StageInstructionFields,StageCode,usize> ensures memory(read) inspect,
+extern "C" u64 tile_scratch_bytes(u32 width, StageSpan code, address registers,
+    cfn<StageInstructionFields,StageSpan,usize> ensures memory(read) inspect,
+    cfn<u32,address,StageSpan,usize> ensures memory(read) scalar_bytes) on cpu
+    requires nonzero(inspect) requires nonzero(scalar_bytes);
+extern "C" u32 tile_uses(StageSpan code, u32 has_tiles,
+    cfn<StageInstructionFields,StageSpan,usize> ensures memory(read) inspect,
     address output, cfn<void,address,usize> include) on cpu
     requires nonzero(inspect) requires nonzero(include);
 
@@ -164,7 +162,7 @@ struct SubgroupFlags {
  u32 shuffle; u32 shuffle_relative; u32 extended_types;
 };
 extern "C" SubgroupFlags subgroup_flags(u32 used) on cpu;
-extern "C" u32 subgroup_uses(StageCode code, address registers, u32 initial,
-    cfn<StageInstructionFields,StageCode,usize> ensures memory(read) inspect,
+extern "C" u32 subgroup_uses(StageSpan code, address registers, u32 initial,
+    cfn<StageInstructionFields,StageSpan,usize> ensures memory(read) inspect,
     cfn<u32,address,usize> ensures memory(read) scalar_bytes) on cpu
     requires nonzero(inspect) requires nonzero(scalar_bytes);
