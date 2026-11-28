@@ -1,5 +1,6 @@
 module bootstrap.call_arguments;
 import bootstrap.proof_facts;
+import bootstrap.output_bindings;
 import bootstrap.ir_dataflow;
 import bootstrap.names;
 
@@ -732,6 +733,27 @@ extern "C" void project_borrow_fields(BorrowFieldSpan fields, usize count, Borro
     if (pending != 0) { host.emit_pending(host.context); }
 }
 
+void visit_call_source_task(CallSourceShape source,address context,cfn<void,address,CallSourceTaskPart,usize> visit) on cpu
+    requires nonzero(visit) {
+    visit(context, CallSourceTaskPart::Captures, 0u64);
+    visit(context, CallSourceTaskPart::Initialized, 0u64);
+    usize output = 0u64;
+    while (output < source.outputs) {
+        visit(context, CallSourceTaskPart::Output, output);
+        output += 1u64;
+    }
+    usize completion = 0u64;
+    while (completion < source.completions) {
+        visit(context, CallSourceTaskPart::Completion, completion);
+        completion += 1u64;
+    }
+    usize guard = 0u64;
+    while (guard < source.guards) {
+        visit(context, CallSourceTaskPart::Guard, guard);
+        guard += 1u64;
+    }
+}
+
 extern "C" void bind_call_borrow_source(CallSourceShape source, CallSourceHost host) on cpu
     requires nonzero(host.lookup) requires nonzero(host.borrow) requires nonzero(host.identity)
     requires nonzero(host.index) requires nonzero(host.task) requires nonzero(host.finish) {
@@ -754,25 +776,45 @@ extern "C" void bind_call_borrow_source(CallSourceShape source, CallSourceHost h
         return;
     }
     if (source.kind == CallSourceKind::Task) {
-        host.task(host.context, CallSourceTaskPart::Captures, 0u64);
-        host.task(host.context, CallSourceTaskPart::Initialized, 0u64);
-        usize output = 0u64;
-        while (output < source.outputs) {
-            host.task(host.context, CallSourceTaskPart::Output, output);
-            output += 1u64;
-        }
-        usize completion = 0u64;
-        while (completion < source.completions) {
-            host.task(host.context, CallSourceTaskPart::Completion, completion);
-            completion += 1u64;
-        }
-        usize guard = 0u64;
-        while (guard < source.guards) {
-            host.task(host.context, CallSourceTaskPart::Guard, guard);
-            guard += 1u64;
-        }
+        visit_call_source_task(source,host.context,host.task);
     }
     host.finish(host.context, source.kind);
+}
+
+void rename_output_source(address bindings,OutputSourceHost host,OutputSourcePart part,usize index) on cpu
+    requires nonzero(host.identity) requires nonzero(host.rename) {
+    let original = host.identity(host.context,part,index);
+    if (original == address()) { return; }
+    let replacement = find_output_binding(bindings,original);
+    if (replacement != address()) { host.rename(host.context,part,index,replacement); }
+}
+
+extern "C" void bind_output_borrow_source(CallSourceShape source,address bindings,OutputSourceHost host) on cpu
+    requires nonzero(host.identity) requires nonzero(host.rename) requires nonzero(host.child) requires nonzero(host.task) {
+    if (source.kind == CallSourceKind::Keep) { return; }
+    if (source.kind == CallSourceKind::Task) {
+        visit_call_source_task(source,host.context,host.task);
+        return;
+    }
+    if (source.kind == CallSourceKind::Data || source.kind == CallSourceKind::Parameter) {
+        rename_output_source(bindings,host,OutputSourcePart::Root,0u64);
+        usize index = 0u64;
+        while (index < source.indices) {
+            rename_output_source(bindings,host,OutputSourcePart::Index,index);
+            index += 1u64;
+        }
+        return;
+    }
+    host.child(host.context,source.kind);
+    if (source.kind == CallSourceKind::Element) {
+        rename_output_source(bindings,host,OutputSourcePart::Index,0u64);
+    } else if (source.kind == CallSourceKind::TaskOutput) {
+        usize result = 0u64;
+        while (result < source.indices) {
+            rename_output_source(bindings,host,OutputSourcePart::TaskResult,result);
+            result += 1u64;
+        }
+    }
 }
 
 extern "C" void map_call_borrows(BorrowCallCounts counts, BorrowCallHost host) on cpu

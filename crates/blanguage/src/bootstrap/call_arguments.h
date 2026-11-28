@@ -316,6 +316,17 @@ extern "C" void bind_call_borrow_source(CallSourceShape source, CallSourceHost h
     requires nonzero(host.lookup) requires nonzero(host.borrow) requires nonzero(host.identity)
     requires nonzero(host.index) requires nonzero(host.task) requires nonzero(host.finish);
 
+enum OutputSourcePart:u32 { Root=0; Index=1; TaskResult=2; };
+struct OutputSourceHost {
+    address context;
+    cfn<address,address,OutputSourcePart,usize> identity;
+    cfn<void,address,OutputSourcePart,usize,address> rename;
+    cfn<void,address,CallSourceKind> child;
+    cfn<void,address,CallSourceTaskPart,usize> task;
+};
+extern "C" void bind_output_borrow_source(CallSourceShape source,address bindings,OutputSourceHost host) on cpu
+    requires nonzero(host.identity) requires nonzero(host.rename) requires nonzero(host.child) requires nonzero(host.task);
+
 struct AddressRequirements { u32 writable; u32 initialized; u32 atomic; };
 enum AddressViolation:u32 { None=0; Inactive=1; Layout=2; Atomic=3; ReadOnly=4; Uninitialized=5; };
 struct AddressRequirementHost {

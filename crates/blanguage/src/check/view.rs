@@ -1640,7 +1640,14 @@ impl From<&Source> for CallSourceShape {
                 shape.guards = guards.len();
                 CallSourceKind::Task
             }
-            Source::TaskOutput { .. } => CallSourceKind::TaskOutput,
+            Source::TaskOutput { projection, .. } => {
+                shape.indices = match projection {
+                    TaskProjection::Returned(_, identity) => usize::from(identity.is_some()),
+                    TaskProjection::Initialized(identities) => identities.len(),
+                    TaskProjection::Writes | TaskProjection::Places => 0,
+                };
+                CallSourceKind::TaskOutput
+            }
             Source::Unresolved | Source::Inactive | Source::External => CallSourceKind::Keep,
         };
         shape
@@ -1759,6 +1766,129 @@ impl<'a> CallSource<'a> {
     }
 }
 
+#[repr(u32)]
+#[derive(Clone, Copy)]
+enum OutputSourcePart { Root, Index, TaskResult }
+
+#[repr(C)]
+struct OutputSourceHost {
+    context: *mut std::ffi::c_void,
+    identity: unsafe extern "C" fn(*mut std::ffi::c_void, OutputSourcePart, usize) -> *const ValueIdentity,
+    rename: unsafe extern "C" fn(*mut std::ffi::c_void, OutputSourcePart, usize, *const ValueIdentity),
+    child: unsafe extern "C" fn(*mut std::ffi::c_void, CallSourceKind),
+    task: unsafe extern "C" fn(*mut std::ffi::c_void, CallSourceTaskPart, usize),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::bind_output_borrow_source"]
+    fn b_bind_output_borrow_source(source: CallSourceShape, bindings: *const bounds::OutputBindings, host: OutputSourceHost);
+}
+
+enum OutputIdentity<'a> {
+    Root(&'a mut ValueIdentity),
+    Selection(&'a mut Option<bounds::Selector>),
+    TaskResult(&'a mut Option<ValueIdentity>),
+}
+
+impl OutputIdentity<'_> {
+    fn value(&self) -> Option<ValueIdentity> {
+        match self {
+            Self::Root(identity) => Some(**identity),
+            Self::Selection(selector) => selector.and_then(bounds::Selector::identity),
+            Self::TaskResult(identity) => **identity,
+        }
+    }
+
+    fn rename(self, identity: ValueIdentity) {
+        match self {
+            Self::Root(value) => *value = identity,
+            Self::Selection(selector) => *selector = selector.and_then(|value| value.map(|_| Some(identity))),
+            Self::TaskResult(value) => *value = Some(identity),
+        }
+    }
+}
+
+struct OutputSource<'a> {
+    source: Source,
+    bindings: &'a bounds::OutputBindings,
+    current: Option<ValueIdentity>,
+}
+
+impl<'a> OutputSource<'a> {
+    fn slot(&mut self, part: OutputSourcePart, index: usize) -> OutputIdentity<'_> {
+        match (part, &mut self.source) {
+            (OutputSourcePart::Root, Source::Data(identity) | Source::Parameter(identity, _)) => OutputIdentity::Root(identity),
+            (OutputSourcePart::Index, Source::Parameter(_, indices)) => OutputIdentity::Selection(&mut indices[index]),
+            (OutputSourcePart::Index, Source::Element { index, .. }) => OutputIdentity::Selection(index),
+            (OutputSourcePart::TaskResult, Source::TaskOutput { projection: TaskProjection::Returned(_, identity), .. }) =>
+                OutputIdentity::TaskResult(identity),
+            (OutputSourcePart::TaskResult, Source::TaskOutput { projection: TaskProjection::Initialized(identities), .. }) =>
+                OutputIdentity::TaskResult(&mut identities[index]),
+            _ => unreachable!(),
+        }
+    }
+
+    unsafe extern "C" fn identity(context: *mut std::ffi::c_void, part: OutputSourcePart, index: usize) -> *const ValueIdentity {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        input.current = input.slot(part, index).value();
+        input.current.as_ref().map_or(std::ptr::null(), std::ptr::from_ref)
+    }
+
+    unsafe extern "C" fn rename(context: *mut std::ffi::c_void, part: OutputSourcePart, index: usize, replacement: *const ValueIdentity) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        input.slot(part, index).rename(unsafe { *replacement });
+    }
+
+    unsafe extern "C" fn child(context: *mut std::ffi::c_void, kind: CallSourceKind) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let bindings = input.bindings;
+        match (kind, &mut input.source) {
+            (CallSourceKind::Position, Source::Position(origin)) |
+            (CallSourceKind::Contents, Source::Contents { origin, .. }) =>
+                *origin = Arc::new(origin.bind_outputs(bindings)),
+            (CallSourceKind::Relation, Source::Relation(graph, _)) =>
+                *graph = Arc::new(graph.output_bound(bindings)),
+            (CallSourceKind::Element, Source::Element { parent, .. }) |
+            (CallSourceKind::Projection, Source::Projection { parent, .. }) =>
+                **parent = parent.output_bound(bindings),
+            (CallSourceKind::TaskOutput, Source::TaskOutput { task, .. }) =>
+                **task = task.output_bound(bindings),
+            _ => unreachable!(),
+        }
+    }
+
+    unsafe extern "C" fn task(context: *mut std::ffi::c_void, part: CallSourceTaskPart, index: usize) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let Source::Task { captures, initialized, outputs, completions, guards } = &mut input.source else { unreachable!() };
+        let bindings = input.bindings;
+        match part {
+            CallSourceTaskPart::Captures => **captures = captures.output_bound(bindings),
+            CallSourceTaskPart::Initialized => **initialized = initialized.output_bound(bindings),
+            CallSourceTaskPart::Output => outputs[index] = outputs[index].output_bound(bindings),
+            CallSourceTaskPart::Completion => {
+                let completion = &mut completions[index];
+                completion.task = completion.task.output_bound(bindings);
+            }
+            CallSourceTaskPart::Guard => {
+                let guard = &mut guards[index];
+                guard.target = guard.target.output_bound(bindings);
+                let actual = bindings.iter().map(|(from, to)| (*from, identity_proof(*to))).collect();
+                guard.map_arguments(|proof| proof.at_call(&actual));
+                guard.map_inputs(|word| word.map(|id| bindings.get(&id).copied()));
+            }
+        }
+    }
+
+    fn bind(source: Source, bindings: &'a bounds::OutputBindings) -> Source {
+        let shape = (&source).into();
+        let mut input = Self { source, bindings, current: None };
+        let host = OutputSourceHost { context: std::ptr::from_mut(&mut input).cast(), identity: Self::identity,
+            rename: Self::rename, child: Self::child, task: Self::task };
+        unsafe { b_bind_output_borrow_source(shape, bindings, host) };
+        input.source
+    }
+}
+
 fn identity_proof(id:ValueIdentity)->bounds::Proof {
     bounds::Proof::default().with_identity(id)
 }
@@ -1811,31 +1941,9 @@ impl Source {
         }
     }
     pub(super) fn bind_outputs(self, bindings: &bounds::OutputBindings) -> Self {
-        match self {
-            Self::Data(id) => Self::Data(bindings.get(&id).copied().unwrap_or(id)),
-            Self::Parameter(id,indices) => Self::Parameter(bindings.get(&id).copied().unwrap_or(id),indices.into_iter().map(|index|index.and_then(|index|index.map(|id|Some(bindings.get(&id).copied().unwrap_or(id))))).collect()),
-            Self::Position(origin) => Self::Position(Arc::new(origin.bind_outputs(bindings))),
-            Self::Relation(graph,root)=>Self::Relation(Arc::new(graph.output_bound(bindings)),root),
-            Self::Contents{origin,word}=>Self::Contents{origin:Arc::new(origin.bind_outputs(bindings)),word},
-            Self::Element{parent,fields,index}=>Self::Element{parent:Box::new(parent.output_bound(bindings)),fields,index:index.and_then(|index|index.map(|id|Some(bindings.get(&id).copied().unwrap_or(id))))},
-            Self::Projection{parent,fields}=>Self::Projection{parent:Box::new(parent.output_bound(bindings)),fields},
-            Self::Task{captures,outputs,initialized,guards,completions}=>Self::Task{
-                captures:Box::new(captures.output_bound(bindings)),
-                initialized:Box::new(initialized.output_bound(bindings)),
-                outputs:outputs.into_iter().map(|output|output.output_bound(bindings)).collect(),
-                completions:completions.iter().map(|completion|completion.map_task(|task|task.output_bound(bindings))).collect(),
-                guards:guards.into_iter().map(|mut guard| {
-                    guard.target=guard.target.output_bound(bindings);
-                    let actual=bindings.iter().map(|(from,to)|(*from,bounds::Proof::default().with_identity(*to))).collect();
-                    guard.map_arguments(|proof|proof.at_call(&actual));
-                    guard.map_inputs(|word|word.map(|id|bindings.get(&id).copied()));
-                    guard
-                }).collect(),
-            },
-            Self::TaskOutput{task,projection}=>Self::TaskOutput{task:Box::new(task.output_bound(bindings)),projection:projection.map_result(|id|Some(bindings.get(&id).copied().unwrap_or(id)))},
-            Self::Unresolved | Self::Inactive | Self::External => self,
-        }
+        OutputSource::bind(self, bindings)
     }
+
     pub(super) fn at_call(self, bindings: &BTreeMap<ValueIdentity, bounds::Proof>) -> Borrow {
         CallSource::bind(self, bindings)
     }
