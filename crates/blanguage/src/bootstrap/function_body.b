@@ -1354,6 +1354,10 @@ extern "C" SourceStatementStep source_statement_step(LocalCursor cursor,Signatur
 }
 
 
+bool exclusive_access(u32 access) on cpu {
+ return access==2||access==3;
+}
+
 extern "C" ReadPlaceStep read_place_step(Cursor cursor,ReadPlaceFacts facts) on cpu {
  Cursor c=cursor;
  if(c.phase==0){c.phase=1;return ReadPlaceStep(c,ReadPlaceNeed::Access,0);}
@@ -1375,7 +1379,7 @@ extern "C" ReadPlaceStep read_place_step(Cursor cursor,ReadPlaceFacts facts) on 
    c.phase=30;
    if(facts.kind==4){if(facts.access==4){return ReadPlaceStep(c,ReadPlaceNeed::AtomicTileError,0);}if(facts.input!=0){return ReadPlaceStep(c,ReadPlaceNeed::TileInput,0);}}
    if(facts.kind==5){return ReadPlaceStep(c,ReadPlaceNeed::Initialize,0);}
-   if(facts.kind==7){if(facts.access==4){return ReadPlaceStep(c,ReadPlaceNeed::AtomicDataError,0);}if(facts.access==2||facts.access==3){c.phase=41;return ReadPlaceStep(c,ReadPlaceNeed::Initialize,0);}c.phase=42;return ReadPlaceStep(c,ReadPlaceNeed::DataAccess,0);}
+   if(facts.kind==7){if(facts.access==4){return ReadPlaceStep(c,ReadPlaceNeed::AtomicDataError,0);}if(exclusive_access(facts.access)){c.phase=41;return ReadPlaceStep(c,ReadPlaceNeed::Initialize,0);}c.phase=42;return ReadPlaceStep(c,ReadPlaceNeed::DataAccess,0);}
   }
  }
  if(c.phase==4){if(facts.memory!=0){c.phase=5;return ReadPlaceStep(c,ReadPlaceNeed::Address,0);}c.phase=8;return ReadPlaceStep(c,ReadPlaceNeed::Initialize,0);}
@@ -1390,7 +1394,7 @@ extern "C" ReadPlaceStep read_place_step(Cursor cursor,ReadPlaceFacts facts) on 
  if(c.phase==41){c.phase=42;return ReadPlaceStep(c,ReadPlaceNeed::DataAccess,0);}
  if(c.phase==42){c.phase=30;if(facts.current==0){return ReadPlaceStep(c,ReadPlaceNeed::DataCross,0);}}
  if(c.phase==43){c.phase=46;if(facts.current==0){return ReadPlaceStep(c,ReadPlaceNeed::DataCross,0);}}
- if(c.phase==46){c.phase=44;if(facts.access==2||facts.access==3){return ReadPlaceStep(c,ReadPlaceNeed::Initialize,0);}}
+ if(c.phase==46){c.phase=44;if(exclusive_access(facts.access)){return ReadPlaceStep(c,ReadPlaceNeed::Initialize,0);}}
  if(c.phase==44){c.phase=45;return ReadPlaceStep(c,ReadPlaceNeed::IndexedAccess,0);}
  if(c.phase==45){c.phase=30;return ReadPlaceStep(c,ReadPlaceNeed::DatasetEffect,0);}
  if(c.phase==31){c.index+=1u64;c.phase=30;}
@@ -1471,7 +1475,7 @@ extern "C" WritePlaceStep write_place_step(Cursor cursor,WritePlaceFacts facts) 
   if(facts.kind==6){return WritePlaceStep(c,WritePlaceNeed::ReadOnlyError);}
   if(facts.kind==3){return WritePlaceStep(c,WritePlaceNeed::ViewError);}
   if(facts.kind==4){return WritePlaceStep(c,facts.access==4 ? WritePlaceNeed::AtomicTileError : WritePlaceNeed::TileError);}
-  if(facts.kind==7){if(facts.access==4){return WritePlaceStep(c,WritePlaceNeed::AtomicDataError);}if(facts.writable==0||(facts.access!=2&&facts.access!=3&&facts.access!=4)){return WritePlaceStep(c,WritePlaceNeed::WriteError);}}
+  if(facts.kind==7){if(facts.access==4){return WritePlaceStep(c,WritePlaceNeed::AtomicDataError);}if(facts.writable==0||!exclusive_access(facts.access)){return WritePlaceStep(c,WritePlaceNeed::WriteError);}}
   c.part=0u64;c.phase=60;
  }
  if(c.phase==21){c.phase=22;return WritePlaceStep(c,WritePlaceNeed::AssignProof);}
@@ -1511,6 +1515,31 @@ extern "C" WritePlaceStep write_place_step(Cursor cursor,WritePlaceFacts facts) 
   c.phase=72;if(facts.kind==7){return WritePlaceStep(c,WritePlaceNeed::Initialize);}
  }
  return WritePlaceStep(c,WritePlaceNeed::Complete);
+}
+
+extern "C" WritableStorage writable_storage(u32 kind,u32 access,u32 current) on cpu {
+ bool reference=kind==0;
+ bool permitted=kind==5||(exclusive_access(access)&&(reference||kind==1||(kind==7&&current!=0)));
+ return WritableStorage(reference ? 1 : 0,permitted ? 1 : 0);
+}
+
+extern "C" MutablePlaceStep mutable_place_step(MutablePlaceCursor cursor,MutablePlaceFacts facts) on cpu {
+ MutablePlaceCursor c=cursor;
+ if(c.phase==0){
+  if(facts.views!=0&&facts.persistent!=0){return MutablePlaceStep(c,MutablePlaceNeed::ViewError);}
+  c.phase=1;return MutablePlaceStep(c,MutablePlaceNeed::Owned);
+ }
+ if(c.phase==1){c.phase=2;return MutablePlaceStep(c,MutablePlaceNeed::Writable);}
+ if(c.phase==3){
+  if(facts.unique==0){return MutablePlaceStep(c,MutablePlaceNeed::Duplicate);}
+  c.component+=1u64;c.phase=2;
+ }
+ if(c.phase==2){
+  if(c.component<facts.components){c.phase=3;return MutablePlaceStep(c,MutablePlaceNeed::Unique);}
+  c.phase=4;
+  if(facts.access==3){return MutablePlaceStep(c,MutablePlaceNeed::Initialize);}
+ }
+ return MutablePlaceStep(c,MutablePlaceNeed::Complete);
 }
 
 extern "C" UnsafeReadStep unsafe_read_step(LocalCursor cursor,StorageView source,Slice arguments,UnsafeReadFacts facts) on cpu {

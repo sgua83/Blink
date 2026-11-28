@@ -72,8 +72,82 @@ impl Place {
     }
     pub(super) fn components_in(&self,owner:&Place)->Option<Vec<usize>>{place::components(self,owner)}
     pub(super) fn overlaps(&self,other:&Place)->bool{place::overlaps(self,other)}
+
+    pub(super) fn storage_components(&self) -> StorageComponents<'_> {
+        match self {
+            Self::Local(_, slots, _) | Self::ReadOnlyLocal(_, slots, ..) => StorageComponents::Slots(slots),
+            Self::Reference { words, .. } | Self::Indexed { words, .. } | Self::ViewElement { words, .. }
+            | Self::TileElement { words, .. } | Self::Element { words, .. }
+            | Self::ApplicationElement { words, .. } => StorageComponents::Words(words),
+            Self::AtomicParameter(_) => StorageComponents::Words(&[]),
+        }
+    }
+}
+
+pub(super) enum StorageComponents<'a> {
+    Slots(&'a [usize]),
+    Words(&'a [u32]),
+}
+
+impl StorageComponents<'_> {
+    pub(super) fn len(&self) -> usize {
+        match self {
+            Self::Slots(slots) => slots.len(),
+            Self::Words(words) => words.len(),
+        }
+    }
+
+    pub(super) fn at(&self, index: usize) -> usize {
+        match self {
+            Self::Slots(slots) => slots[index],
+            Self::Words(words) => words[index] as usize,
+        }
+    }
+}
+
+pub(super) struct StorageAccess {
+    pub kind: u32,
+    pub access: Access,
+    pub writable: bool,
+}
+
+#[repr(C)]
+struct WritableStorage { reference: u32, permitted: u32 }
+
+#[repr(C)]
+struct MutablePlaceCursor { phase: u32, component: u64 }
+
+#[repr(C)]
+struct MutablePlaceFacts { access: u32, persistent: u32, views: u32, unique: u32, components: u64 }
+
+#[repr(u32)]
+enum MutablePlaceNeed { ViewError, Owned, Writable, Unique, Duplicate, Initialize, Complete }
+
+#[repr(C)]
+struct MutablePlaceStep { cursor: MutablePlaceCursor, need: MutablePlaceNeed }
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.function_body::writable_storage"]
+    fn writable_storage(kind: u32, access: u32, current: u32) -> WritableStorage;
+    #[link_name = "bootstrap.function_body::mutable_place_step"]
+    fn mutable_place_step(cursor: MutablePlaceCursor, facts: MutablePlaceFacts) -> MutablePlaceStep;
 }
 impl Builder<'_> {
+    pub(super) fn storage_access(&self, base: &Place) -> StorageAccess {
+        let (kind, access, writable) = match base {
+            Place::Reference { access, .. } => (0, *access, false),
+            Place::ApplicationElement { access, .. } => (1, *access, false),
+            Place::ViewElement { .. } => (3, Access::Read, false),
+            Place::TileElement { tile, .. } => (4, self.tiles[*tile].access, false),
+            Place::Local(..) => (5, Access::Value, true),
+            Place::ReadOnlyLocal(..) => (6, Access::Read, false),
+            Place::Element { binding, writable, .. } => (7, self.view_access[binding], *writable),
+            Place::AtomicParameter(_) => (8, Access::Atomic, false),
+            Place::Indexed { .. } => unreachable!(),
+        };
+        StorageAccess { kind, access, writable }
+    }
+
     pub(super) async fn mutable_place(&mut self, expr: &Expr, access: Access) -> Result<Option<Place>> {
         let Some(place) = unsafe { self.world.call(self.place(expr)).await }? else {
             return Ok(None);
@@ -81,18 +155,29 @@ impl Builder<'_> {
         unsafe { self.world.call(self.mutable_place_value(place,access,expr.span())).await }.map(Some)
     }
     pub(super) async fn mutable_place_value(&mut self,place:Place,access:Access,span:Span)->Result<Place> {
-        if place.ty().contains_views() && matches!(place.storage(), Place::Element { .. } | Place::ApplicationElement { .. }) {
-            return self.fail(span,"B185","持久dataset的view载荷不可写或独占借出；数值字段按原权限修改");
+        let components = place.storage_components();
+        let mut cursor = MutablePlaceCursor { phase: 0, component: 0 };
+        let mut facts = MutablePlaceFacts {
+            access: access as u32,
+            persistent: u32::from(matches!(place.storage(), Place::Element { .. } | Place::ApplicationElement { .. })),
+            views: u32::from(place.ty().contains_views()),
+            unique: 0,
+            components: components.len() as u64,
+        };
+        let mut seen = BTreeSet::new();
+        loop {
+            let step = unsafe { mutable_place_step(cursor, MutablePlaceFacts { ..facts }) };
+            cursor = step.cursor;
+            match step.need {
+                MutablePlaceNeed::ViewError => return self.fail(span, "B185", "持久dataset的view载荷不可写或独占借出；数值字段按原权限修改"),
+                MutablePlaceNeed::Owned => self.require_owned_writable(&place, span)?,
+                MutablePlaceNeed::Writable => { unsafe { self.world.call(self.writable_storage(&place, span, None)).await }?; }
+                MutablePlaceNeed::Unique => facts.unique = u32::from(seen.insert(components.at(cursor.component as usize))),
+                MutablePlaceNeed::Duplicate => return self.fail(span, "B227", "独占借用位置不能包含重复分量"),
+                MutablePlaceNeed::Initialize => { unsafe { self.world.call(self.require_initialized(&place, span)).await }?; }
+                MutablePlaceNeed::Complete => return Ok(place),
+            }
         }
-        self.require_owned_writable(&place, span)?;
-        let positions = unsafe { self.world.call(self.writable_storage(&place, span, None)).await }?;
-        if positions.iter().copied().collect::<BTreeSet<_>>().len() != positions.len() {
-            return self.fail(span, "B227", "独占借用位置不能包含重复分量");
-        }
-        if access == Access::InOut {
-            unsafe { self.world.call(self.require_initialized(&place, span)).await }?;
-        }
-        Ok(place)
     }
     pub(super) fn require_owned_writable(&self,place:&Place,span:Span)->Result<()> {
         if self.env.values().any(|binding|matches!(binding,Binding::OwnedValue(value)if value.ownership==application::Ownership::Borrowed && value.place().is_some_and(|root|place.overlaps(&root)))) {
@@ -100,33 +185,26 @@ impl Builder<'_> {
         }
         Ok(())
     }
-    pub(super) async fn writable_storage(&mut self, place: &Place, span: Span, written: Option<bounds::Proof>) -> Result<Vec<usize>> {
-        if let Place::Indexed { base, words, .. } = place {
-            unsafe { self.world.call(self.writable_storage(base, span, written.map(|_|bounds::Proof::default()))).await }?;
-            return Ok(words.iter().map(|w| *w as usize).collect());
+    pub(super) async fn writable_storage(&mut self, place: &Place, span: Span, written: Option<bounds::Proof>) -> Result<()> {
+        let base = place.storage();
+        let storage = self.storage_access(base);
+        let decision = unsafe { writable_storage(storage.kind, storage.access as u32, u32::from(storage.writable)) };
+        if decision.reference != 0 {
+            let borrow = unsafe { self.world.call(self.position_origin(base, span)).await }?.normalize();
+            let written = if matches!(place, Place::Indexed { .. }) { written.map(|_| bounds::Proof::default()) } else { written };
+            self.check_view_requirement(view::Requirement::Address {
+                borrow, layout: address::Layout::of(base.ty()), written,
+                writable: true, initialized: false, external_atomic: false, span,
+            })?;
         }
-        if matches!(place,Place::Reference{..}) {let borrow=unsafe { self.world.call(self.position_origin(place,span)).await }?.normalize();
-            self.check_view_requirement(view::Requirement::Address {borrow,layout:address::Layout::of(place.ty()),written,writable:true,initialized:false,external_atomic:false,span})?;
-        }
-        match place {
-            Place::Reference { words, access: Access::Write | Access::InOut, .. } => Ok(words.iter().map(|word| *word as usize).collect()),
-            Place::ApplicationElement { words, access: Access::Write | Access::InOut, .. } =>
-                Ok(words.iter().map(|word| *word as usize).collect()),
-            Place::Local(_, slots, ..) => Ok(slots.clone()),
-            Place::Element {
-                binding,
-                words,
-                writable: true,
-                ..
-            } if matches!(self.view_access[binding], Access::Write | Access::InOut) => {
-                Ok(words.iter().map(|w| *w as usize).collect())
-            }
-            _ => self.fail(
+        if decision.permitted == 0 {
+            return self.fail(
                 span,
                 "B227",
                 "write／inout 需要当前独占元素或可变局部位置，不能借用只读或原子共享位置",
-            ),
+            );
         }
+        Ok(())
     }
     pub(super) fn positions(&self, place: &Place) -> Vec<Position> {
         if let Some(positions) = self.env.values().find_map(|binding| {

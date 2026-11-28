@@ -324,6 +324,15 @@ enum WritePlaceNeed:u32 {Access=0;ViewType=1;ViewPayloadError=2;Owned=3;ViewAvai
 struct WritePlaceStep {Cursor cursor;WritePlaceNeed need;};
 extern "C" WritePlaceStep write_place_step(Cursor cursor,WritePlaceFacts facts) on cpu;
 
+struct WritableStorage {u32 reference;u32 permitted;};
+extern "C" WritableStorage writable_storage(u32 kind,u32 access,u32 current) on cpu;
+
+struct MutablePlaceCursor {u32 phase;u64 component;};
+struct MutablePlaceFacts {u32 access;u32 persistent;u32 views;u32 unique;u64 components;};
+enum MutablePlaceNeed:u32 {ViewError=0;Owned=1;Writable=2;Unique=3;Duplicate=4;Initialize=5;Complete=6;};
+struct MutablePlaceStep {MutablePlaceCursor cursor;MutablePlaceNeed need;};
+extern "C" MutablePlaceStep mutable_place_step(MutablePlaceCursor cursor,MutablePlaceFacts facts) on cpu;
+
 struct UnsafeReadFacts {u32 present;u32 access;};
 enum UnsafeReadNeed:u32 {BadArguments=0;Application=1;ApplicationCpu=2;Dataset=3;BadAccess=4;Value=5;Index=6;IndexType=7;ApplicationRead=8;DatasetRead=9;ViewRead=10;Empty=11;};
 struct UnsafeReadStep {LocalCursor cursor;UnsafeReadNeed need;};

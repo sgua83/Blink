@@ -605,21 +605,6 @@ impl Builder<'_> {
         };
         Ok((source, offset, word))
     }
-    pub(super) fn indexed_base(&self, base: &Place) -> (u32, u32) {
-        let (kind, access) = match base {
-            Place::Reference { access, .. } => (0, *access),
-            Place::ApplicationElement { access, .. } => (1, *access),
-            Place::ViewElement { .. } => (3, Access::Read),
-            Place::TileElement { tile, .. } => (4, self.tiles[*tile].access),
-            Place::Local(..) => (5, Access::Value),
-            Place::ReadOnlyLocal(..) => (6, Access::Read),
-            Place::Element { binding, .. } => (7, self.view_access[binding]),
-            Place::AtomicParameter(_) => (8, Access::Atomic),
-            Place::Indexed { .. } => unreachable!(),
-        };
-        (kind, access as u32)
-    }
-
     pub(super) fn indexed_local_word(&self, base: &Place, word: u32) -> (std::ops::Range<usize>, u32) {
         let (Place::Local(_, slots, storage) | Place::ReadOnlyLocal(_, slots, storage, _)) = base
         else { unreachable!() };
