@@ -389,3 +389,126 @@ void write_domain_upper(address output,address identity,u32 distance) on cpu {
     unsafe_position<u32>(field(output,40u64))=distance;
 }
 
+address operand_identity(address operand) on cpu {
+    return unsafe_position<OperandKind>(operand)==OperandKind::Value ? field(operand,8u64) : address();
+}
+
+array<address,3> expression_identities(address expression) on cpu {
+    address first=field(expression,8u64);
+    if(unsafe_position<u32>(expression)==0){
+        return array<address,3>(operand_identity(first),operand_identity(field(expression,48u64)),address());
+    }
+    address operand=field(first,8u64);
+    address identity=unsafe_position<u32>(first)==1 ? operand : operand_identity(operand);
+    return array<address,3>(identity,address(),address());
+}
+
+array<address,3> domain_identities(address domain) on cpu {
+    DomainKind kind=unsafe_position<DomainKind>(domain);
+    address first=field(domain,8u64);
+    if(kind==DomainKind::View||kind==DomainKind::ViewLength){
+        return array<address,3>(first,field(domain,40u64),field(domain,72u64));
+    }
+    if(kind==DomainKind::Sum||kind==DomainKind::Shifted){
+        return array<address,3>(first,field(domain,40u64),address());
+    }
+    if(kind==DomainKind::Computed){return expression_identities(first);}
+    if(kind==DomainKind::ApplicationData||kind==DomainKind::ApplicationLength
+        ||kind==DomainKind::Upper||kind==DomainKind::Lower||kind==DomainKind::Room
+        ||kind==DomainKind::Offset||kind==DomainKind::CommonRange||kind==DomainKind::Floating){
+        return array<address,3>(first,address(),address());
+    }
+    return array<address,3>(address(),address(),address());
+}
+
+extern "C" address rename_index_domain(address source,address output,address context,cfn<address,address,address> lookup) on cpu
+    requires nonzero(lookup) {
+    array<address,3> slots=domain_identities(source);
+    bool copied=false;
+    for(i in 0..3){
+        address identity=slots[i];
+        if(identity==address()){continue;}
+        address mapped=lookup(context,identity);
+        if(mapped==address()){continue;}
+        if(!copied){
+            RtlMoveMemory(output,source,size_of<IndexDomainKey>());
+            copied=true;
+        }
+        address slot=field(output,address_bits(identity)-address_bits(source));
+        unsafe_position<IdentityKey>(slot)=make_key_identity(capture_key_identity(mapped));
+    }
+    return copied ? output : source;
+}
+
+array<address,4> fact_identity_slots(FactView fact,bool domains) on cpu {
+    if(fact.kind==FactKind::Predicate){
+        return array<address,4>(operand_identity(field(fact.payload,8u64)),
+            operand_identity(field(fact.payload,48u64)),address(),address());
+    }
+    if(fact.kind==FactKind::Equal||fact.kind==FactKind::NotEqual||fact.kind==FactKind::Below){
+        return array<address,4>(fact.first,fact.second,address(),address());
+    }
+    if(domains&&(fact.kind==FactKind::Index||fact.kind==FactKind::Outside)){
+        array<address,3> domain=domain_identities(fact.payload);
+        return array<address,4>(fact.first,domain[0],domain[1],domain[2]);
+    }
+    return array<address,4>(fact.first,address(),address(),address());
+}
+
+void normalize_renamed_predicate(address predicate) on cpu {
+    u8 tag=unsafe_position<u8>(predicate);
+    address left=field(predicate,8u64);
+    address right=field(predicate,48u64);
+    bool reverse=tag==u8(u32(ComparisonKind::Greater))||tag==u8(u32(ComparisonKind::GreaterEqual));
+    if(reverse){
+        unsafe_position<u8>(predicate)=tag==u8(u32(ComparisonKind::Greater))
+            ? u8(u32(ComparisonKind::Less)) : u8(u32(ComparisonKind::LessEqual));
+    }
+    if(reverse||((tag==u8(u32(ComparisonKind::Equal))||tag==u8(u32(ComparisonKind::NotEqual)))&&order_operand(left,right)>0)){
+        OperandKey first=unsafe_position<OperandKey>(left);
+        unsafe_position<OperandKey>(left)=unsafe_position<OperandKey>(right);
+        unsafe_position<OperandKey>(right)=first;
+    }
+}
+
+extern "C" void rename_fact_key(address source,address output,address context,cfn<address,address,address> lookup) on cpu
+    requires nonzero(lookup) {
+    RtlMoveMemory(output,source,size_of<FactKey>());
+    FactView fact=read_fact_fields(output);
+    array<address,4> slots=fact_identity_slots(fact,true);
+    for(i in 0..4){
+        address identity=slots[i];
+        if(identity==address()){continue;}
+        address renamed=lookup(context,identity);
+        if(renamed!=address()){
+            unsafe_position<IdentityKey>(identity)=make_key_identity(capture_key_identity(renamed));
+        }
+    }
+    if(fact.kind==FactKind::Predicate){
+        normalize_renamed_predicate(fact.payload);
+    }else if((fact.kind==FactKind::Equal||fact.kind==FactKind::NotEqual)&&order_identity(fact.first,fact.second)>0){
+        IdentityKey first=unsafe_position<IdentityKey>(fact.first);
+        unsafe_position<IdentityKey>(fact.first)=unsafe_position<IdentityKey>(fact.second);
+        unsafe_position<IdentityKey>(fact.second)=first;
+    }
+}
+
+u32 visit_fact_identities(address source,address context,u32 nested_domains,cfn<u32,address,address> accept) on cpu
+    requires nonzero(accept) {
+    array<address,4> slots=fact_identity_slots(read_fact_fields(source),nested_domains!=0);
+    for(index in 0..4){
+        address identity=slots[index];
+        if(identity!=address()&&accept(context,identity)!=0){return 1;}
+    }
+    return 0;
+}
+
+extern "C" u32 visit_domain_identities(address source,address context,cfn<u32,address,address> accept) on cpu
+    requires nonzero(accept) {
+    array<address,3> slots=domain_identities(source);
+    for(index in 0..3){
+        address identity=slots[index];
+        if(identity!=address()&&accept(context,identity)!=0){return 1;}
+    }
+    return 0;
+}

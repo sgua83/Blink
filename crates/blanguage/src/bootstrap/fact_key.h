@@ -16,6 +16,14 @@ struct IndexDomainKey { array<u64,13> words; };
 
 extern "C" i32 order_identity(address left, address right) on cpu;
 extern "C" i32 order_domain(address left, address right) on cpu;
+extern "C" address rename_index_domain(address source,address output,address context,cfn<address,address,address> lookup) on cpu
+    requires nonzero(lookup);
+extern "C" void rename_fact_key(address source,address output,address context,cfn<address,address,address> lookup) on cpu
+    requires nonzero(lookup);
+u32 visit_fact_identities(address source,address context,u32 nested_domains,cfn<u32,address,address> accept) on cpu
+    requires nonzero(accept);
+extern "C" u32 visit_domain_identities(address source,address context,cfn<u32,address,address> accept) on cpu
+    requires nonzero(accept);
 extern "C" i32 order_operand(address left, address right) on cpu;
 extern "C" i32 order_selector(address left, address right) on cpu;
 extern "C" i32 order_predicate(address left, address right) on cpu;

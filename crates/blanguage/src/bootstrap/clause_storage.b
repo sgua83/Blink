@@ -1,4 +1,5 @@
 module bootstrap.clause_storage;
+import bootstrap.fact_key;
 
 extern "C" handle GetProcessHeap() on cpu from "KERNEL32.dll";
 extern "C" address HeapAlloc(handle heap,u32 flags,u64 bytes) on cpu from "KERNEL32.dll";
@@ -310,4 +311,108 @@ extern "C" address combine_clause_branch(address parent,address condition,u32 tr
         return clause_impossible();
     }
     return pair_of(StoredClauseKind::Branch,truth,parent,condition);
+}
+
+struct ClauseWalk { OrderedTree pending; OrderedTree visited; };
+
+void push_walk_payload(address pending,address payload) on cpu {
+    address slot=ordered_tree_prepare(pending,size_of<address>());
+    unsafe_position<address>(slot)=payload;
+    unsafe_position<OrderedTree>(pending).count+=1u64;
+}
+
+address pop_walk_payload(address pending) on cpu {
+    OrderedTree stack=unsafe_position<OrderedTree>(pending);
+    u64 slot=stack.count-1u64;
+    address row=unsafe_address(address_bits(stack.records)+slot*size_of<address>());
+    unsafe_position<OrderedTree>(pending).count=slot;
+    return unsafe_position<address>(row);
+}
+
+struct ClauseVisitKey { OrderedNode node; address payload; };
+struct ClauseVisitSearch { u64 index; u64 parent; i32 order; };
+
+address visit_key(OrderedTree tree,u64 index) on cpu {
+    return unsafe_address(address_bits(tree.records)+(index-1u64)*size_of<ClauseVisitKey>());
+}
+
+ClauseVisitSearch find_clause(OrderedTree visited,address payload) on cpu {
+    u64 index=visited.root;
+    ClauseVisitSearch result=ClauseVisitSearch(0u64,0u64,i32(0));
+    while(index!=0u64){
+        ClauseVisitKey row=unsafe_position<ClauseVisitKey>(visit_key(visited,index));
+        if(row.payload==payload){result.index=index;return result;}
+        bool before=address_bits(payload)<address_bits(row.payload);
+        result.parent=index;
+        result.order=before ? -i32(1) : i32(1);
+        index=before ? row.node.left : row.node.right;
+    }
+    return result;
+}
+
+void visit_clause(address visited,address payload,ClauseVisitSearch found) on cpu {
+    address entry=ordered_tree_prepare(visited,size_of<ClauseVisitKey>());
+    unsafe_position<ClauseVisitKey>(entry).payload=payload;
+    ordered_tree_publish(visited,size_of<ClauseVisitKey>(),found.parent,found.order);
+}
+
+extern "C" void clause_walk_drop(address owner) on cpu {
+    fact_tree_clear(address_of(unsafe_position<ClauseWalk>(owner).pending));
+    fact_tree_clear(address_of(unsafe_position<ClauseWalk>(owner).visited));
+}
+
+extern "C" void clause_fact_walk_start(address owner,address context,cfn<address,address> next) on cpu
+    requires nonzero(next) {
+    address pending=address_of(unsafe_position<ClauseWalk>(owner).pending);
+    while(true){
+        address root=next(context);
+        if(root==address()){break;}
+        push_walk_payload(pending,root);
+    }
+    OrderedTree stack=unsafe_position<OrderedTree>(pending);
+    u64 first=0u64;
+    u64 limit=stack.count;
+    while(first<limit){
+        limit-=1u64;
+        if(first==limit){break;}
+        address left=unsafe_address(address_bits(stack.records)+first*size_of<address>());
+        address right=unsafe_address(address_bits(stack.records)+limit*size_of<address>());
+        address payload=unsafe_position<address>(left);
+        unsafe_position<address>(left)=unsafe_position<address>(right);
+        unsafe_position<address>(right)=payload;
+        first+=1u64;
+    }
+}
+
+extern "C" address clause_fact_walk_next(address owner) on cpu {
+    address pending=address_of(unsafe_position<ClauseWalk>(owner).pending);
+    address visited=address_of(unsafe_position<ClauseWalk>(owner).visited);
+    while(unsafe_position<OrderedTree>(pending).count!=0u64){
+        address payload=pop_walk_payload(pending);
+        ClauseVisitSearch found=find_clause(unsafe_position<OrderedTree>(visited),payload);
+        if(found.index!=0u64){continue;}
+        visit_clause(visited,payload,found);
+        StoredClause node=clause_header(payload);
+        if(node.kind==StoredClauseKind::Facts){return payload_fields(payload);}
+        if(node.kind==StoredClauseKind::Impossible){continue;}
+        ClausePair edges=clause_edges(payload);
+        address right=node.kind==StoredClauseKind::Branch ? selected_case(edges.second,node.truth) : edges.second;
+        push_walk_payload(pending,right);
+        push_walk_payload(pending,edges.first);
+    }
+    return address();
+}
+
+extern "C" u32 clause_input_identities(address owner,address context,u32 nested_domains,cfn<u32,address,address> accept) on cpu
+    requires nonzero(accept) {
+    while(true){
+        address facts=clause_fact_walk_next(owner);
+        if(facts==address()){return 0;}
+        FactCursor cursor=fact_tree_cursor(facts);
+        while(true){
+            address fact=fact_tree_next(facts,address_of(cursor),0);
+            if(fact==address()){break;}
+            if(visit_fact_identities(fact,context,nested_domains,accept)!=0){return 1;}
+        }
+    }
 }

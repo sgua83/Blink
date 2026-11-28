@@ -30,83 +30,60 @@ struct SourceNode {
     empty: u32,
     condition: Borrowed,
 }
+#[derive(Default)]
+#[repr(C)]
+struct ClauseTree {
+    records: Slot,
+    root: usize,
+    count: usize,
+    capacity: usize,
+}
+
+#[derive(Default)]
+#[repr(C)]
 struct FactWalk<'a> {
-    pending: Vec<&'a Clause>,
-    seen: std::collections::HashSet<usize>,
-}
-
-impl<'a> FactWalk<'a> {
-    fn new(roots: impl IntoIterator<Item = &'a Clause>) -> Self {
-        let mut pending = roots.into_iter().collect::<Vec<_>>();
-        pending.reverse();
-        Self { pending, seen: Default::default() }
-    }
-}
-
-#[derive(Clone, Copy)]
-#[repr(C)]
-struct FactWalkHost {
-    visit: unsafe extern "C" fn(Slot, Borrowed) -> u32,
-    push: unsafe extern "C" fn(Slot, Borrowed),
-    pop: unsafe extern "C" fn(Slot) -> Borrowed,
-}
-
-unsafe extern "C" fn visit_fact_clause(walk: Slot, clause: Borrowed) -> u32 {
-    let walk = unsafe { &mut *walk.cast::<FactWalk<'_>>() };
-    let clause = unsafe { &*clause.cast::<Clause>() };
-    u32::from(walk.seen.insert(clause.key()))
-}
-
-unsafe extern "C" fn push_fact_clause(walk: Slot, clause: Borrowed) {
-    unsafe { &mut *walk.cast::<FactWalk<'_>>() }.pending.push(unsafe { &*clause.cast::<Clause>() });
-}
-
-unsafe extern "C" fn pop_fact_clause(walk: Slot) -> Borrowed {
-    unsafe { &mut *walk.cast::<FactWalk<'_>>() }.pending.pop()
-        .map_or(std::ptr::null(), |clause| std::ptr::from_ref(clause).cast())
-}
-
-const FACT_WALK: FactWalkHost = FactWalkHost {
-    visit: visit_fact_clause,
-    push: push_fact_clause,
-    pop: pop_fact_clause,
-};
-
-struct ConditionInput<'a, F> {
-    facts: Option<facts::Iter<'a>>,
-    accept: F,
-}
-
-#[repr(C)]
-struct ConditionInputHost {
-    graph: FactWalkHost,
-    begin: unsafe extern "C" fn(Slot, Borrowed),
-    next: unsafe extern "C" fn(Slot) -> super::fact_fields::Fields,
-    predicate: unsafe extern "C" fn(Borrowed) -> super::fact_fields::PredicateView,
-    accept: unsafe extern "C" fn(Slot, Borrowed) -> u32,
-}
-
-unsafe extern "C" fn begin_input_facts<F>(slot: Slot, facts: Borrowed) {
-    let input = unsafe { &mut *slot.cast::<ConditionInput<'_, F>>() };
-    input.facts = Some(unsafe { &*facts.cast::<Facts>() }.iter());
-}
-
-unsafe extern "C" fn next_input_fact<F>(slot: Slot) -> super::fact_fields::Fields {
-    let input = unsafe { &mut *slot.cast::<ConditionInput<'_, F>>() };
-    input.facts.as_mut().unwrap().next().map_or_else(Default::default, super::fact_fields::Fields::from)
-}
-
-unsafe extern "C" fn accept_input<F: FnMut(&ValueIdentity) -> bool>(slot: Slot, id: Borrowed) -> u32 {
-    let input = unsafe { &mut *slot.cast::<ConditionInput<'_, F>>() };
-    u32::from((input.accept)(unsafe { &*id.cast::<ValueIdentity>() }))
+    pending: ClauseTree,
+    visited: ClauseTree,
+    roots: std::marker::PhantomData<&'a Clause>,
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.condition_graph::next_fact_block"]
-    fn next_fact_block(walk: Slot, host: FactWalkHost) -> Borrowed;
+    #[link_name = "bootstrap.clause_storage::clause_fact_walk_start"]
+    fn start_fact_walk(walk: &mut FactWalk<'_>, context: Slot, next: unsafe extern "C" fn(Slot) -> Borrowed);
 
-    #[link_name = "bootstrap.condition_graph::condition_inputs"]
-    fn read_condition_inputs(walk: Slot, input: Slot, host: ConditionInputHost) -> u32;
+    #[link_name = "bootstrap.clause_storage::clause_fact_walk_next"]
+    fn next_fact_block(walk: &mut FactWalk<'_>) -> *const Facts;
+
+    #[link_name = "bootstrap.clause_storage::clause_input_identities"]
+    fn read_input_identities(walk: &mut FactWalk<'_>, context: Slot, nested_domains: u32,
+        accept: unsafe extern "C" fn(Slot, &ValueIdentity) -> u32) -> u32;
+
+    #[link_name = "bootstrap.clause_storage::clause_walk_drop"]
+    fn drop_fact_walk(walk: &mut FactWalk<'_>);
+}
+
+impl<'a> FactWalk<'a> {
+    fn new<I: IntoIterator<Item = &'a Clause>>(roots: I) -> Self {
+        unsafe extern "C" fn next_root<'a, I: Iterator<Item = &'a Clause>>(context: Slot) -> Borrowed {
+            unsafe { &mut *context.cast::<I>() }.next().map_or(ptr::null(), |clause| clause.raw().cast_const())
+        }
+
+        let mut walk = Self::default();
+        let mut roots = roots.into_iter();
+        unsafe { start_fact_walk(&mut walk, ptr::from_mut(&mut roots).cast(), next_root::<I::IntoIter>) };
+        walk
+    }
+
+    fn next(&mut self) -> Option<&'a Facts> {
+        // B only returns an immutable leaf borrowed from the original roots.
+        unsafe { next_fact_block(self).as_ref() }
+    }
+}
+
+impl Drop for FactWalk<'_> {
+    fn drop(&mut self) {
+        unsafe { drop_fact_walk(self) };
+    }
 }
 
 pub(super) fn any_fact<'a>(
@@ -114,8 +91,7 @@ pub(super) fn any_fact<'a>(
     test: &impl Fn(&Fact) -> bool,
 ) -> bool {
     let mut walk = FactWalk::new(roots);
-    let source = std::ptr::from_mut(&mut walk).cast();
-    while let Some(facts) = unsafe { next_fact_block(source, FACT_WALK).cast::<Facts>().as_ref() } {
+    while let Some(facts) = walk.next() {
         if facts.iter().any(test) {
             return true;
         }
@@ -123,21 +99,27 @@ pub(super) fn any_fact<'a>(
     false
 }
 
-pub(super) fn condition_inputs<F: FnMut(&ValueIdentity) -> bool>(roots: &[Clause; 2], accept: F) -> bool {
-    let mut walk = FactWalk::new(roots);
-    let mut input = ConditionInput { facts: None, accept };
-    let host = ConditionInputHost {
-        graph: FACT_WALK,
-        begin: begin_input_facts::<F>,
-        next: next_input_fact::<F>,
-        predicate: super::fact_fields::predicate,
-        accept: accept_input::<F>,
-    };
-    unsafe {
-        read_condition_inputs(
-            std::ptr::from_mut(&mut walk).cast(), std::ptr::from_mut(&mut input).cast(), host,
-        ) != 0
+fn input_identities<'a, F: FnMut(&ValueIdentity) -> bool>(
+    roots: impl IntoIterator<Item = &'a Clause>, nested_domains: bool, mut accept: F,
+) -> bool {
+    unsafe extern "C" fn accept_input<F: FnMut(&ValueIdentity) -> bool>(context: Slot, identity: &ValueIdentity) -> u32 {
+        u32::from(unsafe { &mut *context.cast::<F>() }(identity))
     }
+
+    let mut walk = FactWalk::new(roots);
+    unsafe {
+        read_input_identities(&mut walk, ptr::from_mut(&mut accept).cast(), u32::from(nested_domains), accept_input::<F>) != 0
+    }
+}
+
+pub(super) fn condition_inputs<F: FnMut(&ValueIdentity) -> bool>(roots: &[Clause; 2], accept: F) -> bool {
+    input_identities(roots, false, accept)
+}
+
+pub(super) fn any_scalar_identity<'a>(
+    roots: impl IntoIterator<Item = &'a Clause>, test: &impl Fn(&ValueIdentity) -> bool,
+) -> bool {
+    input_identities(roots, true, test)
 }
 
 #[derive(Clone, Copy)]
@@ -368,7 +350,7 @@ unsafe extern "C" fn output_begin_facts(slot: Slot, facts: Borrowed) {
 unsafe extern "C" fn output_map_fact(slot: Slot) -> u32 {
     let ctx = unsafe { output_rename(slot) };
     let Some(fact) = ctx.facts.next() else { return 0; };
-    ctx.renamed.insert(fact.map(&|id| output_identity(id, ctx.bindings)));
+    ctx.renamed.insert(super::fact_fields::map_fact(*fact, &|id| output_identity(id, ctx.bindings)));
     1
 }
 

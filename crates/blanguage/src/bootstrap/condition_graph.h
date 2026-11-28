@@ -16,14 +16,6 @@ extern "C" address clause_postorder_next(inout TraversalStack stack,address cont
     cfn<u32,address,address> completed) on cpu requires nonzero(completed);
 extern "C" void traversal_stack_drop(inout TraversalStack stack) on cpu;
 
-struct FactWalkHost {
- cfn<u32,address,address> visit;
- cfn<void,address,address> push;
- cfn<address,address> pop;
-};
-extern "C" address next_fact_block(address walk,FactWalkHost host) on cpu
- requires nonzero(host.visit) requires nonzero(host.push) requires nonzero(host.pop);
-
 struct CallProjectionHost {
  cfn<address,address> next;
  cfn<void,address,address> impossible;
@@ -161,18 +153,6 @@ extern "C" void negate_graph(address root,address context,NegateHost host) on cp
 struct InternalScalar { u32 kind; u32 width; u64 mask; u64 bias; };
 struct InternalOperand { address identity; u64 bits; address scalar; u32 is_constant; };
 struct InternalPredicate { address scalar; BinaryOperation operation; InternalOperand left; InternalOperand right; };
-struct ConditionInputHost {
- FactWalkHost graph;
- cfn<void,address,address> begin;
- cfn<FactView,address> next;
- cfn<InternalPredicate,address> ensures memory(read) predicate;
- cfn<u32,address,address> accept;
-};
-extern "C" u32 condition_inputs(address walk,address input,ConditionInputHost host) on cpu
- requires nonzero(host.graph.visit) requires nonzero(host.graph.push) requires nonzero(host.graph.pop)
- requires nonzero(host.begin) requires nonzero(host.next) requires nonzero(host.predicate)
- requires nonzero(host.accept);
-
 struct InternalUpper { address identity; u32 distance; u32 present; };
 struct InternalHost {
  cfn<FactView,address> next;

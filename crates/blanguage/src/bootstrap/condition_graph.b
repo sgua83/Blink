@@ -80,46 +80,6 @@ extern "C" void traversal_stack_drop(inout TraversalStack stack) on cpu {
     if(records!=address()){HeapFree(GetProcessHeap(),0,records);}
 }
 
-extern "C" address next_fact_block(address walk,FactWalkHost host) on cpu
- requires nonzero(host.visit) requires nonzero(host.push) requires nonzero(host.pop) {
- while(true){
-  address clause=host.pop(walk);
-  if(address_bits(clause)==0u64){return address();}
-  if(host.visit(walk,clause)==0){continue;}
-  SourceNode source=clause_source(clause);
-  if(source.kind==1){return source.left;}
-  if(source.kind>=2){
-   address right=source.kind==4&&source.truth==0 ? source.no : source.right;
-   host.push(walk,right);
-   host.push(walk,source.left);
-  }
- }
-}
-
-extern "C" u32 condition_inputs(address walk,address input,ConditionInputHost host) on cpu
- requires nonzero(host.graph.visit) requires nonzero(host.graph.push) requires nonzero(host.graph.pop)
- requires nonzero(host.begin) requires nonzero(host.next) requires nonzero(host.predicate)
- requires nonzero(host.accept) {
- while(true){
-  address block=next_fact_block(walk,host.graph);
-  if(address_bits(block)==0u64){return 0;}
-  host.begin(input,block);
-  while(true){
-   FactView fact=host.next(input);
-   if(fact.present==0){break;}
-   if(fact.kind==FactKind::Predicate){
-    InternalPredicate predicate=host.predicate(fact.payload);
-    if(predicate.left.is_constant==0 && host.accept(input,predicate.left.identity)!=0){return 1;}
-    if(predicate.right.is_constant==0 && host.accept(input,predicate.right.identity)!=0){return 1;}
-   }else{
-    if(host.accept(input,fact.first)!=0){return 1;}
-    if((fact.kind==FactKind::Equal||fact.kind==FactKind::NotEqual||fact.kind==FactKind::Below)
-       && host.accept(input,fact.second)!=0){return 1;}
-   }
-  }
- }
-}
-
 usize word_at(Span span,usize index) on cpu {
  return unsafe_position<usize>(unsafe_address(address_bits(span.data)+u64(index)*8u64));
 }

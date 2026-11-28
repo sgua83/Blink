@@ -3,6 +3,7 @@ mod condition_graph;
 mod selection_proof;
 mod cross_facts;
 mod fact_fields;
+use fact_fields::map_domain;
 pub(super) mod origin_store;
 use origin_store::{OriginList, OriginRows};
 mod condition_slots;
@@ -227,9 +228,6 @@ impl ScalarPredicate {
         }
         Self { op, scalar, a, b }
     }
-    fn map(self, identity: impl Fn(ValueIdentity) -> Option<ValueIdentity>) -> Option<Self> {
-        Some(Self::new(self.op, self.scalar, self.a.map(&identity)?, self.b.map(&identity)?))
-    }
 }
 
 
@@ -439,30 +437,6 @@ impl CallBindings for Substitution<'_, '_> {
 
 fn output_identity(identity: ValueIdentity, bindings: &OutputBindings) -> ValueIdentity {
     bindings.get(&identity).copied().unwrap_or(identity)
-}
-fn map_domain(domain:IndexDomain, identity:&impl Fn(ValueIdentity)->ValueIdentity)->IndexDomain {
-    match domain {
-        IndexDomain::View(ids) => IndexDomain::View(ids.map(|id| identity(id))),
-        IndexDomain::ViewLength(ids) => {
-            IndexDomain::ViewLength(ids.map(|id| identity(id)))
-        }
-        IndexDomain::ApplicationData(id) => {
-            IndexDomain::ApplicationData(identity(id))
-        }
-        IndexDomain::ApplicationLength(id) => {
-            IndexDomain::ApplicationLength(identity(id))
-        }
-        IndexDomain::Upper(limit, distance) => IndexDomain::Upper(identity(limit), distance),
-        IndexDomain::Lower(base, distance) => IndexDomain::Lower(identity(base), distance),
-        IndexDomain::Room(base) => IndexDomain::Room(identity(base)),
-        IndexDomain::Sum(left, right) => IndexDomain::Sum(identity(left), identity(right)),
-        IndexDomain::Offset(base, amount) => IndexDomain::Offset(identity(base), amount),
-        IndexDomain::Shifted(base, limit, distance) => IndexDomain::Shifted(identity(base), identity(limit), distance),
-        IndexDomain::Computed(expression) => IndexDomain::Computed(expression.map(|id| Some(identity(id))).unwrap()),
-        IndexDomain::CommonRange(source,from,low,extended,to) => IndexDomain::CommonRange(identity(source),from,low,extended,to),
-        IndexDomain::Floating(bound) => IndexDomain::Floating(FloatingBound { source: identity(bound.source), ..bound }),
-        other => other,
-    }
 }
 unsafe extern "C" {
     #[link_name = "bootstrap.scalar_fold::cast_index_domain"]
@@ -843,29 +817,25 @@ impl Proof {
         proof
     }
     // 函数体的寄存器身份只在该编译单元内有效；调用边界只翻译实际参数关系。
-    pub(super) fn scalar_identities(&self)->BTreeSet<ValueIdentity> {
-        let ids=std::cell::RefCell::new(self.origins.iter().flatten().copied().collect::<BTreeSet<_>>());
-        let identity=|id|{ids.borrow_mut().insert(id);id};
-        for domain in self.domains.iter().flatten(){map_domain(*domain,&identity);}
-        Clause::any_scalar_identity(self.conditions.iter().flatten().flat_map(|condition|condition.cases.iter()),&|id|{identity(*id);false});
-        for address in self.addresses.iter().flatten(){if let address::Identity::Value(values)=address{for id in values{identity(*id);}}}
-        ids.into_inner()
+    pub(super) fn scalar_identities(&self) -> BTreeSet<ValueIdentity> {
+        let identities = std::cell::RefCell::new(BTreeSet::new());
+        self.any_scalar_identity(&|identity| {
+            identities.borrow_mut().insert(*identity);
+            false
+        });
+        identities.into_inner()
     }
-    pub(super) fn any_scalar_identity(&self, test:&impl Fn(&ValueIdentity)->bool)->bool {
-        if self.origins.iter().flatten().any(test) { return true; }
-        for domain in self.domains.iter().flatten() {
-            let found=std::cell::Cell::new(false);
-            map_domain(*domain,&|id|{found.set(found.get()||test(&id));id});
-            if found.get() { return true; }
-        }
-        if Clause::any_scalar_identity(self.conditions.iter().flatten().flat_map(|condition|condition.cases.iter()),test) {
-            return true;
-        }
-        self.addresses.iter().flatten().any(|address|match address {
-            address::Identity::Value(values)=>values.iter().any(test),
-            _=>false,
-        })
+
+    pub(super) fn any_scalar_identity(&self, test: &impl Fn(&ValueIdentity) -> bool) -> bool {
+        self.origins.iter().flatten().any(test)
+            || self.domains.iter().flatten().any(|domain| fact_fields::any_domain_identity(domain, test))
+            || Clause::any_scalar_identity(self.conditions.iter().flatten().flat_map(|condition| &condition.cases), test)
+            || self.addresses.iter().flatten().any(|address| match address {
+                address::Identity::Value(values) => values.iter().any(test),
+                _ => false,
+            })
     }
+
     pub(super) fn substitute_values(&self, values: &BTreeMap<ValueIdentity, Proof>) -> Self {
         let lookup = |id| values.get(&id);
         let bindings = Substitution(&lookup);
@@ -1481,22 +1451,6 @@ fn environment_facts(environment:&BTreeMap<String,Binding>)->Facts {
     facts
 }
 impl Fact {
-    fn map(self,identity:&impl Fn(ValueIdentity)->ValueIdentity)->Self {
-        match self {
-            Self::Equal(a,b)=>Self::equal(identity(a),identity(b)),
-            Self::NotEqual(a,b)=>{let(a,b)=(identity(a),identity(b));Self::NotEqual(a.min(b),a.max(b))},
-            Self::Index(id,domain)=>Self::Index(identity(id),map_domain(domain,identity)),
-            Self::Outside(id,domain)=>Self::Outside(identity(id),map_domain(domain,identity)),
-            Self::Minimum(id,scalar,n)=>Self::Minimum(identity(id),scalar,n),
-            Self::Maximum(id,scalar,n)=>Self::Maximum(identity(id),scalar,n),
-            Self::NonZero(id)=>Self::NonZero(identity(id)),
-            Self::Zero(id)=>Self::Zero(identity(id)),
-            Self::Boolean(id,truth)=>Self::Boolean(identity(id),truth),
-            Self::Predicate(predicate,truth)=>Self::Predicate(predicate.map(|id|Some(identity(id))).unwrap(),truth),
-            Self::Below(a,b,strict,scalar)=>Self::Below(identity(a),identity(b),strict,scalar),
-        }
-    }
-
     fn equal(a: ValueIdentity, b: ValueIdentity) -> Self {
         Self::Equal(a.min(b), a.max(b))
     }
@@ -2279,19 +2233,6 @@ impl Clause {
         )
     }
 
-    fn visit_identities(
-        ordered: &[&Self],
-        identity: &impl Fn(ValueIdentity) -> ValueIdentity,
-    ) {
-        for &clause in ordered {
-            if let ClauseNode::Facts(facts) = clause.view() {
-                for fact in facts {
-                    fact.map(identity);
-                }
-            }
-        }
-    }
-
     fn raw_facts(facts: Facts) -> Self {
         let mut transferred = ManuallyDrop::new(facts);
         let payload = unsafe { clause_facts(&mut *transferred) };
@@ -2413,11 +2354,7 @@ impl Clause {
     pub(super) fn any_scalar_identity<'a>(
         roots:impl IntoIterator<Item=&'a Self>, test:&impl Fn(&ValueIdentity)->bool,
     )->bool {
-        Self::any_fact(roots,&|fact|{
-            let found=std::cell::Cell::new(false);
-            fact.map(&|id|{found.set(found.get()||test(&id));id});
-            found.get()
-        })
+        condition_graph::any_scalar_identity(roots, test)
     }
     fn any_fact<'a>(roots: impl IntoIterator<Item = &'a Self>, test: &impl Fn(&Fact) -> bool) -> bool {
         condition_graph::any_fact(roots, test)

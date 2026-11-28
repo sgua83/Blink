@@ -1,7 +1,7 @@
 //! Physical projections borrow original Fact fields until the synchronous consumer returns.
 use super::{Clause, Comparison, Condition, Domains, Fact, IndexDomain, Operand, Proof, Scalar, ScalarPredicate, ScalarRanges, ValueIdentity, numeric_domain};
 use crate::builtin_types::ScalarEncoding;
-use std::{ffi::c_void, ptr};
+use std::{ffi::c_void, mem::MaybeUninit, ptr};
 type Borrowed = *const c_void;
 type Slot = *mut c_void;
 
@@ -43,6 +43,61 @@ pub(super) unsafe fn key(view: Fields) -> Fact {
         materialize(view, result.as_mut_ptr().cast());
         result.assume_init()
     }
+}
+
+type Lookup = unsafe extern "C" fn(Slot, &ValueIdentity) -> *const ValueIdentity;
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.fact_key::rename_fact_key"]
+    fn rename_key(source: &Fact, output: *mut Fact, context: Slot, lookup: Lookup);
+    #[link_name = "bootstrap.fact_key::rename_index_domain"]
+    fn rename_domain(source: &IndexDomain, output: *mut IndexDomain, context: Slot, lookup: Lookup) -> *const IndexDomain;
+    #[link_name = "bootstrap.fact_key::visit_domain_identities"]
+    fn visit_domain_identities(source: &IndexDomain, context: Borrowed,
+        accept: unsafe extern "C" fn(Borrowed, &ValueIdentity) -> u32) -> u32;
+}
+
+struct IdentityMapping<'a, F> {
+    map: &'a F,
+    mapped: MaybeUninit<ValueIdentity>,
+}
+
+unsafe extern "C" fn mapped_identity<F: Fn(ValueIdentity) -> ValueIdentity>(
+    context: Slot, source: &ValueIdentity,
+) -> *const ValueIdentity {
+    let mapping = unsafe { &mut *context.cast::<IdentityMapping<'_, F>>() };
+    let result = (mapping.map)(*source);
+    if result == *source {
+        return ptr::null();
+    }
+    // B copies this value before it asks for the next identity.
+    mapping.mapped.write(result)
+}
+
+pub(super) fn map_fact<F: Fn(ValueIdentity) -> ValueIdentity>(source: Fact, map: &F) -> Fact {
+    let mut mapping = IdentityMapping { map, mapped: MaybeUninit::uninit() };
+    let mut output = MaybeUninit::uninit();
+    unsafe {
+        rename_key(&source, output.as_mut_ptr(), ptr::from_mut(&mut mapping).cast(), mapped_identity::<F>);
+        output.assume_init()
+    }
+}
+
+pub(super) fn map_domain<F: Fn(ValueIdentity) -> ValueIdentity>(source: IndexDomain, map: &F) -> IndexDomain {
+    let mut mapping = IdentityMapping { map, mapped: MaybeUninit::uninit() };
+    let mut output = MaybeUninit::uninit();
+    // The result borrows either the original record or this call's output.
+    unsafe {
+        *rename_domain(&source, output.as_mut_ptr(), ptr::from_mut(&mut mapping).cast(), mapped_identity::<F>)
+    }
+}
+
+pub(super) fn any_domain_identity<F: Fn(&ValueIdentity) -> bool>(domain: &IndexDomain, test: &F) -> bool {
+    unsafe extern "C" fn matches<F: Fn(&ValueIdentity) -> bool>(context: Borrowed, identity: &ValueIdentity) -> u32 {
+        let test = unsafe { &*context.cast::<F>() };
+        u32::from(test(identity))
+    }
+    unsafe { visit_domain_identities(domain, ptr::from_ref(test).cast(), matches::<F>) != 0 }
 }
 
 pub(super) use super::fact_key::order_identity as compare;

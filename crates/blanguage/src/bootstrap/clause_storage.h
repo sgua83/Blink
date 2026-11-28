@@ -30,3 +30,10 @@ extern "C" address combine_clause_both(address left,address right,cfn<u32,addres
 extern "C" address combine_clause_either(address left,address right,cfn<u32,address> conflict) on cpu
  requires nonzero(conflict);
 extern "C" address combine_clause_branch(address parent,address condition,u32 truth) on cpu;
+
+extern "C" void clause_walk_drop(address owner) on cpu;
+extern "C" void clause_fact_walk_start(address owner,address context,cfn<address,address> next) on cpu
+    requires nonzero(next);
+extern "C" address clause_fact_walk_next(address owner) on cpu;
+extern "C" u32 clause_input_identities(address owner,address context,u32 nested_domains,cfn<u32,address,address> accept) on cpu
+    requires nonzero(accept);

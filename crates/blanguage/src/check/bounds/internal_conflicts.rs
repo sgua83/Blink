@@ -1,7 +1,7 @@
 //! B decides internal contradictions; the original typed containers own facts and aliases.
 use super::facts;
 use super::fact_fields::{ScalarView, same_scalar, scalar};
-use super::{Fact, Facts, Scalar, ValueIdentity, fact_fields, map_domain};
+use super::{Fact, Facts, Scalar, ValueIdentity, fact_fields};
 use std::{
     collections::{BTreeMap, btree_map},
     ffi::c_void,
@@ -15,21 +15,10 @@ type Roots = BTreeMap<ValueIdentity, ValueIdentity>;
 type OrderedFacts = BTreeMap<Fact, usize>;
 
 fn canonical(fact: Fact, roots: &Roots) -> Option<Fact> {
-    let root = |id| roots.get(&id).copied().unwrap_or(id);
-    Some(match fact {
-        Fact::Equal(..) => return None,
-        Fact::NotEqual(a, b) => {
-            let (a, b) = (root(a), root(b));
-            Fact::NotEqual(a.min(b), a.max(b))
-        }
-        Fact::Below(a, b, strict, scalar) => Fact::Below(root(a), root(b), strict, scalar),
-        Fact::Predicate(predicate, truth) => {
-            Fact::Predicate(predicate.map(|id| Some(root(id))).unwrap(), truth)
-        }
-        Fact::Index(id, domain) => Fact::Index(root(id), map_domain(domain, &root)),
-        Fact::Outside(id, domain) => Fact::Outside(root(id), map_domain(domain, &root)),
-        value => value.identity().map(|id| value.at(root(id))).unwrap_or(value),
-    })
+    if matches!(fact, Fact::Equal(..)) {
+        return None;
+    }
+    Some(fact_fields::map_fact(fact, &|id| roots.get(&id).copied().unwrap_or(id)))
 }
 
 fn ordered_facts(facts: &Facts, roots: &Roots) -> OrderedFacts {
