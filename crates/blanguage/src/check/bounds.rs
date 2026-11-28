@@ -114,17 +114,14 @@ impl Selector {
     }
 
     pub(super) fn at_call(self, bindings: &impl CallBindings) -> Option<Self> {
-        let (base, scale, offset) = match self {
-            Self::Direct(index) => return index.at_call(bindings).map(Self::Direct),
-            Self::Prefix(length) => return length.at_call(bindings).map(Self::Prefix),
-            Self::Affine { base, scale, offset } => (base, scale, offset),
-        };
-        let input = bindings.input(base)?;
-        if let [BitRange { lower, upper }] = input.intervals() && lower == upper {
-            let value = i128::from(*lower).checked_mul(scale)?.checked_add(offset)?;
-            return Some(Self::Direct(Operand::Constant(Scalar::U32, u32::try_from(value).ok()?.into())));
+        match self {
+            Self::Direct(index) => index.at_call(bindings).map(Self::Direct),
+            Self::Prefix(length) => length.at_call(bindings).map(Self::Prefix),
+            Self::Affine { base, scale, offset } => Some(match integer::bind_index(base, Some((scale, offset)), bindings)? {
+                Operand::Value(base) => Self::Affine { base, scale, offset },
+                constant => Self::Direct(constant),
+            }),
         }
-        Some(Self::Affine { base: input.identity()?, scale, offset })
     }
 
     fn affine(self, query: &mut IntegerQuery<'_>) -> Option<IntegerAffine> {
@@ -196,17 +193,10 @@ impl Operand {
         })
     }
     pub(super) fn at_call(self, bindings: &impl CallBindings) -> Option<Self> {
-        Some(match self {
-            Self::Value(id) => {
-                let input = bindings.input(id)?;
-                match (input.identity(), input.intervals()) {
-                    (Some(id), _) => Self::Value(id),
-                    (None, [BitRange { lower, upper }]) if lower == upper => Self::Constant(Scalar::U32, *lower),
-                    _ => return None,
-                }
-            }
-            constant => constant,
-        })
+        match self {
+            Self::Value(id) => integer::bind_index(id, None, bindings),
+            constant => Some(constant),
+        }
     }
 }
 // Predicates retain the scalar type through substitution. Floating results

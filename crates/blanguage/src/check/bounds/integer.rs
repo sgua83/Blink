@@ -1,6 +1,6 @@
 //! B owns integer interval values and complete set rules; native retains the actual containers.
 use super::{
-    Bits, Fact, Facts, IndexDomain, IntegerExpression, IntegerOperation, IntegerQuery, Operand,
+    Bits, CallBindings, Fact, Facts, IndexDomain, IntegerExpression, IntegerOperation, IntegerQuery, Operand,
     Scalar, ScalarRanges, ValueIdentity,
 };
 use super::facts::Iter;
@@ -35,6 +35,67 @@ impl From<i128> for Wide {
             low: bits as Bits,
             high: (bits >> 64) as Bits,
         }
+    }
+}
+
+#[repr(C)]
+struct CallIndexAffine {
+    present: u32,
+    scale: Wide,
+    offset: Wide,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct CallIndexInput {
+    lower: u64,
+    upper: u64,
+    count: usize,
+    has_identity: u32,
+}
+
+#[repr(u32)]
+enum CallIndexKind { Unbound, Identity, Constant }
+
+#[repr(C)]
+struct CallIndexBinding {
+    kind: CallIndexKind,
+    bits: u64,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.scalar_fold::bind_call_index"]
+    fn b_bind_call_index(context: *mut c_void, identity: *const ValueIdentity, affine: CallIndexAffine,
+        lookup: unsafe extern "C" fn(*mut c_void, *const ValueIdentity) -> CallIndexInput) -> CallIndexBinding;
+}
+
+pub(super) fn bind_index<P: CallBindings>(
+    identity: ValueIdentity, affine: Option<(i128, i128)>, bindings: &P,
+) -> Option<Operand> {
+    struct Input<'a, P> {
+        bindings: &'a P,
+        actual: Option<ValueIdentity>,
+    }
+    unsafe extern "C" fn lookup<P: CallBindings>(context: *mut c_void, identity: *const ValueIdentity) -> CallIndexInput {
+        let context = unsafe { &mut *context.cast::<Input<'_, P>>() };
+        let Some(input) = context.bindings.input(unsafe { *identity }) else {
+            return CallIndexInput::default();
+        };
+        context.actual = input.identity();
+        let intervals = input.intervals();
+        let range = intervals.first().copied().unwrap_or(crate::ir::scalar_ranges::BitRange { lower: 0, upper: 0 });
+        CallIndexInput { lower: range.lower, upper: range.upper, count: intervals.len(),
+            has_identity: u32::from(context.actual.is_some()) }
+    }
+    let present = u32::from(affine.is_some());
+    let (scale, offset) = affine.unwrap_or_default();
+    let affine = CallIndexAffine { present, scale: scale.into(), offset: offset.into() };
+    let mut input = Input { bindings, actual: None };
+    let binding = unsafe { b_bind_call_index(std::ptr::from_mut(&mut input).cast(), &identity, affine, lookup::<P>) };
+    match binding.kind {
+        CallIndexKind::Unbound => None,
+        CallIndexKind::Identity => input.actual.map(Operand::Value),
+        CallIndexKind::Constant => Some(Operand::Constant(Scalar::U32, binding.bits)),
     }
 }
 #[repr(C)]

@@ -1213,6 +1213,23 @@ extern "C" IntegerWideChecked integer_wide_checked_multiply(IntegerWide a,Intege
  if(integer_wide_unsigned_less(limit,magnitude)){overflow=1;}
  return IntegerWideChecked(overflow==0 ? 1 : 0,sa!=sb ? range_negate(magnitude) : magnitude);
 }
+extern "C" CallIndexBinding bind_call_index(address context,address identity,CallIndexAffine affine,
+    cfn<CallIndexInput,address,address> lookup) on cpu requires nonzero(lookup) {
+    CallIndexInput input = lookup(context,identity);
+    let symbolic = CallIndexBinding(input.has_identity != 0 ? CallIndexKind::Identity : CallIndexKind::Unbound,0u64);
+    if (affine.present == 0 && input.has_identity != 0) { return symbolic; }
+    if (input.count != 1u64 || input.lower != input.upper) { return symbolic; }
+    if (affine.present == 0) { return CallIndexBinding(CallIndexKind::Constant,input.lower); }
+
+    IntegerWideChecked product = integer_wide_checked_multiply(range_unsigned(input.lower),affine.scale);
+    if (product.present == 0) { return CallIndexBinding(CallIndexKind::Unbound,0u64); }
+    IntegerWideChecked value = integer_wide_checked_add(product.value,affine.offset);
+    if (value.present == 0 || value.value.high != 0u64 || value.value.low > 4294967295u64) {
+        return CallIndexBinding(CallIndexKind::Unbound,0u64);
+    }
+    return CallIndexBinding(CallIndexKind::Constant,value.value.low);
+}
+
 // Callers supply the nonzero magnitude of the original affine scale.
 extern "C" IntegerWideDivision integer_wide_unsigned_divide(IntegerWide numerator,IntegerWide denominator) on cpu {
  if(numerator.high==0u64&&denominator.high==0u64&&denominator.low!=0u64){

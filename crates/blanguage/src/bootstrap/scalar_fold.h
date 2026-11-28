@@ -136,6 +136,13 @@ extern "C" IntegerRangePieces integer_range_project(u32 width,u64 bias,IntegerWi
 
 // The original integer-range wide value is also used by relation coefficients.
 struct IntegerWideChecked {u32 present;IntegerWide value;};
+enum CallIndexKind:u32 { Unbound=0; Identity=1; Constant=2; };
+struct CallIndexBinding { CallIndexKind kind; u64 bits; };
+struct CallIndexAffine { u32 present; IntegerWide scale; IntegerWide offset; };
+struct CallIndexInput { u64 lower; u64 upper; u64 count; u32 has_identity; };
+extern "C" CallIndexBinding bind_call_index(address context,address identity,CallIndexAffine affine,
+    cfn<CallIndexInput,address,address> lookup) on cpu requires nonzero(lookup);
+
 struct IntegerWideDivision {IntegerWide quotient;IntegerWide remainder;};
 extern "C" IntegerWide range_add(IntegerWide a,IntegerWide b) on cpu;
 extern "C" IntegerWide range_subtract(IntegerWide a,IntegerWide b) on cpu;
