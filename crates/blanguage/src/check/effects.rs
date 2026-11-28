@@ -117,14 +117,54 @@ impl Drop for LoopStorage {
     }
 }
 
+// The B ordered tree is borrowed from a live loop. Only an exclusive
+// borrow can grow or release its records.
+#[repr(C)]
+#[derive(Default)]
+pub(super) struct LoopSlots {
+    records: *mut std::ffi::c_void,
+    root: usize,
+    count: usize,
+    capacity: usize,
+}
+
+unsafe impl Send for LoopSlots {}
+unsafe impl Sync for LoopSlots {}
+
+impl LoopSlots {
+    pub fn contains(&self, slot: &usize) -> bool {
+        unsafe { has_loop_slot(self, *slot) != 0 }
+    }
+
+    pub fn insert(&mut self, slot: usize) {
+        unsafe { insert_loop_slot(self, slot) };
+    }
+
+    fn extend(&mut self, slots: impl IntoIterator<Item = usize>) {
+        for slot in slots { self.insert(slot); }
+    }
+}
+
+impl Drop for LoopSlots {
+    fn drop(&mut self) {
+        unsafe { drop_loop_slots(std::ptr::from_mut(self).cast()) };
+    }
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.source_writes::has_loop_slot"]
+    fn has_loop_slot(slots: &LoopSlots, slot: usize) -> u32;
+    #[link_name = "bootstrap.source_writes::insert_loop_slot"]
+    fn insert_loop_slot(slots: &mut LoopSlots, slot: usize);
+    #[link_name = "bootstrap.proof_facts::fact_tree_clear"]
+    fn drop_loop_slots(slots: *mut std::ffi::c_void);
     #[link_name = "bootstrap.source_writes::drop_loop_storage"]
     fn drop_loop_storage(storage: &mut LoopStorage);
 }
 // Immutable output of the existing loop write preanalysis, not memory state.
 #[derive(Default)]
 pub(super) struct LoopWrites {
-    pub locals: BTreeSet<usize>,
+    pub locals: LoopSlots,
     pub storage: LoopStorage,
     pub unknown_storage: bool,
     pub external: bool,

@@ -3,6 +3,7 @@ import bootstrap.ast_storage;
 import bootstrap.signatures;
 import bootstrap.c_function;
 import bootstrap.scalar_fold;
+import bootstrap.proof_facts;
 
 enum WritePath:u32 { Direct=0; WhenTrue=1; WhenFalse=2; Unknown=3; TrueMoves=4; FalseMoves=5; Range=6; Elements=7; Loop=8; };
 enum Truth:u32 { Absent=0; Conditional=1; False=2; True=3; };
@@ -106,6 +107,10 @@ extern "C" NumericTransfer numeric_nested_order(NumericTransfer effect, NumericR
 extern "C" NumericIterations numeric_iterations(NumericTransfer effect, NumericRange input, NumericRange guard) on cpu;
 extern "C" NumericRanges numeric_ranges(NumericTransfer effect, NumericRange input, NumericIterations iterations) on cpu;
 extern "C" NumericRetention numeric_retention(NumericTransfer effect, NumericRange input, NumericRange guard, u32 bounded) on cpu;
+
+// Local slot records reuse the compiler's ordered tree storage.
+extern "C" u32 has_loop_slot(address slots, usize slot) on cpu;
+extern "C" void insert_loop_slot(inout OrderedTree slots, usize slot) on cpu;
 
 enum LoopWriteKind:u32 { Move=0; Position=1; Contents=2; Memory=3; External=4; };
 enum LoopProjection:u32 { Ignore=0; External=1; Unknown=2; Contents=3; Memory=4; Position=5; };

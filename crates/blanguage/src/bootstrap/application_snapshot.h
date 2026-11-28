@@ -10,7 +10,6 @@ struct RegisterHost {
     cfn<u32,address,address,usize> writes_local;
     cfn<u32,address,address,address> writes_load;
     cfn<LoopEffects,address,usize> ensures memory(read) loop_effects;
-    cfn<u32,address,usize> ensures memory(read) loop_local;
     cfn<u32,address,usize> ensures memory(read) scalar_bytes;
     cfn<Word,address,usize,usize,usize> cast;
 };
@@ -23,17 +22,17 @@ struct SnapshotHost {
 
 extern "C" Word application_register_constant(SnapshotSource source, RegisterHost host, usize reg) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.block)
-    requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local) requires nonzero(host.cast);
+    requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.cast);
 extern "C" u32 application_register_equal(SnapshotSource source, RegisterHost host, usize left, usize right) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.block)
-    requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_effects)
     requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
     requires nonzero(host.writes_load);
 
 // The result names an existing read in the borrowed instruction blocks.
 extern "C" usize read_snapshot(SnapshotSource source, SnapshotHost host, usize register) on cpu
     requires nonzero(host.registers.ir.inspect) requires nonzero(host.registers.block)
-    requires nonzero(host.registers.writes_local) requires nonzero(host.registers.loop_effects) requires nonzero(host.registers.loop_local)
+    requires nonzero(host.registers.writes_local) requires nonzero(host.registers.loop_effects)
     requires nonzero(host.registers.scalar_bytes)
     requires nonzero(host.registers.cast) requires nonzero(host.registers.writes_load)
  requires nonzero(host.truth);
@@ -101,7 +100,7 @@ struct ResourceStorageHost {
 extern "C" ResourceStorageNeed application_resource_storage_step(inout ResourceStorageCursor cursor,
     SnapshotSource source, RegisterHost host, ResourceStorageHost storage, u32 root_matched, u32 unresolved) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.block)
-    requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_effects)
     requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
     requires nonzero(host.writes_load)
     requires nonzero(storage.edge) requires nonzero(storage.parent)
@@ -109,7 +108,7 @@ extern "C" ResourceStorageNeed application_resource_storage_step(inout ResourceS
     requires nonzero(storage.load) requires nonzero(storage.index_matches) requires nonzero(storage.emit);
 extern "C" u32 application_dataset_position(SnapshotSource source, RegisterHost host, Node source_node, StoredDatasetFrame frame, FrameIndex index) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.block)
-    requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_effects)
     requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
     requires nonzero(host.writes_load) requires nonzero(index.matches);
 
@@ -121,7 +120,7 @@ extern "C" u32 application_allocated(SnapshotSource source, RegisterHost host, u
 
 extern "C" u32 application_same_position(SnapshotSource source, RegisterHost host, Node left, Node right, u32 exact_index) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.block)
-    requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_effects)
     requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
     requires nonzero(host.writes_load);
 
@@ -129,18 +128,18 @@ extern "C" ApplicationByteRange application_byte_range(usize index, usize stride
 extern "C" u32 application_storage_includes_root(SnapshotSource source, RegisterHost host, StorageWrite written, usize root) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.writes_load) requires nonzero(host.cast)
-    requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
+    requires nonzero(host.loop_effects)
     requires nonzero(host.scalar_bytes);
 extern "C" u32 application_storage_changes(SnapshotSource source, RegisterHost host, LoopEffects effects,
     Word root, ApplicationByteRange range, u32 has_range) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.writes_load) requires nonzero(host.cast)
-    requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
+    requires nonzero(host.loop_effects)
     requires nonzero(host.scalar_bytes);
 
 extern "C" u32 application_store_overlap(IndexedByteAccess read, IndexedByteAccess written,
     Span offset, SnapshotSource source, RegisterHost host) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.block)
-    requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_effects)
     requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
     requires nonzero(host.writes_load);

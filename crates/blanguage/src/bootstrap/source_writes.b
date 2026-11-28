@@ -1,5 +1,36 @@
 module bootstrap.source_writes;
 
+struct LoopSlotCell { OrderedNode node; usize slot; };
+struct LoopSlotSearch { usize parent; i32 order; };
+
+LoopSlotSearch find_loop_slot(OrderedTree tree, usize slot) on cpu {
+    usize current = tree.root;
+    usize parent = 0u64;
+    i32 order = i32(1);
+    while (current != 0u64) {
+        let row = unsafe_address(address_bits(tree.records) + (current - 1u64) * size_of<LoopSlotCell>());
+        let cell = unsafe_position<LoopSlotCell>(row);
+        if (slot == cell.slot) { return LoopSlotSearch(current, i32(0)); }
+        order = slot < cell.slot ? i32(-1) : i32(1);
+        parent = current;
+        current = order < 0 ? cell.node.left : cell.node.right;
+    }
+    return LoopSlotSearch(parent, order);
+}
+
+extern "C" u32 has_loop_slot(address slots, usize slot) on cpu {
+    return u32(find_loop_slot(unsafe_position<OrderedTree>(slots), slot).order == 0);
+}
+
+extern "C" void insert_loop_slot(inout OrderedTree slots, usize slot) on cpu {
+    let selected = find_loop_slot(slots, slot);
+    if (selected.order == 0) { return; }
+    let owner = unsafe_address(address_bits(address_of(slots)));
+    let cell = ordered_tree_prepare(owner, size_of<LoopSlotCell>());
+    unsafe_position<LoopSlotCell>(cell).slot = slot;
+    ordered_tree_publish(owner, size_of<LoopSlotCell>(), selected.parent, selected.order);
+}
+
 extern "C" LoopProjection loop_projection(LoopWriteKind kind, u32 address_write, u32 iterator) on cpu {
     if (kind == LoopWriteKind::Move) { return LoopProjection::Ignore; }
     if (kind == LoopWriteKind::External || address_write != 0) { return LoopProjection::External; }

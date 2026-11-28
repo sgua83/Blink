@@ -944,7 +944,7 @@ struct SnapshotSource {
 
 #[repr(C)]
 struct LoopEffects {
-    locals: *const BTreeSet<usize>,
+    locals: *const effects::LoopSlots,
     storage: dataflow::Span,
     external: u32,
     unknown_storage: u32,
@@ -969,7 +969,6 @@ struct RegisterHost {
     writes_local: unsafe extern "C" fn(*const c_void, *const c_void, usize) -> u32,
     writes_load: unsafe extern "C" fn(*const c_void, *const c_void, *const c_void) -> u32,
     loop_effects: unsafe extern "C" fn(*const c_void, usize) -> LoopEffects,
-    loop_local: unsafe extern "C" fn(*const BTreeSet<usize>, usize) -> u32,
     scalar_bytes: unsafe extern "C" fn(*const c_void, Reg) -> u32,
     cast: unsafe extern "C" fn(*const c_void, Reg, Reg, usize) -> AddressWord,
 }
@@ -977,7 +976,7 @@ struct RegisterHost {
 const REGISTER_HOST: RegisterHost = RegisterHost {
     ir: dataflow::HOST, block: snapshot_block, writes_local: snapshot_writes_local,
     writes_load: snapshot_writes_load, loop_effects: snapshot_loop_effects,
-    loop_local: snapshot_loop_local, scalar_bytes: snapshot_scalar_bytes,
+    scalar_bytes: snapshot_scalar_bytes,
     cast: snapshot_cast,
 };
 
@@ -1020,10 +1019,6 @@ unsafe extern "C" fn snapshot_writes_load(context: *const c_void, inst: *const c
 unsafe extern "C" fn snapshot_loop_effects(context: *const c_void, at: usize) -> LoopEffects {
     let loads = unsafe { &*context.cast::<ApplicationLoads<'_, '_>>() };
     (&loads.0.loop_contexts[at].writes).into()
-}
-
-unsafe extern "C" fn snapshot_loop_local(locals: *const BTreeSet<usize>, slot: usize) -> u32 {
-    u32::from(unsafe { &*locals }.contains(&slot))
 }
 
 unsafe extern "C" fn snapshot_scalar_bytes(context: *const c_void, reg: Reg) -> u32 {
