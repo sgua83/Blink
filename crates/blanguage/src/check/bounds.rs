@@ -777,9 +777,7 @@ impl Proof {
         entry: usize,
         bindings: &mut OutputBindings,
     ) {
-        for (origins, reg) in self.origins.iter().zip(registers) {
-            bindings.bind_row(origins, *reg, entry);
-        }
+        bindings.bind_origins(&self.origins, registers, entry);
     }
     pub(super) fn output_aliases(
         &self,
@@ -805,13 +803,7 @@ impl Proof {
     ) -> Self {
         let mut proof = Self::capture_output(value, bindings);
         if let Some(registers) = registers {
-            proof.origins.resize(registers.len());
-            for (origins, reg) in proof.origins.iter_mut().zip(registers) {
-                let identity = ValueIdentity::Register(*reg);
-                if !origins.contains(&identity) {
-                    origins.push(identity);
-                }
-            }
+            proof.origins.ensure_registers(registers);
         }
         proof.under_path(&value.ty, aliases);
         proof

@@ -1,6 +1,7 @@
 module bootstrap.output_bindings;
 import bootstrap.fact_key;
 import bootstrap.proof_facts;
+import bootstrap.proof_origins;
 
 struct OutputBindingCell { OrderedNode links; IdentityKey source; IdentityKey target; };
 struct OutputBindingPosition { address match_cell; u64 parent; i32 order; };
@@ -42,7 +43,7 @@ extern "C" void write_output_binding(address owner,address source,address target
     }
 }
 
-extern "C" void collect_output_bindings(address owner,address origins,usize count,usize result,usize entry) on cpu {
+void collect_output_row(address owner,address origins,usize count,usize result,usize entry) on cpu {
     IdentityKey target=make_key_identity(NumericIdentity(IdentityKind::Register,result,0u64,0u64));
     usize index=0u64;
     while(index<count){
@@ -54,6 +55,17 @@ extern "C" void collect_output_bindings(address owner,address origins,usize coun
             if(position.match_cell==address()){store_output_binding(owner,make_key_identity(key),target,position);}
         }
         index+=1u64;
+    }
+}
+
+extern "C" void collect_output_bindings(address owner,address rows,address registers,usize count,usize entry) on cpu {
+    usize width=min(unsafe_position<OrderedTree>(rows).count,count);
+    usize component=0u64;
+    while(component<width){
+        OrderedTree row=unsafe_position<OrderedTree>(origin_row(rows,component));
+        address reg=unsafe_address(address_bits(registers)+component*size_of<usize>());
+        collect_output_row(owner,row.records,row.count,unsafe_position<usize>(reg),entry);
+        component+=1u64;
     }
 }
 

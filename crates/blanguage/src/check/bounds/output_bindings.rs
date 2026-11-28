@@ -1,4 +1,4 @@
-use super::{Reg, ValueIdentity};
+use super::{OriginRows, Reg, ValueIdentity};
 use std::{ffi::c_void, ptr};
 
 #[repr(C)]
@@ -23,7 +23,7 @@ unsafe extern "C" {
     #[link_name = "bootstrap.output_bindings::write_output_binding"]
     fn insert(owner: &mut OutputBindings, source: &ValueIdentity, target: &ValueIdentity);
     #[link_name = "bootstrap.output_bindings::collect_output_bindings"]
-    fn collect(owner: &mut OutputBindings, origins: *const ValueIdentity, count: usize, result: Reg, entry: usize);
+    fn collect(owner: &mut OutputBindings, origins: &OriginRows, registers: *const Reg, count: usize, entry: usize);
     #[link_name = "bootstrap.output_bindings::find_output_binding"]
     fn find(owner: &OutputBindings, source: &ValueIdentity) -> *const ValueIdentity;
     #[link_name = "bootstrap.output_bindings::next_output_binding"]
@@ -45,8 +45,8 @@ impl OutputBindings {
         unsafe { insert(self, &source, &target); }
     }
 
-    pub(super) fn bind_row(&mut self, origins: &[ValueIdentity], result: Reg, entry: usize) {
-        unsafe { collect(self, origins.as_ptr(), origins.len(), result, entry); }
+    pub(super) fn bind_origins(&mut self, origins: &OriginRows, registers: &[Reg], entry: usize) {
+        unsafe { collect(self, origins, registers.as_ptr(), registers.len(), entry); }
     }
 
     pub(in crate::check) fn iter(&self) -> Entries<'_> {

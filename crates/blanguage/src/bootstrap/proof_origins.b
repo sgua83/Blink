@@ -68,6 +68,30 @@ extern "C" void origin_rows_resize(address rows,usize length) on cpu {
     }
 }
 
+extern "C" void origin_rows_ensure_registers(address rows,address registers,usize width) on cpu {
+    origin_rows_resize(rows,width);
+    usize component=0u64;
+    while(component<width){
+        address register=unsafe_address(address_bits(registers)+component*size_of<usize>());
+        usize result=unsafe_position<usize>(register);
+        IdentityKey key=make_key_identity(NumericIdentity(IdentityKind::Register,result,0u64,0u64));
+        address identity=unsafe_address(address_bits(address_of(key)));
+        address slot=origin_row(rows,component);
+        OrderedTree row=unsafe_position<OrderedTree>(slot);
+        bool present=false;
+        usize index=0u64;
+        while(index<row.count){
+            if(order_identity(origin_at(row.records,index),identity)==0){
+                present=true;
+                break;
+            }
+            index+=1u64;
+        }
+        if(!present){origin_list_insert(slot,row.count,identity);}
+        component+=1u64;
+    }
+}
+
 extern "C" void origin_rows_copy(address original,address output) on cpu {
     ordered_tree_copy(original,output,size_of<OrderedTree>());
     usize count=unsafe_position<OrderedTree>(original).count;

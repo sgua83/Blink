@@ -37,6 +37,8 @@ unsafe extern "C" {
               accept: unsafe extern "C" fn(*mut c_void, &ValueIdentity) -> u32);
     #[link_name = "bootstrap.proof_origins::origin_rows_push"]
     fn push_row(rows: &mut OriginRows, list: &mut OriginList);
+    #[link_name = "bootstrap.proof_origins::origin_rows_ensure_registers"]
+    fn ensure_registers(owner: &mut OriginRows, registers: *const super::Reg, width: usize);
     #[link_name = "bootstrap.proof_origins::origin_rows_resize"]
     fn resize_rows(rows: &mut OriginRows, length: usize);
     #[link_name = "bootstrap.proof_origins::origin_rows_copy"]
@@ -81,6 +83,10 @@ impl OriginList {
 }
 
 impl OriginRows {
+    pub(super) fn ensure_registers(&mut self, registers: &[super::Reg]) {
+        unsafe { ensure_registers(self, registers.as_ptr(), registers.len()); }
+    }
+
     pub(in crate::check) const fn new() -> Self {
         Self { records: ptr::null_mut(), root: 0, count: 0, capacity: 0 }
     }

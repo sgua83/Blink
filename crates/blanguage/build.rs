@@ -143,7 +143,7 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
                 "condition_index" => &["proof_facts"],
                 "clause_storage" => &["proof_facts", "fact_key"],
                 "capture_inputs" => &["declarations"],
-                "output_bindings" => &["fact_key", "proof_facts"],
+                "output_bindings" => &["fact_key", "proof_facts", "proof_origins"],
                 "proof_origins" => &["fact_key", "proof_facts"],
                 "proof_domain_join" => &["proof_facts", "fact_key", "scalar_fold"],
                 "condition_graph" => &["condition_index", "clause_storage"],

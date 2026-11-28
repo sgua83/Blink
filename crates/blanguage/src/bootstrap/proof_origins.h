@@ -8,5 +8,7 @@ extern "C" void origin_list_retain(address list,address context,cfn<u32,address,
 
 extern "C" void origin_rows_push(address rows,address list) on cpu;
 extern "C" void origin_rows_resize(address rows,usize length) on cpu;
+address origin_row(address rows,usize index) on cpu;
+extern "C" void origin_rows_ensure_registers(address rows,address registers,usize width) on cpu;
 extern "C" void origin_rows_copy(address original,address output) on cpu;
 extern "C" void origin_rows_clear(address rows) on cpu;
