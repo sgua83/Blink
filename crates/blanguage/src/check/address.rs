@@ -596,6 +596,112 @@ impl<'a, I: Iterator<Item = (&'a view::Source, bounds::Clause)>> OriginNormaliza
     }
 }
 
+#[repr(u32)]
+enum AddressPositionRoot { Other, Derived, Dataset }
+
+#[repr(u32)]
+enum AddressPositionValue { Stored, Initialized }
+
+#[repr(C)]
+struct AddressPositionHost {
+    context: *mut std::ffi::c_void,
+    offset: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> u32,
+    initialized: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> u32,
+    emit: unsafe extern "C" fn(*mut std::ffi::c_void, usize, AddressPositionValue),
+    next: unsafe extern "C" fn(*mut std::ffi::c_void) -> AddressSourceEntry,
+    resolve: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> u32,
+    same: unsafe extern "C" fn(*const std::ffi::c_void) -> u32,
+    accept: unsafe extern "C" fn(*mut std::ffi::c_void),
+    pending: unsafe extern "C" fn(*const std::ffi::c_void) -> u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::address_position_at"]
+    fn b_address_position_at(word: u32, parts: usize, stored: u32, root: AddressPositionRoot,
+        host: AddressPositionHost) -> u32;
+}
+
+struct PositionAt<'a, I> {
+    origin: &'a Origin,
+    borrow: Option<&'a view::Borrow>,
+    index: Option<bounds::Operand>,
+    entries: I,
+    parent: Option<&'a Origin>,
+    current: Option<Position>,
+    known: Option<Position>,
+}
+
+impl<'a, I: Iterator<Item = (&'a view::Source, bounds::Clause)>> PositionAt<'a, I> {
+    unsafe extern "C" fn offset(context: *const std::ffi::c_void, slot: usize) -> u32 {
+        unsafe { &*context.cast::<Self>() }.origin.layout.parts[slot].1
+    }
+
+    unsafe extern "C" fn initialized(context: *const std::ffi::c_void, slot: usize) -> u32 {
+        unsafe { &*context.cast::<Self>() }.origin.initialized[slot].into()
+    }
+
+    unsafe extern "C" fn emit(context: *mut std::ffi::c_void, slot: usize, value: AddressPositionValue) {
+        let query = unsafe { &mut *context.cast::<Self>() };
+        query.known = Some(match value {
+            AddressPositionValue::Stored => query.origin.positions[slot].clone(),
+            AddressPositionValue::Initialized => Position::Initialized,
+        });
+    }
+
+    unsafe extern "C" fn next(context: *mut std::ffi::c_void) -> AddressSourceEntry {
+        let query = unsafe { &mut *context.cast::<Self>() };
+        let Some((source, when)) = query.entries.next() else {
+            return AddressSourceEntry { kind: AddressSourceKind::End, possible: 0 };
+        };
+        let kind = if let view::Source::Position(origin) = source {
+            query.parent = Some(origin);
+            AddressSourceKind::Position
+        } else {
+            AddressSourceKind::Other
+        };
+        AddressSourceEntry { kind, possible: when.possible().into() }
+    }
+
+    unsafe extern "C" fn resolve(context: *mut std::ffi::c_void, slot: usize) -> u32 {
+        let query = unsafe { &mut *context.cast::<Self>() };
+        let parent = query.parent.take().unwrap();
+        if parent.layout != query.origin.base { return 0; }
+        let Some(position) = parent.position_at(query.origin.words[slot]) else { return 0; };
+        query.current = match query.index {
+            Some(index) => select_dataset_position(position, index),
+            None => Some(position),
+        };
+        query.current.is_some().into()
+    }
+
+    unsafe extern "C" fn same(context: *const std::ffi::c_void) -> u32 {
+        let query = unsafe { &*context.cast::<Self>() };
+        (query.known == query.current).into()
+    }
+
+    unsafe extern "C" fn accept(context: *mut std::ffi::c_void) {
+        let query = unsafe { &mut *context.cast::<Self>() };
+        query.known = query.current.take();
+    }
+
+    unsafe extern "C" fn pending(context: *const std::ffi::c_void) -> u32 {
+        let borrow = unsafe { &*context.cast::<Self>() }.borrow.unwrap();
+        (!borrow.inputs.is_empty() || !borrow.calls.is_empty() || !borrow.reads.is_empty()).into()
+    }
+
+    fn get(mut self, word: u32, root: AddressPositionRoot) -> Option<Position> {
+        let parts = self.origin.layout.parts.len();
+        let stored = !self.origin.positions.is_empty();
+        let host = AddressPositionHost {
+            context: std::ptr::from_mut(&mut self).cast(), offset: Self::offset, initialized: Self::initialized,
+            emit: Self::emit, next: Self::next, resolve: Self::resolve,
+            same: Self::same, accept: Self::accept, pending: Self::pending,
+        };
+        if unsafe { b_address_position_at(word, parts, stored.into(), root, host) } == 0 { return None; }
+        self.known
+    }
+}
+
 impl Origin {
     pub(super) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self {
         let mut origin=self.clone();
@@ -647,26 +753,13 @@ impl Origin {
         }
     }
     pub fn position_at(&self,word:u32)->Option<Position> {
-        let component=self.layout.parts.iter().position(|(_,at)|*at==word)?;
-        if !self.positions.is_empty(){return Some(self.positions[component].clone());}
-        if let Root::Dataset{borrow,index}=&self.root {
-            return dataset_positions(borrow,*index,&self.base,&[self.words[component]]).map(|positions|positions[0].clone());
-        }
-        if self.initialized[component]{return Some(Position::Initialized);}
-        if let Root::Derived(borrow)=&self.root {
-            let parent_word=self.words[component];
-            let mut known=None;
-            for(source,when)in borrow.sources.entries() {
-                if !when.possible(){continue;}
-                let view::Source::Position(parent)=source else{return None};
-                if parent.layout!=self.base{return None;}
-                let position=parent.position_at(parent_word)?;
-                if known.as_ref().is_some_and(|old|*old!=position){return None;}
-                known=Some(position);
-            }
-            return known;
-        }
-        None
+        let (kind, borrow, index) = match &self.root {
+            Root::Derived(borrow) => (AddressPositionRoot::Derived, Some(borrow), None),
+            Root::Dataset { borrow, index } => (AddressPositionRoot::Dataset, Some(borrow), *index),
+            _ => (AddressPositionRoot::Other, None, None),
+        };
+        PositionAt { origin: self, borrow, index, entries: borrow.into_iter().flat_map(|borrow| borrow.sources.entries()),
+            parent: None, current: None, known: None }.get(word, kind)
     }
     fn project(&self, selected: &Self) -> Self {
         let count = selected.words.len();
@@ -2254,37 +2347,24 @@ pub(super) fn initialized_by_effects(
     position.initialized_by(&known)
 }
 
-fn dataset_positions(borrow:&view::Borrow,index:Option<bounds::Operand>,layout:&Layout,words:&[u32])->Option<Vec<Position>> {
-    fn select(position:Position,index:bounds::Operand)->Option<Position> {
-        if matches!(position,Position::Initialized|Position::Element(..)|Position::ApplicationElement(..)){return Some(position);}
-        let selected=match index {
-            bounds::Operand::Constant(Scalar::U32,value)=>ownership::ApplicationIndex::Constant(value as u32),
-            bounds::Operand::Value(id@ValueIdentity::Register(reg))=>ownership::ApplicationIndex::Value(id,reg),
-            _=>return None,
-        };
-        Some(match position {
-            Position::Parameter(scope,word)=>Position::ApplicationElement(scope,selected,word as u32),
-            Position::ApplicationInput(input,_,word)=>Position::ApplicationInput(input,Some(selected),word),
-            Position::Both(a,b)=>Position::both(select(a.as_ref().clone(),index)?,select(b.as_ref().clone(),index)?),
-            Position::Conditional(when,a,b)=>Position::selected(when.as_ref().clone(),select(a.as_ref().clone(),index)?,select(b.as_ref().clone(),index)?),
-            Position::Indexed(choices,at)=>Position::Indexed(choices.iter().map(|position|select(position.clone(),index)).collect::<Option<_>>()?,at),
-            _=>return None,
-        })
+fn select_dataset_position(position: Position, index: bounds::Operand) -> Option<Position> {
+    if matches!(position, Position::Initialized | Position::Element(..) | Position::ApplicationElement(..)) {
+        return Some(position);
     }
-    let mut result=None;
-    for(source,when)in borrow.sources.entries() {
-        if !when.possible(){continue;}
-        let view::Source::Position(parent)=source else{return None;};
-        if parent.layout!=*layout{return None;}
-        let positions=words.iter().map(|word|{
-            let position=parent.position_at(*word)?;
-            match index{Some(index)=>select(position,index),None=>Some(position)}
-        }).collect::<Option<Vec<_>>>()?;
-        if result.as_ref().is_some_and(|known|*known!=positions){return None;}
-        result=Some(positions);
-    }
-    if !borrow.inputs.is_empty()||!borrow.calls.is_empty()||!borrow.reads.is_empty(){return None;}
-    result
+    let selected = match index {
+        bounds::Operand::Constant(Scalar::U32, value) => ownership::ApplicationIndex::Constant(value as u32),
+        bounds::Operand::Value(id @ ValueIdentity::Register(reg)) => ownership::ApplicationIndex::Value(id, reg),
+        _ => return None,
+    };
+    let select = |position| select_dataset_position(position, index);
+    Some(match position {
+        Position::Parameter(scope, word) => Position::ApplicationElement(scope, selected, word as u32),
+        Position::ApplicationInput(input, _, word) => Position::ApplicationInput(input, Some(selected), word),
+        Position::Both(a, b) => Position::both(select(a.as_ref().clone())?, select(b.as_ref().clone())?),
+        Position::Conditional(when, a, b) => Position::selected(when.as_ref().clone(), select(a.as_ref().clone())?, select(b.as_ref().clone())?),
+        Position::Indexed(choices, at) => Position::Indexed(choices.iter().cloned().map(select).collect::<Option<_>>()?, at),
+        _ => return None,
+    })
 }
 pub(super) fn borrowed_positions(borrow:&view::Borrow,layout:&Layout,words:&[u32])->Vec<Position> {
     let unresolved = |word| Position::Borrowed(Arc::new(borrow.clone()), layout.clone(), word);

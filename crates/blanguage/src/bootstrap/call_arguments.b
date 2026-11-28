@@ -431,6 +431,13 @@ extern "C" void normalize_address_origin(u32 derived, u32 pending, OriginNormali
     if (pending != 0) { host.emit(host.context, OriginSourceAction::Pending); }
 }
 
+usize find_address_component(u32 word, usize parts, address context,
+    cfn<u32,address,usize> ensures memory(read) offset) on cpu requires nonzero(offset) {
+    usize index = 0u64;
+    while (index < parts && offset(context, index) != word) { index += 1u64; }
+    return index;
+}
+
 extern "C" OriginProjectionResult project_address_origin(usize selected, usize parent,
     u32 selected_writable, u32 parent_writable, OriginProjectionHost host) on cpu
     requires nonzero(host.selected) requires nonzero(host.parent_offset)
@@ -438,20 +445,44 @@ extern "C" OriginProjectionResult project_address_origin(usize selected, usize p
     usize slot = 0u64;
     while (slot < selected) {
         let field = host.selected(host.context, slot);
-        usize index = 0u64;
-        while (index < parent) {
-            if (host.parent_offset(host.context, index) == field.word) {
-                let candidate = host.parent(host.context, index);
-                host.emit(host.context, index, candidate.word, candidate.initialized | field.initialized);
-                break;
-            }
-            index += 1u64;
-        }
+        let index = find_address_component(field.word, parent, host.context, host.parent_offset);
         if (index == parent) { return OriginProjectionResult::Missing; }
+        let candidate = host.parent(host.context, index);
+        host.emit(host.context, index, candidate.word, candidate.initialized | field.initialized);
         slot += 1u64;
     }
     return selected_writable != 0 && parent_writable != 0
         ? OriginProjectionResult::Writable : OriginProjectionResult::ReadOnly;
+}
+
+extern "C" u32 address_position_at(u32 word, usize parts, u32 stored, AddressPositionRoot root,
+    AddressPositionHost host) on cpu requires nonzero(host.offset) requires nonzero(host.initialized)
+    requires nonzero(host.emit) requires nonzero(host.next) requires nonzero(host.resolve)
+    requires nonzero(host.same) requires nonzero(host.accept) requires nonzero(host.pending) {
+    let slot = find_address_component(word, parts, host.context, host.offset);
+    if (slot == parts) { return 0; }
+    if (stored != 0) {
+        host.emit(host.context, slot, AddressPositionValue::Stored);
+        return 1;
+    }
+    if (root != AddressPositionRoot::Dataset && host.initialized(host.context, slot) != 0) {
+        host.emit(host.context, slot, AddressPositionValue::Initialized);
+        return 1;
+    }
+    if (root == AddressPositionRoot::Other) { return 0; }
+
+    u32 agreed = 0;
+    while (true) {
+        let source = host.next(host.context);
+        if (source.kind == AddressSourceKind::End) { break; }
+        if (source.possible == 0) { continue; }
+        if (source.kind != AddressSourceKind::Position || host.resolve(host.context, slot) == 0) { return 0; }
+        if (agreed != 0 && host.same(host.context) == 0) { return 0; }
+        host.accept(host.context);
+        agreed = 1;
+    }
+    if (root == AddressPositionRoot::Dataset && host.pending(host.context) != 0) { return 0; }
+    return agreed;
 }
 
 extern "C" u32 seed_memory_regions(RegionSeed seed, RegionSeedHost host) on cpu

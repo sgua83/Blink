@@ -130,6 +130,24 @@ extern "C" OriginProjectionResult project_address_origin(usize selected, usize p
     requires nonzero(host.selected) requires nonzero(host.parent_offset)
     requires nonzero(host.parent) requires nonzero(host.emit);
 
+enum AddressPositionRoot:u32 { Other=0; Derived=1; Dataset=2; };
+enum AddressPositionValue:u32 { Stored=0; Initialized=1; };
+struct AddressPositionHost {
+    address context;
+    cfn<u32,address,usize> ensures memory(read) offset;
+    cfn<u32,address,usize> ensures memory(read) initialized;
+    cfn<void,address,usize,AddressPositionValue> emit;
+    cfn<AddressSourceEntry,address> next;
+    cfn<u32,address,usize> resolve;
+    cfn<u32,address> same;
+    cfn<void,address> accept;
+    cfn<u32,address> ensures memory(read) pending;
+};
+extern "C" u32 address_position_at(u32 word, usize parts, u32 stored, AddressPositionRoot root,
+    AddressPositionHost host) on cpu requires nonzero(host.offset) requires nonzero(host.initialized)
+    requires nonzero(host.emit) requires nonzero(host.next) requires nonzero(host.resolve)
+    requires nonzero(host.same) requires nonzero(host.accept) requires nonzero(host.pending);
+
 struct RegionBytes { u32 word; u32 offset; u32 size; };
 enum RegionSeedKind:u32 { Positions=0; Resource=1; External=2; };
 struct RegionSeed { usize parts; usize positions; usize words; RegionSeedKind kind; u32 materialize; };
