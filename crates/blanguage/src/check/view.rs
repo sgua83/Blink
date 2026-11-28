@@ -4,10 +4,278 @@ use std::ops::ControlFlow;
 // 循环引用只在原Proof中连接入口和实际回边；公共合同只编码闭合来源。
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct LoopInput { pub level: usize, pub index: usize }
+// B owns the rows and cursor state. Rust initializes, compares, and drops their typed payloads.
+#[repr(C)]
+#[derive(Default)]
+struct OrderedEdgeTree {
+    records: *mut std::ffi::c_void,
+    root: usize,
+    count: usize,
+    capacity: usize,
+}
+
+#[repr(C)]
+struct EdgePayload<K> {
+    key: K,
+    when: bounds::Clause,
+}
+
+#[repr(C)]
+struct EdgeCell<K> {
+    links: [usize; 4],
+    entry: EdgePayload<K>,
+}
+
+#[repr(C)]
+struct EdgePlace {
+    entry: *mut std::ffi::c_void,
+    parent: usize,
+    order: i32,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct EdgeCursor {
+    front: usize,
+    back: usize,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.proof_facts::ordered_tree_seek"]
+    fn seek_edge(tree: &OrderedEdgeTree, stride: usize, key: *const std::ffi::c_void,
+        compare: unsafe extern "C" fn(*const std::ffi::c_void, *const std::ffi::c_void) -> i32) -> EdgePlace;
+    #[link_name = "bootstrap.proof_facts::ordered_tree_insert_slot"]
+    fn insert_edge_slot(tree: &mut OrderedEdgeTree, stride: usize, parent: usize, order: i32) -> *mut std::ffi::c_void;
+    #[link_name = "bootstrap.proof_facts::ordered_tree_erase_slot"]
+    fn erase_edge_slot(tree: &mut OrderedEdgeTree, stride: usize, entry: *mut std::ffi::c_void);
+    #[link_name = "bootstrap.proof_facts::ordered_tree_retain_owned"]
+    fn retain_edges(tree: &mut OrderedEdgeTree, stride: usize, context: *mut std::ffi::c_void,
+        keep: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_void) -> u32);
+    #[link_name = "bootstrap.proof_facts::ordered_tree_clone_owned"]
+    fn clone_edge_tree(tree: &OrderedEdgeTree, output: &mut OrderedEdgeTree, stride: usize,
+        clone: unsafe extern "C" fn(*const std::ffi::c_void, *mut std::ffi::c_void));
+    #[link_name = "bootstrap.proof_facts::ordered_tree_cursor"]
+    fn edge_cursor(tree: &OrderedEdgeTree, stride: usize) -> EdgeCursor;
+    #[link_name = "bootstrap.proof_facts::ordered_tree_step"]
+    fn edge_step(tree: &OrderedEdgeTree, stride: usize, cursor: &mut EdgeCursor, reverse: u32) -> *mut std::ffi::c_void;
+    #[link_name = "bootstrap.proof_facts::fact_tree_clear"]
+    fn release_edge_rows(tree: &mut OrderedEdgeTree);
+}
+
+struct EdgeTree<K: Ord> {
+    tree: OrderedEdgeTree,
+    entries: std::marker::PhantomData<EdgePayload<K>>,
+}
+
+// The heap rows are owned and accessed under the same borrows as the Rust payloads.
+unsafe impl<K: Ord + Send> Send for EdgeTree<K> {}
+unsafe impl<K: Ord + Sync> Sync for EdgeTree<K> {}
+
+impl<K: Ord> EdgeTree<K> {
+    const STRIDE: usize = {
+        // The B rows come from the Windows x64 heap after four 64-bit links.
+        assert!(align_of::<EdgePayload<K>>() <= 16);
+        assert!(std::mem::offset_of!(EdgeCell<K>, entry) == 32);
+        size_of::<EdgeCell<K>>()
+    };
+
+    fn new() -> Self { Self { tree: OrderedEdgeTree::default(), entries: std::marker::PhantomData } }
+
+    fn len(&self) -> usize { self.tree.count }
+    fn is_empty(&self) -> bool { self.len() == 0 }
+
+    unsafe extern "C" fn compare(key: *const std::ffi::c_void, entry: *const std::ffi::c_void) -> i32 {
+        let key = unsafe { &*key.cast::<K>() };
+        let entry = unsafe { &*entry.cast::<EdgePayload<K>>() };
+        key.cmp(&entry.key) as i32
+    }
+
+    fn seek(&self, key: &K) -> EdgePlace {
+        unsafe { seek_edge(&self.tree, Self::STRIDE, std::ptr::from_ref(key).cast(), Self::compare) }
+    }
+
+    fn get(&self, key: &K) -> Option<&bounds::Clause> {
+        let place = self.seek(key);
+        unsafe { place.entry.cast::<EdgePayload<K>>().as_ref() }.map(|entry| &entry.when)
+    }
+
+    fn contains_key(&self, key: &K) -> bool { self.get(key).is_some() }
+
+    fn insert_with(&mut self, key: K, value: impl FnOnce(Option<&bounds::Clause>) -> bounds::Clause) {
+        let place = self.seek(&key);
+        if let Some(entry) = unsafe { place.entry.cast::<EdgePayload<K>>().as_mut() } {
+            entry.when = value(Some(&entry.when));
+        } else {
+            let entry = EdgePayload { key, when: value(None) };
+            // Publish and initialize the new slot without invoking another operation in between.
+            let slot = unsafe { insert_edge_slot(&mut self.tree, Self::STRIDE, place.parent, place.order) };
+            unsafe { slot.cast::<EdgePayload<K>>().write(entry) };
+        }
+    }
+
+    fn remove(&mut self, key: &K) -> Option<bounds::Clause> {
+        let place = self.seek(key);
+        if place.entry.is_null() { return None; }
+        let entry = unsafe { place.entry.cast::<EdgePayload<K>>().read() };
+        unsafe { erase_edge_slot(&mut self.tree, Self::STRIDE, place.entry) };
+        Some(entry.when)
+    }
+
+    fn retain<F: FnMut(&K, &bounds::Clause) -> bool>(&mut self, mut keep: F) {
+        unsafe extern "C" fn filter<K, F: FnMut(&K, &bounds::Clause) -> bool>(
+            context: *mut std::ffi::c_void, slot: *mut std::ffi::c_void,
+        ) -> u32 {
+            let keep = unsafe { &mut *context.cast::<F>() };
+            let entry = slot.cast::<EdgePayload<K>>();
+            let keep = unsafe { keep(&(*entry).key, &(*entry).when) };
+            if !keep { unsafe { entry.drop_in_place() } };
+            u32::from(keep)
+        }
+        unsafe { retain_edges(&mut self.tree, Self::STRIDE, std::ptr::from_mut(&mut keep).cast(), filter::<K, F>) }
+    }
+
+    fn iter(&self) -> EdgeEntries<'_, K> {
+        EdgeEntries { tree: self, walk: EdgeWalk::new::<K>(&self.tree) }
+    }
+
+    fn keys(&self) -> impl DoubleEndedIterator<Item = &K> + ExactSizeIterator {
+        self.iter().map(|(key, _)| key)
+    }
+
+    fn values(&self) -> impl DoubleEndedIterator<Item = &bounds::Clause> + ExactSizeIterator {
+        self.iter().map(|(_, when)| when)
+    }
+
+    fn values_mut(&mut self) -> impl Iterator<Item = &mut bounds::Clause> {
+        let mut walk = EdgeWalk::new::<K>(&self.tree);
+        // The cursor visits each owned row once. It only reads tree links.
+        std::iter::from_fn(move || unsafe { walk.next::<K>(&self.tree, false).as_mut() }.map(|entry| &mut entry.when))
+    }
+
+    fn take_entries(&mut self) -> IntoEdgeEntries<K> {
+        let tree = std::mem::take(&mut self.tree);
+        let walk = EdgeWalk::new::<K>(&tree);
+        IntoEdgeEntries { tree, walk, entries: std::marker::PhantomData }
+    }
+}
+
+impl<K: Ord + Clone> Clone for EdgeTree<K> {
+    fn clone(&self) -> Self {
+        unsafe extern "C" fn clone_entry<K: Clone>(from: *const std::ffi::c_void, to: *mut std::ffi::c_void) {
+            let from = unsafe { &*from.cast::<EdgePayload<K>>() };
+            let entry = EdgePayload { key: from.key.clone(), when: from.when.clone() };
+            unsafe { to.cast::<EdgePayload<K>>().write(entry) };
+        }
+        let mut output = Self::new();
+        unsafe { clone_edge_tree(&self.tree, &mut output.tree, Self::STRIDE, clone_entry::<K>) };
+        output
+    }
+}
+
+impl<K: Ord> Drop for EdgeTree<K> {
+    fn drop(&mut self) {
+        if !self.tree.records.is_null() { drop(self.take_entries()); }
+    }
+}
+
+impl<K: Ord> PartialEq for EdgeTree<K> {
+    fn eq(&self, other: &Self) -> bool { self.len() == other.len() && self.iter().eq(other.iter()) }
+}
+impl<K: Ord> Eq for EdgeTree<K> {}
+impl<K: Ord> PartialOrd for EdgeTree<K> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
+}
+impl<K: Ord> Ord for EdgeTree<K> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering { self.iter().cmp(other.iter()) }
+}
+
+struct EdgeWalk {
+    cursor: EdgeCursor,
+    remaining: usize,
+}
+
+impl EdgeWalk {
+    fn new<K: Ord>(tree: &OrderedEdgeTree) -> Self {
+        let cursor = if tree.count == 0 { EdgeCursor::default() } else { unsafe { edge_cursor(tree, EdgeTree::<K>::STRIDE) } };
+        Self { cursor, remaining: tree.count }
+    }
+
+    fn next<K: Ord>(&mut self, tree: &OrderedEdgeTree, reverse: bool) -> *mut EdgePayload<K> {
+        if self.remaining == 0 { return std::ptr::null_mut(); }
+        self.remaining -= 1;
+        unsafe { edge_step(tree, EdgeTree::<K>::STRIDE, &mut self.cursor, u32::from(reverse)).cast() }
+    }
+}
+
+pub(super) struct EdgeEntries<'a, K: Ord> {
+    tree: &'a EdgeTree<K>,
+    walk: EdgeWalk,
+}
+
+impl<'a, K: Ord> Iterator for EdgeEntries<'a, K> {
+    type Item = (&'a K, &'a bounds::Clause);
+    fn next(&mut self) -> Option<Self::Item> {
+        unsafe { self.walk.next::<K>(&self.tree.tree, false).as_ref() }.map(|entry| (&entry.key, &entry.when))
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) { (self.walk.remaining, Some(self.walk.remaining)) }
+}
+impl<K: Ord> DoubleEndedIterator for EdgeEntries<'_, K> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        unsafe { self.walk.next::<K>(&self.tree.tree, true).as_ref() }.map(|entry| (&entry.key, &entry.when))
+    }
+}
+impl<K: Ord> ExactSizeIterator for EdgeEntries<'_, K> {}
+
+pub(super) struct IntoEdgeEntries<K: Ord> {
+    tree: OrderedEdgeTree,
+    walk: EdgeWalk,
+    entries: std::marker::PhantomData<EdgePayload<K>>,
+}
+impl<K: Ord> IntoEdgeEntries<K> {
+    fn step(&mut self, reverse: bool) -> Option<(K, bounds::Clause)> {
+        let slot = std::ptr::NonNull::new(self.walk.next::<K>(&self.tree, reverse))?;
+        let entry = unsafe { slot.as_ptr().read() };
+        Some((entry.key, entry.when))
+    }
+}
+impl<K: Ord> Iterator for IntoEdgeEntries<K> {
+    type Item = (K, bounds::Clause);
+    fn next(&mut self) -> Option<Self::Item> { self.step(false) }
+    fn size_hint(&self) -> (usize, Option<usize>) { (self.walk.remaining, Some(self.walk.remaining)) }
+}
+impl<K: Ord> DoubleEndedIterator for IntoEdgeEntries<K> {
+    fn next_back(&mut self) -> Option<Self::Item> { self.step(true) }
+}
+impl<K: Ord> ExactSizeIterator for IntoEdgeEntries<K> {}
+impl<K: Ord> Drop for IntoEdgeEntries<K> {
+    fn drop(&mut self) {
+        for entry in self.by_ref() { drop(entry); }
+        if !self.tree.records.is_null() { unsafe { release_edge_rows(&mut self.tree) } }
+    }
+}
+
+impl<K: Ord> FromIterator<(K, bounds::Clause)> for EdgeTree<K> {
+    fn from_iter<I: IntoIterator<Item = (K, bounds::Clause)>>(entries: I) -> Self {
+        let mut output = Self::new();
+        for (key, value) in entries { output.insert_with(key, |_| value); }
+        output
+    }
+}
+impl<'a, K: Ord> IntoIterator for &'a EdgeTree<K> {
+    type Item = (&'a K, &'a bounds::Clause);
+    type IntoIter = EdgeEntries<'a, K>;
+    fn into_iter(self) -> Self::IntoIter { self.iter() }
+}
+impl<K: Ord> IntoIterator for EdgeTree<K> {
+    type Item = (K, bounds::Clause);
+    type IntoIter = IntoEdgeEntries<K>;
+    fn into_iter(mut self) -> Self::IntoIter { self.take_entries() }
+}
+
 // 来源边只持有该来源实际成立的条件。不存在的边和已知不成立的边仍可区分。
 #[derive(Clone,PartialEq,Eq,PartialOrd,Ord)]
-pub(super) struct Edges<K:Ord>(BTreeMap<K,bounds::Clause>);
-impl<K:Ord> Default for Edges<K>{fn default()->Self{Self(BTreeMap::new())}}
+pub(super) struct Edges<K:Ord>(EdgeTree<K>);
+impl<K:Ord> Default for Edges<K>{fn default()->Self{Self(EdgeTree::new())}}
 impl<K:Ord+Clone> Edges<K>{
     fn substitute_values(&self, values: &BTreeMap<ValueIdentity,bounds::Proof>) -> Self {
         Self(self.0.iter().map(|(key, when)| (key.clone(), when.substitute_values(values))).collect())
@@ -16,14 +284,10 @@ impl<K:Ord+Clone> Edges<K>{
     pub fn insert(&mut self, key: K) { self.insert_when(key, bounds::Clause::default()); }
 
     pub fn insert_when(&mut self, key: K, when: bounds::Clause) {
-        use std::collections::btree_map::Entry;
-        match self.0.entry(key) {
-            Entry::Vacant(entry) => { entry.insert(when); }
-            Entry::Occupied(mut entry) => {
-                let joined = bounds::Clause::either(entry.get(), &when).canonical();
-                entry.insert(joined);
-            }
-        }
+        self.0.insert_with(key, |previous| match previous {
+            Some(previous) => bounds::Clause::either(previous, &when).canonical(),
+            None => when,
+        });
     }
 
     pub fn union(&mut self, other: &Self) {
@@ -39,25 +303,17 @@ impl<K:Ord+Clone> Edges<K>{
     }
 
     pub(in crate::check) fn union_when(&mut self, key: K, when: &bounds::Clause) {
-        use std::collections::btree_map::Entry;
-        match self.0.entry(key) {
-            Entry::Vacant(entry) => { entry.insert(when.clone()); }
-            Entry::Occupied(mut entry) => {
-                let joined = bounds::Clause::either(entry.get(), when);
-                entry.insert(joined);
-            }
-        }
+        self.0.insert_with(key, |previous| match previous {
+            Some(previous) => bounds::Clause::either(previous, when),
+            None => when.clone(),
+        });
     }
 
     pub(in crate::check) fn insert_normalized(&mut self, key: K, when: bounds::Clause, normal: &mut bounds::Normalizer) {
-        use std::collections::btree_map::Entry;
-        match self.0.entry(key) {
-            Entry::Vacant(entry) => { entry.insert(normal.clause(&when)); }
-            Entry::Occupied(mut entry) => {
-                let joined = normal.clause(&bounds::Clause::either(entry.get(), &when));
-                entry.insert(joined);
-            }
-        }
+        self.0.insert_with(key, |previous| match previous {
+            Some(previous) => normal.clause(&bounds::Clause::either(previous, &when)),
+            None => normal.clause(&when),
+        });
     }
 
     pub(super) fn same_sources(&self, other: &Self) -> bool {
@@ -75,7 +331,7 @@ impl<K:Ord+Clone> Edges<K>{
     }
     pub fn contains(&self, key: &K) -> bool { self.0.get(key).is_some_and(bounds::Clause::possible) }
     pub fn is_empty(&self) -> bool { self.0.is_empty() }
-    pub fn iter(&self) -> std::collections::btree_map::Keys<'_, K, bounds::Clause> { self.0.keys() }
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &K> + ExactSizeIterator { self.0.keys() }
     pub(super) fn paths(&self) -> impl Iterator<Item = &bounds::Clause> { self.0.values() }
     pub(super) fn borrowed_entries(&self) -> impl DoubleEndedIterator<Item = (&K, &bounds::Clause)> { self.0.iter() }
     pub fn entries(&self) -> impl DoubleEndedIterator<Item = (&K, bounds::Clause)> {
@@ -106,8 +362,16 @@ impl<K:Ord+Clone> Edges<K>{
 }
 impl<K:Ord+Clone,const N:usize> From<[K;N]> for Edges<K>{fn from(values:[K;N])->Self{values.into_iter().collect()}}
 impl<K:Ord+Clone> FromIterator<K> for Edges<K>{fn from_iter<T:IntoIterator<Item=K>>(values:T)->Self{let mut result=Self::default();for value in values{result.insert(value);}result}}
-impl<'a,K:Ord> IntoIterator for &'a Edges<K>{type Item=&'a K;type IntoIter=std::collections::btree_map::Keys<'a,K,bounds::Clause>;fn into_iter(self)->Self::IntoIter{self.0.keys()}}
-impl<K:Ord> IntoIterator for Edges<K>{type Item=K;type IntoIter=std::collections::btree_map::IntoKeys<K,bounds::Clause>;fn into_iter(self)->Self::IntoIter{self.0.into_keys()}}
+impl<'a,K:Ord> IntoIterator for &'a Edges<K> {
+    type Item = &'a K;
+    type IntoIter = std::iter::Map<EdgeEntries<'a, K>, fn((&'a K, &'a bounds::Clause)) -> &'a K>;
+    fn into_iter(self) -> Self::IntoIter { self.0.iter().map(|(key, _)| key) }
+}
+impl<K:Ord> IntoIterator for Edges<K> {
+    type Item = K;
+    type IntoIter = std::iter::Map<IntoEdgeEntries<K>, fn((K, bounds::Clause)) -> K>;
+    fn into_iter(self) -> Self::IntoIter { self.0.into_iter().map(|(key, _)| key) }
+}
 impl<K:Ord+Clone+crate::module::codec::Decode> crate::module::codec::Decode for Edges<K>{
     fn decode(r: &mut crate::module::codec::Reader<'_>) -> crate::module::codec::Result<Self> {
         let values = <BTreeMap<K, bounds::Condition> as crate::module::codec::Decode>::decode(r)?;
@@ -218,7 +482,7 @@ struct BorrowCallMapping<'a, F> {
     map: F,
     roots: Vec<&'a bounds::Clause>,
     projected: std::vec::IntoIter<bounds::Clause>,
-    sources: std::collections::btree_map::Iter<'a, Source, bounds::Clause>,
+    sources: EdgeEntries<'a, Source>,
     output: Borrow,
 }
 
@@ -340,7 +604,7 @@ impl Borrow {
     }
 
     pub(super) fn normalize_contract(&mut self,normal:&mut bounds::Normalizer) {
-        let sources=std::mem::take(&mut self.sources.0);
+        let sources=std::mem::take(&mut self.sources).into_entries();
         for(mut source,when)in sources {
             match &mut source {
                 Source::Position(origin)|Source::Contents{origin,..}=>normal.origin(Arc::make_mut(origin)),
@@ -416,7 +680,7 @@ unsafe extern "C" {
 }
 
 struct BorrowFieldProjection {
-    remaining: std::collections::btree_map::IntoIter<Source, bounds::Clause>,
+    remaining: IntoEdgeEntries<Source>,
     current: Option<(Box<Borrow>, bounds::Clause)>,
     path: Vec<usize>,
     pending: Borrow,
@@ -544,7 +808,7 @@ unsafe extern "C" {
 
 struct TaskBorrowProjectionContext<'a> {
     borrow: &'a Borrow,
-    remaining: std::collections::btree_map::Iter<'a, Source, bounds::Clause>,
+    remaining: EdgeEntries<'a, Source>,
     projection: TaskProjection,
     result: Borrow,
 }
@@ -3128,7 +3392,7 @@ const _: () = {
             Self::default()
         }
         unsafe fn write(&self, output: Slot) {
-            unsafe { contracts::write_map_with(&self.sources.0, output, entry) }
+            unsafe { contracts::write_entries(self.sources.0.len(), self.sources.borrowed_entries(), output, entry) }
         }
         unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
             let mut values = BTreeMap::<Source, bounds::Condition>::new();

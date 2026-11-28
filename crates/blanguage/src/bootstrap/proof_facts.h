@@ -10,6 +10,20 @@ u64 ordered_tree_next(OrderedTree tree,u64 stride,u64 current) on cpu;
 struct FactCursor { u64 front; u64 back; };
 struct FactBound { address key; u32 exclusive; };
 
+struct OrderedPlace { address entry; u64 parent; i32 order; };
+extern "C" OrderedPlace ordered_tree_seek(address owner,u64 stride,address key,cfn<i32,address,address> compare) on cpu
+    requires nonzero(compare);
+extern "C" address ordered_tree_insert_slot(address owner,u64 stride,u64 parent,i32 order) on cpu
+    requires nonzero(stride);
+extern "C" void ordered_tree_erase_slot(address owner,u64 stride,address entry) on cpu
+    requires nonzero(stride);
+extern "C" void ordered_tree_retain_owned(address owner,u64 stride,address context,cfn<u32,address,address> retain) on cpu
+    requires nonzero(retain);
+extern "C" void ordered_tree_clone_owned(address original,address output,u64 stride,cfn<void,address,address> clone) on cpu
+    requires nonzero(clone);
+extern "C" FactCursor ordered_tree_cursor(address owner,u64 stride) on cpu;
+extern "C" address ordered_tree_step(address owner,u64 stride,address cursor,u32 reverse) on cpu;
+
 extern "C" void fact_tree_clear(address owner) on cpu;
 extern "C" void fact_tree_copy(address original, address output) on cpu;
 address fact_tree_prepare_key(address owner) on cpu;

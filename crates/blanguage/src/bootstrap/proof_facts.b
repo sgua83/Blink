@@ -197,15 +197,18 @@ extern "C" void fact_tree_clear(address owner) on cpu {
     unsafe_position<OrderedTree>(owner) = OrderedTree(address(),0u64,0u64,0u64);
 }
 
+OrderedTree clone_storage(OrderedTree tree,u64 stride) on cpu {
+    let records = HeapAlloc(GetProcessHeap(),0,tree.count * stride);
+    if (records == address()) { abort(); }
+    return OrderedTree(records,tree.root,tree.count,tree.count);
+}
+
 void ordered_tree_copy(address original,address output,u64 stride) on cpu {
     OrderedTree tree = unsafe_position<OrderedTree>(original);
-    if (tree.count != 0u64) {
-        u64 bytes = tree.count * stride;
-        address records = HeapAlloc(GetProcessHeap(),0,bytes);
-        if (records == address()) { abort(); return; }
-        RtlMoveMemory(records,tree.records,bytes);
-        unsafe_position<OrderedTree>(output) = OrderedTree(records,tree.root,tree.count,tree.count);
-    }
+    if (tree.count == 0u64) { return; }
+    OrderedTree copy = clone_storage(tree,stride);
+    RtlMoveMemory(copy.records,tree.records,tree.count * stride);
+    unsafe_position<OrderedTree>(output) = copy;
 }
 
 extern "C" void fact_tree_copy(address original, address output) on cpu {
@@ -258,31 +261,121 @@ extern "C" u32 fact_tree_insert(address owner,address key) on cpu {
 // Erase the current key and return its successor's new index for retain.
 // Keeping live nodes packed avoids a separate free list and copies only the
 // live allocation when a query first needs to own borrowed facts.
-u64 erase<const DOMAIN:u32 in {0,1,2}>(address owner, address records, u64 count, u64 erased) on cpu {
-    TreeRows tree=TreeRows(owner,records,tree_stride<DOMAIN>());
+u64 erase_ordered(TreeRows tree, u64 count, u64 erased) on cpu {
     u64 current = erased;
-    u64 next = neighbor<DOMAIN>(records,current,false);
-    OrderedNode value = unsafe_position<OrderedNode>(node<DOMAIN>(records,current));
+    u64 next = tree_neighbor(tree.records,tree.stride,current,false);
+    OrderedNode value = unsafe_position<OrderedNode>(row(tree.records,tree.stride,current));
     if (value.left != 0u64 && value.right != 0u64) {
-        RtlMoveMemory(payload<DOMAIN>(records,current),payload<DOMAIN>(records,next),tree_key_bytes<DOMAIN>());
+        RtlMoveMemory(offset(row(tree.records,tree.stride,current),size_of<OrderedNode>()),
+            offset(row(tree.records,tree.stride,next),size_of<OrderedNode>()),tree.stride-size_of<OrderedNode>());
         u64 successor = next;
         next = current;
         current = successor;
-        value = unsafe_position<OrderedNode>(node<DOMAIN>(records,current));
+        value = unsafe_position<OrderedNode>(row(tree.records,tree.stride,current));
     }
     u64 child = value.left == 0u64 ? value.right : value.left;
     replace_child(tree,value.parent,current,child);
     rebalance(tree,value.parent);
     if (current != count) {
-        OrderedNode moved = unsafe_position<OrderedNode>(node<DOMAIN>(records,count));
-        RtlMoveMemory(node<DOMAIN>(records,current),node<DOMAIN>(records,count),tree_stride<DOMAIN>());
+        OrderedNode moved = unsafe_position<OrderedNode>(row(tree.records,tree.stride,count));
+        RtlMoveMemory(row(tree.records,tree.stride,current),row(tree.records,tree.stride,count),tree.stride);
         replace_child(tree,moved.parent,count,current);
         set_parent(tree,moved.left,current);
         set_parent(tree,moved.right,current);
         if (next == count) { next = current; }
     }
-    unsafe_position<OrderedTree>(owner).count = count - 1u64;
+    unsafe_position<OrderedTree>(tree.owner).count = count - 1u64;
     return next;
+}
+
+u64 erase<const DOMAIN:u32 in {0,1,2}>(address owner,address records,u64 count,u64 erased) on cpu {
+    return erase_ordered(TreeRows(owner,records,tree_stride<DOMAIN>()),count,erased);
+}
+
+extern "C" OrderedPlace ordered_tree_seek(address owner,u64 stride,address key,cfn<i32,address,address> compare) on cpu
+    requires nonzero(compare) {
+    OrderedTree tree = unsafe_position<OrderedTree>(owner);
+    u64 current = tree.root;
+    OrderedPlace place = OrderedPlace(address(),0u64,i32(0));
+    while (current != 0u64) {
+        let cell = row(tree.records,stride,current);
+        let entry = offset(cell,size_of<OrderedNode>());
+        place.order = compare(key,entry);
+        if (place.order == 0) {
+            place.entry = entry;
+            return place;
+        }
+        place.parent = current;
+        let node = unsafe_position<OrderedNode>(cell);
+        current = place.order < 0 ? node.left : node.right;
+    }
+    return place;
+}
+
+extern "C" address ordered_tree_insert_slot(address owner,u64 stride,u64 parent,i32 order) on cpu
+    requires nonzero(stride) {
+    let cell = ordered_tree_prepare(owner,stride);
+    ordered_tree_publish(owner,stride,parent,order);
+    return offset(cell,size_of<OrderedNode>());
+}
+
+extern "C" void ordered_tree_erase_slot(address owner,u64 stride,address entry) on cpu
+    requires nonzero(stride) {
+    OrderedTree tree = unsafe_position<OrderedTree>(owner);
+    u64 index = (address_bits(entry)-address_bits(tree.records)-size_of<OrderedNode>())/stride+1u64;
+    erase_ordered(TreeRows(owner,tree.records,stride),tree.count,index);
+}
+
+extern "C" void ordered_tree_retain_owned(address owner,u64 stride,address context,cfn<u32,address,address> retain) on cpu
+    requires nonzero(retain) {
+    OrderedTree tree = unsafe_position<OrderedTree>(owner);
+    u64 index = tree_extreme(tree.records,stride,tree.root,false);
+    while (index != 0u64) {
+        let entry = offset(row(tree.records,stride,index),size_of<OrderedNode>());
+        if (retain(context,entry) == 0) {
+            index = erase_ordered(TreeRows(owner,tree.records,stride),tree.count,index);
+            tree.count -= 1u64;
+        } else {
+            index = tree_neighbor(tree.records,stride,index,false);
+        }
+    }
+}
+
+extern "C" void ordered_tree_clone_owned(address original,address output,u64 stride,cfn<void,address,address> clone) on cpu
+    requires nonzero(clone) {
+    OrderedTree source = unsafe_position<OrderedTree>(original);
+    if (source.count == 0u64) { return; }
+    OrderedTree destination = clone_storage(source,stride);
+    u64 index = 1u64;
+    while (index <= source.count) {
+        let from = row(source.records,stride,index);
+        let to = row(destination.records,stride,index);
+        unsafe_position<OrderedNode>(to) = unsafe_position<OrderedNode>(from);
+        clone(offset(from,size_of<OrderedNode>()),offset(to,size_of<OrderedNode>()));
+        index += 1u64;
+    }
+    unsafe_position<OrderedTree>(output) = destination;
+}
+
+extern "C" FactCursor ordered_tree_cursor(address owner,u64 stride) on cpu {
+    OrderedTree tree = unsafe_position<OrderedTree>(owner);
+    return FactCursor(tree_extreme(tree.records,stride,tree.root,false),tree_extreme(tree.records,stride,tree.root,true));
+}
+
+extern "C" address ordered_tree_step(address owner,u64 stride,address cursor,u32 reverse) on cpu {
+    FactCursor state = unsafe_position<FactCursor>(cursor);
+    if (state.front == 0u64) { return address(); }
+    OrderedTree tree = unsafe_position<OrderedTree>(owner);
+    u64 at = reverse == 0 ? state.front : state.back;
+    if (state.front == state.back) {
+        state = FactCursor(0u64,0u64);
+    } else if (reverse == 0) {
+        state.front = tree_neighbor(tree.records,stride,state.front,false);
+    } else {
+        state.back = tree_neighbor(tree.records,stride,state.back,true);
+    }
+    unsafe_position<FactCursor>(cursor) = state;
+    return offset(row(tree.records,stride,at),size_of<OrderedNode>());
 }
 
 extern "C" u32 fact_tree_remove(address owner, address key) on cpu {
@@ -323,8 +416,7 @@ extern "C" void fact_tree_retain(address owner,address context,cfn<u32,address,a
 }
 
 FactCursor row_cursor<const DOMAIN:u32 in {0,1,2}>(address owner) on cpu {
-    OrderedTree tree = unsafe_position<OrderedTree>(owner);
-    return FactCursor(extreme<DOMAIN>(tree.records,tree.root,false),extreme<DOMAIN>(tree.records,tree.root,true));
+    return ordered_tree_cursor(owner,tree_stride<DOMAIN>());
 }
 
 extern "C" FactCursor fact_tree_cursor(address owner) on cpu {
@@ -384,12 +476,7 @@ FactCursor advance<const DOMAIN:u32 in {0,1,2}>(address records, FactCursor prev
 }
 
 address next_key<const DOMAIN:u32 in {0,1,2}>(address owner, address cursor, u32 reverse) on cpu {
-    FactCursor state = unsafe_position<FactCursor>(cursor);
-    if (state.front == 0u64) { return address(); }
-    OrderedTree tree = unsafe_position<OrderedTree>(owner);
-    address item = payload<DOMAIN>(tree.records,reverse == 0 ? state.front : state.back);
-    unsafe_position<FactCursor>(cursor) = advance<DOMAIN>(tree.records,state,reverse != 0);
-    return item;
+    return ordered_tree_step(owner,tree_stride<DOMAIN>(),cursor,reverse);
 }
 
 extern "C" address fact_tree_next(address owner,address cursor,u32 reverse) on cpu {
