@@ -1,6 +1,7 @@
 module bootstrap.stage_fusion;
 import bootstrap.ir_dataflow;
 import bootstrap.names;
+import codec.builtin_type;
 
 u64 binding_at(address data, u64 index) on cpu {
     return unsafe_position<u64>(unsafe_address(address_bits(data) + index * 8u64));
@@ -164,19 +165,19 @@ extern "C" bool tile_row_before(address left, address right, address context) on
     return a.end < b.end;
 }
 
-void tile_publish_word(TileKey key, u32 bytes, u64 slot, bool wide, TileLayoutHost host) on cpu
+void tile_publish_word(TileKey key, BuiltinScalar unit, u64 slot, bool wide, TileLayoutHost host) on cpu
     requires nonzero(host.cell) requires nonzero(host.publish) {
     if (!wide) {
-        host.publish(host.context, key, bytes, slot, 0);
+        host.publish(host.context, TilePlacedWord(key, usize(slot), 0, unit));
     } else {
         TileCell low = host.cell(host.context, key);
         if (low.bytes != 0 && low.byte == key.byte) {
-            host.publish(host.context, key, bytes, slot, 0);
+            host.publish(host.context, TilePlacedWord(key, usize(slot), 0, unit));
         }
         TileKey next = TileKey(key.storage, key.owner, key.byte + 4);
         TileCell cell = host.cell(host.context, next);
         if (cell.bytes != 0 && cell.byte == key.byte) {
-            host.publish(host.context, next, bytes, slot, 4);
+            host.publish(host.context, TilePlacedWord(next, usize(slot), 4, unit));
         }
     }
 }
@@ -224,10 +225,11 @@ TileExtents tile_place_rows(TilePlan plan, bool wide, bool publish, TileLayoutHo
         if (publish) {
             TileKey first = unsafe_position<TileKey>(tile_piece<TileKey>(plan.members.data, row.first));
             u32 shift = row.bytes == 4 ? 2 : 3;
+            BuiltinScalar unit = row.bytes == 8 ? BuiltinScalar::U64 : BuiltinScalar::U32;
             u64 member = 0u64;
             while (member < row.count) {
                 TileKey key = unsafe_position<TileKey>(tile_piece<TileKey>(plan.members.data, row.first + member));
-                tile_publish_word(key, row.bytes, slot + u64((key.byte - first.byte) >> shift), wide, host);
+                tile_publish_word(key, unit, slot + u64((key.byte - first.byte) >> shift), wide, host);
                 member += 1u64;
             }
         }

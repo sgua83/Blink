@@ -27,7 +27,7 @@ struct TileLayoutHost {
     cfn<void,address,TileKey,TileCell> describe;
     cfn<TileCell,address,TileKey> ensures memory(read) cell;
     cfn<i64,address,u64> ensures memory(read) birth;
-    cfn<void,address,TileKey,u32,u64,u32> publish;
+    cfn<void,address,TilePlacedWord> publish;
 };
 extern "C" TileExtents place_tile(TileLayoutInput input, TileLayoutHost host) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.reserve) requires nonzero(host.describe)

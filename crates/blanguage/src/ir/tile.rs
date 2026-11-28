@@ -4,8 +4,6 @@ use std::ffi::c_void;
 #[cfg(feature = "compiler")]
 use std::{collections::{BTreeMap, BTreeSet}, mem::MaybeUninit};
 #[cfg(feature = "compiler")]
-use crate::builtin_types::ScalarCode;
-#[cfg(feature = "compiler")]
 mod private_live;
 #[cfg(feature = "compiler")]
 pub(crate) use private_live::{HOST as PRIVATE_LIVE_HOST, Host as PrivateLiveHost};
@@ -63,6 +61,7 @@ pub(crate) struct TileExtents {
 }
 
 #[cfg(feature = "compiler")]
+#[derive(Default)]
 pub(crate) struct PlacedTiles {
     pub(crate) words: dataflow::TileLayout,
     pub(crate) extents: TileExtents,
@@ -93,18 +92,15 @@ struct TileLayoutHost {
     describe: unsafe extern "C" fn(*mut c_void, TileKey, TileCell),
     cell: unsafe extern "C" fn(*const c_void, TileKey) -> TileCell,
     birth: unsafe extern "C" fn(*const c_void, usize) -> i64,
-    publish: unsafe extern "C" fn(*mut c_void, TileKey, u32, usize, u32),
+    publish: unsafe extern "C" fn(*mut c_void, dataflow::TilePlacedWord),
 }
-
-#[cfg(feature = "compiler")]
-type PlacementOutput = BTreeMap<SharedWord, (ScalarCode, usize, u32)>;
 
 #[cfg(feature = "compiler")]
 struct TileStorage<'a> {
     births: &'a BTreeMap<usize, i64>,
     cells: BTreeMap<SharedWord, TileCell>,
     scratch: [Vec<MaybeUninit<u64>>; 4],
-    layout: Option<&'a mut PlacementOutput>,
+    words: dataflow::TileLayout,
 }
 
 #[cfg(feature = "compiler")]
@@ -137,11 +133,8 @@ unsafe extern "C" fn tile_birth(context: *const c_void, tile: usize) -> i64 {
 }
 
 #[cfg(feature = "compiler")]
-unsafe extern "C" fn publish_tile_word(context: *mut c_void, key: TileKey, bytes: u32, slot: usize, part: u32) {
-    let storage = unsafe { &mut *context.cast::<TileStorage<'_>>() };
-    let unit = if bytes == 8 { ScalarCode::U64 } else { ScalarCode::U32 };
-    // The B planner publishes only when the caller supplies the final layout.
-    unsafe { storage.layout.as_deref_mut().unwrap_unchecked() }.insert(key.word(), (unit, slot, part));
+unsafe extern "C" fn push_placed_word(context: *mut c_void, word: dataflow::TilePlacedWord) {
+    unsafe { &mut *context.cast::<TileStorage<'_>>() }.words.push(word);
 }
 
 
@@ -208,41 +201,45 @@ impl Stage {
     pub(crate) fn tile_layout(
         &self, wide: bool,
     ) -> (PlacedTiles, dataflow::InputFragments, Vec<dataflow::TileUse>) {
-        let mut placed = PlacementOutput::new();
-        let (extents, inputs, uses) = self.place_tile_layout(wide, Some(&mut placed));
-        let words = placed.into_iter().map(|(key, (unit, slot, part))| {
-            dataflow::TilePlacedWord { key: key.into(), position: slot, part, unit }
-        }).collect();
-        (PlacedTiles { words, extents }, inputs, uses)
+        let (mut placed, inputs, uses) = self.place_tile_layout(wide, true);
+        placed.words.sort_by_key(|row| row.key.word());
+        // A stable order keeps the last placement for a repeated key.
+        placed.words.dedup_by(|later, earlier| {
+            if later.key.word() != earlier.key.word() { return false; }
+            *earlier = *later;
+            true
+        });
+        (placed, inputs, uses)
     }
 
     #[cfg(feature = "compiler")]
     fn place_tile_layout(
-        &self, wide: bool, layout: Option<&mut PlacementOutput>,
-    ) -> (TileExtents, dataflow::InputFragments, Vec<dataflow::TileUse>) {
+        &self, wide: bool, publish: bool,
+    ) -> (PlacedTiles, dataflow::InputFragments, Vec<dataflow::TileUse>) {
         if self.tiles.is_empty() {
-            return (TileExtents::default(), Vec::new(), Vec::new());
+            return (PlacedTiles::default(), Vec::new(), Vec::new());
         }
         let dataflow::LayoutFacts { reads, births, groups } = dataflow::tile_layout_facts(self);
         let mut uses: Vec<_> = reads.into_iter().map(|(word, (end, read_mask))| {
             dataflow::TileUse { key: word.into(), end, read_mask }
         }).collect();
         // Vulkan normalizes the layout input to cells after the exact reads are consumed.
-        let inputs = if layout.is_some() { dataflow::input_fragments(self, &uses) } else { Vec::new() };
-        let publish = u32::from(layout.is_some());
-        let mut storage = TileStorage { births: &births, cells: BTreeMap::new(), scratch: Default::default(), layout };
+        let inputs = if publish { dataflow::input_fragments(self, &uses) } else { Vec::new() };
+        let mut storage = TileStorage {
+            births: &births, cells: BTreeMap::new(), scratch: Default::default(), words: Vec::new(),
+        };
         let input = TileLayoutInput {
             tiles: dataflow::Span::slice(&self.tiles), groups: dataflow::Span::slice(&groups),
-            uses: uses.as_mut_ptr(), use_count: uses.len(), wide: u32::from(wide), publish,
+            uses: uses.as_mut_ptr(), use_count: uses.len(), wide: u32::from(wide), publish: u32::from(publish),
         };
         let extents = unsafe {
             place_tile(input, TileLayoutHost {
                 ir: dataflow::HOST, context: std::ptr::from_mut(&mut storage).cast(),
                 reserve: reserve_tile_storage, describe: describe_tile_cell,
-                cell: tile_cell, birth: tile_birth, publish: publish_tile_word,
+                cell: tile_cell, birth: tile_birth, publish: push_placed_word,
             })
         };
-        (extents, inputs, uses)
+        (PlacedTiles { words: storage.words, extents }, inputs, uses)
     }
 
 
@@ -252,7 +249,7 @@ impl Stage {
     }
     #[cfg(feature = "compiler")]
     pub(super) fn tile_data_bytes_for(&self, width: u32) -> u64 {
-        let words = self.place_tile_layout(false, None).0.narrow;
+        let words = self.place_tile_layout(false, false).0.extents.narrow;
         words as u64 * u64::from(width) * 4
     }
     pub fn tile_scratch_bytes(&self) -> u64 {
