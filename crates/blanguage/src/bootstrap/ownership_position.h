@@ -1,10 +1,13 @@
 module bootstrap.ownership_position;
 struct PositionIndex { u32 kind; u32 value; address identity; u64 reg; };
-struct PositionIndexFields { u64 owner; u64 member; u64 word; PositionIndex index; };
 struct PositionView {
     usize payload_offset;
     usize stride;
-    cfn<PositionIndexFields,address> index_fields;
+    usize index_payload_offset;
+    usize index_register_offset;
+    usize index_width;
+    usize selection_payload_offset;
+    usize selection_width;
 };
 struct PositionNode { u32 kind; u64 owner; u64 member; u64 word; PositionIndex index; address condition; u64 count; };
 struct PositionItem { address node; u32 present; };
@@ -49,7 +52,6 @@ extern "C" address index(address values,PositionIndex selected,u64 width,Host ho
     requires nonzero(host.make_position)
     requires nonzero(host.clone_position);
 extern "C" address word(address value,PositionIndex selected,u32 field,Host host) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
     requires nonzero(host.presence_kind)
@@ -71,7 +73,6 @@ struct DatasetPositionCleanup {
 };
 extern "C" address dataset_position(address value, PositionIndex selected, Host host,
     DatasetPositionCleanup cleanup) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.equal) requires nonzero(host.presence_kind)
     requires nonzero(host.fresh_vector) requires nonzero(host.push_vector)
     requires nonzero(host.make_position) requires nonzero(host.clone_position)
@@ -85,7 +86,6 @@ struct DatasetOutputMapping {
 };
 extern "C" address dataset_output_position(address value, DatasetOutputMapping output, Host host,
     DatasetPositionCleanup cleanup) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.equal) requires nonzero(host.presence_kind)
     requires nonzero(host.fresh_vector) requires nonzero(host.push_vector)
     requires nonzero(host.make_position) requires nonzero(host.clone_position)
@@ -93,7 +93,6 @@ extern "C" address dataset_output_position(address value, DatasetOutputMapping o
     requires nonzero(output.field);
 
 extern "C" u32 ready(address value,address known,Host host) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
     requires nonzero(host.presence_kind)
@@ -114,7 +113,6 @@ struct InitializationReadHost {
 struct InitializationReadSpan { address positions; usize count; usize stride; };
 extern "C" u32 initialization_read(InitializationReadSpan positions, address known, address output,
     InitializationReadMode mode, Host host, InitializationReadHost read) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.equal) requires nonzero(host.identity_equal)
     requires nonzero(host.presence_kind) requires nonzero(host.presence_equal)
     requires nonzero(host.contains) requires nonzero(host.contains_parameter)
@@ -124,7 +122,6 @@ extern "C" u32 initialization_read(InitializationReadSpan positions, address kno
     requires nonzero(read.input) requires nonzero(read.emit);
 
 extern "C" u32 word_ready(address value,PositionIndex selected,u32 field,address known,Host host) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
     requires nonzero(host.presence_kind)
@@ -138,7 +135,6 @@ extern "C" u32 word_ready(address value,PositionIndex selected,u32 field,address
     requires nonzero(host.next)
     requires nonzero(host.drop_iterator);
 extern "C" u32 prefix_ready(address value,u32 length,u32 field,address known,Host host) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
     requires nonzero(host.presence_kind)
@@ -152,7 +148,6 @@ extern "C" u32 prefix_ready(address value,u32 length,u32 field,address known,Hos
     requires nonzero(host.next)
     requires nonzero(host.drop_iterator);
 extern "C" u32 uses_scope(address value,u64 owner,Host host) on cpu
-    requires nonzero(host.positions.index_fields)
     ;
 struct InitializationHost {
     cfn<address,address,usize> positions;
@@ -162,7 +157,6 @@ struct InitializationHost {
 };
 extern "C" address merge_initialization(address exits, usize count, usize condition_count,
     Host host, InitializationHost initialization) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
     requires nonzero(host.presence_kind)
@@ -190,7 +184,6 @@ struct LoopFieldHost {
 };
 extern "C" void loop_field_initialization(address context, address output, usize rows, usize states,
     PositionIndex selected, Host host, LoopFieldHost exit) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
     requires nonzero(host.presence_kind)
@@ -219,7 +212,6 @@ struct ArrayExitHost {
 };
 extern "C" void array_initialization(address context, address output, usize count, ArrayRange range,
     PositionIndex selected, Host host, ArrayExitHost exits) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
     requires nonzero(host.presence_kind)
@@ -247,7 +239,6 @@ struct InitializationEffectsHost {
 
 extern "C" u32 visit_initialization_effects(address initialized, address context,
     InitializationFilter filter, Host host, InitializationEffectsHost sink) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.iterate)
     requires nonzero(host.next)
     requires nonzero(host.drop_iterator)
@@ -256,7 +247,6 @@ extern "C" u32 visit_initialization_effects(address initialized, address context
     requires nonzero(sink.effect);
 extern "C" u32 visit_initialization_position(address position, address context,
     InitializationFilter filter, Host host, InitializationEffectsHost sink) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(sink.enter)
     requires nonzero(sink.leave)
     requires nonzero(sink.effect);
@@ -289,7 +279,6 @@ struct ResolutionHost {
     cfn<void,address,PositionIndex,u64,u32> finish_indexed;
 };
 extern "C" void resolve_position(address value,address context,ResolutionHost resolver) on cpu
-    requires nonzero(resolver.positions.index_fields)
     requires nonzero(resolver.equal)
     requires nonzero(resolver.presence_kind)
     requires nonzero(resolver.truth)

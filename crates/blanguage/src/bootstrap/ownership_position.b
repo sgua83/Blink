@@ -14,7 +14,19 @@ address position_payload(address value, PositionView view) on cpu {
     return unsafe_address(address_bits(value) + view.payload_offset);
 }
 
-PositionNode inspect_position(address value, PositionView view) on cpu requires nonzero(view.index_fields) {
+PositionIndex read_index(address value, PositionView view) on cpu {
+    let kind = unsafe_position<u32>(value);
+    let payload = address_bits(value) + view.index_payload_offset;
+    if (kind == 1) {
+        return PositionIndex(kind, unsafe_position<u32>(unsafe_address(payload)), address(), 0u64);
+    }
+    let reg = unsafe_position<u64>(unsafe_address(payload + view.index_register_offset));
+    return PositionIndex(kind, 0, unsafe_address(payload), reg);
+}
+
+struct LoopPositionInput { u64 level; u64 index; };
+
+PositionNode inspect_position(address value, PositionView view) on cpu {
     let kind = position_kind(value);
     let payload = position_payload(value, view);
     PositionNode shape = PositionNode(kind, 0u64, 0u64, 0u64, absent_index(), address(), 0u64);
@@ -22,13 +34,23 @@ PositionNode inspect_position(address value, PositionView view) on cpu requires 
         let parameter = unsafe_position<PositionParameter>(payload);
         shape.owner = parameter.owner;
         shape.word = parameter.word;
-    } else if (kind == 8 || kind == 9 || kind == 10) {
-        let fields = view.index_fields(value);
-        shape.owner = fields.owner;
-        shape.member = fields.member;
-        shape.word = fields.word;
-        shape.index = fields.index;
-        if (kind == 10) { shape.count = unsafe_position<SharedPositionSpan>(payload).count; }
+    } else if (kind == 8) {
+        shape.owner = unsafe_position<u64>(payload);
+        let selected = address_bits(payload) + size_of<u64>();
+        shape.index = read_index(unsafe_address(selected), view);
+        shape.word = u64(unsafe_position<u32>(unsafe_address(selected + view.index_width)));
+    } else if (kind == 9) {
+        let input = unsafe_position<LoopPositionInput>(payload);
+        shape.owner = input.level;
+        shape.member = input.index;
+        let selected = address_bits(payload) + size_of<LoopPositionInput>();
+        if (unsafe_position<u32>(unsafe_address(selected)) != 0) {
+            shape.index = read_index(unsafe_address(selected + view.selection_payload_offset), view);
+        }
+        shape.word = u64(unsafe_position<u32>(unsafe_address(selected + view.selection_width)));
+    } else if (kind == 10) {
+        shape.count = unsafe_position<SharedPositionSpan>(payload).count;
+        shape.index = read_index(unsafe_address(address_bits(payload) + size_of<SharedPositionSpan>()), view);
     } else if (kind == 11) {
         shape.condition = unsafe_position<PositionConditionalFields>(payload).condition;
         shape.count = 2u64;
@@ -60,8 +82,7 @@ bool same_index(PositionIndex a,PositionIndex b,Host host) on cpu
     if(a.kind==1){return a.value==b.value;}
     return host.identity_equal(a.identity,b.identity)!=0;
 }
-PositionNode node(Projection value,Host host) on cpu
-    requires nonzero(host.positions.index_fields) { 
+PositionNode node(Projection value,Host host) on cpu { 
     PositionNode result=inspect_position(value.node,host.positions);
     if((value.mode&2)!=0){
         if(result.kind==7){result.kind=value.index.kind==0 ? 7 : 8;result.index=value.index;result.word=u64(value.word);}
@@ -77,7 +98,6 @@ PositionNode node(Projection value,Host host) on cpu
 // Returning them recursively would carry unchanged pointer fields through the
 // call contract without an independent consumer.
 address normalized(Projection value,Host host) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
     requires nonzero(host.presence_kind)
@@ -99,7 +119,6 @@ address normalized(Projection value,Host host) on cpu
     return value.node;
 }
 bool equal_ready(Projection left_view,Projection right_view,Host host) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
     requires nonzero(host.presence_kind)
@@ -120,7 +139,6 @@ bool equal_ready(Projection left_view,Projection right_view,Host host) on cpu
     return host.equal(left_view.node,right_view.node)!=0;
 }
 bool equivalent(Projection a,Projection b,Host host) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
     requires nonzero(host.presence_kind)
@@ -130,7 +148,6 @@ bool equivalent(Projection a,Projection b,Host host) on cpu
     return equal_ready(left_view,right_view,host);
 }
 bool completable(Projection value,Host host) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
     requires nonzero(host.presence_kind)
@@ -144,7 +161,6 @@ bool completable(Projection value,Host host) on cpu
     return false;
 }
 bool contained(Projection value,address initialized,Host host) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
     requires nonzero(host.presence_kind)
@@ -173,7 +189,6 @@ LoopFieldState unconditional(address known) on cpu {
 }
 bool initialized(Projection value,LoopFieldState edge,Host host) on cpu
     requires nonzero(host.field_coverage)
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
     requires nonzero(host.presence_kind)
@@ -200,7 +215,6 @@ bool initialized(Projection value,LoopFieldState edge,Host host) on cpu
         && host.field_coverage(edge,shape)!=0;
 }
 address materialize(Projection value,Host host) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
     requires nonzero(host.presence_kind)
@@ -220,7 +234,6 @@ address materialize(Projection value,Host host) on cpu
     return host.make_position(shape,unsafe_address(0u64),unsafe_address(0u64),unsafe_address(0u64));
 }
 PositionIndex element_index(address value,Host host) on cpu
-    requires nonzero(host.positions.index_fields)
     { 
     PositionNode shape=inspect_position(value,host.positions);
     if(shape.kind==8||shape.kind==9){return shape.index;}
@@ -230,7 +243,6 @@ PositionIndex element_index(address value,Host host) on cpu
     return absent_index();
 }
 bool prefix(address value,u32 length,u32 word,address known,Host host) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
     requires nonzero(host.presence_kind)
@@ -260,7 +272,6 @@ bool prefix(address value,u32 length,u32 word,address known,Host host) on cpu
     host.drop_iterator(iterator);return count==u64(length);
 }
 bool scope(address value,u64 owner,Host host) on cpu
-    requires nonzero(host.positions.index_fields)
     { 
     PositionNode shape=inspect_position(value,host.positions);
     if(shape.kind==7||shape.kind==8){return shape.owner==owner;}
@@ -268,7 +279,6 @@ bool scope(address value,u64 owner,Host host) on cpu
     return false;
 }
 bool uses_index(address value,PositionIndex index,Host host) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.identity_equal)
     requires nonzero(host.presence_uses_index) { 
     if(index.kind==1){return false;}PositionNode shape=inspect_position(value,host.positions);
@@ -311,7 +321,6 @@ extern "C" address index(address values,PositionIndex selected,u64 width,Host ho
     return result;
 }
 extern "C" address word(address value,PositionIndex selected,u32 field,Host host) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
     requires nonzero(host.presence_kind)
@@ -464,7 +473,6 @@ extern "C" DatasetMappedLeaf dataset_element_leaf(address context, PositionNode 
 
 address map_dataset_positions(address value, DatasetPositionMapping mapping, Host host,
     DatasetPositionCleanup cleanup) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.equal) requires nonzero(host.presence_kind)
     requires nonzero(host.fresh_vector) requires nonzero(host.push_vector)
     requires nonzero(host.make_position) requires nonzero(host.clone_position)
@@ -549,7 +557,6 @@ address map_dataset_positions(address value, DatasetPositionMapping mapping, Hos
 
 extern "C" address dataset_position(address value, PositionIndex selected, Host host,
     DatasetPositionCleanup cleanup) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.equal) requires nonzero(host.presence_kind)
     requires nonzero(host.fresh_vector) requires nonzero(host.push_vector)
     requires nonzero(host.make_position) requires nonzero(host.clone_position)
@@ -561,7 +568,6 @@ extern "C" address dataset_position(address value, PositionIndex selected, Host 
 
 extern "C" address dataset_output_position(address value, DatasetOutputMapping output, Host host,
     DatasetPositionCleanup cleanup) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.equal) requires nonzero(host.presence_kind)
     requires nonzero(host.fresh_vector) requires nonzero(host.push_vector)
     requires nonzero(host.make_position) requires nonzero(host.clone_position)
@@ -572,7 +578,6 @@ extern "C" address dataset_output_position(address value, DatasetOutputMapping o
 }
 
 extern "C" u32 ready(address value,address known,Host host) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
     requires nonzero(host.presence_kind)
@@ -587,7 +592,6 @@ extern "C" u32 ready(address value,address known,Host host) on cpu
     requires nonzero(host.drop_iterator) { return initialized(original(value),unconditional(known),host) ? 1 : 0;}
 bool visit_missing_read_position(address value, address output, InitializationReadMode mode,
     Host host, InitializationReadHost read) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(read.input) requires nonzero(read.emit) {
     let shape = inspect_position(value,host.positions);
     if (shape.kind == 10 || shape.kind == 11 || shape.kind == 12) {
@@ -611,7 +615,6 @@ bool visit_missing_read_position(address value, address output, InitializationRe
 
 extern "C" u32 initialization_read(InitializationReadSpan positions, address known, address output,
     InitializationReadMode mode, Host host, InitializationReadHost read) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.equal) requires nonzero(host.identity_equal)
     requires nonzero(host.presence_kind) requires nonzero(host.presence_equal)
     requires nonzero(host.contains) requires nonzero(host.contains_parameter)
@@ -635,7 +638,6 @@ extern "C" u32 initialization_read(InitializationReadSpan positions, address kno
 }
 
 extern "C" u32 word_ready(address value,PositionIndex selected,u32 field,address known,Host host) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
     requires nonzero(host.presence_kind)
@@ -651,7 +653,6 @@ extern "C" u32 word_ready(address value,PositionIndex selected,u32 field,address
     return initialized(Projection(value,2,selected,field),unconditional(known),host) ? 1 : 0;
 }
 extern "C" u32 prefix_ready(address value,u32 length,u32 field,address known,Host host) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
     requires nonzero(host.presence_kind)
@@ -665,10 +666,8 @@ extern "C" u32 prefix_ready(address value,u32 length,u32 field,address known,Hos
     requires nonzero(host.next)
     requires nonzero(host.drop_iterator) { return prefix(value,length,field,known,host) ? 1 : 0;}
 extern "C" u32 uses_scope(address value,u64 owner,Host host) on cpu
-    requires nonzero(host.positions.index_fields)
     { return scope(value,owner,host) ? 1 : 0;}
 address intersect(address a, address b, Host host) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
     requires nonzero(host.presence_kind)
@@ -706,7 +705,6 @@ address intersect(address a, address b, Host host) on cpu
 
 extern "C" address merge_initialization(address exits, usize count, usize condition_count,
     Host host, InitializationHost initialization) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
     requires nonzero(host.presence_kind)
@@ -752,7 +750,6 @@ extern "C" address merge_initialization(address exits, usize count, usize condit
 
 extern "C" void loop_field_initialization(address context, address output, usize rows, usize states,
     PositionIndex selected, Host host, LoopFieldHost exit) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
     requires nonzero(host.presence_kind)
@@ -796,7 +793,6 @@ extern "C" void loop_field_initialization(address context, address output, usize
 
 extern "C" void array_initialization(address context, address output, usize count, ArrayRange range,
     PositionIndex selected, Host host, ArrayExitHost exits) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
     requires nonzero(host.presence_kind)
@@ -850,7 +846,6 @@ bool initialization_matches(PositionNode position, InitializationFilter filter) 
         && (filter.indexed != 0 || position.index.kind == 0);
 }
 bool visit_effect(address position, address context, InitializationFilter filter, Host host, InitializationEffectsHost sink) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(sink.enter)
     requires nonzero(sink.leave)
     requires nonzero(sink.effect) {
@@ -872,7 +867,6 @@ bool visit_effect(address position, address context, InitializationFilter filter
 
 extern "C" u32 visit_initialization_position(address position, address context,
     InitializationFilter filter, Host host, InitializationEffectsHost sink) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(sink.enter)
     requires nonzero(sink.leave)
     requires nonzero(sink.effect) {
@@ -880,7 +874,6 @@ extern "C" u32 visit_initialization_position(address position, address context,
 }
 extern "C" u32 visit_initialization_effects(address initialized, address context,
     InitializationFilter filter, Host host, InitializationEffectsHost sink) on cpu
-    requires nonzero(host.positions.index_fields)
     requires nonzero(host.iterate)
     requires nonzero(host.next)
     requires nonzero(host.drop_iterator)
@@ -901,7 +894,6 @@ extern "C" u32 visit_initialization_effects(address initialized, address context
 
 
 extern "C" void resolve_position(address value,address context,ResolutionHost resolver) on cpu
-    requires nonzero(resolver.positions.index_fields)
     requires nonzero(resolver.equal)
     requires nonzero(resolver.presence_kind)
     requires nonzero(resolver.truth)

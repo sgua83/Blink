@@ -6,10 +6,11 @@ mod position;
 mod place;
 use position::{PositionChild, PositionCondition};
 
+#[repr(C, u32)]
 #[derive(Clone, Copy)]
 pub(super) enum ApplicationIndex {
-    Constant(u32),
-    Value(ValueIdentity,Reg),
+    Constant(u32) = 1,
+    Value(ValueIdentity,Reg) = 2,
 }
 impl ApplicationIndex {
     pub(super) fn of(value: &Value) -> Self {
@@ -25,6 +26,25 @@ impl Eq for ApplicationIndex {}
 impl PartialOrd for ApplicationIndex {fn partial_cmp(&self,other:&Self)->Option<std::cmp::Ordering>{Some(self.cmp(other))}}
 impl Ord for ApplicationIndex {fn cmp(&self,other:&Self)->std::cmp::Ordering{match(self,other){(Self::Constant(a),Self::Constant(b))=>a.cmp(b),(Self::Value(a,_),Self::Value(b,_))=>a.cmp(b),(Self::Constant(_),Self::Value(..))=>std::cmp::Ordering::Less,_=>std::cmp::Ordering::Greater}}}
 #[repr(C, u32)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum ApplicationSelection {
+    None = 0,
+    Some(ApplicationIndex) = 1,
+}
+
+impl From<Option<ApplicationIndex>> for ApplicationSelection {
+    fn from(value: Option<ApplicationIndex>) -> Self {
+        match value { None => Self::None, Some(value) => Self::Some(value) }
+    }
+}
+
+impl ApplicationSelection {
+    pub(super) fn index(self) -> Option<ApplicationIndex> {
+        match self { Self::None => None, Self::Some(index) => Some(index) }
+    }
+}
+
+#[repr(C, u32)]
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Position {
     Initialized = 0,
@@ -36,13 +56,16 @@ pub(super) enum Position {
     TileElement(usize, Reg, u32) = 6,
     Parameter(usize, usize) = 7,
     ApplicationElement(usize, ApplicationIndex, u32) = 8,
-    ApplicationInput(view::LoopInput, Option<ApplicationIndex>, u32) = 9,
+    ApplicationInput(view::LoopInput, ApplicationSelection, u32) = 9,
     Indexed(SharedPositions, ApplicationIndex) = 10,
     Conditional(PositionCondition, PositionChild, PositionChild) = 11,
     Both(PositionChild, PositionChild) = 12,
 }
 
 impl Position {
+    pub(super) fn application_input(input: view::LoopInput, index: Option<ApplicationIndex>, word: u32) -> Self {
+        Self::ApplicationInput(input, index.into(), word)
+    }
     pub(super) fn index(positions:Vec<Self>,index:ApplicationIndex,width:usize)->Vec<Self>{position::indexed(positions,index,width)}
     pub(super) fn selected(when:owned_presence::Presence,a:Self,b:Self)->Self{position::selected(when,a,b)}
     pub(super) fn both(a:Self,b:Self)->Self{position::both(a,b)}

@@ -849,7 +849,7 @@ unsafe extern "C" fn write_loop_entry_root(context: *mut c_void, index: usize, i
     // The current and saved entry bindings have the same root before loop writes.
     entry.slots.resources.entry(entry.current.root.identity()).or_default().inputs.insert(input);
     if initialize != 0 {
-        entry.current.initialization = Some(Position::ApplicationInput(input, None, 0));
+        entry.current.initialization = Some(Position::application_input(input, None, 0));
     }
     entry.current.root.proof.set_view_borrow(0, Borrow { inputs: view::Edges::from([input]), ..Borrow::default() });
 }

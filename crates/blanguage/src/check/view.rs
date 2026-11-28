@@ -3,6 +3,7 @@ use super::*;
 use std::ops::ControlFlow;
 // 循环引用只在原Proof中连接入口和实际回边；公共合同只编码闭合来源。
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(C)]
 pub(super) struct LoopInput { pub level: usize, pub index: usize }
 // B owns the rows and cursor state. Rust initializes, compares, and drops their typed payloads.
 #[repr(C)]

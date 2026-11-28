@@ -1490,7 +1490,7 @@ fn canonical_with_guards(
 
 fn resolved_position(position:&Position,path:&bounds::Clause,map:&impl Fn(&Borrow)->Borrow,application:&impl Fn(LoopInput,Option<ownership::ApplicationIndex>,u32)->Position)->Position {
     match position {
-        Position::ApplicationInput(input,index,word)=>application(*input,*index,*word),
+        Position::ApplicationInput(input,index,word)=>application(*input,index.index(),*word),
         Position::Borrowed(borrow,layout,word)=>{
             let borrow=address::borrow_in_path(&map(borrow),path);
             let next=address::borrowed_positions(&borrow,layout,&[*word]).remove(0);
@@ -1507,7 +1507,7 @@ fn resolved_position(position:&Position,path:&bounds::Clause,map:&impl Fn(&Borro
 }
 fn bind_application_position(position:&Position,input:LoopInput,scope:&Position,bindings:&BTreeMap<ValueIdentity,bounds::Proof>,path:&bounds::Clause)->Position {
     match position {
-        Position::ApplicationInput(at,index,word)if *at==input=>scope.application_word(*index,*word),
+        Position::ApplicationInput(at,index,word)if *at==input=>scope.application_word(index.index(),*word),
         Position::Both(a,b)=>Position::both(bind_application_position(a,input,scope,bindings,path),bind_application_position(b,input,scope,bindings,path)),
         Position::Conditional(when,a,b)=>match when.condition().at_call(bindings).truth_in(path) {
             Some(true)=>bind_application_position(a,input,scope,bindings,path),
@@ -1519,7 +1519,7 @@ fn bind_application_position(position:&Position,input:LoopInput,scope:&Position,
     }
 }
 fn resolved_application_position(input:LoopInput,index:Option<ownership::ApplicationIndex>,word:u32,initialized:&BTreeSet<Position>,path:&bounds::Clause,function:&Function,state:&State,known:&States,visiting:&mut BTreeSet<Position>)->Position {
-    let position=Position::ApplicationInput(input,index,word);
+    let position=Position::application_input(input,index,word);
     if position.initialized_by(initialized){return Position::Initialized;}
     // An unchanged cycle supplies no counterexample; every actual entry and
     // continued producer is still checked below in the same source graph.
@@ -1656,7 +1656,7 @@ fn resolved_initialization_sources(
     let effects=address::initialization_effects(initialized,&bounds::Clause::default());
     let effects=initialization_effects(&effects,function,state,known);
     let positions = initialized.iter().filter(|position| !matches!(position, Position::Initialization(_)))
-        .map(|position| resolved_position(position, path, &map, &|input, index, word| Position::ApplicationInput(input, index, word)))
+        .map(|position| resolved_position(position, path, &map, &Position::application_input))
         .collect();
     (positions, effects)
 }

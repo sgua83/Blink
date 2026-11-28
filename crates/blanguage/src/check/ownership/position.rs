@@ -251,43 +251,27 @@ unsafe fn required_index(value:Index)->ApplicationIndex {
 }
 unsafe fn actual_index(value:Index)->Option<ApplicationIndex> {if value.kind==0{None}else{Some(unsafe{required_index(value)})}}
 #[repr(C)]
-struct PositionIndexFields {
-    owner: u64,
-    member: u64,
-    word: u64,
-    index: Index,
-}
-
-#[repr(C)]
 #[derive(Clone, Copy)]
 struct PositionView {
     payload_offset: usize,
     stride: usize,
-    index_fields: unsafe extern "C" fn(Address) -> PositionIndexFields,
+    index_payload_offset: usize,
+    index_register_offset: usize,
+    index_width: usize,
+    selection_payload_offset: usize,
+    selection_width: usize,
 }
 
 const POSITION_VIEW: PositionView = PositionView {
-    // repr(C, u32) puts the u32 tag before the aligned union of variant payloads.
+    // repr(C, u32) puts each tag before its aligned union of variant payloads.
     payload_offset: size_of::<u32>().next_multiple_of(align_of::<Position>()),
     stride: size_of::<Position>(),
-    index_fields,
+    index_payload_offset: size_of::<u32>().next_multiple_of(align_of::<ApplicationIndex>()),
+    index_register_offset: size_of::<ValueIdentity>().next_multiple_of(align_of::<Reg>()),
+    index_width: size_of::<ApplicationIndex>(),
+    selection_payload_offset: size_of::<u32>().next_multiple_of(align_of::<ApplicationSelection>()),
+    selection_width: size_of::<ApplicationSelection>(),
 };
-
-unsafe extern "C" fn index_fields(value: Address) -> PositionIndexFields {
-    match unsafe { &*value.cast::<Position>() } {
-        Position::ApplicationElement(owner, selected, word) => PositionIndexFields {
-            owner: *owner as u64, member: 0, word: u64::from(*word), index: index(Some(selected)),
-        },
-        Position::ApplicationInput(input, selected, word) => PositionIndexFields {
-            owner: input.level as u64, member: input.index as u64,
-            word: u64::from(*word), index: index(selected.as_ref()),
-        },
-        Position::Indexed(_, selected) => PositionIndexFields {
-            owner: 0, member: 0, word: 0, index: index(Some(selected)),
-        },
-        _ => unreachable!(),
-    }
-}
 
 unsafe extern "C" fn equal(a:Address,b:Address)->u32 {u32::from(unsafe{&*a.cast::<Position>()==&*b.cast::<Position>()})}
 unsafe extern "C" fn identity_equal(a:Address,b:Address)->u32 {u32::from(unsafe{*a.cast::<ValueIdentity>()==*b.cast::<ValueIdentity>()})}
@@ -302,7 +286,7 @@ unsafe extern "C" fn contains(set:Address,value:Address)->u32 {u32::from(unsafe{
 // These are scalar keys for the original BTreeSet, never projected trees.
 unsafe extern "C" fn contains_parameter(set:Address,owner:u64,word:u64)->u32 {u32::from(unsafe{&*set.cast::<BTreeSet<Position>>()}.contains(&Position::Parameter(owner as usize,word as usize)))}
 unsafe extern "C" fn contains_element(set:Address,owner:u64,at:Index,word:u32)->u32 {u32::from(unsafe{&*set.cast::<BTreeSet<Position>>()}.contains(&Position::ApplicationElement(owner as usize,unsafe{required_index(at)},word)))}
-unsafe extern "C" fn contains_input(set:Address,owner:u64,member:u64,at:Index,word:u32)->u32 {u32::from(unsafe{&*set.cast::<BTreeSet<Position>>()}.contains(&Position::ApplicationInput(view::LoopInput{level:owner as usize,index:member as usize},unsafe{actual_index(at)},word)))}
+unsafe extern "C" fn contains_input(set:Address,owner:u64,member:u64,at:Index,word:u32)->u32 {u32::from(unsafe{&*set.cast::<BTreeSet<Position>>()}.contains(&Position::application_input(view::LoopInput{level:owner as usize,index:member as usize},unsafe{actual_index(at)},word)))}
 enum Iter { One(btree_set::Iter<'static,Position>), Difference(btree_set::Difference<'static,Position>) }
 unsafe extern "C" fn iterate(a:Address,b:Address)->Address {
     // The B traversal borrows the actual input sets and drops this iterator
@@ -325,7 +309,7 @@ unsafe extern "C" fn make_position(shape:Node,a:Address,b:Address,choices:Addres
         0=>Position::Initialized,
         7=>Position::Parameter(shape.owner as usize,shape.word as usize),
         8=>Position::ApplicationElement(shape.owner as usize,unsafe{required_index(shape.index)},shape.word as u32),
-        9=>Position::ApplicationInput(view::LoopInput{level:shape.owner as usize,index:shape.member as usize},unsafe{actual_index(shape.index)},shape.word as u32),
+        9=>Position::application_input(view::LoopInput{level:shape.owner as usize,index:shape.member as usize},unsafe{actual_index(shape.index)},shape.word as u32),
         10=>Position::Indexed((*unsafe{Box::from_raw(choices.cast::<Vec<Position>>())}).into(),unsafe{required_index(shape.index)}),
         11=>Position::Conditional(PositionCondition::new(unsafe{&*shape.condition.cast::<owned_presence::Presence>()}.clone()),PositionChild::new(*unsafe{Box::from_raw(a.cast::<Position>())}),PositionChild::new(*unsafe{Box::from_raw(b.cast::<Position>())})),
         12=>Position::Both(PositionChild::new(*unsafe{Box::from_raw(a.cast::<Position>())}),PositionChild::new(*unsafe{Box::from_raw(b.cast::<Position>())})),
