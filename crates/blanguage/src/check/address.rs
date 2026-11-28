@@ -764,7 +764,21 @@ impl<'a, I: Iterator<Item = &'a view::Source>> AddressLayout<'a, I> {
 }
 
 #[repr(u32)]
-enum AddressOriginRoot { External, Derived, Dataset, Stored }
+enum AddressOriginRoot { External, Derived, Dataset, Stored, Parameter, Resource }
+
+impl Root {
+    fn kind(&self) -> AddressOriginRoot {
+        use AddressOriginRoot as Kind;
+        match self {
+            Self::External(_) => Kind::External,
+            Self::Derived(_) => Kind::Derived,
+            Self::Dataset { .. } => Kind::Dataset,
+            Self::Parameter(_) => Kind::Parameter,
+            Self::Resource { .. } => Kind::Resource,
+            Self::Local { .. } | Self::Buffer(_) => Kind::Stored,
+        }
+    }
+}
 
 #[repr(u32)]
 enum AddressOriginQuery { Storage, Symbolic }
@@ -834,33 +848,134 @@ impl<'a, I: Iterator<Item = (&'a view::Source, &'a bounds::Clause)>> AddressOrig
     }
 }
 
+#[repr(u32)]
+enum AddressOriginBindingMode { Substitute, Outputs, Call }
+
+#[repr(C)]
+struct AddressOriginBindingHost {
+    context: *mut std::ffi::c_void,
+    parameter: unsafe extern "C" fn(*mut std::ffi::c_void) -> u32,
+    unresolved_parameter: unsafe extern "C" fn(*mut std::ffi::c_void),
+    bind_borrow: unsafe extern "C" fn(*mut std::ffi::c_void),
+    external: unsafe extern "C" fn(*mut std::ffi::c_void),
+    clear_positions: unsafe extern "C" fn(*mut std::ffi::c_void),
+    index: unsafe extern "C" fn(*mut std::ffi::c_void) -> u32,
+    unresolved_index: unsafe extern "C" fn(*mut std::ffi::c_void),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::bind_address_origin"]
+    fn b_bind_address_origin(root: AddressOriginRoot, mode: AddressOriginBindingMode, host: AddressOriginBindingHost);
+}
+
+#[derive(Copy, Clone)]
+enum AddressOriginBindings<'a> {
+    Substitute(&'a BTreeMap<ValueIdentity, bounds::Proof>),
+    Outputs(&'a bounds::OutputBindings),
+    Call(&'a BTreeMap<ValueIdentity, bounds::Proof>),
+}
+
+struct AddressOriginBinding<'a> { value: Origin, bindings: AddressOriginBindings<'a> }
+
+impl AddressOriginBinding<'_> {
+    unsafe extern "C" fn parameter(context: *mut std::ffi::c_void) -> u32 {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let Root::Parameter(parameter) = &input.value.root else { unreachable!() };
+        let (AddressOriginBindings::Substitute(values) | AddressOriginBindings::Call(values)) = input.bindings
+            else { unreachable!() };
+        let Some(proof) = values.get(&ValueIdentity::ParameterStorage(*parameter)) else { return 0 };
+        input.value.root = Root::Derived(proof.view_borrow(0));
+        1
+    }
+
+    unsafe extern "C" fn unresolved_parameter(context: *mut std::ffi::c_void) {
+        unsafe { &mut *context.cast::<Self>() }.value.root = Root::Derived(view::Borrow::source(view::Source::Unresolved));
+    }
+
+    fn borrow_mut(&mut self) -> &mut view::Borrow {
+        match &mut self.value.root {
+            Root::Resource { borrow, .. } | Root::Derived(borrow) | Root::Dataset { borrow, .. } => borrow,
+            _ => unreachable!(),
+        }
+    }
+
+    unsafe extern "C" fn bind_borrow(context: *mut std::ffi::c_void) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let bindings = input.bindings;
+        let borrow = input.borrow_mut();
+        *borrow = match bindings {
+            AddressOriginBindings::Substitute(values) => borrow.substitute_values(values),
+            AddressOriginBindings::Outputs(values) => borrow.output_bound(values),
+            AddressOriginBindings::Call(values) => borrow.at_call(values),
+        };
+    }
+
+    unsafe extern "C" fn external(context: *mut std::ffi::c_void) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let Root::External(identity) = &mut input.value.root else { unreachable!() };
+        *identity = match input.bindings {
+            AddressOriginBindings::Substitute(values) => identity.substitute_values(values),
+            AddressOriginBindings::Outputs(values) => identity.output_bound(values),
+            AddressOriginBindings::Call(values) => identity.at_call(values),
+        };
+    }
+
+    unsafe extern "C" fn clear_positions(context: *mut std::ffi::c_void) {
+        unsafe { &mut *context.cast::<Self>() }.value.positions = Arc::from([]);
+    }
+
+    unsafe extern "C" fn index(context: *mut std::ffi::c_void) -> u32 {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let (Root::Resource { index: Some(index), .. } | Root::Dataset { index: Some(index), .. }) = &mut input.value.root
+            else { return 1 };
+        let resolved = match input.bindings {
+            AddressOriginBindings::Substitute(values) => {
+                let bounds::Operand::Value(id) = index else { return 1 };
+                if !values.contains_key(id) { return 1; }
+                index.at_call(values)
+            }
+            AddressOriginBindings::Outputs(values) => {
+                if let bounds::Operand::Value(id) = index && let Some(bound) = values.get(id) { *id = *bound; }
+                return 1;
+            }
+            AddressOriginBindings::Call(values) => index.at_call(values),
+        };
+        let Some(resolved) = resolved else { return 0 };
+        *index = resolved;
+        1
+    }
+
+    unsafe extern "C" fn unresolved_index(context: *mut std::ffi::c_void) {
+        *unsafe { &mut *context.cast::<Self>() }.borrow_mut() = view::Borrow::source(view::Source::Unresolved);
+    }
+
+    fn bind(mut self) -> Origin {
+        let root = self.value.root.kind();
+        let mode = match self.bindings {
+            AddressOriginBindings::Substitute(_) => AddressOriginBindingMode::Substitute,
+            AddressOriginBindings::Outputs(_) => AddressOriginBindingMode::Outputs,
+            AddressOriginBindings::Call(_) => AddressOriginBindingMode::Call,
+        };
+        let host = AddressOriginBindingHost { context: std::ptr::from_mut(&mut self).cast(), parameter: Self::parameter,
+            unresolved_parameter: Self::unresolved_parameter, bind_borrow: Self::bind_borrow, external: Self::external,
+            clear_positions: Self::clear_positions, index: Self::index, unresolved_index: Self::unresolved_index };
+        unsafe { b_bind_address_origin(root, mode, host) };
+        self.value
+    }
+}
+
 impl Origin {
     pub(super) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self {
-        let mut origin=self.clone();
-        origin.root=match &self.root {
-            Root::Parameter(parameter)if values.contains_key(&ValueIdentity::ParameterStorage(*parameter))=>{origin.positions=Arc::from([]);Root::Derived(values[&ValueIdentity::ParameterStorage(*parameter)].view_borrow(0))},
-            Root::External(identity)=>Root::External(identity.substitute_values(values)),
-            Root::Derived(borrow)=>Root::Derived(borrow.substitute_values(values)),
-            Root::Resource{borrow,index}=>Root::Resource{borrow:borrow.substitute_values(values),index:*index},
-            root=>root.clone(),
-        };
-        if let Root::Resource{borrow,index:Some(index)}|Root::Dataset{borrow,index:Some(index)}=&mut origin.root
-            &&let bounds::Operand::Value(id)=index && values.contains_key(id) {
-            match index.at_call(values){Some(bound)=>*index=bound,None=>*borrow=view::Borrow::source(view::Source::Unresolved)}
-        }
-        origin
+        AddressOriginBinding { value: self.clone(), bindings: AddressOriginBindings::Substitute(values) }.bind()
     }
 
     fn query_address_origin(&self, path: Option<&bounds::Clause>) -> bool {
-        use AddressOriginRoot as Kind;
-        let (root, borrow) = match &self.root {
-            Root::External(_) => (Kind::External, None),
-            Root::Derived(borrow) => (Kind::Derived, Some(borrow)),
-            Root::Dataset { borrow, .. } => (Kind::Dataset, Some(borrow)),
-            _ => (Kind::Stored, None),
+        let borrow = match &self.root {
+            Root::Derived(borrow) | Root::Dataset { borrow, .. } => Some(borrow),
+            _ => None,
         };
         let sources = borrow.into_iter().flat_map(|borrow| borrow.sources.borrowed_entries());
-        AddressOriginSources { sources, path, current: None }.query(root)
+        AddressOriginSources { sources, path, current: None }.query(self.root.kind())
     }
 
     pub fn symbolic_input(&self) -> bool {
@@ -978,35 +1093,10 @@ impl Origin {
         value
     }
     pub fn bind_outputs(&self, bindings: &bounds::OutputBindings) -> Self {
-        let mut value=self.clone();
-        match &mut value.root {
-            Root::Resource{borrow,..} | Root::Derived(borrow) | Root::Dataset{borrow,..} => *borrow=borrow.output_bound(bindings),
-            Root::External(identity)=>*identity=identity.output_bound(bindings),
-            _ => {}
-        }
-        if let Root::Resource{index:Some(index),..}|Root::Dataset{index:Some(index),..}=&mut value.root {
-            if let bounds::Operand::Value(id)=index {if let Some(bound)=bindings.get(id){*id=*bound;}}
-        }
-        value
+        AddressOriginBinding { value: self.clone(), bindings: AddressOriginBindings::Outputs(bindings) }.bind()
     }
     pub fn bound_at_call(&self, bindings: &BTreeMap<ValueIdentity,bounds::Proof>) -> Self {
-        let mut value=self.clone();
-        match &mut value.root {
-            Root::Parameter(parameter) => {
-                let borrow=bindings.get(&ValueIdentity::ParameterStorage(*parameter))
-                    .map(|proof|proof.view_borrow(0))
-                    .unwrap_or_else(||view::Borrow::source(view::Source::Unresolved));
-                value.root=Root::Derived(borrow);
-            }
-            Root::Resource{borrow,..} | Root::Derived(borrow) | Root::Dataset{borrow,..} => *borrow=borrow.at_call(bindings),
-            Root::External(identity)=>*identity=identity.at_call(bindings),
-            _ => return value,
-        }
-        value.positions=Arc::from([]);
-        if let Root::Resource{borrow,index:Some(index)}|Root::Dataset{borrow,index:Some(index)}=&mut value.root {
-            match index.at_call(bindings) {Some(bound)=>*index=bound,None=>*borrow=view::Borrow::source(view::Source::Unresolved)}
-        }
-        value
+        AddressOriginBinding { value: self.clone(), bindings: AddressOriginBindings::Call(bindings) }.bind()
     }
     pub fn at_call(&self,bindings:&BTreeMap<ValueIdentity,bounds::Proof>)->view::Borrow {
         view::Borrow::source(view::Source::Position(Arc::new(self.bound_at_call(bindings))))

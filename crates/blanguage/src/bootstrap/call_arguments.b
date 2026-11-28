@@ -550,6 +550,32 @@ extern "C" u32 query_address_origin(AddressOriginRoot root, AddressOriginQuery q
     }
 }
 
+extern "C" void bind_address_origin(AddressOriginRoot root, AddressOriginBindingMode mode, AddressOriginBindingHost host) on cpu
+    requires nonzero(host.parameter) requires nonzero(host.unresolved_parameter)
+    requires nonzero(host.bind_borrow) requires nonzero(host.external)
+    requires nonzero(host.clear_positions) requires nonzero(host.index) requires nonzero(host.unresolved_index) {
+    if (root == AddressOriginRoot::Stored) { return; }
+    if (root == AddressOriginRoot::Parameter) {
+        if (mode == AddressOriginBindingMode::Outputs) { return; }
+        if (host.parameter(host.context) != 0) {
+            host.clear_positions(host.context);
+        } else if (mode == AddressOriginBindingMode::Call) {
+            host.unresolved_parameter(host.context);
+            host.clear_positions(host.context);
+        }
+        return;
+    }
+    if (root == AddressOriginRoot::External) {
+        host.external(host.context);
+    } else if (root != AddressOriginRoot::Dataset || mode != AddressOriginBindingMode::Substitute) {
+        host.bind_borrow(host.context);
+    }
+    if (mode == AddressOriginBindingMode::Call) { host.clear_positions(host.context); }
+    if (root == AddressOriginRoot::Dataset || root == AddressOriginRoot::Resource) {
+        if (host.index(host.context) == 0) { host.unresolved_index(host.context); }
+    }
+}
+
 extern "C" AddressViolation validate_address_requirements(AddressRequirements required, AddressRequirementHost host) on cpu
     requires nonzero(host.next) requires nonzero(host.valid_layout) requires nonzero(host.blink_storage)
     requires nonzero(host.writable) requires nonzero(host.initialized) requires nonzero(host.possible)

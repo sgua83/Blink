@@ -171,7 +171,7 @@ struct AddressLayoutHost {
 extern "C" u32 address_layout_valid(AddressLayoutHost host) on cpu
     requires nonzero(host.next) requires nonzero(host.validate);
 
-enum AddressOriginRoot:u32 { External=0; Derived=1; Dataset=2; Stored=3; };
+enum AddressOriginRoot:u32 { External=0; Derived=1; Dataset=2; Stored=3; Parameter=4; Resource=5; };
 enum AddressOriginQuery:u32 { Storage=0; Symbolic=1; };
 enum AddressOriginSource:u32 { End=0; Position=1; Symbolic=2; Relation=3; Other=4; };
 struct AddressOriginHost {
@@ -184,6 +184,22 @@ struct AddressOriginHost {
 extern "C" u32 query_address_origin(AddressOriginRoot root, AddressOriginQuery query, AddressOriginHost host) on cpu
     requires nonzero(host.next) requires nonzero(host.follow)
     requires nonzero(host.symbolic_relation) requires nonzero(host.possible);
+
+enum AddressOriginBindingMode:u32 { Substitute=0; Outputs=1; Call=2; };
+struct AddressOriginBindingHost {
+    address context;
+    cfn<u32,address> parameter;
+    cfn<void,address> unresolved_parameter;
+    cfn<void,address> bind_borrow;
+    cfn<void,address> external;
+    cfn<void,address> clear_positions;
+    cfn<u32,address> index;
+    cfn<void,address> unresolved_index;
+};
+extern "C" void bind_address_origin(AddressOriginRoot root, AddressOriginBindingMode mode, AddressOriginBindingHost host) on cpu
+    requires nonzero(host.parameter) requires nonzero(host.unresolved_parameter)
+    requires nonzero(host.bind_borrow) requires nonzero(host.external)
+    requires nonzero(host.clear_positions) requires nonzero(host.index) requires nonzero(host.unresolved_index);
 
 struct AddressRequirements { u32 writable; u32 initialized; u32 atomic; };
 enum AddressViolation:u32 { None=0; Inactive=1; Layout=2; Atomic=3; ReadOnly=4; Uninitialized=5; };
