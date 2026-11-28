@@ -439,39 +439,43 @@ bool round_unchanged(address context, usize count, u32 paths, RoundHost host) on
     return true;
 }
 
-extern "C" u32 solve_round(address context, RoundSchedule schedule, u32 initial, RoundHost host) on cpu
+extern "C" void solve_relation(address context, RoundSchedule schedule, RoundHost host) on cpu
     requires nonzero(host.evaluate) requires nonzero(host.observe)
-    requires nonzero(host.equivalent) requires nonzero(host.forget)
+    requires nonzero(host.equivalent) requires nonzero(host.forget) requires nonzero(host.advance)
 {
-    usize index = initial != 0 ? 0u64 : schedule.stable;
-    while (index < schedule.count) {
-        usize id = unsafe_position<usize>(cell(schedule.ordered,index,8u64));
-        host.evaluate(context,id,0);
-        index += 1u64;
-    }
-
-    usize active = 0u64;
-    index = 0u64;
-    while (index < schedule.inputs.count) {
-        usize variable = unsafe_position<usize>(cell(schedule.inputs.data,index,8u64));
-        index += 1u64;
-        if (initial != 0 || (unsafe_position<u8>(cell(schedule.schedule_flags,variable,1u64)) & FIXED_INPUT) == u8(0)) {
-            host.evaluate(context,variable,1);
-            active += 1u64;
+    bool initial = true;
+    while (true) {
+        usize index = initial ? 0u64 : schedule.stable;
+        while (index < schedule.count) {
+            usize id = unsafe_position<usize>(cell(schedule.ordered,index,8u64));
+            host.evaluate(context,id,0);
+            index += 1u64;
         }
-    }
 
-    host.observe(context);
-    if (round_unchanged(context,active,0,host) && round_unchanged(context,active,1,host)) {
-        return 1;
-    }
+        usize active = 0u64;
+        index = 0u64;
+        while (index < schedule.inputs.count) {
+            usize variable = unsafe_position<usize>(cell(schedule.inputs.data,index,8u64));
+            index += 1u64;
+            if (initial || (unsafe_position<u8>(cell(schedule.schedule_flags,variable,1u64)) & FIXED_INPUT) == u8(0)) {
+                host.evaluate(context,variable,1);
+                active += 1u64;
+            }
+        }
 
-    index = schedule.stable;
-    while (index < schedule.count) {
-        host.forget(context,unsafe_position<usize>(cell(schedule.ordered,index,8u64)));
-        index += 1u64;
+        host.observe(context);
+        if (round_unchanged(context,active,0,host) && round_unchanged(context,active,1,host)) {
+            return;
+        }
+
+        index = schedule.stable;
+        while (index < schedule.count) {
+            host.forget(context,unsafe_position<usize>(cell(schedule.ordered,index,8u64)));
+            index += 1u64;
+        }
+        host.advance(context);
+        initial = false;
     }
-    return 0;
 }
 
 usize old_id(WalkSlice ids, usize index) on cpu {

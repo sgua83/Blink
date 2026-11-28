@@ -104,11 +104,12 @@ struct RoundHost {
     cfn<void,address> observe;
     cfn<u32,address,usize,u32> equivalent;
     cfn<void,address,usize> forget;
+    cfn<void,address> advance;
 };
 
-extern "C" u32 solve_round(address context, RoundSchedule schedule, u32 initial, RoundHost host) on cpu
+extern "C" void solve_relation(address context, RoundSchedule schedule, RoundHost host) on cpu
     requires nonzero(host.evaluate) requires nonzero(host.observe)
-    requires nonzero(host.equivalent) requires nonzero(host.forget);
+    requires nonzero(host.equivalent) requires nonzero(host.forget) requires nonzero(host.advance);
 
 struct RelationSelection {
     WalkSlice nodes;

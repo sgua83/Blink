@@ -2219,47 +2219,18 @@ impl Graph {
             evaluation.function.history.get(&input.level).map(|history| (node, (input.level, history)))
         }).collect::<BTreeMap<_, _>>();
         let plan = self.evaluation_plan(reachable.into_iter(), true);
-        let mut variables = plan.inputs.iter().map(|&id| (id, Borrow::default())).collect::<BTreeMap<_, _>>();
-        let mut values = BTreeMap::new();
-        let mut initial = true;
-        loop {
-            let bindings = LoopBindings {
-                outer: evaluation.loop_bindings,
-                inputs: &self.inputs,
-                values: &variables,
-            };
-            let mut scope = BorrowEvaluation {
-                function: evaluation.function,
-                state: evaluation.state,
-                known: evaluation.known,
-                expand_loops: evaluation.expand_loops,
-                deferred_reads: evaluation.deferred_reads,
-                loop_bindings: Some(&bindings),
-                values: BTreeMap::new(), stored: None, exit_writes: None, stored_paths: super::StoredPaths::Borrowed(evaluation.stored_paths.paths()),
-            };
-            let mut query = Query {
-                graph: self,
-                relation: Arc::clone(self),
-                variables: &variables,
-                values,
-            };
-            let (converged, next) = {
-                let mut round = RelationRound {
-                    root, query: &mut query, scope: &mut scope, loop_scopes: &loop_scopes,
-                    next: Vec::new(),
-                };
-                let converged = round.run(&plan, initial);
-                (converged, round.next)
-            };
-            if converged {
-                let value = query.node(root);
-                let residual = std::cell::OnceCell::new();
-                return self.rebind(value, &|| residual.get_or_init(|| self.residual(&query, &plan)));
-            }
-            values = query.values;
-            variables.extend(next);
-            initial = false;
-        }
+        let mut solve = RelationSolve {
+            root, graph: self, evaluation, loop_scopes,
+            variables: plan.inputs.iter().map(|&id| (id, Borrow::default())).collect(),
+            values: BTreeMap::new(), next: Vec::new(), memo: BTreeMap::new(), stored: None,
+        };
+        solve.run(&plan);
+        let query = Query {
+            graph: self, variables: &solve.variables, values: &solve.values,
+        };
+        let value = query.node(root);
+        let residual = std::cell::OnceCell::new();
+        self.rebind(value, &|| residual.get_or_init(|| self.residual(&query, &plan)))
     }
 }
 #[repr(C)]
@@ -2277,49 +2248,75 @@ struct RoundHost {
     observe: unsafe extern "C" fn(Slot),
     equivalent: unsafe extern "C" fn(Slot, usize, u32) -> u32,
     forget: unsafe extern "C" fn(Slot, usize),
+    advance: unsafe extern "C" fn(Slot),
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.relation_order::solve_round"]
-    fn solve_relation_round(context: Slot, schedule: RoundSchedule, initial: u32, host: RoundHost) -> u32;
+    #[link_name = "bootstrap.relation_order::solve_relation"]
+    fn solve_relation(context: Slot, schedule: RoundSchedule, host: RoundHost);
 }
 
-struct RelationRound<'round, 'graph, 'scope> {
+struct RelationSolve<'graph, 'scope> {
     root: usize,
-    query: &'round mut Query<'graph>,
-    scope: &'round mut BorrowEvaluation<'scope>,
-    loop_scopes: &'round BTreeMap<usize, (usize, &'scope LoopHistory)>,
+    graph: &'graph Arc<Graph>,
+    evaluation: &'scope BorrowEvaluation<'scope>,
+    loop_scopes: BTreeMap<usize, (usize, &'scope LoopHistory)>,
+    variables: BTreeMap<usize, Borrow>,
+    values: BTreeMap<usize, Borrow>,
     next: Vec<(usize, Borrow)>,
+    memo: BTreeMap<(LoopSources, super::EvaluationInput), Borrow>,
+    stored: Option<Arc<super::StoredLocations>>,
 }
 
-impl RelationRound<'_, '_, '_> {
-    fn run(&mut self, plan: &EvaluationPlan, initial: bool) -> bool {
+impl RelationSolve<'_, '_> {
+    fn run(&mut self, plan: &EvaluationPlan) {
         let schedule = RoundSchedule {
             ordered: plan.ordered.as_ptr(), count: plan.ordered.len(),
             stable: plan.stable, schedule_flags: plan.schedule_flags.as_ptr(), inputs: WalkSlice::of(&plan.inputs),
         };
         let host = RoundHost {
             evaluate: Self::evaluate, observe: Self::observe,
-            equivalent: Self::equivalent, forget: Self::forget,
+            equivalent: Self::equivalent, forget: Self::forget, advance: Self::advance,
         };
-        unsafe { solve_relation_round(ptr::from_mut(self).cast(), schedule, u32::from(initial), host) != 0 }
+        unsafe { solve_relation(ptr::from_mut(self).cast(), schedule, host) };
     }
 
     unsafe extern "C" fn evaluate(context: Slot, id: usize, input: u32) {
-        let round = unsafe { &mut *context.cast::<Self>() };
-        let mut value = round.query.definition(id, round.scope);
+        let solve = unsafe { &mut *context.cast::<Self>() };
+        let evaluation = solve.evaluation;
+        let bindings = LoopBindings {
+            outer: evaluation.loop_bindings, inputs: &solve.graph.inputs, values: &solve.variables,
+        };
+        let mut scope = BorrowEvaluation {
+            function: evaluation.function,
+            state: evaluation.state,
+            known: evaluation.known,
+            expand_loops: evaluation.expand_loops,
+            deferred_reads: evaluation.deferred_reads,
+            loop_bindings: Some(&bindings),
+            values: std::mem::take(&mut solve.memo),
+            stored: solve.stored.take(),
+            exit_writes: None,
+            stored_paths: super::StoredPaths::Borrowed(evaluation.stored_paths.paths()),
+        };
+        let query = Query {
+            graph: solve.graph, variables: &solve.variables, values: &solve.values,
+        };
+        let mut value = query.definition(id, &mut scope);
+        solve.memo = scope.values;
+        solve.stored = scope.stored;
         if input == 0 {
-            round.query.values.insert(id, value);
+            solve.values.insert(id, value);
             return;
         }
-        if let Some((level, history)) = round.loop_scopes.get(&id) {
+        if let Some((level, history)) = solve.loop_scopes.get(&id) {
             // A carried source can come from any earlier iteration.
             let bindings = bounds::Clause::scalar_identities(value.sources.paths()).into_iter()
                 .filter(|identity| !match identity {
                     ValueIdentity::Register(reg) | ValueIdentity::TaskControl(reg)
                     | ValueIdentity::TaskCompletion(reg, _) => history.registers.contains(reg),
                     ValueIdentity::MemoryValue(memory, _) => history.uses.contains(memory),
-                    ValueIdentity::LoopValue(scope, _) => scope == level || round.scope.function.history.get(scope)
+                    ValueIdentity::LoopValue(scope, _) => scope == level || evaluation.function.history.get(scope)
                         .is_some_and(|inner| inner.registers.start >= history.registers.start
                             && inner.registers.end <= history.registers.end),
                     _ => false,
@@ -2328,29 +2325,28 @@ impl RelationRound<'_, '_, '_> {
                 .collect();
             value = value.guards_at_call(&bindings);
         }
-        round.next.push((id, value));
+        solve.next.push((id, value));
     }
 
     unsafe extern "C" fn observe(context: Slot) {
-        let round = unsafe { &*context.cast::<Self>() };
-        if let Some(observe) = round.scope.known.observe {
+        let solve = unsafe { &*context.cast::<Self>() };
+        if let Some(observe) = solve.evaluation.known.observe {
             use crate::compiler::{AnalysisStorage, BorrowSolveStorage};
-            let query = &round.query;
-            observe(round.scope.state.name, BorrowSolveStorage::Relation {
-                root: round.root,
-                nodes: AnalysisStorage::vector(&query.graph.nodes),
-                frames: AnalysisStorage::vector(&query.graph.frames),
-                resolved: AnalysisStorage::entries::<usize, Borrow>(query.values.len(), None),
-                previous_inputs: AnalysisStorage::entries::<usize, Borrow>(query.variables.len(), None),
-                next_inputs: AnalysisStorage::vector(&round.next),
+            observe(solve.evaluation.state.name, BorrowSolveStorage::Relation {
+                root: solve.root,
+                nodes: AnalysisStorage::vector(&solve.graph.nodes),
+                frames: AnalysisStorage::vector(&solve.graph.frames),
+                resolved: AnalysisStorage::entries::<usize, Borrow>(solve.values.len(), None),
+                previous_inputs: AnalysisStorage::entries::<usize, Borrow>(solve.variables.len(), None),
+                next_inputs: AnalysisStorage::vector(&solve.next),
             });
         }
     }
 
     unsafe extern "C" fn equivalent(context: Slot, index: usize, paths: u32) -> u32 {
-        let round = unsafe { &*context.cast::<Self>() };
-        let (id, value) = &round.next[index];
-        let before = &round.query.variables[id].sources;
+        let solve = unsafe { &*context.cast::<Self>() };
+        let (id, value) = &solve.next[index];
+        let before = &solve.variables[id].sources;
         u32::from(if paths == 0 {
             value.sources.same_sources(before)
         } else {
@@ -2359,8 +2355,15 @@ impl RelationRound<'_, '_, '_> {
     }
 
     unsafe extern "C" fn forget(context: Slot, id: usize) {
-        let round = unsafe { &mut *context.cast::<Self>() };
-        round.query.values.remove(&id);
+        let solve = unsafe { &mut *context.cast::<Self>() };
+        solve.values.remove(&id);
+    }
+
+    unsafe extern "C" fn advance(context: Slot) {
+        let solve = unsafe { &mut *context.cast::<Self>() };
+        solve.variables.extend(std::mem::take(&mut solve.next));
+        solve.memo.clear();
+        solve.stored = None;
     }
 }
 
@@ -2546,10 +2549,9 @@ impl InitialDefinition<'_, '_> {
 }
 
 struct Query<'g> {
-    graph: &'g Graph,
-    relation: Arc<Graph>,
+    graph: &'g Arc<Graph>,
     variables: &'g BTreeMap<usize, Borrow>,
-    values: BTreeMap<usize, Borrow>,
+    values: &'g BTreeMap<usize, Borrow>,
 }
 impl<'g> Query<'g> {
     fn node(&self, id: usize) -> &Borrow {
@@ -2569,7 +2571,7 @@ impl<'g> Query<'g> {
         });
         Borrow { sources, ..Borrow::default() }
     }
-    fn deferred(&self,id:usize)->Borrow{Borrow::source(Origin::Relation(self.relation.clone(),id))}
+    fn deferred(&self,id:usize)->Borrow{Borrow::source(Origin::Relation(Arc::clone(self.graph),id))}
     fn apply<'a>(
         &self, id: usize, from_id: usize, op: &Op, from: &'a Borrow, evaluation: &mut BorrowEvaluation<'_>,
     ) -> Cow<'a, Borrow> {
