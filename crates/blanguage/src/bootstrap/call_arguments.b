@@ -404,9 +404,25 @@ extern "C" u32 walk_address_sources(u32 unavailable, AddressSourceWalk walk, Add
     }
 }
 
+extern "C" u32 seed_memory_regions(RegionSeed seed, RegionSeedHost host) on cpu
+    requires nonzero(host.part) requires nonzero(host.reserve) requires nonzero(host.emit) {
+    if (seed.kind == RegionSeedKind::External) { return 0; }
+    if (seed.materialize == 0) { return 1; }
+    let count = min(seed.parts, seed.kind == RegionSeedKind::Resource ? seed.words : seed.positions);
+    if (count == 0u64) { return 1; }
+    host.reserve(host.context, count);
+    usize slot = 0u64;
+    while (slot < count) {
+        let part = host.part(host.context, slot);
+        host.emit(host.context, slot, RegionBytes(part.word, 0, part.size));
+        slot += 1u64;
+    }
+    return 1;
+}
+
 extern "C" u32 project_memory_regions(address origin, usize parts, u32 parent_size, RegionSpan parent,
-    RegionHost host) on cpu requires nonzero(host.part) requires nonzero(host.region) requires nonzero(host.emit)
-{
+    RegionHost host) on cpu
+    requires nonzero(host.part) requires nonzero(host.region) requires nonzero(host.emit) requires nonzero(host.finish) {
     usize slot=0u64;
     while (slot<parts) {
         RegionBytes part=host.part(origin,slot);
@@ -428,6 +444,7 @@ extern "C" u32 project_memory_regions(address origin, usize parts, u32 parent_si
         }
         slot+=1u64;
     }
+    if (parent.first < parent.end) { host.finish(parent); }
     return 1;
 }
 

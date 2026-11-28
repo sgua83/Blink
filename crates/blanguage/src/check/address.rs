@@ -40,6 +40,69 @@ pub(super) struct MemoryRegion { pub position:Position, pub word:u32, pub offset
 #[repr(C)]
 struct RegionBytes { word: u32, offset: u32, size: u32 }
 
+#[repr(u32)]
+enum RegionSeedKind { Positions, Resource, External }
+
+#[repr(C)]
+struct RegionSeed { parts: usize, positions: usize, words: usize, kind: RegionSeedKind, materialize: u32 }
+
+#[repr(C)]
+struct RegionPart { word: u32, size: u32 }
+
+#[repr(C)]
+struct RegionSeedHost {
+    context: *mut std::ffi::c_void,
+    part: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> RegionPart,
+    reserve: unsafe extern "C" fn(*mut std::ffi::c_void, usize),
+    emit: unsafe extern "C" fn(*mut std::ffi::c_void, usize, RegionBytes),
+}
+
+struct SeedRegions<'a, 'r> {
+    origin: &'a Origin,
+    resource: Option<&'a view::Borrow>,
+    shared_resource: Option<Arc<view::Borrow>>,
+    output: Option<&'r mut Vec<MemoryRegion>>,
+}
+
+impl SeedRegions<'_, '_> {
+    unsafe extern "C" fn part(context: *const std::ffi::c_void, slot: usize) -> RegionPart {
+        let input = unsafe { &*context.cast::<Self>() };
+        let (scalar, word) = input.origin.layout.parts[slot];
+        RegionPart { word, size: scalar.size() }
+    }
+
+    unsafe extern "C" fn reserve(context: *mut std::ffi::c_void, count: usize) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        input.output.as_mut().unwrap().reserve(count);
+    }
+
+    unsafe extern "C" fn emit(context: *mut std::ffi::c_void, slot: usize, bytes: RegionBytes) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let position = if let Some(resource) = input.resource {
+            let shared = input.shared_resource.get_or_insert_with(|| Arc::new(resource.clone()));
+            Position::Borrowed(Arc::clone(shared), input.origin.base.clone(), input.origin.words[slot])
+        } else {
+            input.origin.positions[slot].clone()
+        };
+        input.output.as_mut().unwrap().push(MemoryRegion {
+            position, word: bytes.word, offset: bytes.offset, size: bytes.size,
+        });
+    }
+
+    fn collect(&mut self, kind: RegionSeedKind) -> Option<()> {
+        let seed = RegionSeed {
+            parts: self.origin.layout.parts.len(),
+            positions: self.origin.positions.len(),
+            words: self.origin.words.len(),
+            kind,
+            materialize: self.output.is_some().into(),
+        };
+        let host = RegionSeedHost { context: (self as *mut Self).cast(), part: Self::part,
+            reserve: Self::reserve, emit: Self::emit };
+        (unsafe { seed_memory_regions(seed, host) } != 0).then_some(())
+    }
+}
+
 #[repr(C)]
 struct RegionSpan {
     regions: *mut std::ffi::c_void,
@@ -52,6 +115,7 @@ struct RegionHost {
     part: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> RegionBytes,
     region: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> RegionBytes,
     emit: unsafe extern "C" fn(*mut std::ffi::c_void, usize, RegionBytes),
+    finish: unsafe extern "C" fn(RegionSpan),
 }
 
 #[repr(u32)]
@@ -136,6 +200,8 @@ fn walk_address_sources<'a>(
 unsafe extern "C" {
     #[link_name = "bootstrap.call_arguments::walk_address_sources"]
     fn b_walk_address_sources(unavailable: u32, walk: AddressSourceWalk, host: AddressSourceHost) -> u32;
+    #[link_name = "bootstrap.call_arguments::seed_memory_regions"]
+    fn seed_memory_regions(seed: RegionSeed, host: RegionSeedHost) -> u32;
     #[link_name = "bootstrap.call_arguments::project_memory_regions"]
     fn project_memory_regions(origin: *const std::ffi::c_void, parts: usize, parent_size: u32,
         parent: RegionSpan, host: RegionHost) -> u32;
@@ -156,6 +222,11 @@ unsafe extern "C" fn append_projected_region(regions: *mut std::ffi::c_void, at:
     let regions = unsafe { &mut *regions.cast::<Vec<MemoryRegion>>() };
     let position = regions[at].position.clone();
     regions.push(MemoryRegion { position, word: bytes.word, offset: bytes.offset, size: bytes.size });
+}
+
+unsafe extern "C" fn finish_parent_regions(parent: RegionSpan) {
+    let regions = unsafe { &mut *parent.regions.cast::<Vec<MemoryRegion>>() };
+    drop(regions.drain(parent.first..parent.end));
 }
 
 // One original loop input and its actual projections name the same logical storage.
@@ -353,29 +424,21 @@ impl Origin {
         self.collect_memory_regions(path, Some(&mut regions))?;
         Some(regions)
     }
-    fn collect_memory_regions(&self, path: &bounds::Clause, mut output: Option<&mut Vec<MemoryRegion>>) -> Option<()> {
-        let borrow=match &self.root {
-            Root::External(Identity::Storage(borrow))|Root::Derived(borrow)=>borrow,
-            Root::Resource{borrow,..}|Root::Dataset{borrow,..}=>{
-                if let Some(regions) = output {
-                    let source = std::cell::LazyCell::new(|| Arc::new(borrow.clone()));
-                    regions.extend(self.layout.parts.iter().zip(self.words.iter()).map(|((scalar, word), at)| {
-                        MemoryRegion {
-                            position: Position::Borrowed(Arc::clone(&source), self.base.clone(), *at),
-                            word: *word, offset: 0, size: scalar.size(),
-                        }
-                    }));
-                }
-                return Some(());
-            },
-            Root::External(_)=>return None,
-            _=>{
-                if let Some(regions) = output {
-                    regions.extend(self.layout.parts.iter().zip(self.positions.iter()).map(|((scalar,word),position)|MemoryRegion{position:position.clone(),word:*word,offset:0,size:scalar.size()}));
-                }
-                return Some(());
-            },
+    fn collect_memory_regions(&self, path: &bounds::Clause, output: Option<&mut Vec<MemoryRegion>>) -> Option<()> {
+        let (kind, resource) = match &self.root {
+            Root::External(Identity::Storage(borrow)) | Root::Derived(borrow) => {
+                return self.collect_parent_regions(borrow, path, output);
+            }
+            Root::Resource { borrow, .. } | Root::Dataset { borrow, .. } => (RegionSeedKind::Resource, Some(borrow)),
+            Root::External(_) => (RegionSeedKind::External, None),
+            _ => (RegionSeedKind::Positions, None),
         };
+        SeedRegions { origin: self, resource, shared_resource: None, output }.collect(kind)
+    }
+
+    fn collect_parent_regions(&self, borrow: &view::Borrow, path: &bounds::Clause,
+        mut output: Option<&mut Vec<MemoryRegion>>,
+    ) -> Option<()> {
         walk_address_sources(borrow, Some(path), |_, parent, when| {
             let first = output.as_ref().map_or(0, |regions| regions.len());
             parent.collect_memory_regions(&when, output.as_deref_mut())?;
@@ -388,17 +451,13 @@ impl Origin {
                 part: projected_part,
                 region: parent_region,
                 emit: append_projected_region,
+                finish: finish_parent_regions,
             };
             let parts = self.layout.parts.len().min(self.words.len());
             // An omitted result passes an empty parent span. During materialization
             // the original span stays at the same indices until projection returns.
-            if unsafe { project_memory_regions(std::ptr::from_ref(self).cast(), parts, parent.layout.size, span, host) } == 0 {
-                return None;
-            }
-            if let Some(regions) = output.as_mut() {
-                drop(regions.drain(first..end));
-            }
-            Some(())
+            (unsafe { project_memory_regions(std::ptr::from_ref(self).cast(), parts, parent.layout.size, span, host) } != 0)
+                .then_some(())
         })
     }
     pub fn map_borrows(&self, map: impl FnOnce(&view::Borrow)->view::Borrow) -> Self {

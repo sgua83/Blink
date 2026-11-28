@@ -105,14 +105,28 @@ extern "C" u32 walk_address_sources(u32 unavailable, AddressSourceWalk walk, Add
     requires nonzero(host.next) requires nonzero(host.projection);
 
 struct RegionBytes { u32 word; u32 offset; u32 size; };
+enum RegionSeedKind:u32 { Positions=0; Resource=1; External=2; };
+struct RegionSeed { usize parts; usize positions; usize words; RegionSeedKind kind; u32 materialize; };
+struct RegionPart { u32 word; u32 size; };
+struct RegionSeedHost {
+    address context;
+    cfn<RegionPart,address,usize> ensures memory(read) part;
+    cfn<void,address,usize> reserve;
+    cfn<void,address,usize,RegionBytes> emit;
+};
+extern "C" u32 seed_memory_regions(RegionSeed seed, RegionSeedHost host) on cpu
+    requires nonzero(host.part) requires nonzero(host.reserve) requires nonzero(host.emit);
+
 struct RegionSpan { address regions; usize first; usize end; };
 struct RegionHost {
     cfn<RegionBytes,address,usize> ensures memory(read) part;
     cfn<RegionBytes,address,usize> ensures memory(read) region;
     cfn<void,address,usize,RegionBytes> emit;
+    cfn<void,RegionSpan> finish;
 };
 extern "C" u32 project_memory_regions(address origin, usize parts, u32 parent_size, RegionSpan parent,
-    RegionHost host) on cpu requires nonzero(host.part) requires nonzero(host.region) requires nonzero(host.emit);
+    RegionHost host) on cpu
+    requires nonzero(host.part) requires nonzero(host.region) requires nonzero(host.emit) requires nonzero(host.finish);
 
 extern "C" u32 address_tail(address context,u64 count,u32 size,u32 first,AddressTailHost host) on cpu
  requires nonzero(host.offset) requires nonzero(host.append);
