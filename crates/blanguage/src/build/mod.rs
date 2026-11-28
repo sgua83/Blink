@@ -224,7 +224,7 @@ unsafe extern "C" fn expand_declaration(context: *mut c_void, declaration: *cons
 
 fn used_declarations<'a>(
     world: &'a crate::frontend::World, direct: &'a BTreeSet<Declaration>,
-) -> Vec<&'a Declaration> {
+) -> BTreeSet<&'a Declaration> {
     let mut closure = DeclarationClosure {
         world, direct: direct.iter(), pending: Vec::new(), used: BTreeSet::new(),
     };
@@ -233,7 +233,7 @@ fn used_declarations<'a>(
             next: next_declaration, retain: retain_declaration, expand: expand_declaration,
         });
     }
-    closure.used.into_iter().collect()
+    closure.used
 }
 
 fn entry_link(image: &mut resource::Module) -> Option<ModuleLink<'_>> {

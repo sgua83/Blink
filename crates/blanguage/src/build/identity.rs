@@ -1,6 +1,6 @@
 //! 构建输入只交接已消费的声明与实际实现；COFF和入口映像共用同一编码。
 use super::{ByteField, hash, Result};
-use std::{collections::BTreeMap, ffi::c_void, io::Error, ptr};
+use std::{collections::{BTreeMap, BTreeSet, btree_set}, ffi::c_void, io::Error, ptr};
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Declaration {
     Constant(String),
@@ -852,11 +852,10 @@ pub(super) struct ReuseInputs<'a> {
 }
 
 pub(super) fn match_source<'a>(bytes: &'a [u8], source: &SourceInputs) -> Result<Option<ReuseInputs<'a>>> {
-    let rows = ManifestRows { source, declarations: &[] };
     let expected = ManifestExpected {
         identity: ManifestIdentity::borrow(source),
         selection: ManifestSelection::borrow(&source.selection),
-        context: ptr::from_ref(&rows).cast(),
+        context: ptr::from_ref(source).cast(),
         source_count: source.sources.len(),
         requirement_count: source.requirements.len(),
     };
@@ -917,6 +916,7 @@ struct BuildManifest {
     requirement_count: usize,
     imports_digest: *const u8,
     native_digest: *const u8,
+    declarations: *mut c_void,
     declaration_count: usize,
 }
 
@@ -925,17 +925,14 @@ struct ManifestHost {
     name: NameField,
     source: unsafe extern "C" fn(*const c_void, usize) -> ManifestSource,
     requirement: unsafe extern "C" fn(*const c_void, usize) -> ManifestRequirement,
-    declaration: unsafe extern "C" fn(*const c_void, usize) -> ManifestDeclaration,
+    declaration: unsafe extern "C" fn(*mut c_void) -> ManifestDeclaration,
 }
 
-struct ManifestRows<'a> {
-    source: &'a SourceInputs,
-    declarations: &'a [&'a Declaration],
-}
+type ManifestDeclarations<'a> = btree_set::Iter<'a, &'a Declaration>;
 
 unsafe extern "C" fn manifest_source(context: *const c_void, index: usize) -> ManifestSource {
-    let input = unsafe { &*context.cast::<ManifestRows<'_>>() };
-    let source = &input.source.sources[index];
+    let input = unsafe { &*context.cast::<SourceInputs>() };
+    let source = &input.sources[index];
     ManifestSource {
         module_name: source.module.as_bytes().into(),
         path: source.path.as_slice().into(),
@@ -945,14 +942,15 @@ unsafe extern "C" fn manifest_source(context: *const c_void, index: usize) -> Ma
 }
 
 unsafe extern "C" fn manifest_requirement(context: *const c_void, index: usize) -> ManifestRequirement {
-    let input = unsafe { &*context.cast::<ManifestRows<'_>>() };
-    let (name, kind) = &input.source.requirements[index];
+    let input = unsafe { &*context.cast::<SourceInputs>() };
+    let (name, kind) = &input.requirements[index];
     ManifestRequirement { name: name.as_bytes().into(), kind: kind.as_bytes().into() }
 }
 
-unsafe extern "C" fn manifest_declaration(context: *const c_void, index: usize) -> ManifestDeclaration {
-    let input = unsafe { &*context.cast::<ManifestRows<'_>>() };
-    let (tag, name, query) = input.declarations[index].fields();
+unsafe extern "C" fn manifest_declaration(context: *mut c_void) -> ManifestDeclaration {
+    let declarations = unsafe { &mut *context.cast::<ManifestDeclarations<'_>>() };
+    // The B writer calls this once per entry in the original set for each pass.
+    let (tag, name, query) = unsafe { declarations.next().unwrap_unchecked() }.fields();
     let (module, names) = query.unwrap_or(("", &[]));
     ManifestDeclaration {
         name: name.as_bytes().into(), module_name: module.as_bytes().into(),
@@ -999,19 +997,20 @@ impl ManifestSelection {
 }
 
 pub(super) fn encode(
-    source: &SourceInputs, imports: &[u8; 32], native: Option<&[u8; 32]>, declarations: &[&Declaration],
+    source: &SourceInputs, imports: &[u8; 32], native: Option<&[u8; 32]>, declarations: &BTreeSet<&Declaration>,
 ) -> Vec<u8> {
     let identity = ManifestIdentity::borrow(source);
-    let rows = ManifestRows { source, declarations };
-    let input = BuildManifest {
+    let mut measure_rows = declarations.iter();
+    let mut input = BuildManifest {
         path: identity.path, root: identity.root, working_directory: identity.working_directory,
         module_name: identity.module_name, compiler: identity.compiler,
         max_parameter_bytes: identity.max_parameter_bytes,
         selection: ManifestSelection::borrow(&source.selection),
-        context: ptr::from_ref(&rows).cast(),
+        context: ptr::from_ref(source).cast(),
         source_count: source.sources.len(), requirement_count: source.requirements.len(),
         imports_digest: imports.as_ptr(),
         native_digest: native.map_or(ptr::null(), |digest| digest.as_ptr()),
+        declarations: ptr::from_mut(&mut measure_rows).cast(),
         declaration_count: declarations.len(),
     };
     let magic = u64::from_le_bytes(*MAGIC);
@@ -1019,6 +1018,8 @@ pub(super) fn encode(
     unsafe {
         let length = build_manifest_length(&input, MANIFEST_HOST);
         let mut output = Vec::with_capacity(length);
+        let mut write_rows = declarations.iter();
+        input.declarations = ptr::from_mut(&mut write_rows).cast();
         let written = encode_build_manifest(magic, &input, MANIFEST_HOST, output.as_mut_ptr());
         output.set_len(written);
         output

@@ -388,7 +388,7 @@ void manifest_declarations<const Emit: u32>(inout ManifestWriter writer, BuildMa
     manifest_count<Emit>(writer, input.declaration_count);
     u64 index = 0u64;
     while (index < input.declaration_count) {
-        ManifestDeclaration declaration = host.declaration(input.context, index);
+        ManifestDeclaration declaration = host.declaration(input.declarations);
         manifest_word<Emit>(writer, declaration.tag);
         manifest_field<Emit>(writer, declaration.name);
         if (declaration.tag >= 4 && declaration.tag <= 6) {

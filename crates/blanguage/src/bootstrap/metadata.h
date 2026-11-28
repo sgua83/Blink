@@ -72,13 +72,13 @@ struct BuildManifest {
     u32 max_parameter_bytes; ManifestSelection selection;
     address context; u64 source_count; u64 requirement_count;
     address imports_digest; address native_digest;
-    u64 declaration_count;
+    address declarations; u64 declaration_count;
 };
 struct ManifestHost {
     cfn<MetadataBytes,address,u64> ensures memory(read) name;
     cfn<ManifestSource,address,u64> ensures memory(read) source;
     cfn<ManifestRequirement,address,u64> ensures memory(read) requirement;
-    cfn<ManifestDeclaration,address,u64> ensures memory(read) declaration;
+    cfn<ManifestDeclaration,address> declaration;
 };
 
 // The caller owns the final BLBO buffer sized by build_manifest_length.
