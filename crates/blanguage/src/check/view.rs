@@ -59,6 +59,11 @@ unsafe extern "C" {
     fn edge_cursor(tree: &OrderedEdgeTree, stride: usize) -> EdgeCursor;
     #[link_name = "bootstrap.proof_facts::ordered_tree_step"]
     fn edge_step(tree: &OrderedEdgeTree, stride: usize, cursor: &mut EdgeCursor, reverse: u32) -> *mut std::ffi::c_void;
+    #[link_name = "bootstrap.proof_facts::ordered_tree_compare"]
+    fn compare_edge_trees(
+        left: &OrderedEdgeTree, right: &OrderedEdgeTree, stride: usize,
+        compare: unsafe extern "C" fn(*const std::ffi::c_void, *const std::ffi::c_void) -> i32,
+    ) -> i32;
     #[link_name = "bootstrap.proof_facts::fact_tree_clear"]
     fn release_edge_rows(tree: &mut OrderedEdgeTree);
 }
@@ -89,6 +94,18 @@ impl<K: Ord> EdgeTree<K> {
         let key = unsafe { &*key.cast::<K>() };
         let entry = unsafe { &*entry.cast::<EdgePayload<K>>() };
         key.cmp(&entry.key) as i32
+    }
+
+    unsafe extern "C" fn compare_rows(left: *const std::ffi::c_void, right: *const std::ffi::c_void) -> i32 {
+        let left = unsafe { &*left.cast::<EdgePayload<K>>() };
+        let right = unsafe { &*right.cast::<EdgePayload<K>>() };
+        left.key.cmp(&right.key).then_with(|| left.when.cmp(&right.when)) as i32
+    }
+
+    unsafe extern "C" fn equal_rows(left: *const std::ffi::c_void, right: *const std::ffi::c_void) -> i32 {
+        let left = unsafe { &*left.cast::<EdgePayload<K>>() };
+        let right = unsafe { &*right.cast::<EdgePayload<K>>() };
+        i32::from(left.key != right.key || left.when != right.when)
     }
 
     fn seek(&self, key: &K) -> EdgePlace {
@@ -180,14 +197,19 @@ impl<K: Ord> Drop for EdgeTree<K> {
 }
 
 impl<K: Ord> PartialEq for EdgeTree<K> {
-    fn eq(&self, other: &Self) -> bool { self.len() == other.len() && self.iter().eq(other.iter()) }
+    fn eq(&self, other: &Self) -> bool {
+        self.len() == other.len()
+            && unsafe { compare_edge_trees(&self.tree, &other.tree, Self::STRIDE, Self::equal_rows) == 0 }
+    }
 }
 impl<K: Ord> Eq for EdgeTree<K> {}
 impl<K: Ord> PartialOrd for EdgeTree<K> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
 }
 impl<K: Ord> Ord for EdgeTree<K> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering { self.iter().cmp(other.iter()) }
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        unsafe { compare_edge_trees(&self.tree, &other.tree, Self::STRIDE, Self::compare_rows) }.cmp(&0)
+    }
 }
 
 struct EdgeWalk {

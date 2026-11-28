@@ -55,6 +55,8 @@ bool conflict_fact_contains(address owner,address key,u32 aliases) on cpu;
 
 extern "C" address fact_tree_merge(address left, address right, address cursors, u32 operation) on cpu;
 extern "C" void fact_tree_collect_merge(address left,address right,address cursors,u32 operation,address output) on cpu;
+extern "C" i32 ordered_tree_compare(address left,address right,u64 stride,
+    cfn<i32,address,address> compare) on cpu requires nonzero(compare);
 extern "C" i32 fact_tree_compare(address left, address right) on cpu;
 extern "C" u32 fact_tree_relation(address left, address right, u32 subset) on cpu;
 

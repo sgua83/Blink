@@ -665,23 +665,26 @@ extern "C" void fact_tree_collect_merge(address left,address right,address curso
     unsafe_position<OrderedTree>(output).root=linked.root;
 }
 
-i32 compare_rows<const DOMAIN:u32 in {0,1}>(address left, address right) on cpu {
+extern "C" i32 ordered_tree_compare(address left,address right,u64 stride,
+    cfn<i32,address,address> compare) on cpu requires nonzero(compare) {
     if (left == right) { return i32(0); }
     OrderedTree a = unsafe_position<OrderedTree>(left);
     OrderedTree b = unsafe_position<OrderedTree>(right);
-    u64 x = extreme<DOMAIN>(a.records,a.root,false);
-    u64 y = extreme<DOMAIN>(b.records,b.root,false);
+    u64 x = ordered_tree_first(a,stride);
+    u64 y = ordered_tree_first(b,stride);
     while (x != 0u64 && y != 0u64) {
-        i32 order = order_tree_key<0,DOMAIN>(payload<DOMAIN>(a.records,x),payload<DOMAIN>(b.records,y));
+        address first = offset(row(a.records,stride,x),size_of<OrderedNode>());
+        address second = offset(row(b.records,stride,y),size_of<OrderedNode>());
+        i32 order = compare(first,second);
         if (order != 0) { return order; }
-        x = neighbor<DOMAIN>(a.records,x,false);
-        y = neighbor<DOMAIN>(b.records,y,false);
+        x = ordered_tree_next(a,stride,x);
+        y = ordered_tree_next(b,stride,y);
     }
     return x != 0u64 ? i32(1) : y != 0u64 ? -i32(1) : i32(0);
 }
 
 extern "C" i32 fact_tree_compare(address left,address right) on cpu {
-    return compare_rows<0>(left,right);
+    return ordered_tree_compare(left,right,tree_stride<0>(),c_function(order_fact<0>));
 }
 
 extern "C" u32 fact_tree_relation(address left, address right, u32 subset) on cpu {
@@ -770,5 +773,5 @@ extern "C" address domain_tree_merge(address left,address right,address left_cur
 }
 
 extern "C" i32 domain_tree_compare(address left,address right) on cpu {
-    return compare_rows<1>(left,right);
+    return ordered_tree_compare(left,right,tree_stride<1>(),c_function(order_domain));
 }
