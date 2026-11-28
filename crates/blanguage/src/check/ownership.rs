@@ -4,7 +4,7 @@ use super::*;
 mod position;
 #[path="ownership/place.rs"]
 mod place;
-use position::PositionChild;
+use position::{PositionChild, PositionCondition};
 
 #[derive(Clone, Copy)]
 pub(super) enum ApplicationIndex {
@@ -24,22 +24,24 @@ impl PartialEq for ApplicationIndex {fn eq(&self,other:&Self)->bool{self.cmp(oth
 impl Eq for ApplicationIndex {}
 impl PartialOrd for ApplicationIndex {fn partial_cmp(&self,other:&Self)->Option<std::cmp::Ordering>{Some(self.cmp(other))}}
 impl Ord for ApplicationIndex {fn cmp(&self,other:&Self)->std::cmp::Ordering{match(self,other){(Self::Constant(a),Self::Constant(b))=>a.cmp(b),(Self::Value(a,_),Self::Value(b,_))=>a.cmp(b),(Self::Constant(_),Self::Value(..))=>std::cmp::Ordering::Less,_=>std::cmp::Ordering::Greater}}}
+#[repr(C, u32)]
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Position {
-    Initialized,
-    Local(usize),
-    Borrowed(Arc<view::Borrow>,address::Layout,u32),
-    Initialization(Arc<address::InitializationEffect>),
-    Element(usize, u32),
-    ViewElement([ValueIdentity; 3], Reg, ElementStride, u32),
-    TileElement(usize, Reg, u32),
-    Parameter(usize, usize),
-    ApplicationElement(usize, ApplicationIndex, u32),
-    ApplicationInput(view::LoopInput, Option<ApplicationIndex>, u32),
-    Indexed(SharedPositions, ApplicationIndex),
-    Conditional(Arc<owned_presence::Presence>, PositionChild, PositionChild),
-    Both(PositionChild, PositionChild),
+    Initialized = 0,
+    Local(usize) = 1,
+    Borrowed(Arc<view::Borrow>,address::Layout,u32) = 2,
+    Initialization(Arc<address::InitializationEffect>) = 3,
+    Element(usize, u32) = 4,
+    ViewElement([ValueIdentity; 3], Reg, ElementStride, u32) = 5,
+    TileElement(usize, Reg, u32) = 6,
+    Parameter(usize, usize) = 7,
+    ApplicationElement(usize, ApplicationIndex, u32) = 8,
+    ApplicationInput(view::LoopInput, Option<ApplicationIndex>, u32) = 9,
+    Indexed(SharedPositions, ApplicationIndex) = 10,
+    Conditional(PositionCondition, PositionChild, PositionChild) = 11,
+    Both(PositionChild, PositionChild) = 12,
 }
+
 impl Position {
     pub(super) fn index(positions:Vec<Self>,index:ApplicationIndex,width:usize)->Vec<Self>{position::indexed(positions,index,width)}
     pub(super) fn selected(when:owned_presence::Presence,a:Self,b:Self)->Self{position::selected(when,a,b)}
