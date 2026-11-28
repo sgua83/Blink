@@ -621,12 +621,27 @@ unsafe extern "C" {
         host: AddressPositionHost) -> u32;
 }
 
+struct PositionSources<'a, I> {
+    entries: I,
+    parent: Option<&'a Origin>,
+}
+
+impl<'a, I: Iterator<Item = (&'a view::Source, bounds::Clause)>> PositionSources<'a, I> {
+    fn next(&mut self) -> AddressSourceEntry {
+        let Some((source, when)) = self.entries.next() else {
+            return AddressSourceEntry { kind: AddressSourceKind::End, possible: 0 };
+        };
+        self.parent = match source { view::Source::Position(origin) => Some(origin), _ => None };
+        let kind = if self.parent.is_some() { AddressSourceKind::Position } else { AddressSourceKind::Other };
+        AddressSourceEntry { kind, possible: when.possible().into() }
+    }
+}
+
 struct PositionAt<'a, I> {
     origin: &'a Origin,
     borrow: Option<&'a view::Borrow>,
     index: Option<bounds::Operand>,
-    entries: I,
-    parent: Option<&'a Origin>,
+    sources: PositionSources<'a, I>,
     current: Option<Position>,
     known: Option<Position>,
 }
@@ -649,22 +664,12 @@ impl<'a, I: Iterator<Item = (&'a view::Source, bounds::Clause)>> PositionAt<'a, 
     }
 
     unsafe extern "C" fn next(context: *mut std::ffi::c_void) -> AddressSourceEntry {
-        let query = unsafe { &mut *context.cast::<Self>() };
-        let Some((source, when)) = query.entries.next() else {
-            return AddressSourceEntry { kind: AddressSourceKind::End, possible: 0 };
-        };
-        let kind = if let view::Source::Position(origin) = source {
-            query.parent = Some(origin);
-            AddressSourceKind::Position
-        } else {
-            AddressSourceKind::Other
-        };
-        AddressSourceEntry { kind, possible: when.possible().into() }
+        unsafe { &mut *context.cast::<Self>() }.sources.next()
     }
 
     unsafe extern "C" fn resolve(context: *mut std::ffi::c_void, slot: usize) -> u32 {
         let query = unsafe { &mut *context.cast::<Self>() };
-        let parent = query.parent.take().unwrap();
+        let parent = query.sources.parent.unwrap();
         if parent.layout != query.origin.base { return 0; }
         let Some(position) = parent.position_at(query.origin.words[slot]) else { return 0; };
         query.current = match query.index {
@@ -758,8 +763,8 @@ impl Origin {
             Root::Dataset { borrow, index } => (AddressPositionRoot::Dataset, Some(borrow), *index),
             _ => (AddressPositionRoot::Other, None, None),
         };
-        PositionAt { origin: self, borrow, index, entries: borrow.into_iter().flat_map(|borrow| borrow.sources.entries()),
-            parent: None, current: None, known: None }.get(word, kind)
+        let sources = PositionSources { entries: borrow.into_iter().flat_map(|borrow| borrow.sources.entries()), parent: None };
+        PositionAt { origin: self, borrow, index, sources, current: None, known: None }.get(word, kind)
     }
     fn project(&self, selected: &Self) -> Self {
         let count = selected.words.len();
@@ -2366,39 +2371,75 @@ fn select_dataset_position(position: Position, index: bounds::Operand) -> Option
         _ => return None,
     })
 }
-pub(super) fn borrowed_positions(borrow:&view::Borrow,layout:&Layout,words:&[u32])->Vec<Position> {
-    let unresolved = |word| Position::Borrowed(Arc::new(borrow.clone()), layout.clone(), word);
-    let mut positions = vec![None; words.len()];
-    // Only fields without an unresolved position need the next feasible source.
-    let mut remaining = words.len();
-    for (source, when) in borrow.sources.entries() {
-        if remaining == 0 {
-            break;
-        }
-        if !when.possible() {
-            continue;
-        }
-        let view::Source::Position(origin) = source else {
-            return words.iter().map(|&word| unresolved(word)).collect();
-        };
-        for (&word, known) in words.iter().zip(&mut positions) {
-            let Some(slot) = known else {
-                *known = Some(origin.position_at(word));
-                remaining -= usize::from(known.as_ref().is_some_and(Option::is_none));
-                continue;
-            };
-            if slot.is_some() {
-                let position = origin.position_at(word);
-                if *slot != position {
-                    *slot = None;
-                    remaining -= 1;
-                }
-            }
-        }
+#[repr(u32)]
+enum BorrowedPositionMatch { Unavailable, Equal, Different }
+
+#[repr(C)]
+struct BorrowedPositionHost {
+    context: *mut std::ffi::c_void,
+    next: unsafe extern "C" fn(*mut std::ffi::c_void) -> AddressSourceEntry,
+    remember: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> u32,
+    compare: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> BorrowedPositionMatch,
+    forget: unsafe extern "C" fn(*mut std::ffi::c_void, usize),
+    publish: unsafe extern "C" fn(*mut std::ffi::c_void, usize, u32),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::borrowed_address_positions"]
+    fn b_borrowed_address_positions(fields: usize, host: BorrowedPositionHost);
+}
+
+struct BorrowedPositions<'a, I> {
+    borrow: &'a view::Borrow,
+    layout: &'a Layout,
+    words: &'a [u32],
+    sources: PositionSources<'a, I>,
+    known: Vec<Option<Position>>,
+    output: Vec<Position>,
+}
+
+impl<'a, I: Iterator<Item = (&'a view::Source, bounds::Clause)>> BorrowedPositions<'a, I> {
+    unsafe extern "C" fn next(context: *mut std::ffi::c_void) -> AddressSourceEntry {
+        unsafe { &mut *context.cast::<Self>() }.sources.next()
     }
-    words.iter().zip(positions).map(|(&word, known)| {
-        known.flatten().unwrap_or_else(|| unresolved(word))
-    }).collect()
+
+    unsafe extern "C" fn remember(context: *mut std::ffi::c_void, field: usize) -> u32 {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        input.known[field] = input.sources.parent.unwrap().position_at(input.words[field]);
+        input.known[field].is_some().into()
+    }
+
+    unsafe extern "C" fn compare(context: *mut std::ffi::c_void, field: usize) -> BorrowedPositionMatch {
+        let input = unsafe { &*context.cast::<Self>() };
+        let Some(known) = input.known[field].as_ref() else { return BorrowedPositionMatch::Unavailable; };
+        let candidate = input.sources.parent.unwrap().position_at(input.words[field]);
+        if candidate.as_ref() == Some(known) { BorrowedPositionMatch::Equal } else { BorrowedPositionMatch::Different }
+    }
+
+    unsafe extern "C" fn forget(context: *mut std::ffi::c_void, field: usize) {
+        unsafe { &mut *context.cast::<Self>() }.known[field] = None;
+    }
+
+    unsafe extern "C" fn publish(context: *mut std::ffi::c_void, field: usize, retain: u32) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let value = if retain != 0 { input.known[field].take() } else { None };
+        input.output.push(value.unwrap_or_else(||
+            Position::Borrowed(Arc::new(input.borrow.clone()), input.layout.clone(), input.words[field])));
+    }
+
+    fn collect(mut self) -> Vec<Position> {
+        let fields = self.words.len();
+        let host = BorrowedPositionHost { context: std::ptr::from_mut(&mut self).cast(), next: Self::next,
+            remember: Self::remember, compare: Self::compare, forget: Self::forget, publish: Self::publish };
+        unsafe { b_borrowed_address_positions(fields, host) };
+        self.output
+    }
+}
+
+pub(super) fn borrowed_positions(borrow: &view::Borrow, layout: &Layout, words: &[u32]) -> Vec<Position> {
+    let sources = PositionSources { entries: borrow.sources.entries(), parent: None };
+    BorrowedPositions { borrow, layout, words, sources, known: vec![None; words.len()],
+        output: Vec::with_capacity(words.len()) }.collect()
 }
 
 impl ReferenceAddress {

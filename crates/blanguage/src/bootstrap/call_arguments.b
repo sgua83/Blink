@@ -485,6 +485,38 @@ extern "C" u32 address_position_at(u32 word, usize parts, u32 stored, AddressPos
     return agreed;
 }
 
+extern "C" void borrowed_address_positions(usize fields, BorrowedPositionHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.remember) requires nonzero(host.compare)
+    requires nonzero(host.forget) requires nonzero(host.publish) {
+    usize remaining = fields;
+    u32 retain = 0;
+    while (remaining != 0u64) {
+        let source = host.next(host.context);
+        if (source.kind == AddressSourceKind::End) { break; }
+        if (source.possible == 0) { continue; }
+        if (source.kind != AddressSourceKind::Position) {
+            retain = 0;
+            break;
+        }
+        usize field = 0u64;
+        while (field < fields) {
+            if (retain == 0) {
+                if (host.remember(host.context, field) == 0) { remaining -= 1u64; }
+            } else if (host.compare(host.context, field) == BorrowedPositionMatch::Different) {
+                host.forget(host.context, field);
+                remaining -= 1u64;
+            }
+            field += 1u64;
+        }
+        retain = 1;
+    }
+    usize field = 0u64;
+    while (field < fields) {
+        host.publish(host.context, field, retain);
+        field += 1u64;
+    }
+}
+
 extern "C" u32 seed_memory_regions(RegionSeed seed, RegionSeedHost host) on cpu
     requires nonzero(host.part) requires nonzero(host.reserve) requires nonzero(host.emit) {
     if (seed.kind == RegionSeedKind::External) { return 0; }
