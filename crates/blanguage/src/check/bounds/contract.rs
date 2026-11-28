@@ -13,13 +13,13 @@ pub(in crate::check) struct Normalizer {
     types: BTreeMap<ValueIdentity, Option<Scalar>>,
     lengths: BTreeMap<ValueIdentity, ValueIdentity>,
     decisions: native::DecisionTree,
-    operations: HashMap<(bool, usize, usize), usize>,
+    operations: native::OperationMemo,
     memo: native::ClauseMemo,
 }
 impl Normalizer {
     pub(in crate::check) fn new() -> Self {
         Self { types: BTreeMap::new(), lengths: BTreeMap::new(), decisions: native::DecisionTree::default(),
-            operations:HashMap::new(), memo: native::ClauseMemo::new() }
+            operations:native::OperationMemo::default(), memo: native::ClauseMemo::new() }
     }
     pub(in crate::check) fn storage(&self) -> crate::compiler::ConditionStorage {
         use crate::compiler::{AnalysisStorage, ConditionStorage};
@@ -27,8 +27,7 @@ impl Normalizer {
             decisions: self.decisions.storage(),
             // Numbered records also form the index, so there is no separate allocation.
             unique: AnalysisStorage::entries::<(), ()>(0, None),
-            operations: AnalysisStorage::entries::<(bool, usize, usize), usize>(
-                self.operations.len(), Some(self.operations.capacity())),
+            operations: self.operations.storage(),
             negatives: self.memo.negatives.storage(),
             imported: self.memo.imported.storage(),
             emitted: self.memo.emitted.storage(),
@@ -47,8 +46,7 @@ impl Normalizer {
         let scalar=match id { ValueIdentity::DataLength(_)|ValueIdentity::TileLength=>Some(Scalar::U32), _=>self.types.get(&id).copied().flatten() }?;
         scalar.is_integer().then_some(scalar)
     }
-    fn node(&mut self,variable:Variable,cells:Vec<(u128,usize)>)->usize {native::node(self,variable,cells)}
-    fn pairs(&self,a:usize,b:usize)->(Variable,Vec<(u128,usize,usize)>) {native::pairs(self,a,b)}
+    fn node(&mut self,variable:Variable,cells:Vec<native::DecisionCell>)->usize {native::node(self,variable,cells)}
     fn operation(&mut self,a:usize,b:usize,or:bool)->usize {native::operation(self,a,b,or)}
     fn not(&mut self,root:usize)->usize {native::not(self,root)}
     fn fact(&mut self,fact:Fact)->usize {native::fact(self,fact)}

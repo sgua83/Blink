@@ -128,20 +128,6 @@ struct Cell {
     end: End,
     value: usize,
 }
-fn cell(value: Option<(u128, usize)>) -> Cell {
-    match value {
-        Some((end, value)) => Cell {
-            present: 1,
-            end: end.into(),
-            value,
-        },
-        None => Cell {
-            present: 0,
-            end: 0.into(),
-            value: 0,
-        },
-    }
-}
 #[repr(C)]
 struct Index {
     present: u32,
@@ -152,12 +138,6 @@ fn index(value: Option<usize>) -> Index {
         present: u32::from(value.is_some()),
         value: value.unwrap_or(0),
     }
-}
-#[repr(C)]
-struct Pair {
-    end: End,
-    left: usize,
-    right: usize,
 }
 #[repr(C)]
 struct Pending {
@@ -180,21 +160,14 @@ fn pending(value: Option<(usize, bool)>) -> Pending {
     }
 }
 #[repr(C)]
-struct Operation {
-    present: u32,
-    ready: u32,
-    either: u32,
-    left: usize,
-    right: usize,
-}
-type Key = (bool, usize, usize);
-
-
-#[repr(C)]
 #[derive(Clone, Copy)]
-struct DecisionCell {
+pub(super) struct DecisionCell {
     end: End,
     value: usize,
+}
+
+impl DecisionCell {
+    fn new(end: u128, value: usize) -> Self { Self { end: end.into(), value } }
 }
 
 impl From<DecisionCell> for Cell {
@@ -232,8 +205,8 @@ pub(super) struct DecisionTree {
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.condition_index::intern_contract_decision"]
-    fn intern_decision(tree: &mut DecisionTree, key: Decision, variable_bytes: usize,
+    #[link_name = "bootstrap.contract_apply::normalize_contract_decision"]
+    fn normalize_decision(tree: &mut DecisionTree, key: Decision, variable_bytes: usize,
         compare: unsafe extern "C" fn(Borrowed, Borrowed) -> i32) -> usize;
     #[link_name = "bootstrap.condition_index::contract_decision_at"]
     fn decision_at(tree: &DecisionTree, node: usize) -> Decision;
@@ -250,11 +223,11 @@ unsafe extern "C" fn compare_decision_variable(left: Borrowed, right: Borrowed) 
 }
 
 impl DecisionTree {
-    fn intern(&mut self, variable: &Variable, cells: &[DecisionCell]) -> usize {
+    fn normalize(&mut self, variable: &Variable, cells: &mut [DecisionCell]) -> usize {
         // The B owner copies only Copy payloads and reserves 16-byte alignment.
         const { assert!(std::mem::align_of::<Variable>() <= 16); }
-        let key = Decision { variable: borrow(variable), cells: cells.as_ptr(), count: cells.len() };
-        unsafe { intern_decision(self, key, std::mem::size_of::<Variable>(), compare_decision_variable) }
+        let key = Decision { variable: borrow(variable), cells: cells.as_mut_ptr(), count: cells.len() };
+        unsafe { normalize_decision(self, key, std::mem::size_of::<Variable>(), compare_decision_variable) }
     }
 
     fn get(&self, node: usize) -> Decision {
@@ -278,251 +251,49 @@ impl Drop for DecisionTree {
     }
 }
 
-struct Node {
-    normal: *mut Normalizer,
-    variable: Variable,
-    input: std::vec::IntoIter<(u128, usize)>,
-    merged: Vec<DecisionCell>,
-}
-unsafe extern "C" fn node_next(s: Slot) -> Cell {
-    cell(unsafe { frame::<Node>(s) }.input.next())
-}
-unsafe extern "C" fn node_last(s: Slot) -> Cell {
-    unsafe { frame::<Node>(s) }.merged.last().copied()
-        .map(Cell::from).unwrap_or_else(|| cell(None))
-}
-unsafe extern "C" fn node_extend(s: Slot, end: End) {
-    let n = unsafe { frame::<Node>(s) };
-    let last = n.merged.len() - 1;
-    n.merged[last].end = end;
-}
-unsafe extern "C" fn node_push(s: Slot, value: Cell) {
-    unsafe { frame::<Node>(s) }
-        .merged
-        .push(DecisionCell { end: value.end, value: value.value });
-}
-unsafe extern "C" fn node_count(s: Slot) -> usize {
-    unsafe { frame::<Node>(s) }.merged.len()
-}
-unsafe extern "C" fn node_intern(s: Slot) -> usize {
-    let c = unsafe { frame::<Node>(s) };
-    unsafe { &mut *c.normal }.decisions.intern(&c.variable, &c.merged)
-}
-#[repr(C)]
-struct NodeHost {
-    next: unsafe extern "C" fn(Slot) -> Cell,
-    last: unsafe extern "C" fn(Slot) -> Cell,
-    extend: unsafe extern "C" fn(Slot, End),
-    push: unsafe extern "C" fn(Slot, Cell),
-    count: unsafe extern "C" fn(Slot) -> usize,
-    intern: unsafe extern "C" fn(Slot) -> usize,
-}
-unsafe extern "C" {
-    #[link_name = "bootstrap.condition_graph::contract_node"]
-    fn b_node(context: Slot, host: NodeHost) -> usize;
-}
-pub(super) fn node(
-    normal: &mut Normalizer,
-    variable: Variable,
-    cells: Vec<(u128, usize)>,
-) -> usize {
-    let mut c = Node {
-        normal,
-        variable,
-        input: cells.into_iter(),
-        merged: Vec::new(),
-    };
-    unsafe {
-        b_node(
-            (&mut c as *mut Node).cast(),
-            NodeHost {
-                next: node_next,
-                last: node_last,
-                extend: node_extend,
-                push: node_push,
-                count: node_count,
-                intern: node_intern,
-            },
-        )
-    }
-}
-struct Pairs {
-    left: Decision,
-    right: Decision,
-    output: Vec<(u128, usize, usize)>,
-}
-unsafe extern "C" fn pairs_compare(s: Slot) -> i32 {
-    let c = unsafe { frame::<Pairs>(s) };
-    c.left.variable().cmp(c.right.variable()) as i32
-}
-unsafe extern "C" fn pairs_count(s: Slot, side: u32) -> usize {
-    let c = unsafe { frame::<Pairs>(s) };
-    [c.left, c.right][side as usize].count
-}
-unsafe extern "C" fn pairs_cell(s: Slot, side: u32, i: usize) -> Cell {
-    let c = unsafe { frame::<Pairs>(s) };
-    [c.left, c.right][side as usize].cell(i)
-}
-unsafe extern "C" fn pairs_push(s: Slot, end: End, a: usize, b: usize) {
-    unsafe { frame::<Pairs>(s) }
-        .output
-        .push((end.into(), a, b));
-}
-#[repr(C)]
-struct PairHost {
-    compare: unsafe extern "C" fn(Slot) -> i32,
-    count: unsafe extern "C" fn(Slot, u32) -> usize,
-    cell: unsafe extern "C" fn(Slot, u32, usize) -> Cell,
-    push: unsafe extern "C" fn(Slot, End, usize, usize),
-}
-unsafe extern "C" {
-    #[link_name = "bootstrap.condition_graph::contract_pairs"]
-    fn b_pairs(context: Slot, left: usize, right: usize, host: PairHost) -> u32;
-}
-pub(super) fn pairs(
-    normal: &Normalizer,
-    a: usize,
-    b: usize,
-) -> (Variable, Vec<(u128, usize, usize)>) {
-    let mut c = Pairs {
-        left: normal.decisions.get(a),
-        right: normal.decisions.get(b),
-        output: Vec::new(),
-    };
-    let side = unsafe {
-        b_pairs(
-            (&mut c as *mut Pairs).cast(),
-            a,
-            b,
-            PairHost {
-                compare: pairs_compare,
-                count: pairs_count,
-                cell: pairs_cell,
-                push: pairs_push,
-            },
-        )
-    };
-    (*[c.left, c.right][side as usize].variable(), c.output)
+pub(super) fn node(normal: &mut Normalizer, variable: Variable, mut cells: Vec<DecisionCell>) -> usize {
+    normal.decisions.normalize(&variable, &mut cells)
 }
 
-struct Operations {
-    normal: *mut Normalizer,
-    pending: Vec<(Key, bool)>,
-    variable: MaybeUninit<Variable>,
-    pairs: Vec<(u128, usize, usize)>,
-    cells: Vec<(u128, usize)>,
-}
-unsafe extern "C" fn op_pop(s: Slot) -> Operation {
-    match unsafe { frame::<Operations>(s) }.pending.pop() {
-        Some(((either, left, right), ready)) => Operation {
-            present: 1,
-            ready: u32::from(ready),
-            either: u32::from(either),
-            left,
-            right,
-        },
-        None => Operation {
-            present: 0,
-            ready: 0,
-            either: 0,
-            left: 0,
-            right: 0,
-        },
-    }
-}
-unsafe extern "C" fn op_push(s: Slot, v: Operation) {
-    unsafe { frame::<Operations>(s) }
-        .pending
-        .push(((v.either != 0, v.left, v.right), v.ready != 0));
-}
-unsafe extern "C" fn op_lookup(s: Slot, or: u32, a: usize, b: usize) -> Index {
-    let n = unsafe { &*frame::<Operations>(s).normal };
-    index(n.operations.get(&(or != 0, a, b)).copied())
-}
-unsafe extern "C" fn op_remember(s: Slot, or: u32, a: usize, b: usize, value: usize) {
-    let n = unsafe { &mut *frame::<Operations>(s).normal };
-    n.operations.insert((or != 0, a, b), value);
-}
-unsafe extern "C" fn op_prepare(s: Slot, a: usize, b: usize) {
-    let c = unsafe { frame::<Operations>(s) };
-    let (v, p) = unsafe { &*c.normal }.pairs(a, b);
-    c.variable.write(v);
-    c.pairs = p;
-}
-unsafe extern "C" fn op_count(s: Slot) -> usize {
-    unsafe { frame::<Operations>(s) }.pairs.len()
-}
-unsafe extern "C" fn op_pair(s: Slot, i: usize) -> Pair {
-    let (end, left, right) = unsafe { frame::<Operations>(s) }.pairs[i];
-    Pair {
-        end: end.into(),
-        left,
-        right,
-    }
-}
-unsafe extern "C" fn op_cell(s: Slot, end: End, value: usize) {
-    unsafe { frame::<Operations>(s) }
-        .cells
-        .push((end.into(), value));
-}
-unsafe extern "C" fn op_make(s: Slot) -> usize {
-    let c = unsafe { frame::<Operations>(s) };
-    let cells = std::mem::take(&mut c.cells);
-    unsafe { &mut *c.normal }.node(unsafe { c.variable.assume_init() }, cells)
-}
-unsafe extern "C" fn op_release(s: Slot) {
-    unsafe { frame::<Operations>(s) }.pairs.clear();
-}
 #[repr(C)]
-struct OperationHost {
-    pop: unsafe extern "C" fn(Slot) -> Operation,
-    push: unsafe extern "C" fn(Slot, Operation),
-    lookup: unsafe extern "C" fn(Slot, u32, usize, usize) -> Index,
-    remember: unsafe extern "C" fn(Slot, u32, usize, usize, usize),
-    prepare: unsafe extern "C" fn(Slot, usize, usize),
-    count: unsafe extern "C" fn(Slot) -> usize,
-    pair: unsafe extern "C" fn(Slot, usize) -> Pair,
-    cell: unsafe extern "C" fn(Slot, End, usize),
-    make: unsafe extern "C" fn(Slot) -> usize,
-    release: unsafe extern "C" fn(Slot),
+#[derive(Default)]
+pub(super) struct OperationMemo {
+    entries: Slot,
+    count: usize,
+    capacity: usize,
 }
+
+// This is uniquely owned storage of node numbers.
+unsafe impl Send for OperationMemo {}
+unsafe impl Sync for OperationMemo {}
+
 unsafe extern "C" {
-    #[link_name = "bootstrap.condition_graph::contract_operation"]
-    fn b_operation(
-        context: Slot,
-        left: usize,
-        right: usize,
-        either: u32,
-        host: OperationHost,
-    ) -> usize;
+    #[link_name = "bootstrap.contract_apply::apply_contract_decisions"]
+    fn apply_decisions(decisions: &mut DecisionTree, memo: &mut OperationMemo, variable_bytes: usize,
+        left: usize, right: usize, either: u32, compare: unsafe extern "C" fn(Borrowed, Borrowed) -> i32) -> usize;
+    #[link_name = "bootstrap.contract_apply::drop_contract_operations"]
+    fn drop_operations(memo: &mut OperationMemo);
 }
+
+impl OperationMemo {
+    pub(super) fn storage(&self) -> crate::compiler::AnalysisStorage {
+        crate::compiler::AnalysisStorage {
+            len: self.count, capacity: Some(self.capacity),
+            element_bytes: std::mem::size_of::<[usize; 4]>(),
+        }
+    }
+}
+
+impl Drop for OperationMemo {
+    fn drop(&mut self) {
+        unsafe { drop_operations(self) };
+    }
+}
+
 pub(super) fn operation(normal: &mut Normalizer, a: usize, b: usize, or: bool) -> usize {
-    let mut c = Operations {
-        normal,
-        pending: Vec::new(),
-        variable: MaybeUninit::uninit(),
-        pairs: Vec::new(),
-        cells: Vec::new(),
-    };
     unsafe {
-        b_operation(
-            (&mut c as *mut Operations).cast(),
-            a,
-            b,
-            u32::from(or),
-            OperationHost {
-                pop: op_pop,
-                push: op_push,
-                lookup: op_lookup,
-                remember: op_remember,
-                prepare: op_prepare,
-                count: op_count,
-                pair: op_pair,
-                cell: op_cell,
-                make: op_make,
-                release: op_release,
-            },
-        )
+        apply_decisions(&mut normal.decisions, &mut normal.operations, std::mem::size_of::<Variable>(),
+            a, b, u32::from(or), compare_decision_variable)
     }
 }
 
@@ -530,7 +301,7 @@ struct Negate {
     normal: *mut Normalizer,
     pending: Vec<(usize, bool)>,
     snapshot: Option<Decision>,
-    cells: Vec<(u128, usize)>,
+    cells: Vec<DecisionCell>,
 }
 unsafe extern "C" fn not_pop(s: Slot) -> Pending {
     pending(unsafe { frame::<Negate>(s) }.pending.pop())
@@ -562,7 +333,7 @@ unsafe extern "C" fn not_cell(s: Slot, i: usize) -> Cell {
 unsafe extern "C" fn not_emit(s: Slot, end: End, value: usize) {
     unsafe { frame::<Negate>(s) }
         .cells
-        .push((end.into(), value));
+        .push(DecisionCell { end, value });
 }
 unsafe extern "C" fn not_make(s: Slot) -> usize {
     let c = unsafe { frame::<Negate>(s) };
@@ -624,15 +395,15 @@ struct Semantic {
 }
 unsafe extern "C" fn sem_atom(s: Slot, fact: fact_fields::Fields) -> usize {
     let fact = unsafe { fact_fields::key(fact) };
-    unsafe { &mut *frame::<Semantic>(s).normal }.node(Variable::Atom(fact), vec![(1, 0), (2, 1)])
+    unsafe { &mut *frame::<Semantic>(s).normal }.node(Variable::Atom(fact), vec![DecisionCell::new(1, 0), DecisionCell::new(2, 1)])
 }
 unsafe extern "C" fn sem_range(s: Slot, id: Borrowed, scalar: Borrowed, upper: u64) -> usize {
     let (id, scalar) = unsafe { (*id.cast::<ValueIdentity>(), *scalar.cast::<Scalar>()) };
     unsafe { &mut *frame::<Semantic>(s).normal }.node(
         Variable::Range(id, scalar),
         vec![
-            (u128::from(upper) + 1, 1),
-            (u128::from(scalar.bit_mask()) + 1, 0),
+            DecisionCell::new(u128::from(upper) + 1, 1),
+            DecisionCell::new(u128::from(scalar.bit_mask()) + 1, 0),
         ],
     )
 }
@@ -1113,11 +884,11 @@ unsafe extern "C" fn emit_guard(s: Slot, begin: End, end: End) {
     let normal = unsafe { &mut *c.normal };
     let mut cells = Vec::with_capacity(3);
     if begin != 0 {
-        cells.push((begin, 0));
+        cells.push(DecisionCell::new(begin, 0));
     }
-    cells.push((end, 1));
+    cells.push(DecisionCell::new(end, 1));
     if end != limit {
-        cells.push((limit, 0));
+        cells.push(DecisionCell::new(limit, 0));
     }
     let interval = normal.node(variable, cells);
     let guard = normal.memo.emitted(interval).unwrap_or_else(|| {

@@ -1254,60 +1254,6 @@ extern "C" void canonical_fold(address context,CanonicalFoldHost host) on cpu
 }
 
 bool contract_end_equal(ContractEnd a,ContractEnd b) on cpu {return a.high==b.high&&a.low==b.low;}
-bool contract_end_less(ContractEnd a,ContractEnd b) on cpu {return a.high<b.high||(a.high==b.high&&a.low<b.low);}
-extern "C" usize contract_node(address context,ContractNodeHost host) on cpu
- requires nonzero(host.next) requires nonzero(host.last) requires nonzero(host.extend) requires nonzero(host.push) requires nonzero(host.count) requires nonzero(host.intern) {
- while(true){
-  ContractCell next=host.next(context);if(next.present==0){break;}
-  ContractCell previous=host.last(context);
-  if(previous.present!=0&&previous.value==next.value){host.extend(context,next.end);}else{host.push(context,next);}
- }
- if(host.count(context)==1u64){return host.last(context).value;}
- return host.intern(context);
-}
-
-extern "C" u32 contract_pairs(address context,usize left,usize right,ContractPairHost host) on cpu
- requires nonzero(host.compare) requires nonzero(host.count) requires nonzero(host.cell) requires nonzero(host.push) {
- i32 order=host.compare(context);usize count=host.count(context,order<=0 ? 0 : 1);
- if(order!=0){
-  usize at=0u64;while(at<count){ContractCell cell=host.cell(context,order<0 ? 0 : 1,at);at+=1u64;
-   host.push(context,cell.end,order<0 ? cell.value : left,order<0 ? right : cell.value);
-  }return order<0 ? 0 : 1;
- }
- usize a=0u64;usize b=0u64;usize right_count=host.count(context,1);
- while(a<count&&b<right_count){
-  ContractCell x=host.cell(context,0,a);ContractCell y=host.cell(context,1,b);
-  ContractEnd end=contract_end_less(x.end,y.end) ? x.end : y.end;host.push(context,end,x.value,y.value);
-  if(contract_end_equal(x.end,end)){a+=1u64;}if(contract_end_equal(y.end,end)){b+=1u64;}
- }return 0;
-}
-
-ContractOperation contract_key(usize a,usize b,u32 either,u32 ready) on cpu {
- return ContractOperation(1,ready,either,a<b ? a : b,a<b ? b : a);
-}
-extern "C" usize contract_operation(address context,usize left,usize right,u32 either,ContractOperationHost host) on cpu
- requires nonzero(host.pop) requires nonzero(host.push) requires nonzero(host.lookup) requires nonzero(host.remember) requires nonzero(host.prepare) requires nonzero(host.count) requires nonzero(host.pair) requires nonzero(host.cell) requires nonzero(host.make) requires nonzero(host.release) {
- ContractOperation root=contract_key(left,right,either,0);host.push(context,root);
- while(true){
-  ContractOperation work=host.pop(context);if(work.present==0){break;}
-  if(host.lookup(context,work.either,work.left,work.right).present!=0){continue;}
-  usize a=work.left;usize b=work.right;u32 simple=1;usize value=0u64;
-  if(a==b){value=a;}else if(work.either!=0){
-   if(a==1u64||b==1u64){value=1u64;}else if(a==0u64){value=b;}else{simple=0;}
-  }else if(a==0u64){value=0u64;}else if(a==1u64){value=b;}else{simple=0;}
-  if(simple!=0){host.remember(context,work.either,a,b,value);continue;}
-  host.prepare(context,a,b);usize count=host.count(context);
-  if(work.ready==0){
-   work.ready=1;host.push(context,work);
-   while(count!=0u64){count-=1u64;ContractPair pair=host.pair(context,count);host.push(context,contract_key(pair.left,pair.right,work.either,0));}
-  }else{
-   usize at=0u64;while(at<count){ContractPair pair=host.pair(context,at);at+=1u64;
-    ContractOperation key=contract_key(pair.left,pair.right,work.either,0);host.cell(context,pair.end,host.lookup(context,key.either,key.left,key.right).value);
-   }value=host.make(context);host.remember(context,work.either,a,b,value);
-  }host.release(context);
- }return host.lookup(context,root.either,root.left,root.right).value;
-}
-
 extern "C" usize contract_not(address context,usize root,ContractNotHost host) on cpu
  requires nonzero(host.pop) requires nonzero(host.push) requires nonzero(host.lookup) requires nonzero(host.remember) requires nonzero(host.load) requires nonzero(host.count) requires nonzero(host.cell) requires nonzero(host.emit) requires nonzero(host.make) requires nonzero(host.release) {
  host.push(context,root,0);

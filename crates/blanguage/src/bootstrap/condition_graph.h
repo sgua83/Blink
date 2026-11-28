@@ -324,39 +324,11 @@ extern "C" void canonical_fold(address context,CanonicalFoldHost host) on cpu
 // One synchronous public-contract normalizer owns every typed container.
 struct ContractEnd { u64 low; u64 high; };
 struct ContractCell { u32 present; ContractEnd end; usize value; };
-struct ContractPair { ContractEnd end; usize left; usize right; };
 struct ContractIndex { u32 present; usize value; };
 struct ContractPending { u32 present; u32 ready; usize index; };
-struct ContractOperation { u32 present; u32 ready; u32 either; usize left; usize right; };
 struct ContractDomain { u32 kind; address identity; u32 count; u32 distance; };
 struct ContractVariable { u32 kind; FactView fact; ContractEnd end; };
 struct ContractImport { u32 present; u32 fold; address clause; u32 either; usize next; usize result; usize count; };
-struct ContractNodeHost {
- cfn<ContractCell,address> next;
- cfn<ContractCell,address> ensures memory(read) last;
- cfn<void,address,ContractEnd> extend;
- cfn<void,address,ContractCell> push;
- cfn<usize,address> ensures memory(read) count;
- cfn<usize,address> intern;
-};
-struct ContractPairHost {
- cfn<i32,address> ensures memory(read) compare;
- cfn<usize,address,u32> ensures memory(read) count;
- cfn<ContractCell,address,u32,usize> ensures memory(read) cell;
- cfn<void,address,ContractEnd,usize,usize> push;
-};
-struct ContractOperationHost {
- cfn<ContractOperation,address> pop;
- cfn<void,address,ContractOperation> push;
- cfn<ContractIndex,address,u32,usize,usize> ensures memory(read) lookup;
- cfn<void,address,u32,usize,usize,usize> remember;
- cfn<void,address,usize,usize> prepare;
- cfn<usize,address> ensures memory(read) count;
- cfn<ContractPair,address,usize> ensures memory(read) pair;
- cfn<void,address,ContractEnd,usize> cell;
- cfn<usize,address> make;
- cfn<void,address> release;
-};
 struct ContractNotHost {
  cfn<ContractPending,address> pop;
  cfn<void,address,usize,u32> push;
@@ -433,15 +405,6 @@ struct ContractUnionHost {
  cfn<usize,address,usize,usize,u32> operation;
  cfn<void,address,u32,usize> emit;
 };
-
-extern "C" usize contract_node(address context,ContractNodeHost host) on cpu
- requires nonzero(host.next) requires nonzero(host.last) requires nonzero(host.extend) requires nonzero(host.push) requires nonzero(host.count) requires nonzero(host.intern);
-
-extern "C" u32 contract_pairs(address context,usize left,usize right,ContractPairHost host) on cpu
- requires nonzero(host.compare) requires nonzero(host.count) requires nonzero(host.cell) requires nonzero(host.push);
-
-extern "C" usize contract_operation(address context,usize left,usize right,u32 either,ContractOperationHost host) on cpu
- requires nonzero(host.pop) requires nonzero(host.push) requires nonzero(host.lookup) requires nonzero(host.remember) requires nonzero(host.prepare) requires nonzero(host.count) requires nonzero(host.pair) requires nonzero(host.cell) requires nonzero(host.make) requires nonzero(host.release);
 
 extern "C" usize contract_not(address context,usize root,ContractNotHost host) on cpu
  requires nonzero(host.pop) requires nonzero(host.push) requires nonzero(host.lookup) requires nonzero(host.remember) requires nonzero(host.load) requires nonzero(host.count) requires nonzero(host.cell) requires nonzero(host.emit) requires nonzero(host.make) requires nonzero(host.release);
