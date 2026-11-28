@@ -226,6 +226,17 @@ struct AddressStorageHost {
 extern "C" void bind_external_address_storage(AddressStorageHost host) on cpu
     requires nonzero(host.next) requires nonzero(host.local) requires nonzero(host.emit);
 
+struct AddressJoinEntry { u32 equal; u32 storage; };
+enum AddressJoinAction:u32 { Keep=0; Unknown=1; Conditional=2; Union=3; };
+struct AddressJoinHost {
+    address context;
+    cfn<void,address,usize> reserve;
+    cfn<AddressJoinEntry,address,usize> inspect;
+    cfn<void,address,usize,AddressJoinAction> emit;
+};
+extern "C" void join_address_identities(usize width, usize left, usize right, u32 conditional, AddressJoinHost host) on cpu
+    requires nonzero(host.reserve) requires nonzero(host.inspect) requires nonzero(host.emit);
+
 struct AddressRequirements { u32 writable; u32 initialized; u32 atomic; };
 enum AddressViolation:u32 { None=0; Inactive=1; Layout=2; Atomic=3; ReadOnly=4; Uninitialized=5; };
 struct AddressRequirementHost {

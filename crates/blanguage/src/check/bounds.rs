@@ -1114,7 +1114,7 @@ impl Proof {
     }
 
     pub(super) fn join_fields(&mut self, other: &Self, width: usize, branch: Option<&Condition>) {
-        if !self.addresses.is_empty()||!other.addresses.is_empty(){self.addresses=(0..width).map(|i|address::Identity::selected(branch,self.addresses.get(i).and_then(Option::as_ref),other.addresses.get(i).and_then(Option::as_ref))).collect();}
+        self.addresses = address::join_address_identities(&self.addresses, &other.addresses, width, branch);
         self.views.resize_with(width,view::Borrow::default);
         for(i,value)in self.views.iter_mut().enumerate(){
             let empty=view::Borrow::default();let other=other.views.get(i).unwrap_or(&empty);

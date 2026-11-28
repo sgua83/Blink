@@ -621,6 +621,24 @@ extern "C" void bind_external_address_storage(AddressStorageHost host) on cpu
     }
 }
 
+extern "C" void join_address_identities(usize width, usize left, usize right, u32 conditional, AddressJoinHost host) on cpu
+    requires nonzero(host.reserve) requires nonzero(host.inspect) requires nonzero(host.emit) {
+    if (width == 0u64 || (left == 0u64 && right == 0u64)) { return; }
+    host.reserve(host.context, width);
+    usize component = 0u64;
+    while (component < width) {
+        let entry = host.inspect(host.context, component);
+        AddressJoinAction action = AddressJoinAction::Keep;
+        if (entry.equal == 0) {
+            if (entry.storage == 0) { action = AddressJoinAction::Unknown; }
+            else if (conditional != 0) { action = AddressJoinAction::Conditional; }
+            else { action = AddressJoinAction::Union; }
+        }
+        host.emit(host.context, component, action);
+        component += 1u64;
+    }
+}
+
 extern "C" AddressViolation validate_address_requirements(AddressRequirements required, AddressRequirementHost host) on cpu
     requires nonzero(host.next) requires nonzero(host.valid_layout) requires nonzero(host.blink_storage)
     requires nonzero(host.writable) requires nonzero(host.initialized) requires nonzero(host.possible)

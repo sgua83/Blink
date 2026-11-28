@@ -1288,14 +1288,88 @@ impl Identity {
     pub(super) fn at_call(&self,bindings:&BTreeMap<ValueIdentity,bounds::Proof>)->Self {
         self.bind_address_identity(AddressOriginBindings::Call(bindings))
     }
-    pub(super) fn selected(choice:Option<&bounds::Condition>,a:Option<&Self>,b:Option<&Self>)->Option<Self> {
-        if a==b{return a.cloned();}
-        if !matches!(a,Some(Self::Storage(_)))&&!matches!(b,Some(Self::Storage(_))){return None;}
-        let mut a=match a {Some(Self::Storage(borrow))=>borrow.clone(),_=>view::Borrow::source(view::Source::External)};
-        let external;
-        let b=match b {Some(Self::Storage(borrow))=>borrow,_=>{external=view::Borrow::source(view::Source::External);&external}};
-        Some(Self::Storage(match choice{Some(choice)=>a.selected(choice,b),None=>{a.union(b);a}}))
+}
+
+#[repr(C)]
+struct AddressJoinEntry { equal: u32, storage: u32 }
+
+#[repr(u32)]
+enum AddressJoinAction { Keep, Unknown, Conditional, Union }
+
+#[repr(C)]
+struct AddressJoinHost {
+    context: *mut std::ffi::c_void,
+    reserve: unsafe extern "C" fn(*mut std::ffi::c_void, usize),
+    inspect: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> AddressJoinEntry,
+    emit: unsafe extern "C" fn(*mut std::ffi::c_void, usize, AddressJoinAction),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::join_address_identities"]
+    fn b_join_address_identities(width: usize, left: usize, right: usize, conditional: u32, host: AddressJoinHost);
+}
+
+struct AddressIdentityJoin<'a> {
+    left: &'a [Option<Identity>],
+    right: &'a [Option<Identity>],
+    branch: Option<&'a bounds::Condition>,
+    output: Vec<Option<Identity>>,
+}
+
+impl AddressIdentityJoin<'_> {
+    fn identities(&self, slot: usize) -> (Option<&Identity>, Option<&Identity>) {
+        (self.left.get(slot).and_then(Option::as_ref), self.right.get(slot).and_then(Option::as_ref))
     }
+
+    unsafe extern "C" fn reserve(context: *mut std::ffi::c_void, width: usize) {
+        unsafe { &mut *context.cast::<Self>() }.output.reserve(width);
+    }
+
+    unsafe extern "C" fn inspect(context: *const std::ffi::c_void, slot: usize) -> AddressJoinEntry {
+        let (left, right) = unsafe { &*context.cast::<Self>() }.identities(slot);
+        AddressJoinEntry { equal: (left == right).into(),
+            storage: (matches!(left, Some(Identity::Storage(_))) || matches!(right, Some(Identity::Storage(_)))).into() }
+    }
+
+    unsafe extern "C" fn emit(context: *mut std::ffi::c_void, slot: usize, action: AddressJoinAction) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let value = match action {
+            AddressJoinAction::Unknown => None,
+            AddressJoinAction::Keep => input.left.get(slot).cloned().flatten(),
+            AddressJoinAction::Conditional | AddressJoinAction::Union => {
+                let (left, right) = input.identities(slot);
+                let mut left = match left {
+                    Some(Identity::Storage(value)) => value.clone(),
+                    _ => view::Borrow::source(view::Source::External),
+                };
+                let external;
+                let right = match right {
+                    Some(Identity::Storage(value)) => value,
+                    _ => { external = view::Borrow::source(view::Source::External); &external }
+                };
+                if matches!(action, AddressJoinAction::Conditional) {
+                    left = left.selected(input.branch.unwrap(), right);
+                } else {
+                    left.union(right);
+                }
+                Some(Identity::Storage(left))
+            }
+        };
+        input.output.push(value);
+    }
+
+    fn join(mut self, width: usize) -> Vec<Option<Identity>> {
+        let (left, right, conditional) = (self.left.len(), self.right.len(), self.branch.is_some());
+        let host = AddressJoinHost { context: std::ptr::from_mut(&mut self).cast(), reserve: Self::reserve,
+            inspect: Self::inspect, emit: Self::emit };
+        unsafe { b_join_address_identities(width, left, right, conditional.into(), host) };
+        self.output
+    }
+}
+
+pub(super) fn join_address_identities(left: &[Option<Identity>], right: &[Option<Identity>], width: usize,
+    branch: Option<&bounds::Condition>) -> Vec<Option<Identity>> {
+    AddressIdentityJoin { left, right, branch, output: Vec::new() }.join(width)
 }
 
 
