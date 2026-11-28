@@ -108,6 +108,24 @@ impl<K: Ord> EdgeTree<K> {
         i32::from(left.key != right.key || left.when != right.when)
     }
 
+    unsafe extern "C" fn same_row_key(left: *const std::ffi::c_void, right: *const std::ffi::c_void) -> i32 {
+        let left = unsafe { &*left.cast::<EdgePayload<K>>() };
+        let right = unsafe { &*right.cast::<EdgePayload<K>>() };
+        i32::from(left.key != right.key)
+    }
+
+    unsafe extern "C" fn equivalent_row_path(left: *const std::ffi::c_void, right: *const std::ffi::c_void) -> i32 {
+        let left = unsafe { &*left.cast::<EdgePayload<K>>() };
+        let right = unsafe { &*right.cast::<EdgePayload<K>>() };
+        i32::from(!left.when.equivalent(&right.when))
+    }
+
+    fn compare_with(
+        &self, other: &Self, compare: unsafe extern "C" fn(*const std::ffi::c_void, *const std::ffi::c_void) -> i32,
+    ) -> i32 {
+        unsafe { compare_edge_trees(&self.tree, &other.tree, Self::STRIDE, compare) }
+    }
+
     fn seek(&self, key: &K) -> EdgePlace {
         unsafe { seek_edge(&self.tree, Self::STRIDE, std::ptr::from_ref(key).cast(), Self::compare) }
     }
@@ -198,8 +216,7 @@ impl<K: Ord> Drop for EdgeTree<K> {
 
 impl<K: Ord> PartialEq for EdgeTree<K> {
     fn eq(&self, other: &Self) -> bool {
-        self.len() == other.len()
-            && unsafe { compare_edge_trees(&self.tree, &other.tree, Self::STRIDE, Self::equal_rows) == 0 }
+        self.len() == other.len() && self.compare_with(other, Self::equal_rows) == 0
     }
 }
 impl<K: Ord> Eq for EdgeTree<K> {}
@@ -208,7 +225,7 @@ impl<K: Ord> PartialOrd for EdgeTree<K> {
 }
 impl<K: Ord> Ord for EdgeTree<K> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        unsafe { compare_edge_trees(&self.tree, &other.tree, Self::STRIDE, Self::compare_rows) }.cmp(&0)
+        self.compare_with(other, Self::compare_rows).cmp(&0)
     }
 }
 
@@ -343,12 +360,11 @@ impl<K:Ord+Clone> Edges<K>{
     }
 
     pub(super) fn same_sources(&self, other: &Self) -> bool {
-        self.0.keys().eq(other.0.keys())
+        self.0.len() == other.0.len() && self.0.compare_with(&other.0, EdgeTree::<K>::same_row_key) == 0
     }
 
     pub(super) fn equivalent_paths(&self, other: &Self) -> bool {
-        self.0.values().zip(other.0.values())
-            .all(|(left, right)| left.equivalent(right))
+        self.0.compare_with(&other.0, EdgeTree::<K>::equivalent_row_path) == 0
     }
 
     pub fn remove(&mut self, key: &K) -> Option<bounds::Clause> { self.0.remove(key) }
