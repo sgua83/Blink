@@ -5,19 +5,22 @@ use std::{ffi::c_void, collections::btree_set};
 type Address = *mut c_void;
 type EqualPosition = unsafe extern "C" fn(Address, Address) -> u32;
 #[repr(C)]
-struct SharedPositionSpan {
+pub(in crate::check) struct SharedPositionSpan {
     positions: Address,
     count: usize,
 }
 
 impl SharedPositionSpan {
+    pub(in crate::check) fn single(value: Address) -> Self {
+        Self { positions: value, count: 1 }
+    }
     fn empty() -> Self {
         Self { positions: std::ptr::null_mut(), count: 0 }
     }
 }
 
 #[repr(C)]
-struct SharedPositionChildren {
+pub(in crate::check) struct SharedPositionChildren {
     first: SharedPositionSpan,
     second: SharedPositionSpan,
 }
@@ -26,9 +29,9 @@ unsafe extern "C" {
     #[link_name = "bootstrap.ownership_position::allocate_shared_positions"]
     fn allocate_shared_positions(bytes: usize) -> Address;
     #[link_name = "bootstrap.ownership_position::retain_shared_positions"]
-    fn retain_shared_positions(positions: Address);
+    pub(in crate::check) fn retain_shared_positions(positions: Address);
     #[link_name = "bootstrap.ownership_position::release_shared_positions"]
-    fn release_shared_positions(
+    pub(in crate::check) fn release_shared_positions(
         span: SharedPositionSpan, width: usize,
         take: unsafe extern "C" fn(Address) -> SharedPositionChildren,
     );
@@ -147,65 +150,6 @@ impl Drop for SharedPositions {
 }
 
 #[repr(transparent)]
-pub(in crate::check) struct PositionCondition(std::ptr::NonNull<Presence>);
-
-// Published conditions are immutable. B releases the allocation on its last reference.
-unsafe impl Send for PositionCondition {}
-unsafe impl Sync for PositionCondition {}
-
-impl PositionCondition {
-    fn new(value: Presence) -> Self {
-        let condition = allocate_shared::<Presence>(1);
-        unsafe { condition.as_ptr().write(value) };
-        Self(condition)
-    }
-}
-
-impl AsRef<Presence> for PositionCondition {
-    fn as_ref(&self) -> &Presence {
-        unsafe { self.0.as_ref() }
-    }
-}
-
-impl std::ops::Deref for PositionCondition {
-    type Target = Presence;
-
-    fn deref(&self) -> &Presence { self.as_ref() }
-}
-
-impl Clone for PositionCondition {
-    fn clone(&self) -> Self {
-        unsafe { retain_shared_positions(self.0.cast().as_ptr()) };
-        Self(self.0)
-    }
-}
-
-impl PartialEq for PositionCondition {
-    fn eq(&self, other: &Self) -> bool { self.0 == other.0 || self.as_ref() == other.as_ref() }
-}
-impl Eq for PositionCondition {}
-impl PartialOrd for PositionCondition {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
-}
-impl Ord for PositionCondition {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.as_ref().cmp(other.as_ref())
-    }
-}
-
-impl Drop for PositionCondition {
-    fn drop(&mut self) {
-        unsafe extern "C" fn take(value: Address) -> SharedPositionChildren {
-            unsafe { value.cast::<Presence>().drop_in_place() };
-            SharedPositionChildren { first: SharedPositionSpan::empty(), second: SharedPositionSpan::empty() }
-        }
-
-        let span = SharedPositionSpan { positions: self.0.cast().as_ptr(), count: 1 };
-        unsafe { release_shared_positions(span, size_of::<Presence>(), take) };
-    }
-}
-
-#[repr(transparent)]
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(in crate::check) struct PositionChild(SharedPositions);
 
@@ -311,7 +255,7 @@ unsafe extern "C" fn make_position(shape:Node,a:Address,b:Address,choices:Addres
         8=>Position::ApplicationElement(shape.owner as usize,unsafe{required_index(shape.index)},shape.word as u32),
         9=>Position::application_input(view::LoopInput{level:shape.owner as usize,index:shape.member as usize},unsafe{actual_index(shape.index)},shape.word as u32),
         10=>Position::Indexed((*unsafe{Box::from_raw(choices.cast::<Vec<Position>>())}).into(),unsafe{required_index(shape.index)}),
-        11=>Position::Conditional(PositionCondition::new(unsafe{&*shape.condition.cast::<owned_presence::Presence>()}.clone()),PositionChild::new(*unsafe{Box::from_raw(a.cast::<Position>())}),PositionChild::new(*unsafe{Box::from_raw(b.cast::<Position>())})),
+        11=>Position::Conditional(PresenceNode::new(unsafe{&*shape.condition.cast::<owned_presence::Presence>()}.clone()),PositionChild::new(*unsafe{Box::from_raw(a.cast::<Position>())}),PositionChild::new(*unsafe{Box::from_raw(b.cast::<Position>())})),
         12=>Position::Both(PositionChild::new(*unsafe{Box::from_raw(a.cast::<Position>())}),PositionChild::new(*unsafe{Box::from_raw(b.cast::<Position>())})),
         // This is the original application_word unreachable shape, with the
         // same private caller contract; B chooses the actual output kind.
@@ -380,7 +324,7 @@ pub(super) fn compare_index(a: &ApplicationIndex, b: &ApplicationIndex) -> std::
 }
 
 pub(super) fn selected(when:owned_presence::Presence,a:Position,b:Position)->Position {
-    match unsafe{source_select(pointer(&when),pointer(&a),pointer(&b),equal)} {0=>a,1=>b,_=>Position::Conditional(PositionCondition::new(when),PositionChild::new(a),PositionChild::new(b))}
+    match unsafe{source_select(pointer(&when),pointer(&a),pointer(&b),equal)} {0=>a,1=>b,_=>Position::Conditional(PresenceNode::new(when),PositionChild::new(a),PositionChild::new(b))}
 }
 pub(super) fn both(a:Position,b:Position)->Position {match unsafe{source_both(pointer(&a),pointer(&b),equal)} {0=>a,1=>b,_=>Position::Both(PositionChild::new(a),PositionChild::new(b))}}
 pub(super) fn indexed(values:Vec<Position>,at:ApplicationIndex,width:usize)->Vec<Position> {*unsafe{Box::from_raw(source_index(pointer(&values),position_index(Some(&at)),width as u64,HOST).cast::<Vec<Position>>())}}

@@ -9,11 +9,12 @@ pub(super) enum Presence {
     All = 1,
     Input(Value) = 2,
     Selected(Comparison, ownership::ApplicationIndex, ownership::ApplicationIndex) = 3,
-    Not(Box<Presence>) = 4,
-    Both(Box<Presence>, Box<Presence>) = 5,
-    Either(Box<Presence>, Box<Presence>) = 6,
+    Not(PresenceNode) = 4,
+    Both(PresenceNode, PresenceNode) = 5,
+    Either(PresenceNode, PresenceNode) = 6,
 }
 mod host;
+pub(in crate::check) use host::PresenceNode;
 pub(super) mod path;
 
 impl PartialEq for Presence { fn eq(&self, other: &Self) -> bool { host::compare(self, other).is_eq() } }

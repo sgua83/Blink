@@ -4,9 +4,11 @@ use super::*;
 mod position;
 #[path="ownership/place.rs"]
 mod place;
-use position::{PositionChild, PositionCondition};
+use owned_presence::PresenceNode;
+use position::PositionChild;
 pub(in crate::check) use position::{
-    PositionIndex, PositionView, POSITION_VIEW, equal as position_equal, position_index, required_index,
+    PositionIndex, PositionView, POSITION_VIEW, SharedPositionChildren, SharedPositionSpan,
+    equal as position_equal, position_index, release_shared_positions, required_index, retain_shared_positions,
 };
 
 #[repr(C, u32)]
@@ -65,7 +67,7 @@ pub(super) enum Position {
     ApplicationElement(usize, ApplicationIndex, u32) = 8,
     ApplicationInput(view::LoopInput, ApplicationSelection, u32) = 9,
     Indexed(SharedPositions, ApplicationIndex) = 10,
-    Conditional(PositionCondition, PositionChild, PositionChild) = 11,
+    Conditional(PresenceNode, PositionChild, PositionChild) = 11,
     Both(PositionChild, PositionChild) = 12,
 }
 

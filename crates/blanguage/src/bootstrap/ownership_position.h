@@ -65,6 +65,7 @@ struct SharedPositionSpan { address positions; usize count; };
 struct SharedPositionChildren { SharedPositionSpan first; SharedPositionSpan second; };
 extern "C" address allocate_shared_positions(usize bytes) on cpu;
 extern "C" void retain_shared_positions(address positions) on cpu;
+extern "C" u32 take_unique_shared_position(address value, address output, usize width) on cpu;
 extern "C" void release_shared_positions(SharedPositionSpan positions, usize width,
     cfn<SharedPositionChildren,address> take) on cpu requires nonzero(take);
 

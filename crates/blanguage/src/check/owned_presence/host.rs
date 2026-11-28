@@ -1,6 +1,9 @@
 //! Native storage operations for the original Presence and Position owners.
 use super::*;
-use ownership::{PositionIndex, PositionView, POSITION_VIEW, position_equal, position_index, required_index};
+use ownership::{
+    PositionIndex, PositionView, POSITION_VIEW, SharedPositionChildren, SharedPositionSpan,
+    position_equal, position_index, release_shared_positions, required_index, retain_shared_positions,
+};
 use std::ffi::c_void;
 
 type Address = *mut c_void;
@@ -13,6 +16,7 @@ struct PresenceView {
     first_index_offset: usize,
     ownership_payload_offset: usize,
     positions: &'static PositionView,
+    width: usize,
 }
 
 const PRESENCE_VIEW: PresenceView = PresenceView {
@@ -20,6 +24,7 @@ const PRESENCE_VIEW: PresenceView = PresenceView {
     first_index_offset: size_of::<Comparison>().next_multiple_of(align_of::<ownership::ApplicationIndex>()),
     ownership_payload_offset: size_of::<u32>().next_multiple_of(align_of::<Ownership>()),
     positions: &POSITION_VIEW,
+    width: size_of::<Presence>(),
 };
 
 fn pointer<T>(value: &T) -> Address { (value as *const T).cast_mut().cast() }
@@ -56,12 +61,84 @@ unsafe extern "C" fn input(output: Address, value: Address) {
 unsafe extern "C" fn move_value(output: Address, source: Address) {
     let value = unsafe { take(source) }; unsafe { *output.cast::<Presence>() = value; }
 }
-unsafe extern "C" fn pair(output: Address, left: Address, right: Address, any: u32) {
-    let left = Box::new(unsafe { take(left) }); let right = Box::new(unsafe { take(right) });
-    unsafe { *output.cast::<Presence>() = if any == 0 { Presence::Both(left, right) } else { Presence::Either(left, right) }; }
+#[repr(C)]
+struct DetachedPresence { children: SharedPositionChildren, input: Address }
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ownership_presence::publish_presence"]
+    fn publish_presence(value: Address, layout: &PresenceView) -> Address;
+    #[link_name = "bootstrap.ownership_presence::detach_presence"]
+    fn detach_presence(value: Address, layout: &PresenceView) -> DetachedPresence;
+    #[link_name = "bootstrap.ownership_position::take_unique_shared_position"]
+    fn take_unique_shared_position(value: Address, output: Address, width: usize) -> u32;
 }
-unsafe extern "C" fn wrap_not(value: Address) {
-    let original = unsafe { take(value) }; unsafe { *value.cast::<Presence>() = Presence::Not(Box::new(original)); }
+
+unsafe extern "C" fn take_presence(value: Address) -> SharedPositionChildren {
+    let detached = unsafe { detach_presence(value, &PRESENCE_VIEW) };
+    if !detached.input.is_null() {
+        unsafe { detached.input.cast::<Value>().drop_in_place() };
+    }
+    detached.children
+}
+
+#[repr(transparent)]
+pub(in crate::check) struct PresenceNode(std::ptr::NonNull<Presence>);
+
+// A published node is immutable. The shared storage counts ownership atomically.
+unsafe impl Send for PresenceNode {}
+unsafe impl Sync for PresenceNode {}
+
+impl PresenceNode {
+    pub(in crate::check) fn new(mut value: Presence) -> Self {
+        const { assert!(align_of::<Presence>() <= 16); }
+        let node = unsafe { publish_presence(std::ptr::from_mut(&mut value).cast(), &PRESENCE_VIEW) };
+        Self(unsafe { std::ptr::NonNull::new_unchecked(node.cast()) })
+    }
+
+    fn into_value(self) -> Presence {
+        let mut result = std::mem::MaybeUninit::<Presence>::uninit();
+        let moved = unsafe {
+            take_unique_shared_position(self.0.cast().as_ptr(), result.as_mut_ptr().cast(), size_of::<Presence>())
+        };
+        if moved == 0 {
+            return self.as_ref().clone();
+        }
+        std::mem::forget(self);
+        unsafe { result.assume_init() }
+    }
+}
+
+impl std::ops::Deref for PresenceNode {
+    type Target = Presence;
+    fn deref(&self) -> &Presence { unsafe { self.0.as_ref() } }
+}
+impl AsRef<Presence> for PresenceNode {
+    fn as_ref(&self) -> &Presence { self }
+}
+impl Clone for PresenceNode {
+    fn clone(&self) -> Self {
+        unsafe { retain_shared_positions(self.0.cast().as_ptr()) };
+        Self(self.0)
+    }
+}
+impl Drop for PresenceNode {
+    fn drop(&mut self) {
+        let span = SharedPositionSpan::single(self.0.cast().as_ptr());
+        unsafe { release_shared_positions(span, size_of::<Presence>(), take_presence) };
+    }
+}
+impl PartialEq for PresenceNode {
+    fn eq(&self, other: &Self) -> bool { self.cmp(other).is_eq() }
+}
+impl Eq for PresenceNode {}
+impl PartialOrd for PresenceNode {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
+}
+impl Ord for PresenceNode {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        if self.0 == other.0 { return std::cmp::Ordering::Equal; }
+        self.as_ref().cmp(other.as_ref())
+    }
 }
 
 type Children = unsafe extern "C" fn(Address, Address, Address, Address, Host) -> u32;
@@ -69,8 +146,8 @@ type Selected = unsafe extern "C" fn(Selection, Address, Host) -> u32;
 type Scoped = unsafe extern "C" fn(Address, Address, Host) -> u32;
 unsafe extern "C" fn children_scope(value: Address, context: Address, host: Host, apply: Children) -> u32 {
     let (mut left, mut right) = match unsafe { take(value) } {
-        Presence::Not(left) => (*left, Presence::None),
-        Presence::Both(left, right) | Presence::Either(left, right) => (*left, *right),
+        Presence::Not(left) => (left.into_value(), Presence::None),
+        Presence::Both(left, right) | Presence::Either(left, right) => (left.into_value(), right.into_value()),
         leaf => (leaf, Presence::None),
     };
     unsafe { apply(value, pointer(&mut left), pointer(&mut right), context, host) }
@@ -156,10 +233,6 @@ unsafe extern "C" fn ownership_constant(output: Address, kind: u32) {
     let value = match kind { 0 => Ownership::Moved, 1 => Ownership::Owned, _ => Ownership::Borrowed };
     unsafe { *output.cast::<Ownership>() = value; }
 }
-unsafe extern "C" fn ownership_conditional(output: Address, value: Address) {
-    let value = unsafe { take(value) };
-    unsafe { *output.cast::<Ownership>() = Ownership::Conditional(Box::new(value)); }
-}
 unsafe extern "C" fn copy_value(output: Address, source: Address) {
     let value = unsafe { &*source.cast::<Presence>() }.clone();
     unsafe { *output.cast::<Presence>() = value; }
@@ -175,8 +248,7 @@ struct Host {
     selected: unsafe extern "C" fn(Address, Selection),
     input: unsafe extern "C" fn(Address, Address),
     move_value: unsafe extern "C" fn(Address, Address),
-    pair: unsafe extern "C" fn(Address, Address, Address, u32),
-    wrap_not: unsafe extern "C" fn(Address),
+    take_presence: unsafe extern "C" fn(Address) -> SharedPositionChildren,
     children_scope: unsafe extern "C" fn(Address, Address, Host, Children) -> u32,
     selected_scope: unsafe extern "C" fn(Selection, Address, Host, Selected) -> u32,
     clone_scope: unsafe extern "C" fn(Address, Address, Host, Scoped) -> u32,
@@ -194,18 +266,17 @@ struct Host {
     condition_truth_in: unsafe extern "C" fn(Address, Address) -> u32,
     ownership_copy: unsafe extern "C" fn(Address, Address),
     ownership_constant: unsafe extern "C" fn(Address, u32),
-    ownership_conditional: unsafe extern "C" fn(Address, Address),
     copy_value: unsafe extern "C" fn(Address, Address),
 }
 const HOST: Host = Host {
     layout: &PRESENCE_VIEW, compare_input, constant_input, input_uses_index,
-    truth, selected, input, move_value, pair, wrap_not,
+    truth, selected, input, move_value, take_presence,
     children_scope, selected_scope, clone_scope, truth_scope,
     position_equal,
     condition_scope, condition_clone_scope, condition_truth, condition_input,
     condition_index, condition_negate, condition_logical, condition_substitute,
     input_offset, condition_truth_in, ownership_copy,
-    ownership_constant, ownership_conditional, copy_value,
+    ownership_constant, copy_value,
 };
 unsafe extern "C" {
     #[link_name = "bootstrap.ownership_presence::relation"] fn source_relation(output: Address, value: Selection, host: Host);

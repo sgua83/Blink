@@ -23,7 +23,7 @@ pub(super) enum Ownership {
     Moved = 0,
     Owned = 1,
     Borrowed = 2,
-    Conditional(Box<owned_presence::Presence>) = 3,
+    Conditional(owned_presence::PresenceNode) = 3,
 }
 // Current element facts belong to this Data, including conditional cleanup
 // premises supplied by a real input declaration. They are not type invariants.
@@ -5122,7 +5122,7 @@ impl Builder<'_> {
             }
         }
         fn bind_model(model:&mut returns::Returned,indices:&[ownership::ApplicationIndex],depth:usize){
-            let bind=|mode:&mut Ownership|if let Ownership::Conditional(when)=mode{*when=Box::new(bind_presence(when,indices,depth));};
+            let bind=|mode:&mut Ownership|if let Ownership::Conditional(when)=mode{*when=owned_presence::PresenceNode::new(bind_presence(when,indices,depth));};
             match model{
                 returns::Returned::OwnedValue(value)=>{bind(&mut value.ownership);for child in value.payloads.iter_mut().flatten(){bind_model(child,indices,depth);}},
                 returns::Returned::Dataset(data)=>{bind(&mut data.ownership);data.elements=std::mem::take(&mut data.elements).map(&mut|mut model|{bind_model(&mut model,indices,depth+1);model},&mut|when|when);},

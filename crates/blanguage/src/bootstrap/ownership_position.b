@@ -315,6 +315,7 @@ extern "C" handle GetProcessHeap() on cpu from "KERNEL32.dll";
 extern "C" address HeapAlloc(handle heap, u32 flags, usize bytes) on cpu from "KERNEL32.dll";
 extern "C" address HeapReAlloc(handle heap, u32 flags, address data, usize bytes) on cpu from "KERNEL32.dll";
 extern "C" i32 HeapFree(handle heap, u32 flags, address data) on cpu from "KERNEL32.dll";
+extern "C" void RtlMoveMemory(address output, address input, usize bytes) on cpu from "KERNEL32.dll";
 
 extern "C" never abort() on cpu from "ucrtbase.dll";
 
@@ -371,6 +372,15 @@ extern "C" void retain_shared_positions(address positions) on cpu {
 bool release_position_reference(address positions) on cpu {
     let header = shared_position_header(positions);
     return atomic_sub(unsafe_position<atomic<u64>>(header), 1u64, acq_rel) == 1u64;
+}
+
+extern "C" u32 take_unique_shared_position(address value, address output, usize width) on cpu {
+    let header = shared_position_header(value);
+    let previous = atomic_compare_exchange(unsafe_position<atomic<u64>>(header), 1u64, 0u64, acq_rel, acquire);
+    if (previous != 1u64) { return 0; }
+    RtlMoveMemory(output, value, width);
+    HeapFree(GetProcessHeap(), 0, header);
+    return 1;
 }
 
 struct SharedPositionRelease {
