@@ -732,6 +732,49 @@ extern "C" void project_borrow_fields(BorrowFieldSpan fields, usize count, Borro
     if (pending != 0) { host.emit_pending(host.context); }
 }
 
+extern "C" void bind_call_borrow_source(CallSourceShape source, CallSourceHost host) on cpu
+    requires nonzero(host.lookup) requires nonzero(host.borrow) requires nonzero(host.identity)
+    requires nonzero(host.index) requires nonzero(host.task) requires nonzero(host.finish) {
+    if (source.kind == CallSourceKind::Data || source.kind == CallSourceKind::Parameter) {
+        if (host.lookup(host.context) == 0) {
+            host.finish(host.context, CallSourceKind::Missing);
+            return;
+        }
+        if (source.kind == CallSourceKind::Parameter) {
+            usize index = 0u64;
+            while (index < source.indices) {
+                host.index(host.context, index);
+                index += 1u64;
+            }
+            host.borrow(host.context);
+            host.finish(host.context, CallSourceKind::Parameter);
+        } else if (host.borrow(host.context) == 0 && host.identity(host.context) == 0) {
+            host.finish(host.context, CallSourceKind::Missing);
+        }
+        return;
+    }
+    if (source.kind == CallSourceKind::Task) {
+        host.task(host.context, CallSourceTaskPart::Captures, 0u64);
+        host.task(host.context, CallSourceTaskPart::Initialized, 0u64);
+        usize output = 0u64;
+        while (output < source.outputs) {
+            host.task(host.context, CallSourceTaskPart::Output, output);
+            output += 1u64;
+        }
+        usize completion = 0u64;
+        while (completion < source.completions) {
+            host.task(host.context, CallSourceTaskPart::Completion, completion);
+            completion += 1u64;
+        }
+        usize guard = 0u64;
+        while (guard < source.guards) {
+            host.task(host.context, CallSourceTaskPart::Guard, guard);
+            guard += 1u64;
+        }
+    }
+    host.finish(host.context, source.kind);
+}
+
 extern "C" void map_call_borrows(BorrowCallCounts counts, BorrowCallHost host) on cpu
     requires nonzero(host.collect) requires nonzero(host.project)
     requires nonzero(host.restore) requires nonzero(host.map_source) {

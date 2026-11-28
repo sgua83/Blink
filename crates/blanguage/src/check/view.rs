@@ -1606,6 +1606,159 @@ pub(super) enum Source {
     Task { captures:Box<Borrow>, outputs:Vec<Borrow>, initialized:Box<Borrow>, guards:Vec<outputs::TaskGuard>, completions:Vec<TaskInputCompletion> },
     TaskOutput { task:Box<Borrow>, projection:TaskProjection },
 }
+#[repr(u32)]
+enum CallSourceKind {
+    Data, Parameter, Position, Relation, Contents, Element, Projection, Task, TaskOutput, Keep, Missing,
+}
+
+#[repr(u32)]
+enum CallSourceTaskPart { Captures, Initialized, Output, Completion, Guard }
+
+#[repr(C)]
+struct CallSourceShape {
+    kind: CallSourceKind,
+    indices: usize,
+    outputs: usize,
+    completions: usize,
+    guards: usize,
+}
+
+impl From<&Source> for CallSourceShape {
+    fn from(source: &Source) -> Self {
+        let mut shape = Self { kind: CallSourceKind::Keep, indices: 0, outputs: 0, completions: 0, guards: 0 };
+        shape.kind = match source {
+            Source::Data(_) => CallSourceKind::Data,
+            Source::Parameter(_, indices) => { shape.indices = indices.len(); CallSourceKind::Parameter }
+            Source::Position(_) => CallSourceKind::Position,
+            Source::Relation(..) => CallSourceKind::Relation,
+            Source::Contents { .. } => CallSourceKind::Contents,
+            Source::Element { .. } => CallSourceKind::Element,
+            Source::Projection { .. } => CallSourceKind::Projection,
+            Source::Task { outputs, completions, guards, .. } => {
+                shape.outputs = outputs.len();
+                shape.completions = completions.len();
+                shape.guards = guards.len();
+                CallSourceKind::Task
+            }
+            Source::TaskOutput { .. } => CallSourceKind::TaskOutput,
+            Source::Unresolved | Source::Inactive | Source::External => CallSourceKind::Keep,
+        };
+        shape
+    }
+}
+
+#[repr(C)]
+struct CallSourceHost {
+    context: *mut std::ffi::c_void,
+    lookup: unsafe extern "C" fn(*mut std::ffi::c_void) -> u32,
+    borrow: unsafe extern "C" fn(*mut std::ffi::c_void) -> u32,
+    identity: unsafe extern "C" fn(*mut std::ffi::c_void) -> u32,
+    index: unsafe extern "C" fn(*mut std::ffi::c_void, usize),
+    task: unsafe extern "C" fn(*mut std::ffi::c_void, CallSourceTaskPart, usize),
+    finish: unsafe extern "C" fn(*mut std::ffi::c_void, CallSourceKind),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::bind_call_borrow_source"]
+    fn b_bind_call_borrow_source(source: CallSourceShape, host: CallSourceHost);
+}
+
+struct CallSource<'a> {
+    source: Option<Source>,
+    bindings: &'a BTreeMap<ValueIdentity, bounds::Proof>,
+    proof: Option<&'a bounds::Proof>,
+    result: Borrow,
+}
+
+impl<'a> CallSource<'a> {
+    unsafe extern "C" fn lookup(context: *mut std::ffi::c_void) -> u32 {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let id = match input.source.as_ref().unwrap() {
+            Source::Data(id) | Source::Parameter(id, _) => id,
+            _ => unreachable!(),
+        };
+        input.proof = input.bindings.get(id);
+        u32::from(input.proof.is_some())
+    }
+
+    unsafe extern "C" fn borrow(context: *mut std::ffi::c_void) -> u32 {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        input.result = input.proof.unwrap().view_borrow(0);
+        u32::from(!input.result.empty())
+    }
+
+    unsafe extern "C" fn identity(context: *mut std::ffi::c_void) -> u32 {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let Some(identity) = input.proof.unwrap().known_identity(0) else { return 0; };
+        input.result = Borrow::source(Source::Data(identity));
+        1
+    }
+
+    unsafe extern "C" fn index(context: *mut std::ffi::c_void, at: usize) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let Some(Source::Parameter(_, indices)) = &mut input.source else { unreachable!() };
+        indices[at] = Source::index_at_call(indices[at], input.bindings);
+    }
+
+    unsafe extern "C" fn task(context: *mut std::ffi::c_void, part: CallSourceTaskPart, index: usize) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let Some(Source::Task { captures, initialized, outputs, completions, guards }) = &mut input.source else { unreachable!() };
+        let bindings = input.bindings;
+        match part {
+            CallSourceTaskPart::Captures => **captures = captures.at_call(bindings),
+            CallSourceTaskPart::Initialized => {
+                **initialized = initialized.initialization_at_call(bindings).map_sources(|source| source.at_call(bindings));
+            }
+            CallSourceTaskPart::Output => outputs[index] = outputs[index].at_call(bindings),
+            CallSourceTaskPart::Completion => {
+                let completion = &mut completions[index];
+                completion.task = completion.task.at_call(bindings);
+            }
+            CallSourceTaskPart::Guard => {
+                let guard = &mut guards[index];
+                guard.target = guard.target.at_call(bindings);
+                guard.map_arguments(|proof| proof.at_call(bindings));
+                guard.map_inputs(|word| word.at_call(bindings));
+            }
+        }
+    }
+
+    unsafe extern "C" fn finish(context: *mut std::ffi::c_void, kind: CallSourceKind) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let source = input.source.take().unwrap();
+        let bindings = input.bindings;
+        input.result = match (kind, source) {
+            (CallSourceKind::Missing, _) => Borrow::source(Source::Unresolved),
+            (CallSourceKind::Parameter, Source::Parameter(_, indices)) => input.result.select_elements(&indices),
+            (CallSourceKind::Position, Source::Position(origin)) => origin.at_call(bindings),
+            (CallSourceKind::Relation, Source::Relation(graph, root)) =>
+                Borrow::source(Source::Relation(Arc::new(graph.at_call(bindings)), root)),
+            (CallSourceKind::Contents, Source::Contents { origin, word }) =>
+                Borrow::source(Source::Contents { origin: Arc::new(origin.bound_at_call(bindings)), word }),
+            (CallSourceKind::Element, Source::Element { parent, fields, index }) =>
+                Borrow::selected_element(parent.at_call(bindings), fields, Source::index_at_call(index, bindings)),
+            (CallSourceKind::Projection, Source::Projection { parent, fields }) =>
+                Borrow::projection(parent.at_call(bindings), fields),
+            (CallSourceKind::TaskOutput, Source::TaskOutput { task, projection }) =>
+                task.at_call(bindings).task_projection(projection.map_result(|id| match id {
+                    ValueIdentity::TaskWorkCompletion(..) => Some(id),
+                    _ => bindings.get(&id)?.known_identity(0),
+                })),
+            (CallSourceKind::Keep | CallSourceKind::Task, source) => Borrow::source(source),
+            _ => unreachable!(),
+        };
+    }
+
+    fn bind(source: Source, bindings: &'a BTreeMap<ValueIdentity, bounds::Proof>) -> Borrow {
+        let shape = (&source).into();
+        let mut input = Self { source: Some(source), bindings, proof: None, result: Borrow::default() };
+        let host = CallSourceHost { context: std::ptr::from_mut(&mut input).cast(), lookup: Self::lookup,
+            borrow: Self::borrow, identity: Self::identity, index: Self::index, task: Self::task, finish: Self::finish };
+        unsafe { b_bind_call_borrow_source(shape, host) };
+        input.result
+    }
+}
+
 fn identity_proof(id:ValueIdentity)->bounds::Proof {
     bounds::Proof::default().with_identity(id)
 }
@@ -1683,40 +1836,8 @@ impl Source {
             Self::Unresolved | Self::Inactive | Self::External => self,
         }
     }
-    pub(super) fn at_call(self,bindings:&BTreeMap<ValueIdentity,bounds::Proof>)->Borrow {
-        match self {
-            Self::Parameter(id,indices)=>bindings.get(&id).map(|p|{
-                let indices=indices.into_iter().map(|index|Self::index_at_call(index,bindings)).collect::<Vec<_>>();
-                p.view_borrow(0).select_elements(&indices)
-            }).unwrap_or_else(||Borrow::from_sources(BTreeSet::from([Self::Unresolved]))),
-            Self::Data(id)=>{
-                let Some(proof)=bindings.get(&id) else {return Borrow::from_sources(BTreeSet::from([Self::Unresolved]));};
-                let value=proof.view_borrow(0);
-                if !value.empty(){value}else{Borrow::from_sources(BTreeSet::from([proof.known_identity(0).map(Self::Data).unwrap_or(Self::Unresolved)]))}
-            }
-            Self::Position(origin)=>origin.at_call(bindings),
-            Self::Relation(graph,root)=>Borrow::source(Self::Relation(Arc::new(graph.at_call(bindings)),root)),
-            Self::Contents{origin,word}=>Borrow::source(Self::Contents{origin:Arc::new(origin.bound_at_call(bindings)),word}),
-            Self::Element{parent,fields,index}=>Borrow::selected_element(parent.at_call(bindings),fields,Self::index_at_call(index,bindings)),
-            Self::Projection{parent,fields}=>Borrow::projection(parent.at_call(bindings),fields),
-            Self::Task{captures,outputs,initialized,guards,completions}=>Borrow::source(Self::Task{
-                captures:Box::new(captures.at_call(bindings)),
-                initialized:Box::new(initialized.initialization_at_call(bindings).map_sources(|source|source.at_call(bindings))),
-                outputs:outputs.into_iter().map(|output|output.at_call(bindings)).collect(),
-                completions:completions.iter().map(|completion|completion.map_task(|task|task.at_call(bindings))).collect(),
-                guards:guards.into_iter().map(|mut guard| {
-                    guard.target=guard.target.at_call(bindings);
-                    guard.map_arguments(|proof|proof.at_call(bindings));
-                    guard.map_inputs(|word|word.at_call(bindings));
-                    guard
-                }).collect(),
-            }),
-            Self::TaskOutput{task,projection}=>task.at_call(bindings).task_projection(projection.map_result(|id|match id {
-                ValueIdentity::TaskWorkCompletion(..)=>Some(id),
-                _=>bindings.get(&id)?.known_identity(0),
-            })),
-            Self::Unresolved|Self::Inactive|Self::External=>Borrow::from_sources(BTreeSet::from([self])),
-        }
+    pub(super) fn at_call(self, bindings: &BTreeMap<ValueIdentity, bounds::Proof>) -> Borrow {
+        CallSource::bind(self, bindings)
     }
 }
 

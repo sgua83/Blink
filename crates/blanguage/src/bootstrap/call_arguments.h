@@ -297,6 +297,25 @@ struct BorrowFieldHost {
 extern "C" void project_borrow_fields(BorrowFieldSpan fields, usize count, BorrowFieldKind kind, u32 pending, BorrowFieldHost host) on cpu
     requires nonzero(host.next) requires nonzero(host.reserve) requires nonzero(host.emit) requires nonzero(host.emit_pending);
 
+enum CallSourceKind:u32 {
+    Data=0; Parameter=1; Position=2; Relation=3; Contents=4; Element=5;
+    Projection=6; Task=7; TaskOutput=8; Keep=9; Missing=10;
+};
+enum CallSourceTaskPart:u32 { Captures=0; Initialized=1; Output=2; Completion=3; Guard=4; };
+struct CallSourceShape { CallSourceKind kind; usize indices; usize outputs; usize completions; usize guards; };
+struct CallSourceHost {
+    address context;
+    cfn<u32,address> lookup;
+    cfn<u32,address> borrow;
+    cfn<u32,address> identity;
+    cfn<void,address,usize> index;
+    cfn<void,address,CallSourceTaskPart,usize> task;
+    cfn<void,address,CallSourceKind> finish;
+};
+extern "C" void bind_call_borrow_source(CallSourceShape source, CallSourceHost host) on cpu
+    requires nonzero(host.lookup) requires nonzero(host.borrow) requires nonzero(host.identity)
+    requires nonzero(host.index) requires nonzero(host.task) requires nonzero(host.finish);
+
 struct AddressRequirements { u32 writable; u32 initialized; u32 atomic; };
 enum AddressViolation:u32 { None=0; Inactive=1; Layout=2; Atomic=3; ReadOnly=4; Uninitialized=5; };
 struct AddressRequirementHost {
