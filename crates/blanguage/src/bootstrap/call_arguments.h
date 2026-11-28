@@ -201,6 +201,31 @@ extern "C" void bind_address_origin(AddressOriginRoot root, AddressOriginBinding
     requires nonzero(host.bind_borrow) requires nonzero(host.external)
     requires nonzero(host.clear_positions) requires nonzero(host.index) requires nonzero(host.unresolved_index);
 
+enum AddressIdentityKind:u32 { Constant=0; Values=1; Storage=2; };
+enum AddressIdentityResult:u32 { Original=0; Bound=1; Values=2; };
+struct AddressIdentitySources { u32 present; usize count; };
+struct AddressIdentityHost {
+    address context;
+    cfn<u32,address,usize> address_at;
+    cfn<AddressIdentitySources,address,usize> sources;
+    cfn<void,address,usize> append_source;
+    cfn<void,address,usize> append_original;
+    cfn<void,address> bind_storage;
+};
+extern "C" AddressIdentityResult bind_address_identity(AddressIdentityKind kind, usize count,
+    AddressOriginBindingMode mode, AddressIdentityHost host) on cpu
+    requires nonzero(host.address_at) requires nonzero(host.sources)
+    requires nonzero(host.append_source) requires nonzero(host.append_original) requires nonzero(host.bind_storage);
+
+struct AddressStorageHost {
+    address context;
+    cfn<AddressSourceKind,address> next;
+    cfn<u32,address> local;
+    cfn<void,address,u32> emit;
+};
+extern "C" void bind_external_address_storage(AddressStorageHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.local) requires nonzero(host.emit);
+
 struct AddressRequirements { u32 writable; u32 initialized; u32 atomic; };
 enum AddressViolation:u32 { None=0; Inactive=1; Layout=2; Atomic=3; ReadOnly=4; Uninitialized=5; };
 struct AddressRequirementHost {

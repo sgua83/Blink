@@ -576,6 +576,51 @@ extern "C" void bind_address_origin(AddressOriginRoot root, AddressOriginBinding
     }
 }
 
+extern "C" AddressIdentityResult bind_address_identity(AddressIdentityKind kind, usize count,
+    AddressOriginBindingMode mode, AddressIdentityHost host) on cpu
+    requires nonzero(host.address_at) requires nonzero(host.sources)
+    requires nonzero(host.append_source) requires nonzero(host.append_original) requires nonzero(host.bind_storage) {
+    if (kind == AddressIdentityKind::Constant) { return AddressIdentityResult::Original; }
+    if (kind == AddressIdentityKind::Storage) {
+        host.bind_storage(host.context);
+        return AddressIdentityResult::Bound;
+    }
+    if (mode != AddressOriginBindingMode::Outputs) {
+        usize slot = 0u64;
+        while (slot < count) {
+            if (host.address_at(host.context, slot) != 0) { return AddressIdentityResult::Bound; }
+            slot += 1u64;
+        }
+    }
+    usize slot = 0u64;
+    while (slot < count) {
+        let sources = host.sources(host.context, slot);
+        if (sources.count != 0u64) {
+            let width = mode == AddressOriginBindingMode::Substitute ? sources.count : 1u64;
+            usize child = 0u64;
+            while (child < width) {
+                host.append_source(host.context, child);
+                child += 1u64;
+            }
+        } else if (mode == AddressOriginBindingMode::Outputs ||
+                   (mode == AddressOriginBindingMode::Substitute && sources.present == 0)) {
+            host.append_original(host.context, slot);
+        }
+        slot += 1u64;
+    }
+    return AddressIdentityResult::Values;
+}
+
+extern "C" void bind_external_address_storage(AddressStorageHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.local) requires nonzero(host.emit) {
+    while (true) {
+        let source = host.next(host.context);
+        if (source == AddressSourceKind::End) { return; }
+        let external = source == AddressSourceKind::Position && host.local(host.context) != 0;
+        host.emit(host.context, external ? 1 : 0);
+    }
+}
+
 extern "C" AddressViolation validate_address_requirements(AddressRequirements required, AddressRequirementHost host) on cpu
     requires nonzero(host.next) requires nonzero(host.valid_layout) requires nonzero(host.blink_storage)
     requires nonzero(host.writable) requires nonzero(host.initialized) requires nonzero(host.possible)

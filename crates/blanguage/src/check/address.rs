@@ -875,6 +875,16 @@ enum AddressOriginBindings<'a> {
     Call(&'a BTreeMap<ValueIdentity, bounds::Proof>),
 }
 
+impl AddressOriginBindings<'_> {
+    fn mode(self) -> AddressOriginBindingMode {
+        match self {
+            Self::Substitute(_) => AddressOriginBindingMode::Substitute,
+            Self::Outputs(_) => AddressOriginBindingMode::Outputs,
+            Self::Call(_) => AddressOriginBindingMode::Call,
+        }
+    }
+}
+
 struct AddressOriginBinding<'a> { value: Origin, bindings: AddressOriginBindings<'a> }
 
 impl AddressOriginBinding<'_> {
@@ -951,11 +961,7 @@ impl AddressOriginBinding<'_> {
 
     fn bind(mut self) -> Origin {
         let root = self.value.root.kind();
-        let mode = match self.bindings {
-            AddressOriginBindings::Substitute(_) => AddressOriginBindingMode::Substitute,
-            AddressOriginBindings::Outputs(_) => AddressOriginBindingMode::Outputs,
-            AddressOriginBindings::Call(_) => AddressOriginBindingMode::Call,
-        };
+        let mode = self.bindings.mode();
         let host = AddressOriginBindingHost { context: std::ptr::from_mut(&mut self).cast(), parameter: Self::parameter,
             unresolved_parameter: Self::unresolved_parameter, bind_borrow: Self::bind_borrow, external: Self::external,
             clear_positions: Self::clear_positions, index: Self::index, unresolved_index: Self::unresolved_index };
@@ -1112,33 +1118,175 @@ pub(super) enum Identity {
     Storage(view::Borrow),
 }
 
-impl Identity {
-    pub(super) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self {
-        match self {
-            Self::Constant(_)=>self.clone(),
-            Self::Storage(borrow)=>Self::Storage(borrow.substitute_values(values)),
-            Self::Value(ids)=>{
-                for id in ids {if let Some(value)=values.get(id).and_then(|proof|proof.addresses.first()).cloned().flatten(){return value;}}
-                Self::Value(ids.iter().flat_map(|id|match values.get(id){Some(proof)=>proof.origins.first().map(|row| row.to_vec()).unwrap_or_default(),None=>vec![*id]}).collect())
-            },
+#[repr(u32)]
+enum AddressIdentityKind { Constant, Values, Storage }
+
+#[repr(u32)]
+enum AddressIdentityResult { Original, Bound, Values }
+
+#[repr(C)]
+struct AddressIdentitySources { present: u32, count: usize }
+
+#[repr(C)]
+struct AddressIdentityHost {
+    context: *mut std::ffi::c_void,
+    address_at: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> u32,
+    sources: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> AddressIdentitySources,
+    append_source: unsafe extern "C" fn(*mut std::ffi::c_void, usize),
+    append_original: unsafe extern "C" fn(*mut std::ffi::c_void, usize),
+    bind_storage: unsafe extern "C" fn(*mut std::ffi::c_void),
+}
+
+#[repr(C)]
+struct AddressStorageHost {
+    context: *mut std::ffi::c_void,
+    next: unsafe extern "C" fn(*mut std::ffi::c_void) -> AddressSourceKind,
+    local: unsafe extern "C" fn(*const std::ffi::c_void) -> u32,
+    emit: unsafe extern "C" fn(*mut std::ffi::c_void, u32),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::bind_address_identity"]
+    fn b_bind_address_identity(kind: AddressIdentityKind, count: usize, mode: AddressOriginBindingMode,
+        host: AddressIdentityHost) -> AddressIdentityResult;
+    #[link_name = "bootstrap.call_arguments::bind_external_address_storage"]
+    fn b_bind_external_address_storage(host: AddressStorageHost);
+}
+
+struct AddressStorage<'a, I> {
+    sources: I,
+    current: Option<(&'a view::Source, &'a bounds::Clause)>,
+    output: view::Borrow,
+}
+
+impl<'a, I: Iterator<Item = (&'a view::Source, &'a bounds::Clause)>> AddressStorage<'a, I> {
+    unsafe extern "C" fn next(context: *mut std::ffi::c_void) -> AddressSourceKind {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        input.current = input.sources.next();
+        match input.current {
+            None => AddressSourceKind::End,
+            Some((view::Source::Position(_), _)) => AddressSourceKind::Position,
+            Some(_) => AddressSourceKind::Other,
         }
     }
 
+    unsafe extern "C" fn local(context: *const std::ffi::c_void) -> u32 {
+        let (view::Source::Position(origin), _) = unsafe { &*context.cast::<Self>() }.current.unwrap()
+            else { unreachable!() };
+        origin.has_local().into()
+    }
+
+    unsafe extern "C" fn emit(context: *mut std::ffi::c_void, external: u32) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let (source, when) = input.current.take().unwrap();
+        let source = if external != 0 { view::Source::External } else { source.clone() };
+        let when = bounds::Clause::both(&bounds::Clause::default(), when);
+        input.output.sources.union_when(source, &when);
+    }
+
+    fn project(mut self) -> view::Borrow {
+        let host = AddressStorageHost { context: std::ptr::from_mut(&mut self).cast(),
+            next: Self::next, local: Self::local, emit: Self::emit };
+        unsafe { b_bind_external_address_storage(host) };
+        self.output
+    }
+}
+
+struct AddressIdentityBinding<'a> {
+    identity: &'a Identity,
+    bindings: AddressOriginBindings<'a>,
+    ids: &'a [ValueIdentity],
+    current: &'a [ValueIdentity],
+    output: Option<Identity>,
+    result_ids: Vec<ValueIdentity>,
+}
+
+impl AddressIdentityBinding<'_> {
+    unsafe extern "C" fn address_at(context: *mut std::ffi::c_void, index: usize) -> u32 {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let (AddressOriginBindings::Call(values) | AddressOriginBindings::Substitute(values)) = input.bindings
+            else { unreachable!() };
+        let Some(identity) = values.get(&input.ids[index]).and_then(|proof| proof.addresses.first()).and_then(Option::as_ref)
+            else { return 0 };
+        input.output = Some(identity.clone());
+        1
+    }
+
+    unsafe extern "C" fn sources(context: *mut std::ffi::c_void, index: usize) -> AddressIdentitySources {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let id = &input.ids[index];
+        let (present, current) = match input.bindings {
+            AddressOriginBindings::Call(values) | AddressOriginBindings::Substitute(values) => {
+                let proof = values.get(id);
+                (proof.is_some(), proof.and_then(|proof| proof.origins.first()).map_or(&[][..], |row| row.as_slice()))
+            }
+            AddressOriginBindings::Outputs(values) => {
+                let value = values.get(id);
+                (value.is_some(), value.map_or(&[][..], std::slice::from_ref))
+            }
+        };
+        input.current = current;
+        AddressIdentitySources { present: present.into(), count: current.len() }
+    }
+
+    unsafe extern "C" fn append_source(context: *mut std::ffi::c_void, index: usize) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        input.result_ids.push(input.current[index]);
+    }
+
+    unsafe extern "C" fn append_original(context: *mut std::ffi::c_void, index: usize) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        input.result_ids.push(input.ids[index]);
+    }
+
+    unsafe extern "C" fn bind_storage(context: *mut std::ffi::c_void) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let Identity::Storage(borrow) = input.identity else { unreachable!() };
+        let result = match input.bindings {
+            AddressOriginBindings::Substitute(values) => borrow.substitute_values(values),
+            AddressOriginBindings::Outputs(values) => borrow.output_bound(values),
+            AddressOriginBindings::Call(values) => {
+                let output = view::Borrow { inputs: borrow.inputs.clone(), calls: borrow.calls.clone(),
+                    reads: borrow.reads.clone(), ..view::Borrow::default() };
+                AddressStorage { sources: borrow.sources.borrowed_entries(), current: None, output }.project().at_call(values)
+            }
+        };
+        input.output = Some(Identity::Storage(result));
+    }
+
+    fn bind(mut self, kind: AddressIdentityKind) -> Identity {
+        let count = self.ids.len();
+        let mode = self.bindings.mode();
+        let host = AddressIdentityHost { context: std::ptr::from_mut(&mut self).cast(), address_at: Self::address_at,
+            sources: Self::sources, append_source: Self::append_source, append_original: Self::append_original,
+            bind_storage: Self::bind_storage };
+        match unsafe { b_bind_address_identity(kind, count, mode, host) } {
+            AddressIdentityResult::Original => self.identity.clone(),
+            AddressIdentityResult::Bound => self.output.unwrap(),
+            AddressIdentityResult::Values => Identity::Value(self.result_ids),
+        }
+    }
+}
+
+impl Identity {
+    fn bind_address_identity(&self, bindings: AddressOriginBindings<'_>) -> Self {
+        let (kind, ids) = match self {
+            Self::Constant(_) => (AddressIdentityKind::Constant, &[][..]),
+            Self::Value(ids) => (AddressIdentityKind::Values, ids.as_slice()),
+            Self::Storage(_) => (AddressIdentityKind::Storage, &[][..]),
+        };
+        AddressIdentityBinding { identity: self, bindings, ids, current: &[], output: None, result_ids: Vec::new() }.bind(kind)
+    }
+
+    pub(super) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self {
+        self.bind_address_identity(AddressOriginBindings::Substitute(values))
+    }
+
     pub(super) fn output_bound(&self,bindings:&bounds::OutputBindings)->Self {
-        match self {Self::Value(ids)=>Self::Value(ids.iter().map(|id|bindings.get(id).copied().unwrap_or(*id)).collect()),Self::Storage(borrow)=>Self::Storage(borrow.output_bound(bindings)),constant=>constant.clone()}
+        self.bind_address_identity(AddressOriginBindings::Outputs(bindings))
     }
     pub(super) fn at_call(&self,bindings:&BTreeMap<ValueIdentity,bounds::Proof>)->Self {
-        match self {
-            Self::Value(ids)=>{
-                for id in ids {if let Some(address)=bindings.get(id).and_then(|proof|proof.addresses.first()).cloned().flatten(){return address;}}
-                Self::Value(ids.iter().filter_map(|id|bindings.get(id).and_then(|proof|proof.known_identity(0))).collect())
-            },
-            Self::Storage(borrow)=>Self::Storage(borrow.map_sources(|source|match source {
-                view::Source::Position(origin) if origin.has_local()=>view::Borrow::source(view::Source::External),
-                source=>view::Borrow::source(source),
-            }).at_call(bindings)),
-            constant=>constant.clone(),
-        }
+        self.bind_address_identity(AddressOriginBindings::Call(bindings))
     }
     pub(super) fn selected(choice:Option<&bounds::Condition>,a:Option<&Self>,b:Option<&Self>)->Option<Self> {
         if a==b{return a.cloned();}
