@@ -137,9 +137,9 @@ impl<'b, 'w> Scope<'b, 'w> {
             || self.lexical.parameters().any(|param| param.name() == name)
     }
     pub async fn local_value_write(&self,place:&Expr)->Result<Option<bool>> {
-        let Some(name)=assigned_root(place)else{return Ok(None);};
+        let Some(name)=root_name(place)else{return Ok(None);};
         let Some((_,local))=self.bindings.iter().rev().find(|(bound,_)|*bound==name)else{return Ok(None);};
-        let Some(ty)=unsafe { self.world.call(self.named(&name,place.span())).await }?else{return Ok(Some(false));};
+        let Some(ty)=unsafe { self.world.call(self.named(name,place.span())).await }?else{return Ok(Some(false));};
         Ok(Some(matches!(local,Local::Typed(_)|Local::Initialized(..)|Local::Range|Local::Payload(..))
             &&!ty.owns_resources()&&unsafe { self.world.call(self.builder.unwrap().component_projection(place,&name,&ty,None,None,&|_|Ok(None))).await }?.is_some()))
     }

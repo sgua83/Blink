@@ -3,30 +3,34 @@ module bootstrap.ownership_projection;
 address at(address base,u64 offset) on cpu {return unsafe_address(address_bits(base)+offset);}
 ExprNode expression(Source source,ExprRef reference) on cpu {return unsafe_position<ExprNode>(at(source.nodes,reference.offset));}
 Bytes text(Source source,Text name) on cpu {return Bytes(at(name.kind==0 ? source.source : source.stored,name.range.start),name.range.end-name.range.start);}
-extern "C" Bytes root_name(Source source) on cpu {
+extern "C" PlaceRoot place_root(Source source) on cpu {
+    Bytes absent=Bytes(address(),0u64);
     ExprRef current=source.expression;
     while(true){
         ExprNode node=expression(source,current);
         match(node.kind){
-            ExprKind::Name(name){return text(source,name);}
+            ExprKind::Name(name){return PlaceRoot(text(source,name),PlaceRootKind::Named);}
             ExprKind::Member(value){current=value.base;}
             ExprKind::Index(value){current=value.base;}
+            ExprKind::Specialize(value){
+                PlaceRootKind kind=unsafe_position_name(text(source,value.name)) ? PlaceRootKind::Address : PlaceRootKind::Temporary;
+                return PlaceRoot(absent,kind);
+            }
+            ExprKind::Call(unused){return PlaceRoot(absent,PlaceRootKind::Temporary);}
+            ExprKind::Invoke(unused){return PlaceRoot(absent,PlaceRootKind::Temporary);}
+            ExprKind::Construct(unused){return PlaceRoot(absent,PlaceRootKind::Temporary);}
+            ExprKind::Target(unused){return PlaceRoot(absent,PlaceRootKind::Temporary);}
+            ExprKind::Select(unused){return PlaceRoot(absent,PlaceRootKind::Temporary);}
             ExprKind::Number(unused){break;}
             ExprKind::StaticU32(unused){break;}
             ExprKind::Bool(unused){break;}
             ExprKind::FunctionRef(unused){break;}
-            ExprKind::Call(unused){break;}
-            ExprKind::Invoke(unused){break;}
-            ExprKind::Specialize(unused){break;}
             ExprKind::Cooperate(unused){break;}
-            ExprKind::Construct(unused){break;}
-            ExprKind::Target(unused){break;}
             ExprKind::Unary(unused){break;}
             ExprKind::Binary(unused){break;}
-            ExprKind::Select(unused){break;}
         }
     }
-    return Bytes(address(),0u64);
+    return PlaceRoot(absent,PlaceRootKind::Other);
 }
 u8 byte(Bytes value,u64 index) on cpu {return unsafe_position<u8>(at(value.data,index));}
 bool same(Bytes left,Bytes right) on cpu {
@@ -152,27 +156,6 @@ bool unsafe_position_name(Bytes value) on cpu {
         &&byte(value,9u64)==u8(115)&&byte(value,10u64)==u8(105)&&byte(value,11u64)==u8(116)
         &&byte(value,12u64)==u8(105)&&byte(value,13u64)==u8(111)&&byte(value,14u64)==u8(110);
 }
-bool temporary_root(Source source,ExprRef reference) on cpu {
-    ExprNode node=expression(source,reference);
-    match(node.kind){
-        ExprKind::Index(value){return temporary_root(source,value.base);}
-        ExprKind::Member(value){return temporary_root(source,value.base);}
-        ExprKind::Specialize(value){return !unsafe_position_name(text(source,value.name));}
-        ExprKind::Call(unused){return true;}
-        ExprKind::Invoke(unused){return true;}
-        ExprKind::Construct(unused){return true;}
-        ExprKind::Select(unused){return true;}
-        ExprKind::Target(unused){return true;}
-        ExprKind::Number(unused){return false;}
-        ExprKind::StaticU32(unused){return false;}
-        ExprKind::Bool(unused){return false;}
-        ExprKind::Name(unused){return false;}
-        ExprKind::FunctionRef(unused){return false;}
-        ExprKind::Cooperate(unused){return false;}
-        ExprKind::Unary(unused){return false;}
-        ExprKind::Binary(unused){return false;}
-    }
-}
 extern "C" Projection owned(Source source,address env,address path,Host host) on cpu
     requires nonzero(host.root) requires nonzero(host.index) requires nonzero(host.ty)
     requires nonzero(host.field) requires nonzero(host.element) requires nonzero(host.push) {
@@ -215,4 +198,3 @@ extern "C" void components(address root,address selected,u32 offset,address outp
         host.push(output,found);i+=1u64;
     }
 }
-extern "C" bool temporary(Source source) on cpu {return temporary_root(source,source.expression);}

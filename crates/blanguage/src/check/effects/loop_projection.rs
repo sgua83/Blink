@@ -193,11 +193,11 @@ impl Builder<'_> {
     pub(super) async fn project_loop_writes(&self, writes: &[Write]) -> Result<LoopWrites> {
         let mut effect = LoopWrites::default();
         for write in writes {
-            let (address, iterator) = match write {
-                Write::Position { place, iterator, .. } => (address_write(place), iterator.is_some()),
-                _ => (false, false),
+            let (root, iterator) = match write {
+                Write::Position { place, iterator, .. } => (place_root(place), iterator.is_some()),
+                _ => (PlaceRoot::Other, false),
             };
-            let action = unsafe { loop_projection(write.loop_kind(), address.into(), iterator.into()) };
+            let action = unsafe { loop_projection(write.loop_kind(), root.is_address().into(), iterator.into()) };
             match (action, write) {
                 (LoopProjection::External, _) => effect.include_uncertainty(LoopUncertainty { storage: 1, external: 1 }),
                 (LoopProjection::Unknown, _) => effect.unknown_storage = true,
@@ -224,15 +224,15 @@ impl Builder<'_> {
                         effect.unknown_storage |= !located;
                         continue;
                     }
-                    let name = assigned_root(place);
-                    let binding = name.as_deref().and_then(|name| self.env.get(name));
+                    let name = root.name();
+                    let binding = name.and_then(|name| self.env.get(name));
                     let stored = binding.and_then(Binding::stored_place);
                     let owner = match binding {
                         Some(Binding::ApplicationData(data)) => data.place.as_ref(),
                         _ => stored.as_ref(),
                     };
                     let mut projected = false;
-                    if let (Some(name), Some(owner @ Place::Local(_, slots, ..))) = (name.as_deref(), owner)
+                    if let (Some(name), Some(owner @ Place::Local(_, slots, ..))) = (name, owner)
                         && let Some((_, components)) = unsafe { self.world.call(self.written_projection(place, name, owner, None, writes)).await }?
                     {
                         effect.locals.extend(components.into_iter().flatten().map(|component| slots[component]));
@@ -283,7 +283,7 @@ impl Builder<'_> {
 
     async fn invalidate_loop_elements(&mut self, write: &Write, writes: &[Write], usage: &mut LoopMemoryUse) -> Result<()> {
         let memory = write.memory_effect();
-        let address = matches!(write, Write::Position { contents: false, place, .. } if address_write(place));
+        let address = matches!(write, Write::Position { contents: false, place, .. } if place_root(place).is_address());
         // The address effect borrows the normalized write. It is independent
         // of Data updates, so the later proof pass uses this same classification.
         let effect = unsafe { loop_element_effect(write.loop_kind(), address.into(), memory.is_some().into()) };

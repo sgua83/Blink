@@ -1,5 +1,6 @@
 //! 从已声明的 write／inout 参数追踪调用方位置写入，覆盖表达式与各控制流入口。
 use super::*;
+use super::owned_records::{PlaceRoot, place_root, root_name};
 use crate::syntax::wire::{ExprRef, Optional, SignatureNode, Slice, StmtRef, StorageView, Text, TypeRef};
 use std::ops::ControlFlow;
 mod collection;
@@ -217,7 +218,11 @@ impl Builder<'_> {
                     .any(|write| match write {
                         Write::External{..}|Write::Generator(_)=>true,
                         Write::Memory{..}=>self.env.get(name).and_then(Binding::stored_place).is_some_and(|owner|!self.memory_effect_components(write.memory_effect(), &owner, false).is_empty()),
-                        Write::Position{contents:false,place,..}=>assigned_root(&place).as_deref()==Some(name)||address_write(place),
+                        Write::Position{contents:false,place,..}=>match place_root(place) {
+                            PlaceRoot::Name(root) => root == name,
+                            PlaceRoot::Address => true,
+                            _ => false,
+                        },
                         _=>false,
                     }) =>
             {
@@ -355,7 +360,7 @@ impl Builder<'_> {
         let mut normalized=Vec::new();
         for write in writes {
             let write=match write {
-                Write::Position{place,call:None,contents:false,when,..}if address_write(&place)=>{
+                Write::Position{place,call:None,contents:false,when,..}if place_root(&place).is_address()=>{
                     let scope=Scope::current(self);
                     let mut borrow=match unsafe { self.world.call(scope.input_snapshot(&place,scope.bindings.len(),Access::Write,None,None)).await }? {
                         Some((_,_,borrow))=>borrow,
@@ -454,20 +459,6 @@ impl Builder<'_> {
     }
 }
 
-fn address_write(expr:&Expr)->bool {
-    match expr.kind() {
-        ExprKind::Specialize(name,_,_)=>name=="unsafe_position",
-        ExprKind::Member(base,_)|ExprKind::Index(base,_)=>address_write(&base),
-        _=>false,
-    }
-}
-fn assigned_root(expr: &Expr) -> Option<String> {
-    match expr.kind() {
-        ExprKind::Name(name) => Some(name.to_owned()),
-        ExprKind::Member(base, _) | ExprKind::Index(base, _) => assigned_root(&base),
-        _ => None,
-    }
-}
 impl<'b, 'w> Scope<'b, 'w> {
 
     async fn input_snapshot(&self,expr:&Expr,limit:usize,access:Access,element:Option<(&DataProjection<'_>,&bounds::Clause)>,ordinal:Option<&str>)->Result<Option<(Ty,bounds::Proof,view::Borrow)>> {
@@ -508,13 +499,13 @@ impl<'b, 'w> Scope<'b, 'w> {
                 let origin=address::Origin{root:address::Root::Derived(proof.view_borrow(0)),base:layout.clone(),layout,words:ty.components.iter().map(|(_,word)|*word).collect(),positions:Arc::from([]),writable:true,initialized:vec![false;ty.components.len()].into()};
                 return Ok(Some((ty.clone(),bounds::Proof::default().with_external_borrows(&ty),origin.normalize())));
             },
-            ExprKind::Member(base,field)if address_write(&base)=>{
+            ExprKind::Member(base,field)if place_root(&base).is_address()=>{
                 let Some((ty,proof,borrow))=unsafe { self.world.call(self.input_snapshot(&base,limit,access,element,ordinal)).await }?else{return Ok(None);};
                 let(selected,parts)=member_type(&ty,field,builder.scope.source(),expr.span())?;
                 let origin=address::Origin{root:address::Root::Derived(borrow),base:address::Layout::of(&ty),layout:address::Layout::of(&selected),words:parts.iter().map(|part|ty.components[*part].1).collect(),positions:Arc::from([]),writable:true,initialized:vec![false;selected.components.len()].into()};
                 return Ok(Some((selected,proof.project(&parts,ty.components.len()),origin.normalize())));
             },
-            ExprKind::Index(base,index)if address_write(&base)=>{
+            ExprKind::Index(base,index)if place_root(&base).is_address()=>{
                 let Some((ty,_,borrow))=unsafe { self.world.call(self.input_snapshot(&base,limit,access,element,ordinal)).await }?else{return Ok(None);};
                 let Some(selected)=ty.array.as_deref()else{return Ok(None);};
                 let known=unsafe { self.world.call(self.input_snapshot(&index,limit,Access::Value,element,ordinal)).await }?.and_then(|(ty,proof,_)|(ty==Ty::scalar(Scalar::U32)).then(||proof.known_value(&ty)).flatten()).map(|bits|bits[0]);
@@ -555,7 +546,7 @@ impl<'b, 'w> Scope<'b, 'w> {
             },
             _=>{},
         }
-        let Some(name)=assigned_root(&expr)else{
+        let Some(name)=root_name(expr)else{
             if let ExprKind::Bool(value)=expr.kind(){return Ok(Some((Ty::scalar(Scalar::Bool),bounds::Proof::condition(bounds::Condition::constant(value)),view::Borrow::default())));}
             return Ok(None);
         };
@@ -567,7 +558,7 @@ impl<'b, 'w> Scope<'b, 'w> {
                 Some(Binding::DataReference(data))=>{let(offset,ty)=data.element_layout();Some((&data.data,offset,ty))},
                 _=>None,
             })else{return Ok(None);};
-            let Some((ty,parts))=unsafe { builder.world.call(builder.component_projection(expr,&name,element,None,None,&|_|Ok(None))).await }?else{return Ok(None);};
+            let Some((ty,parts))=unsafe { builder.world.call(builder.component_projection(expr,name,element,None,None,&|_|Ok(None))).await }?else{return Ok(None);};
             let mut borrow=view::Borrow::default();
             for choice in 0..parts.first().map_or(0,Vec::len) {
                 let mut origin=application::dataset_origin(data,offset,element,false);
@@ -578,7 +569,7 @@ impl<'b, 'w> Scope<'b, 'w> {
             }
             return Ok(Some((ty.clone(),bounds::Proof::default().with_external_borrows(&ty),borrow)));
         }
-        let Some(binding)=builder.env.get(&name)else{return Ok(None);};
+        let Some(binding)=builder.env.get(name)else{return Ok(None);};
         let known_index=|index:&Expr| {
             if let ExprKind::Name(name)=index.kind()
                 &&(self.bindings[..limit].iter().any(|(bound,_)|*bound==name)||!matches!(builder.env.get(name),Some(Binding::Value(_)))) {return Ok(None);}
@@ -617,7 +608,7 @@ impl<'b, 'w> Scope<'b, 'w> {
         };
         let mut proof=bounds::Proof::default().with_external_borrows(&ty);
         proof.assign(&kept,ty.components.len(),source.project(&kept,ty.components.len()));
-        let Some((selected,parts))=unsafe { builder.world.call(builder.component_projection(expr,&name,&ty,owner.as_ref(),None,&|index|Ok(match known_index(index)?{Some(bounds::Operand::Constant(Scalar::U32,value))=>Some(value as u32),_=>None}))).await }?else{return Ok(None);};
+        let Some((selected,parts))=unsafe { builder.world.call(builder.component_projection(expr,name,&ty,owner.as_ref(),None,&|index|Ok(match known_index(index)?{Some(bounds::Operand::Constant(Scalar::U32,value))=>Some(value as u32),_=>None}))).await }?else{return Ok(None);};
         let mut value=None::<bounds::Proof>;let mut borrow=view::Borrow::default();
         for choice in 0..parts.first().map_or(0,Vec::len) {
             let indices=parts.iter().map(|part|part[choice]).collect::<Vec<_>>();
@@ -639,7 +630,7 @@ impl<'b, 'w> Scope<'b, 'w> {
             let ty=unsafe { self.world.call(cooperative::parameter_type(self.world,&parameter,(&definition.source,&definition.module,&definition.imports,definition.function.kind()),builder.program.target)).await }?;
             if parameter.ty.dataset {
                 let descriptor=Builder::borrowed_dataset_parameter_type(parameter.access,definition.execution);
-                if let Some(name)=assigned_root(&arg) &&!self.bindings.iter().any(|(bound,_)|*bound==name) {
+                if let Some(name)=root_name(&arg) &&!self.bindings.iter().any(|(bound,_)|*bound==name) {
                     if let Some((data,field,ty))=builder.written_application_data(&arg) {
                         let origin=application::dataset_origin(data,field,ty,false);
                         inputs.insert(ValueIdentity::Register(offset),{let mut component_proof=data.root.proof.clone();component_proof.set_view_borrow(0,origin.normalize());component_proof});
@@ -718,7 +709,7 @@ pub(super) async fn value_writes(builder: &Builder<'_>, body: &Block) -> Result<
 pub(super) async fn expression_assignments(builder: &Builder<'_>, expr: &Expr, names: &mut BTreeSet<String>) -> Result<()> {
     unsafe { builder.world.call(expression_writes(builder, expr, &mut async |write: Write| {
         if let Write::Position{contents:false,place,..}=write
-            && let Some(root)=assigned_root(&place) {names.insert(root);}
+            && let Some(root)=root_name(&place) {names.insert(root.to_owned());}
         Ok(())
     })).await }
 }
@@ -743,8 +734,8 @@ impl BindingUses {
     fn record(&mut self, usage: Write) {
         match usage {
             Write::Position { contents: false, place, .. } => {
-                if let Some(name) = assigned_root(&place) {
-                    self.0.insert(name, BindingUse::WritePlace);
+                if let Some(name) = root_name(&place) {
+                    self.0.insert(name.to_owned(), BindingUse::WritePlace);
                 }
             },
             _ => {},
@@ -1130,7 +1121,7 @@ impl Builder<'_> {
         if matches!(write,Write::Move{..}){return Ok(false);}
         if matches!(target,LoopPlace::Local) {
             return Ok(match write {
-                Write::Position{place,..}=>assigned_root(&place).is_none_or(|root|root==name)||address_write(place),
+                Write::Position{place,..}=>root_name(place).is_none_or(|root|root==name),
                 _=>true,
             });
         }
@@ -1221,7 +1212,8 @@ impl Builder<'_> {
             }
             let Write::Position{place,contents,iterator,local_value,..}=write else{return Ok(true);};
             if *local_value{return Ok(false);}
-            if address_write(place)||iterator.is_some(){return Ok(true);}
+            let root=place_root(place);
+            if root.is_address()||iterator.is_some(){return Ok(true);}
             if *contents{return Ok(self.written_application_data(place).is_none_or(|(data,..)|overlaps(&target.resource.owners(),&view::resource_borrow(data),&self.path)));}
             if let Some((written,_,_))=unsafe { self.world.call(self.loop_write_projection(place,&async |index,_|self.loop_index_operand(index,writes).map(|index|(index,None)))).await }? {
                 if ancestors(&target.resource,&written,&self.path){return Ok(true);}
@@ -1231,8 +1223,8 @@ impl Builder<'_> {
                 let(scalar,word)=target.base.components[*component];
                 return Ok(written.value.1.iter().flatten().any(|part|{let(other,at)=written.base.components[*part];word<at+other.size()&&at<word+scalar.size()}));
             }
-            let Some(root)=assigned_root(&place)else{return Ok(true);};let Some(binding)=self.env.get(&root)else{return Ok(true);};let Some(owner)=binding.stored_place()else{return Ok(true);};
-            let Some((_,parts))=unsafe { self.world.call(self.written_projection(place,&root,&owner,None,writes)).await }?else{return Ok(true);};
+            let Some(root)=root.name()else{return Ok(true);};let Some(binding)=self.env.get(root)else{return Ok(true);};let Some(owner)=binding.stored_place()else{return Ok(true);};
+            let Some((_,parts))=unsafe { self.world.call(self.written_projection(place,root,&owner,None,writes)).await }?else{return Ok(true);};
             for data in binding.application_resources(){
                 if !self.application_element_scopes(&[],&target.resource,data,(&self.path,&self.env)).is_empty()
                     && let Some(descriptor)=&data.place {
@@ -1307,8 +1299,11 @@ impl Builder<'_> {
                 None
             }
             LoopPlace::Local => {
-                if address_write(&lhs) { return Ok(NumericEffect::Unknown); }
-                if assigned_root(&lhs).as_deref() != Some(name) { return Ok(NumericEffect::preserve()); }
+                match place_root(&lhs) {
+                    PlaceRoot::Address => return Ok(NumericEffect::Unknown),
+                    PlaceRoot::Name(root) if root == name => {}
+                    _ => return Ok(NumericEffect::preserve()),
+                }
                 if !matches!(lhs.kind(), ExprKind::Name(bound) if bound == name)
                     || unsafe { self.world.call(scope.named(name, lhs.span())).await }? != Some(Ty::scalar(Scalar::U32)) {
                     return Ok(NumericEffect::Unknown);
@@ -1340,7 +1335,7 @@ impl Builder<'_> {
         if let Some((_, parts, component)) = &projection {
             if !parts.iter().any(|part| part.contains(component)) { return Ok(NumericEffect::preserve()); }
             // A possible location is not necessarily the position selected by this write.
-            if address_write(&lhs) || parts.iter().any(|part| part.contains(component) && part.len() != 1) {
+            if place_root(&lhs).is_address() || parts.iter().any(|part| part.contains(component) && part.len() != 1) {
                 return Ok(NumericEffect::Unknown);
             }
         }

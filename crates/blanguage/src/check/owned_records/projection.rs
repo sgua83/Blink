@@ -7,6 +7,30 @@ type Address=*const c_void;
 #[derive(Clone,Copy)]
 #[repr(C)]struct Bytes{data:*const u8,count:u64}
 impl Bytes{unsafe fn text<'a>(self)->&'a str{unsafe{std::str::from_utf8_unchecked(std::slice::from_raw_parts(self.data,self.count as usize))}}}
+
+#[repr(u32)]
+#[allow(dead_code)] // Produced by the B syntax query.
+enum PlaceRootKind { Other, Named, Address, Temporary }
+
+#[repr(C)]
+struct RawPlaceRoot { name: Bytes, kind: PlaceRootKind }
+
+#[derive(Clone, Copy)]
+pub(in crate::check) enum PlaceRoot<'a> {
+    Other,
+    Name(&'a str),
+    Address,
+    Temporary,
+}
+
+impl<'a> PlaceRoot<'a> {
+    pub(in crate::check) fn name(self) -> Option<&'a str> {
+        match self { Self::Name(name) => Some(name), _ => None }
+    }
+
+    pub(in crate::check) fn is_address(self) -> bool { matches!(self, Self::Address) }
+}
+
 #[derive(Clone,Copy)]
 #[repr(C)]struct TypeInfo{array:Address,length:u64,fields:u64,components:u64}
 #[derive(Clone,Copy)]
@@ -33,14 +57,12 @@ unsafe extern "C"{
  fn b_owned(source:SyntaxSource,env:Address,path:*mut c_void,host:Host)->Projection;
  #[link_name="bootstrap.ownership_projection::owned_type"]
  fn b_type(source:SyntaxSource,env:Address,host:Host)->Address;
- #[link_name="bootstrap.ownership_projection::root_name"]
- fn b_root_name(source: SyntaxSource) -> Bytes;
+ #[link_name="bootstrap.ownership_projection::place_root"]
+ fn b_place_root(source: SyntaxSource) -> RawPlaceRoot;
  #[link_name="bootstrap.ownership_projection::field_layout"]
  fn b_field_layout(root: Address, fields: *const usize, count: u64, host: Host) -> Part;
  #[link_name="bootstrap.ownership_projection::components"]
  fn b_components(root:Address,selected:Address,offset:u32,output:*mut c_void,host:Host);
- #[link_name="bootstrap.ownership_projection::temporary"]
- fn b_temporary(source:SyntaxSource)->bool;
 }
 fn address<T>(value:&T)->Address{ptr::from_ref(value).cast()}
 fn source(expr:&Expr)->SyntaxSource{
@@ -91,11 +113,18 @@ pub(super) fn owned<'a>(builder:&'a Builder<'_>,expr:&Expr)->Option<(OwnedProjec
 pub(super) fn ty<'a>(builder:&'a Builder<'_>,expr:&Expr)->Option<&'a Ty>{
  unsafe{b_type(source(expr),address(&builder.env),HOST).cast::<Ty>().as_ref()}
 }
-pub(in crate::check) fn root_name(expr: &Expr) -> Option<&str> {
-    let name = unsafe { b_root_name(source(expr)) };
-    // The span borrows the sealed syntax held by expr.
-    (!name.data.is_null()).then(|| unsafe { name.text() })
+pub(in crate::check) fn place_root(expr: &Expr) -> PlaceRoot<'_> {
+    let root = unsafe { b_place_root(source(expr)) };
+    match root.kind {
+        PlaceRootKind::Other => PlaceRoot::Other,
+        // The name borrows the sealed syntax held by expr.
+        PlaceRootKind::Named => PlaceRoot::Name(unsafe { root.name.text() }),
+        PlaceRootKind::Address => PlaceRoot::Address,
+        PlaceRootKind::Temporary => PlaceRoot::Temporary,
+    }
 }
+
+pub(in crate::check) fn root_name(expr: &Expr) -> Option<&str> { place_root(expr).name() }
 pub(in crate::check) fn field_layout<'a>(root: &'a Ty, fields: &[usize]) -> (u32, &'a Ty) {
     let selected = unsafe { b_field_layout(address(root), fields.as_ptr(), fields.len() as u64, HOST) };
     // The checked field path selects a Ty borrowed from the original layout.
@@ -111,4 +140,3 @@ pub(in crate::check) fn path_components(root: &Ty, fields: &[usize]) -> Vec<usiz
     let (offset, selected) = field_layout(root, fields);
     components(root, selected, offset)
 }
-pub(super) fn temporary(expr:&Expr)->bool{unsafe{b_temporary(source(expr))}}

@@ -4,7 +4,7 @@ use application::Ownership;
 use owned_values::{OwnedValue,ReadName as MemberName,read_field as member_field,read_field_name as member_field_name};
 use returns::Returned;
 mod projection;
-pub(super) use projection::{components as field_components, field_layout, path_components, root_name};
+pub(super) use projection::{PlaceRoot, components as field_components, field_layout, path_components, place_root, root_name};
 
 #[derive(Clone)]
 pub(super) struct OwnedProjection {
@@ -303,7 +303,7 @@ impl Builder<'_> {
 
 impl Builder<'_> {
     pub(super) fn temporary_projection(&self, expr: &Expr) -> bool {
-        projection::temporary(expr)
+        matches!(projection::place_root(expr), PlaceRoot::Temporary)
     }
 }
 

@@ -2,6 +2,8 @@ module bootstrap.ownership_projection;
 import bootstrap.ast_storage;
 struct Source {address nodes;address source;address stored;ExprRef expression;};
 struct Bytes {address data;u64 count;};
+enum PlaceRootKind:u32 { Other=0; Named=1; Address=2; Temporary=3; };
+struct PlaceRoot { Bytes name; PlaceRootKind kind; };
 struct TypeInfo {address array;u64 length;u64 fields;u64 components;};
 struct Field {Bytes name;u32 offset;address ty;};
 struct Part {u32 offset;address ty;};
@@ -22,9 +24,8 @@ extern "C" Projection owned(Source source,address env,address path,Host host) on
     requires nonzero(host.field) requires nonzero(host.element) requires nonzero(host.push);
 extern "C" address owned_type(Source source,address env,Host host) on cpu
     requires nonzero(host.root) requires nonzero(host.ty) requires nonzero(host.selected_field);
-extern "C" Bytes root_name(Source source) on cpu;
+extern "C" PlaceRoot place_root(Source source) on cpu;
 extern "C" Part field_layout(address root,address fields,u64 count,Host host) on cpu
     requires nonzero(host.element);
 extern "C" void components(address root,address selected,u32 offset,address output,Host host) on cpu
     requires nonzero(host.ty) requires nonzero(host.word) requires nonzero(host.push);
-extern "C" bool temporary(Source source) on cpu;

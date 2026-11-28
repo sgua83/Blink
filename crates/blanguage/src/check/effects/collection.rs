@@ -190,7 +190,7 @@ impl WriteSink for RoutedSink<'_, '_> {
                 Route::Elements(name, start) => {
                     write.restrict_move(&bounds::Condition::default());
                     if let Write::Position { place, iterator, .. } = &mut write
-                        && assigned_root(place).as_deref() == Some(*name)
+                        && root_name(place) == Some(*name)
                     {
                         *iterator = Some(((*name).to_owned(), start.clone()));
                     }
@@ -351,7 +351,7 @@ impl Scope<'_, '_> {
                     view.node(step.value.offset), code.slice(cursor.index as usize + 1..),
                 ))),
                 StatementAction::Element => {
-                    present = u32::from(assigned_root(&view.node(step.value.offset)).is_some_and(|name|
+                    present = u32::from(root_name(&view.node(step.value.offset)).is_some_and(|name|
                         self.bindings.iter().rev().find(|(bound, _)| *bound == name)
                             .is_some_and(|(_, local)| matches!(local, Local::NamedElement(_)))));
                 }
@@ -484,8 +484,8 @@ impl Scope<'_, '_> {
                     writes.accept(world, position(place, Some(expr.clone()), step.contents != 0, local)).await?;
                 }
                 CallAction::ReadPlace => {
-                    if let Some(name) = assigned_root(&view.node(step.value.offset)) {
-                        self.binding_uses.unwrap().borrow_mut().read_place(name);
+                    if let Some(name) = root_name(&view.node(step.value.offset)) {
+                        self.binding_uses.unwrap().borrow_mut().read_place(name.to_owned());
                     }
                 },
                 CallAction::External => {
