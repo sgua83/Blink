@@ -1,6 +1,11 @@
 module bootstrap.relation_order;
 import bootstrap.clause_storage;
 
+extern "C" address calloc(usize count, usize bytes) on cpu from "ucrtbase.dll";
+extern "C" address realloc(address data, usize bytes) on cpu from "ucrtbase.dll";
+extern "C" void free(address data) on cpu from "ucrtbase.dll";
+extern "C" never abort() on cpu from "ucrtbase.dll";
+
 const u64 REACHABLE = 1u64;
 const u64 VARIABLE = 2u64;
 const u64 READS = 4u64;
@@ -24,8 +29,6 @@ address cell(address data, usize index, u64 stride) on cpu {
 
 
 const usize WALK_END = 18446744073709551615u64;
-const u32 WALK_SEEN = 0;
-const u32 WALK_MATCHED = 2;
 
 void walk_frames(address graph,address work,WalkSlice edges,u32 frame_read,WalkEdges host) on cpu
     requires nonzero(host.source.edge) requires nonzero(host.source.frame) requires nonzero(host.source.write)
@@ -73,22 +76,129 @@ u32 walk_inputs(address graph,address work,WalkVisit visit,u32 feedback,WalkEdge
     return reads;
 }
 
-extern "C" u32 walk_relation(address graph,address work,usize root,u32 feedback,WalkHost host) on cpu
-    requires nonzero(host.edges.source.edges) requires nonzero(host.edges.source.edge)
-    requires nonzero(host.edges.source.frame) requires nonzero(host.edges.source.write)
-    requires nonzero(host.edges.source.field) requires nonzero(host.edges.mark_frame)
-    requires nonzero(host.edges.publish) requires nonzero(host.pop) requires nonzero(host.visit)
-{
-    host.edges.publish(work,WalkVisit(root,0));
-    while (true) {
-        WalkVisit visit = host.pop(work);
-        if (visit.node == WALK_END) { return 0; }
-        if (visit.node == root && visit.read != 0) { return 1; }
-        u32 discovered = host.visit(work,visit);
-        if (discovered == WALK_MATCHED) { return 1; }
-        if (discovered == WALK_SEEN) { continue; }
-        walk_inputs(graph,work,visit,feedback,host.edges);
+struct ReachMarks {
+    address data;
+    usize width;
+    usize count;
+};
+
+struct ReachWork {
+    ReachMarks nodes;
+    ReachMarks frames;
+    address pending;
+    usize length;
+    usize capacity;
+};
+
+address plan_cells(usize count, usize bytes) on cpu {
+    if (count == 0u64) { return address(); }
+    address cells = calloc(count, bytes);
+    if (cells == address()) { abort(); }
+    return cells;
+}
+
+ReachWork reach_work(WalkLimits limits) on cpu {
+    ReachMarks nodes = ReachMarks(plan_cells(limits.nodes,1u64),limits.nodes,0u64);
+    ReachMarks frames = ReachMarks(plan_cells(limits.frames,1u64),limits.frames,0u64);
+    return ReachWork(nodes,frames,address(),0u64,0u64);
+}
+
+bool mark_reachable(inout ReachMarks marks,WalkVisit visit) on cpu {
+    address slot = cell(marks.data,visit.node,1u64);
+    u8 flags = unsafe_position<u8>(slot);
+    u8 bit = visit.read == 0 ? u8(1) : u8(2);
+    if ((flags & bit) != u8(0)) { return false; }
+    unsafe_position<u8>(slot) = flags | bit;
+    marks.count += 1u64;
+    return true;
+}
+
+extern "C" u32 mark_reachable_frame(address work,WalkVisit visit) on cpu {
+    return u32(mark_reachable(unsafe_position<ReachWork>(work).frames,visit));
+}
+
+extern "C" void push_reachable(address context,WalkVisit visit) on cpu {
+    usize length = unsafe_position<ReachWork>(context).length;
+    usize capacity = unsafe_position<ReachWork>(context).capacity;
+    address pending = unsafe_position<ReachWork>(context).pending;
+    if (length == capacity) {
+        capacity = capacity == 0u64 ? 8u64 : capacity * 2u64;
+        pending = realloc(pending,capacity * size_of<WalkVisit>());
+        if (pending == address()) { abort(); }
+        unsafe_position<ReachWork>(context).pending = pending;
+        unsafe_position<ReachWork>(context).capacity = capacity;
     }
+    unsafe_position<WalkVisit>(cell(pending,length,size_of<WalkVisit>())) = visit;
+    unsafe_position<ReachWork>(context).length = length + 1u64;
+}
+
+u32 traverse_reachable(address graph,address context,inout ReachWork work,usize root,u32 feedback,
+    RelationSource source,cfn<u32,address,address,usize> accept) on cpu
+    requires nonzero(source.edges) requires nonzero(source.edge) requires nonzero(source.frame)
+    requires nonzero(source.write) requires nonzero(source.field) requires nonzero(accept)
+{
+    WalkEdges host = WalkEdges(source,c_function(mark_reachable_frame),c_function(push_reachable));
+    address state = address_of(work);
+    push_reachable(state,WalkVisit(root,0));
+    while (work.length != 0u64) {
+        work.length -= 1u64;
+        WalkVisit visit = unsafe_position<WalkVisit>(cell(work.pending,work.length,size_of<WalkVisit>()));
+        if (visit.node == root && visit.read != 0) { return 1; }
+        if (!mark_reachable(work.nodes,visit)) { continue; }
+        if (accept(graph,context,visit.node) != 0) { return 1; }
+        walk_inputs(graph,state,visit,feedback,host);
+    }
+    return 0;
+}
+
+void free_reach_work(ReachWork work) on cpu {
+    free(work.pending);
+    free(work.frames.data);
+    free(work.nodes.data);
+}
+
+WalkSlice reachable_ids(ReachMarks marks) on cpu {
+    address data = plan_cells(marks.count,size_of<usize>());
+    usize id = 0u64;
+    usize count = 0u64;
+    while (id < marks.width) {
+        if (unsafe_position<u8>(cell(marks.data,id,1u64)) != u8(0)) {
+            unsafe_position<usize>(cell(data,count,size_of<usize>())) = id;
+            count += 1u64;
+        }
+        id += 1u64;
+    }
+    return WalkSlice(data,count);
+}
+
+extern "C" u32 ignore_reachable(address graph,address context,usize node) on cpu { return 0; }
+
+extern "C" u32 match_relation(address graph,address context,WalkLimits limits,usize root,u32 feedback,
+    RelationSource source,cfn<u32,address,address,usize> accept) on cpu
+    requires nonzero(source.edges) requires nonzero(source.edge) requires nonzero(source.frame)
+    requires nonzero(source.write) requires nonzero(source.field) requires nonzero(accept)
+{
+    ReachWork work = reach_work(limits);
+    u32 found = traverse_reachable(graph,context,work,root,feedback,source,accept);
+    free_reach_work(work);
+    return found;
+}
+
+extern "C" RelationSelection reachable_relation(address graph,WalkLimits limits,usize root,RelationSource source,u32 with_frames) on cpu
+    requires nonzero(source.edges) requires nonzero(source.edge) requires nonzero(source.frame)
+    requires nonzero(source.write) requires nonzero(source.field)
+{
+    ReachWork work = reach_work(limits);
+    traverse_reachable(graph,address(),work,root,0,source,c_function(ignore_reachable));
+    WalkSlice nodes = reachable_ids(work.nodes);
+    WalkSlice frames = with_frames != 0 ? reachable_ids(work.frames) : WalkSlice(address(),0u64);
+    free_reach_work(work);
+    return RelationSelection(nodes,frames,root);
+}
+
+extern "C" void release_reachable(RelationSelection selection) on cpu {
+    free(selection.frames.data);
+    free(selection.nodes.data);
 }
 
 extern "C" usize prepare_plan_inputs(address graph, address work, address roots, address rows,

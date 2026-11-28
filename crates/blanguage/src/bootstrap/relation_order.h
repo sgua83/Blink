@@ -40,17 +40,12 @@ struct WalkEdges {
     cfn<void,address,WalkVisit> publish;
 };
 
-struct WalkHost {
-    WalkEdges edges;
-    cfn<WalkVisit,address> pop;
-    cfn<u32,address,WalkVisit> visit;
-};
+struct WalkLimits { usize nodes; usize frames; };
 
-extern "C" u32 walk_relation(address graph,address work,usize root,u32 feedback,WalkHost host) on cpu
-    requires nonzero(host.edges.source.edges) requires nonzero(host.edges.source.edge)
-    requires nonzero(host.edges.source.frame) requires nonzero(host.edges.source.write)
-    requires nonzero(host.edges.source.field) requires nonzero(host.edges.mark_frame)
-    requires nonzero(host.edges.publish) requires nonzero(host.pop) requires nonzero(host.visit);
+extern "C" u32 match_relation(address graph,address context,WalkLimits limits,usize root,u32 feedback,
+    RelationSource source,cfn<u32,address,address,usize> accept) on cpu
+    requires nonzero(source.edges) requires nonzero(source.edge) requires nonzero(source.frame)
+    requires nonzero(source.write) requires nonzero(source.field) requires nonzero(accept);
 struct PlanInputsHost {
     WalkEdges edges;
     cfn<usize,address> next;
@@ -124,6 +119,11 @@ struct RelationOutput {
     cfn<address,address,address,usize,usize> write;
     cfn<void,address,address,usize,usize> field;
 };
+
+extern "C" RelationSelection reachable_relation(address graph,WalkLimits limits,usize root,RelationSource source,u32 with_frames) on cpu
+    requires nonzero(source.edges) requires nonzero(source.edge) requires nonzero(source.frame)
+    requires nonzero(source.write) requires nonzero(source.field);
+extern "C" void release_reachable(RelationSelection selection) on cpu;
 
 extern "C" usize compact_index(RelationSelection selection, usize id) on cpu;
 

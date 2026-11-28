@@ -142,15 +142,35 @@ struct WalkEdges {
 }
 
 #[repr(C)]
-struct WalkHost {
-    edges: WalkEdges,
-    pop: unsafe extern "C" fn(Slot) -> WalkVisit,
-    visit: unsafe extern "C" fn(Slot, WalkVisit) -> u32,
-}
+struct WalkLimits { nodes: usize, frames: usize }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.relation_order::walk_relation"]
-    fn walk_relation(graph: Borrowed, work: Slot, root: usize, feedback: u32, host: WalkHost) -> u32;
+    #[link_name = "bootstrap.relation_order::match_relation"]
+    fn match_relation(
+        graph: Borrowed, context: Slot, limits: WalkLimits, root: usize, feedback: u32,
+        source: RelationSource, accept: unsafe extern "C" fn(Borrowed, Slot, usize) -> u32,
+    ) -> u32;
+    #[link_name = "bootstrap.relation_order::reachable_relation"]
+    fn reachable_relation(
+        graph: Borrowed, limits: WalkLimits, root: usize, source: RelationSource, with_frames: u32,
+    ) -> RelationSelection;
+    #[link_name = "bootstrap.relation_order::release_reachable"]
+    fn release_reachable(selection: RelationSelection);
+}
+
+struct Reachable(RelationSelection);
+
+impl Reachable {
+    fn nodes(&self) -> &[usize] {
+        // A reachable selection contains its root and owns this storage.
+        unsafe { std::slice::from_raw_parts(self.0.nodes.data.cast(), self.0.nodes.count) }
+    }
+}
+
+impl Drop for Reachable {
+    fn drop(&mut self) {
+        unsafe { release_reachable(self.0) };
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -181,24 +201,40 @@ impl<'g> RelationView<'g> {
         }
     }
 
-    fn reachable(self, root: usize) -> (BTreeSet<usize>, BTreeSet<usize>) {
-        let mut work = RelationWalk::from_view(self, |_| false);
-        work.walk(root, false);
-        let [nodes, _] = work.nodes;
-        let [frames, _] = work.frames;
-        (nodes, frames)
+    fn limits(self) -> WalkLimits {
+        WalkLimits { nodes: self.base.nodes.len() + self.tail.len(), frames: self.base.frames.len() }
+    }
+
+    fn reachable(self, root: usize, with_frames: bool) -> Reachable {
+        Reachable(unsafe {
+            reachable_relation(ptr::from_ref(&self).cast(), self.limits(), root, RelationSource::GRAPH, u32::from(with_frames))
+        })
+    }
+
+    fn matches<F: FnMut(RelationNode<'g>) -> bool>(self, root: usize, feedback: bool, mut accepts: F) -> bool {
+        unsafe extern "C" fn accept<'g, F: FnMut(RelationNode<'g>) -> bool>(
+            graph: Borrowed, context: Slot, id: usize,
+        ) -> u32 {
+            let graph = unsafe { *graph.cast::<RelationView<'g>>() };
+            let accepts = unsafe { &mut *context.cast::<F>() };
+            u32::from(accepts(graph.node(id)))
+        }
+        unsafe {
+            match_relation(ptr::from_ref(&self).cast(), ptr::from_mut(&mut accepts).cast(),
+                self.limits(), root, u32::from(feedback), RelationSource::GRAPH, accept::<F>) != 0
+        }
     }
 
     fn selected(self, root: usize) -> Graph {
-        let (nodes, frames) = self.reachable(root);
-        let nodes: Vec<_> = nodes.into_iter().collect();
-        let frames: Vec<_> = frames.into_iter().collect();
-        let selection = RelationSelection {
-            nodes: WalkSlice::of(&nodes), frames: WalkSlice::of(&frames), root,
-        };
+        let reachable = self.reachable(root, true);
+        let selection = reachable.0;
         let mut selected = SelectedRelation {
             source: self,
-            result: Graph { nodes: Vec::with_capacity(nodes.len()), frames: Vec::with_capacity(frames.len()), ..Graph::default() },
+            result: Graph {
+                nodes: Vec::with_capacity(selection.nodes.count),
+                frames: Vec::with_capacity(selection.frames.count),
+                ..Graph::default()
+            },
         };
         unsafe {
             compact_relation(
@@ -647,58 +683,6 @@ impl PlanDependencies {
         let work = unsafe { &mut *work.cast::<Self>() };
         work.dependencies[first..].sort_unstable();
         work.dependencies.len()
-    }
-}
-
-struct RelationWalk<'g, F> {
-    graph: RelationView<'g>,
-    accepts: F,
-    pending: Vec<WalkVisit>,
-    nodes: [BTreeSet<usize>; 2],
-    frames: [BTreeSet<usize>; 2],
-}
-
-impl<'g, F: FnMut(RelationNode<'g>) -> bool> RelationWalk<'g, F> {
-    fn new(graph: &'g Graph, accepts: F) -> Self {
-        Self::from_view(RelationView { base: graph, tail: &[], residual: None }, accepts)
-    }
-
-    fn from_view(graph: RelationView<'g>, accepts: F) -> Self {
-        Self { graph, accepts, pending: Vec::new(), nodes: Default::default(), frames: Default::default() }
-    }
-
-    unsafe extern "C" fn mark_frame(work: Slot, visit: WalkVisit) -> u32 {
-        let work = unsafe { &mut *work.cast::<Self>() };
-        u32::from(work.frames[visit.read as usize].insert(visit.node))
-    }
-
-    unsafe extern "C" fn push(work: Slot, visit: WalkVisit) {
-        unsafe { &mut *work.cast::<Self>() }.pending.push(visit);
-    }
-
-    unsafe extern "C" fn pop(work: Slot) -> WalkVisit {
-        unsafe { &mut *work.cast::<Self>() }.pending.pop()
-            .unwrap_or(WalkVisit { node: usize::MAX, read: 0 })
-    }
-
-    unsafe extern "C" fn visit(work: Slot, visit: WalkVisit) -> u32 {
-        let work = unsafe { &mut *work.cast::<Self>() };
-        if !work.nodes[visit.read as usize].insert(visit.node) {
-            return 0;
-        }
-        if (work.accepts)(work.graph.node(visit.node)) { 2 } else { 1 }
-    }
-
-    fn walk(&mut self, root: usize, feedback: bool) -> bool {
-        let graph = self.graph;
-        let host = WalkHost {
-            edges: WalkEdges { source: RelationSource::GRAPH, mark_frame: Self::mark_frame, publish: Self::push },
-            pop: Self::pop,
-            visit: Self::visit,
-        };
-        unsafe {
-            walk_relation(ptr::from_ref(&graph).cast(), ptr::from_mut(self).cast(), root, u32::from(feedback), host) != 0
-        }
     }
 }
 
@@ -1976,15 +1960,15 @@ impl Graph {
     }
 
     fn read_feedback(&self, root: usize) -> bool {
-        RelationWalk::new(self, |_| false).walk(root, true)
+        RelationView { base: self, tail: &[], residual: None }.matches(root, true, |_| false)
     }
 
-    fn reachable(&self, root: usize) -> (BTreeSet<usize>, BTreeSet<usize>) {
-        RelationView { base: self, tail: &[], residual: None }.reachable(root)
+    fn reachable(&self, root: usize) -> Reachable {
+        RelationView { base: self, tail: &[], residual: None }.reachable(root, false)
     }
 
     fn any_reachable<'g>(&'g self, root: usize, accepts: impl FnMut(RelationNode<'g>) -> bool) -> bool {
-        RelationWalk::new(self, accepts).walk(root, false)
+        RelationView { base: self, tail: &[], residual: None }.matches(root, false, accepts)
     }
 
     fn evaluation_plan<I: ExactSizeIterator<Item = usize>>(
@@ -2110,8 +2094,7 @@ impl Graph {
         self.project(root, Op::Select(indices.to_vec()))
     }
     pub(in crate::check) fn seed_borrows(&self, root: usize) -> Vec<&Borrow> {
-        let (reachable, _) = self.reachable(root);
-        reachable.into_iter().map(|id| &self.nodes[id].seeds).collect()
+        self.reachable(root).nodes().iter().map(|&id| &self.nodes[id].seeds).collect()
     }
     pub(in crate::check) fn at_call(&self, values: &BTreeMap<ValueIdentity, bounds::Proof>) -> Self {
         self.bind_values(RelationValues::Arguments(values))
@@ -2214,11 +2197,10 @@ impl Graph {
         })
     }
     pub(super) fn solve(self: &Arc<Self>, root: usize, evaluation: &mut BorrowEvaluation<'_>) -> Borrow {
-        let (reachable, _) = self.reachable(root);
         let loop_scopes = self.inputs.iter().filter_map(|(input, &node)| {
             evaluation.function.history.get(&input.level).map(|history| (node, (input.level, history)))
         }).collect::<BTreeMap<_, _>>();
-        let plan = self.evaluation_plan(reachable.into_iter(), true);
+        let plan = self.evaluation_plan(self.reachable(root).nodes().iter().copied(), true);
         let mut solve = RelationSolve {
             root, graph: self, evaluation, loop_scopes,
             variables: plan.inputs.iter().map(|&id| (id, Borrow::default())).collect(),
