@@ -54,7 +54,88 @@ struct RegionHost {
     emit: unsafe extern "C" fn(*mut std::ffi::c_void, usize, RegionBytes),
 }
 
+#[repr(u32)]
+enum AddressSourceKind { End, Position, Inactive, Other }
+
+#[repr(u32)]
+enum AddressSourceWalk { Write, DerivedRegion }
+
+#[repr(C)]
+struct AddressSourceEntry { kind: AddressSourceKind, possible: u32 }
+
+#[repr(C)]
+struct AddressSourceHost {
+    context: *mut std::ffi::c_void,
+    next: unsafe extern "C" fn(*mut std::ffi::c_void) -> AddressSourceEntry,
+    projection: unsafe extern "C" fn(*mut std::ffi::c_void) -> u32,
+}
+
+struct AddressSourceInput<'a, 'p, I, F> {
+    entries: I,
+    path: Option<&'p bounds::Clause>,
+    current: Option<(&'a view::Source, bounds::Clause)>,
+    visit: F,
+}
+
+impl<'a, I, F> AddressSourceInput<'a, '_, I, F>
+where
+    I: Iterator<Item = (&'a view::Source, bounds::Clause)>,
+    F: FnMut(&'a view::Source, &'a Arc<Origin>, bounds::Clause) -> Option<()>,
+{
+    unsafe extern "C" fn next(context: *mut std::ffi::c_void) -> AddressSourceEntry {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        input.current = input.entries.next().map(|(source, when)| {
+            let when = match input.path {
+                Some(path) => bounds::Clause::both(path, &when),
+                None => when,
+            };
+            (source, when)
+        });
+        let Some((source, when)) = &input.current else {
+            return AddressSourceEntry { kind: AddressSourceKind::End, possible: 0 };
+        };
+        let kind = match source {
+            view::Source::Position(_) => AddressSourceKind::Position,
+            view::Source::Inactive => AddressSourceKind::Inactive,
+            _ => AddressSourceKind::Other,
+        };
+        AddressSourceEntry { kind, possible: when.possible().into() }
+    }
+
+    unsafe extern "C" fn projection(context: *mut std::ffi::c_void) -> u32 {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let (source, when) = input.current.take().unwrap();
+        let view::Source::Position(origin) = source else { unreachable!() };
+        (input.visit)(source, origin, when).is_some().into()
+    }
+
+    fn walk(&mut self, unavailable: bool, walk: AddressSourceWalk) -> Option<()> {
+        let host = AddressSourceHost {
+            context: (self as *mut Self).cast(),
+            next: Self::next,
+            projection: Self::projection,
+        };
+        (unsafe { b_walk_address_sources(unavailable.into(), walk, host) } != 0).then_some(())
+    }
+}
+
+fn walk_address_sources<'a>(
+    borrow: &'a view::Borrow,
+    path: Option<&bounds::Clause>,
+    visit: impl FnMut(&'a view::Source, &'a Arc<Origin>, bounds::Clause) -> Option<()>,
+) -> Option<()> {
+    let (walk, unavailable) = if path.is_some() {
+        (AddressSourceWalk::DerivedRegion, borrow.empty() || borrow.pending())
+    } else {
+        (AddressSourceWalk::Write,
+            !borrow.inputs.is_empty() || !borrow.calls.is_empty() || !borrow.reads.is_empty())
+    };
+    AddressSourceInput { entries: borrow.sources.entries(), path, current: None, visit }.walk(unavailable, walk)
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::walk_address_sources"]
+    fn b_walk_address_sources(unavailable: u32, walk: AddressSourceWalk, host: AddressSourceHost) -> u32;
     #[link_name = "bootstrap.call_arguments::project_memory_regions"]
     fn project_memory_regions(origin: *const std::ffi::c_void, parts: usize, parent_size: u32,
         parent: RegionSpan, host: RegionHost) -> u32;
@@ -295,10 +376,7 @@ impl Origin {
                 return Some(());
             },
         };
-        if borrow.empty()||borrow.pending(){return None;}
-        for(source,when)in borrow.sources.entries(){
-            let when=bounds::Clause::both(path, &when);if !when.possible(){continue;}
-            let view::Source::Position(parent)=source else{return None;};
+        walk_address_sources(borrow, Some(path), |_, parent, when| {
             let first = output.as_ref().map_or(0, |regions| regions.len());
             parent.collect_memory_regions(&when, output.as_deref_mut())?;
             let (regions, end) = output.as_deref_mut().map_or((std::ptr::null_mut(), first), |regions| {
@@ -320,8 +398,8 @@ impl Origin {
             if let Some(regions) = output.as_mut() {
                 drop(regions.drain(first..end));
             }
-        }
-        Some(())
+            Some(())
+        })
     }
     pub fn map_borrows(&self, map: impl FnOnce(&view::Borrow)->view::Borrow) -> Self {
         let mut value=self.clone();
@@ -1223,22 +1301,12 @@ impl Builder<'_> {
         borrow: &'a view::Borrow,
         mut visit: impl FnMut(&'a Arc<Origin>, bounds::Clause) -> Option<()>,
     ) -> Option<()> {
-        if !borrow.inputs.is_empty() || !borrow.calls.is_empty() || !borrow.reads.is_empty() {
-            return None;
-        }
-        for (source, when) in borrow.sources.entries().filter(|(_, when)| when.possible()) {
-            match source {
-                view::Source::Position(origin) => {
-                    if view::Borrow::source_unresolved(source, &|| Some(&when)) {
-                        return None;
-                    }
-                    visit(origin, when)?;
-                }
-                view::Source::Inactive => {}
-                _ => return None,
+        walk_address_sources(borrow, None, |source, origin, when| {
+            if view::Borrow::source_unresolved(source, &|| Some(&when)) {
+                return None;
             }
-        }
-        Some(())
+            visit(origin, when)
+        })
     }
 
     pub(super) fn resolved_address_write(&self, borrow: &view::Borrow) -> bool {

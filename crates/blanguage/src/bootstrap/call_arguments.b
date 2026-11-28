@@ -389,6 +389,21 @@ extern "C" TakeAddressStep take_address_step(Phase cursor,TakeAddressFacts facts
  if(c.phase==11){c.phase=12;return TakeAddressStep(c,TakeAddressNeed::Emit,access);}
  return TakeAddressStep(c,TakeAddressNeed::Complete,access);
 }
+extern "C" u32 walk_address_sources(u32 unavailable, AddressSourceWalk walk, AddressSourceHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.projection) {
+    if (unavailable != 0) { return 0; }
+    while (true) {
+        let entry = host.next(host.context);
+        if (entry.kind == AddressSourceKind::End) { return 1; }
+        if (entry.possible == 0) { continue; }
+        if (entry.kind == AddressSourceKind::Position) {
+            if (host.projection(host.context) == 0) { return 0; }
+        } else if (walk != AddressSourceWalk::Write || entry.kind != AddressSourceKind::Inactive) {
+            return 0;
+        }
+    }
+}
+
 extern "C" u32 project_memory_regions(address origin, usize parts, u32 parent_size, RegionSpan parent,
     RegionHost host) on cpu requires nonzero(host.part) requires nonzero(host.region) requires nonzero(host.emit)
 {

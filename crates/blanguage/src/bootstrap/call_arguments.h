@@ -93,6 +93,17 @@ enum TakeAddressNeed:u32 {BadTarget=0;BadCount=1;Place=2;Empty=3;Layout=4;BadLay
 struct TakeAddressStep {Phase cursor;TakeAddressNeed need;CallAccess access;};
 extern "C" TakeAddressStep take_address_step(Phase cursor,TakeAddressFacts facts) on cpu;
 struct AddressTailHost {cfn<u32,address,u64> offset;cfn<void,address,u64,u32> append;};
+enum AddressSourceKind:u32 { End=0; Position=1; Inactive=2; Other=3; };
+enum AddressSourceWalk:u32 { Write=0; DerivedRegion=1; };
+struct AddressSourceEntry { AddressSourceKind kind; u32 possible; };
+struct AddressSourceHost {
+    address context;
+    cfn<AddressSourceEntry,address> next;
+    cfn<u32,address> projection;
+};
+extern "C" u32 walk_address_sources(u32 unavailable, AddressSourceWalk walk, AddressSourceHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.projection);
+
 struct RegionBytes { u32 word; u32 offset; u32 size; };
 struct RegionSpan { address regions; usize first; usize end; };
 struct RegionHost {
