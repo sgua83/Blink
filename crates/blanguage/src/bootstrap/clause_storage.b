@@ -332,6 +332,68 @@ extern "C" PathTruth condition_truth_in(address value,address path,cfn<u32,addre
     return PathTruth::Unknown;
 }
 
+extern "C" address extend_required_environment(address environment,address output,address additions) on cpu {
+    if (unsafe_position<OrderedTree>(additions).count == 0u64) { return environment; }
+    if (environment != output) { fact_tree_copy(environment, output); }
+    FactCursor cursor = fact_tree_cursor(additions);
+    while (true) {
+        let key = fact_tree_next(additions, address_of(cursor), 0);
+        if (key == address()) { return output; }
+        fact_tree_insert(output, key);
+    }
+}
+
+bool required_has_computed(address facts) on cpu {
+    FactCursor cursor = fact_tree_cursor(facts);
+    while (true) {
+        let fact = fact_tree_next(facts, address_of(cursor), 0);
+        if (fact == address()) { return false; }
+        if (unsafe_position<FactKind>(fact) == FactKind::Index) {
+            let domain = read_fact_fields(fact).payload;
+            if (unsafe_position<DomainKind>(domain) == DomainKind::Computed) { return true; }
+        }
+    }
+}
+
+extern "C" u32 required_fact_closure(address context,address input,address output,RequiredClosureHost host) on cpu
+    requires nonzero(host.evaluate)
+    requires nonzero(host.extend_roots)
+    requires nonzero(host.adopt)
+    requires nonzero(host.discard)
+    requires nonzero(host.close_computed)
+    requires nonzero(host.numeric)
+    requires nonzero(host.conflict) {
+    address environment = input;
+    while (true) {
+        let round = host.evaluate(context, environment, output);
+        if (round.additions == address()) { return 0; }
+        environment = round.environment;
+        let added = unsafe_position<OrderedTree>(round.additions).count != 0u64;
+        if (added) {
+            let close_roots = host.extend_roots(context) != 0 || required_has_computed(round.additions);
+            if (unsafe_position<OrderedTree>(environment).count == 0u64) {
+                environment = host.adopt(context, output);
+            } else {
+                environment = extend_required_environment(environment, output, round.additions);
+                host.discard(context);
+            }
+            if (close_roots) { host.close_computed(context, environment); }
+        } else { host.discard(context); }
+
+        OrderedTree numeric = OrderedTree(address(), 0u64, 0u64, 0u64);
+        let numeric_slot = address_of(numeric);
+        if (host.numeric(context, environment, numeric_slot) == 0) { return 0; }
+        let numeric_added = numeric.count != 0u64;
+        environment = extend_required_environment(environment, output, numeric_slot);
+        fact_tree_clear(numeric_slot);
+        if (!added && !numeric_added) {
+            if (environment != output) { fact_tree_copy(environment, output); }
+            return 1;
+        }
+        if (host.conflict(context, environment) != 0) { return 0; }
+    }
+}
+
 extern "C" address combine_clause_branch(address parent,address condition,u32 truth) on cpu {
     if(clause_header(parent).kind==StoredClauseKind::Impossible||
        clause_header(selected_case(condition,truth)).kind==StoredClauseKind::Impossible){

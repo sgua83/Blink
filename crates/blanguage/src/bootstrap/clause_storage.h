@@ -37,6 +37,26 @@ extern "C" PathTruth condition_truth_in(address value,address path,cfn<u32,addre
     requires nonzero(conflict)
     requires nonzero(query);
 
+struct RequiredRound { address environment; address additions; };
+struct RequiredClosureHost {
+    cfn<RequiredRound,address,address,address> evaluate;
+    cfn<u32,address> extend_roots;
+    cfn<address,address,address> adopt;
+    cfn<void,address> discard;
+    cfn<void,address,address> close_computed;
+    cfn<u32,address,address,address> numeric;
+    cfn<u32,address,address> conflict;
+};
+extern "C" address extend_required_environment(address environment,address output,address additions) on cpu;
+extern "C" u32 required_fact_closure(address context,address input,address output,RequiredClosureHost host) on cpu
+    requires nonzero(host.evaluate)
+    requires nonzero(host.extend_roots)
+    requires nonzero(host.adopt)
+    requires nonzero(host.discard)
+    requires nonzero(host.close_computed)
+    requires nonzero(host.numeric)
+    requires nonzero(host.conflict);
+
 extern "C" address combine_clause_branch(address parent,address condition,u32 truth) on cpu;
 
 extern "C" void clause_walk_drop(address owner) on cpu;

@@ -1149,6 +1149,108 @@ pub(super) struct RequiredQuery<'a> {
     root: usize,
     pending: TraversalStack,
 }
+struct RequiredClosure<'a, 'graph> {
+    query: &'a mut RequiredQuery<'graph>,
+    roots: super::EqualityRoots,
+    unexpanded: super::EqualityRoots,
+    required: Option<super::QueryFacts<'a>>,
+}
+
+#[repr(C)]
+struct RequiredRound {
+    environment: Borrowed,
+    additions: Borrowed,
+}
+
+#[repr(C)]
+struct RequiredClosureHost {
+    evaluate: unsafe extern "C" fn(Slot, Borrowed, Slot) -> RequiredRound,
+    extend_roots: unsafe extern "C" fn(Slot) -> u32,
+    adopt: unsafe extern "C" fn(Slot, Slot) -> Borrowed,
+    discard: unsafe extern "C" fn(Slot),
+    close_computed: unsafe extern "C" fn(Slot, &Facts),
+    numeric: unsafe extern "C" fn(Slot, &Facts, *mut Facts) -> u32,
+    conflict: unsafe extern "C" fn(Slot, &Facts) -> u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.clause_storage::extend_required_environment"]
+    fn extend_environment(environment: Borrowed, output: Slot, additions: &Facts) -> Borrowed;
+    #[link_name = "bootstrap.clause_storage::required_fact_closure"]
+    fn close_required(context: Slot, input: &Facts, output: Slot, host: RequiredClosureHost) -> u32;
+}
+
+pub(super) fn required_closure(
+    query: &mut RequiredQuery<'_>, environment: &Facts, roots: super::EqualityRoots,
+) -> Option<super::RequiredFacts> {
+    let mut state = RequiredClosure {
+        query, roots, unexpanded: super::EqualityRoots::new(), required: None,
+    };
+    let mut facts = Facts::new();
+    let found = unsafe {
+        close_required(ptr::from_mut(&mut state).cast(), environment, ptr::from_mut(&mut facts).cast(),
+            RequiredClosureHost {
+                evaluate: required_round, extend_roots: required_extend_roots, adopt: required_adopt,
+                discard: required_drop_round, close_computed: required_close_computed,
+                numeric: required_numeric, conflict: required_conflict,
+            })
+    };
+    (found != 0).then_some(super::RequiredFacts { facts, roots: state.roots })
+}
+
+unsafe extern "C" fn required_round(context: Slot, environment: Borrowed, output: Slot) -> RequiredRound {
+    let state = unsafe { &mut *context.cast::<RequiredClosure<'_, '_>>() };
+    let roots = &state.roots;
+    let members = super::equality_members(roots);
+    let environment = {
+        let empty = Facts::new();
+        let facts = unsafe { &*environment.cast::<Facts>() };
+        let inherited = super::equivalent_facts(facts, super::QueryFacts::Borrowed(&empty), roots,
+            &members, Some(&state.unexpanded));
+        unsafe { extend_environment(environment, output, &inherited) }
+    };
+    state.required = state.query.evaluate(unsafe { &*environment.cast::<Facts>() }, roots, &members);
+    let additions = state.required.as_deref().map_or(ptr::null(), |facts| ptr::from_ref(facts).cast());
+    RequiredRound { environment, additions }
+}
+
+unsafe extern "C" fn required_extend_roots(context: Slot) -> u32 {
+    let state = unsafe { &mut *context.cast::<RequiredClosure<'_, '_>>() };
+    u32::from(super::extend_equality_roots(&mut state.roots, state.required.as_deref().unwrap().iter()))
+}
+
+unsafe extern "C" fn required_adopt(context: Slot, output: Slot) -> Borrowed {
+    let state = unsafe { &mut *context.cast::<RequiredClosure<'_, '_>>() };
+    match state.required.take().unwrap() {
+        super::QueryFacts::Borrowed(facts) => ptr::from_ref(facts).cast(),
+        super::QueryFacts::Owned(facts) => {
+            unsafe { *output.cast::<Facts>() = Arc::unwrap_or_clone(facts); }
+            output.cast_const()
+        }
+    }
+}
+
+unsafe extern "C" fn required_drop_round(context: Slot) {
+    unsafe { &mut *context.cast::<RequiredClosure<'_, '_>>() }.required = None;
+}
+
+unsafe extern "C" fn required_close_computed(context: Slot, environment: &Facts) {
+    let state = unsafe { &mut *context.cast::<RequiredClosure<'_, '_>>() };
+    super::equality::computed(&mut state.roots, [environment]);
+}
+
+unsafe extern "C" fn required_numeric(context: Slot, environment: &Facts, output: *mut Facts) -> u32 {
+    let state = unsafe { &*context.cast::<RequiredClosure<'_, '_>>() };
+    let Some(facts) = super::integer_relation_facts(environment, &state.roots) else { return 0 };
+    unsafe { output.write(facts); }
+    1
+}
+
+unsafe extern "C" fn required_conflict(context: Slot, environment: &Facts) -> u32 {
+    let state = unsafe { &*context.cast::<RequiredClosure<'_, '_>>() };
+    u32::from(super::contradictory_with_roots(environment, &state.roots))
+}
+
 struct RequiredEvaluation<'a, 'b> {
     common_equalities: Option<std::cell::OnceCell<Arc<Facts>>>,
     nodes: *mut RequiredResult<'a>,

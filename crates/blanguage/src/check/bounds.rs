@@ -2430,7 +2430,7 @@ impl Clause {
             return None;
         }
         let mut query = condition_graph::RequiredQuery::new(self);
-        Self::calculate_required_on(environment, environment_roots, &mut query)
+        condition_graph::required_closure(&mut query, environment, environment_roots)
     }
 
     fn possible_numbered<'a>(
@@ -2439,63 +2439,10 @@ impl Clause {
         let environment = Facts::new();
         required_roots::possible(self, &environment, || {
             query.select(root);
-            Self::calculate_required_on(&environment, EqualityRoots::new(), query)
+            condition_graph::required_closure(query, &environment, EqualityRoots::new())
         })
     }
 
-    fn calculate_required_on<'a, 'graph: 'a>(
-        environment: &'a Facts,
-        mut environment_roots: EqualityRoots,
-        query: &mut condition_graph::RequiredQuery<'graph>,
-    ) -> Option<RequiredFacts> {
-        let mut environment: Cow<'a, Facts> = Cow::Borrowed(environment);
-        let unexpanded = EqualityRoots::new();
-        loop {
-            // 共同环境的别名事实只在原环境所有者处生产一次。
-            let environment_members = equality_members(&environment_roots);
-            {
-                let empty = Facts::new();
-                let inherited = equivalent_facts(
-                    &environment,
-                    QueryFacts::Borrowed(&empty),
-                    &environment_roots,
-                    &environment_members,
-                    Some(&unexpanded),
-                );
-                if !inherited.is_empty() {
-                    environment.to_mut().extend(inherited.iter().copied());
-                }
-            }
-            let required = query.evaluate(&environment, &environment_roots, &environment_members)?;
-            let unchanged = required.is_empty();
-            // The prior roots already close the original environment. Inherited
-            // facts only copy a computed result to an existing member of its group.
-            let computed_roots_changed = extend_equality_roots(&mut environment_roots, required.iter())
-                || required.iter().any(|fact| matches!(fact, Fact::Index(_, IndexDomain::Computed(_))));
-            if !unchanged {
-                if environment.is_empty() {
-                    environment = match required {
-                        QueryFacts::Borrowed(facts) => Cow::Borrowed(facts),
-                        QueryFacts::Owned(facts) => Cow::Owned(Arc::unwrap_or_clone(facts)),
-                    };
-                } else {
-                    environment.to_mut().extend(required.iter().copied());
-                }
-            }
-            if computed_roots_changed {
-                equality::computed(&mut environment_roots, [environment.as_ref()]);
-            }
-            let numeric = integer_relation_facts(&environment, &environment_roots)?;
-            if unchanged && numeric.is_empty() {
-                return Some(RequiredFacts { facts: environment.into_owned(), roots: environment_roots });
-            }
-            // The integer solver emits bounds, which leave the equality roots intact.
-            environment.to_mut().extend(numeric);
-            if contradictory_with_roots(&environment, &environment_roots) {
-                return None;
-            }
-        }
-    }
     pub(super) fn possible(&self) -> bool {
         unsafe { native_clause_possible(self, condition_query) != 0 }
     }
