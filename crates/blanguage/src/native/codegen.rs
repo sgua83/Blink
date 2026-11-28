@@ -88,9 +88,37 @@ struct LiteralUse {
 }
 
 #[repr(C)]
-struct TailLayout {
-    bytes: usize,
-    literal_count: usize,
+struct TailStorage {
+    image: *mut u8,
+    regions: *mut super::Region,
+}
+
+#[repr(C)]
+struct TailHost {
+    reserve: unsafe extern "C" fn(*mut std::ffi::c_void, usize, usize, usize) -> TailStorage,
+    probe: unsafe extern "C" fn(*mut std::ffi::c_void, usize, usize),
+    literal: unsafe extern "C" fn(*mut std::ffi::c_void, usize, *const LiteralUse, usize),
+}
+
+struct TailOutput<'a> {
+    image: &'a mut Vec<u8>,
+    regions: Vec<super::Region>,
+    references: Vec<super::TailReference>,
+}
+
+unsafe extern "C" fn reserve_tail(
+    context: *mut std::ffi::c_void, bytes: usize, regions: usize, references: usize,
+) -> TailStorage {
+    let output = unsafe { &mut *context.cast::<TailOutput<'_>>() };
+    output.image.reserve_exact(bytes);
+    output.regions.reserve_exact(regions);
+    output.references.reserve_exact(references);
+    TailStorage { image: output.image.as_mut_ptr(), regions: output.regions.as_mut_ptr() }
+}
+
+unsafe extern "C" fn publish_probe_reference(context: *mut std::ffi::c_void, target: usize, field: usize) {
+    let references = unsafe { &mut (*context.cast::<TailOutput<'_>>()).references };
+    references.push(super::TailReference { target, rel32_fields: vec![field] });
 }
 
 unsafe extern "C" fn publish_literal_references(
@@ -99,7 +127,7 @@ unsafe extern "C" fn publish_literal_references(
     uses: *const LiteralUse,
     count: usize,
 ) {
-    let references = unsafe { &mut *context.cast::<Vec<super::TailReference>>() };
+    let references = unsafe { &mut (*context.cast::<TailOutput<'_>>()).references };
     let uses = unsafe { std::slice::from_raw_parts(uses, count) };
     references.push(super::TailReference { target, rel32_fields: uses.iter().map(|item| item.field).collect() });
 }
@@ -111,12 +139,9 @@ struct CodeTail {
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.x64_instruction::prepare_tail"]
-    fn prepare_tail(probe: usize, uses: *mut LiteralUse, use_count: usize) -> TailLayout;
-    #[link_name = "bootstrap.x64_instruction::write_tail"]
-    fn write_tail(image: *mut u8, end: usize, probe: usize, uses: *const LiteralUse, use_count: usize,
-        regions: *mut super::Region, context: *mut std::ffi::c_void,
-        publish: unsafe extern "C" fn(*mut std::ffi::c_void, usize, *const LiteralUse, usize)) -> CodeTail;
+    #[link_name = "bootstrap.x64_instruction::finish_tail"]
+    fn finish_tail(end: usize, probe: usize, uses: *mut LiteralUse, use_count: usize,
+        context: *mut std::ffi::c_void, host: TailHost) -> CodeTail;
     #[link_name = "bootstrap.x64_instruction::emit_map_range"]
     fn emit_map_range(input: MapRangeInput, host: MapRangeHost) -> u32;
 
@@ -209,7 +234,7 @@ struct Emitter<'a> {
     code: Vec<u8>,
     unwind: Vec<UnwindOperation>,
     prolog: u8,
-    probe: Option<usize>,
+    probe: usize,
     relocations: Vec<Relocation>,
     calls: Vec<Option<usize>>,
     operation_ranges: Vec<super::OperationRange>,
@@ -227,28 +252,20 @@ struct Emitter<'a> {
 impl Emitter<'_> {
     // Literal bytes belong to this code image, after all returning instructions
     // and any local helpers. Their references move with the same image.
-    fn finish(mut self, stack_bytes: u32, include_operation_ranges: bool) -> NativeCode {
+    fn finish(mut self, stack_bytes: u32) -> NativeCode {
         let function_end = self.code.len();
         let unwind = unwind::encode(self.prolog, &self.unwind);
-        let probe = self.probe.unwrap_or(0);
-        let layout = unsafe { prepare_tail(probe, self.literals.as_mut_ptr(), self.literals.len()) };
-        let count = layout.literal_count;
-        let has_probe = usize::from(self.probe.is_some());
-        let mut tail_regions = Vec::with_capacity(count + usize::from(count != 0) + has_probe);
-        let mut tail_references = Vec::with_capacity(count + has_probe);
-        if let Some(at) = self.probe {
-            tail_references.push(super::TailReference { target: function_end, rel32_fields: vec![at] });
-        }
-        self.code.reserve(layout.bytes);
+        let mut output = TailOutput { image: &mut self.code, regions: Vec::new(), references: Vec::new() };
         unsafe {
-            let tail = write_tail(
-                self.code.as_mut_ptr(), function_end, probe, self.literals.as_ptr(), self.literals.len(),
-                tail_regions.as_mut_ptr(), std::ptr::from_mut(&mut tail_references).cast(),
-                publish_literal_references,
+            let tail = finish_tail(
+                function_end, self.probe, self.literals.as_mut_ptr(), self.literals.len(),
+                std::ptr::from_mut(&mut output).cast(),
+                TailHost { reserve: reserve_tail, probe: publish_probe_reference, literal: publish_literal_references },
             );
-            self.code.set_len(tail.end);
-            tail_regions.set_len(tail.region_count);
+            output.image.set_len(tail.end);
+            output.regions.set_len(tail.region_count);
         }
+        let TailOutput { regions, references, .. } = output;
         NativeCode {
             bytes: self.code,
             relocations: self.relocations,
@@ -256,10 +273,10 @@ impl Emitter<'_> {
             calls: self.calls,
             function_end,
             unwind,
-            tail_regions: Some(tail_regions),
-            tail_references: Some(tail_references),
+            tail_regions: Some(regions),
+            tail_references: Some(references),
             sources: super::CodeSources::Emitted {
-                operation_ranges: include_operation_ranges.then_some(self.operation_ranges),
+                operation_ranges: Some(self.operation_ranges),
                 function_abi: self.function_abi,
             },
         }
@@ -277,7 +294,7 @@ impl Emitter<'_> {
             self.code.set_len(entry.length);
             self.unwind.set_len(entry.operations);
         }
-        self.probe = (entry.probe_field != 0).then_some(entry.probe_field);
+        self.probe = entry.probe_field;
         self.prolog = entry.prolog;
     }
     fn bytes(&mut self, b: &[u8]) {
@@ -541,7 +558,7 @@ fn emit_map(
         tile_reads: Span::slice(reads),
         unwind: Vec::new(),
         prolog: 0,
-        probe: None,
+        probe: 0,
         code: Vec::new(),
         relocations: Vec::new(),
         calls: Vec::new(),
@@ -593,5 +610,5 @@ fn emit_map(
         })
     };
     range.result?;
-    Ok(e.finish(stack_bytes, true))
+    Ok(e.finish(stack_bytes))
 }

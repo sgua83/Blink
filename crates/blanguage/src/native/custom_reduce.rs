@@ -360,7 +360,7 @@ pub(super) fn emit(
         tile_reads: super::Span::EMPTY,
         unwind: Vec::new(),
         prolog: 0,
-        probe: None,
+        probe: 0,
         code: Vec::new(),
         relocations: Vec::new(),
         calls: Vec::new(),
@@ -401,5 +401,5 @@ pub(super) fn emit(
             })
     };
     emitted.status.result()?;
-    Ok(e.finish(emitted.stack_bytes, true))
+    Ok(e.finish(emitted.stack_bytes))
 }

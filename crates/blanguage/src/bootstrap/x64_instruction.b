@@ -208,60 +208,59 @@ bool same_literal(LiteralUse left,LiteralUse right) on cpu {
     return left.bits==right.bits && left.wide==right.wide;
 }
 
-extern "C" TailLayout prepare_tail(u64 probe,address uses,u64 use_count) on cpu {
+void tail_region(address regions,u64 ordinal,u64 end,TailRegionKind kind) on cpu {
+    address target=unsafe_address(address_bits(regions)+ordinal*size_of<TailRegion>());
+    unsafe_position<TailRegion>(target)=TailRegion(end,kind);
+}
+
+u64 literal_start(u64 from) on cpu {
+    return ((from + 3u64) / 4u64) * 4u64;
+}
+
+void literal_padding(u64 base, u64 from, u64 start) on cpu {
+    u64 cursor = from;
+    while (cursor < start) {
+        put_byte(base + cursor, u8(0));
+        cursor += 1u64;
+    }
+}
+
+extern "C" CodeTail finish_tail(u64 end,u64 probe,address uses,u64 use_count,address context,TailHost host) on cpu
+    requires nonzero(host.reserve) requires nonzero(host.probe) requires nonzero(host.literal) {
     // LiteralUse is four consecutive u64 words. The sorter moves each complete row.
     sort_rows<array<u64,4>>(uses,use_count,address(),c_function(literal_use_before));
-    u64 bytes=probe!=0u64 ? u64(STACK_PROBE_LENGTH) : 0u64;
-    if(use_count!=0u64){bytes+=3u64;}
-    u64 literal_count=0u64;
+    u64 probe_count=u64(probe!=0u64);
+    u64 probe_end=end+probe_count*u64(STACK_PROBE_LENGTH);
+    u64 first_literal=use_count!=0u64 ? literal_start(probe_end) : probe_end;
+    u64 bytes=first_literal-end;
+    u64 references=probe_count;
     u64 index=0u64;
     LiteralUse previous=LiteralUse(0u64,0u64,0u64,0u64);
     while(index<use_count){
         LiteralUse item=unsafe_position<LiteralUse>(literal_use_at(uses,index));
         if(index==0u64 || !same_literal(item,previous)){
             bytes+=4u64+item.wide*4u64;
-            literal_count+=1u64;
+            references+=1u64;
             previous=item;
         }
         index+=1u64;
     }
-    return TailLayout(bytes,literal_count);
-}
-
-void tail_region(address regions,u64 ordinal,u64 end,TailRegionKind kind) on cpu {
-    address target=unsafe_address(address_bits(regions)+ordinal*size_of<TailRegion>());
-    unsafe_position<TailRegion>(target)=TailRegion(end,kind);
-}
-
-u64 align_literal(u64 base, u64 from) on cpu {
-    u64 cursor = from;
-    u64 start = ((cursor + 3u64) / 4u64) * 4u64;
-    while (cursor < start) {
-        put_byte(base + cursor, u8(0));
-        cursor += 1u64;
-    }
-    return start;
-}
-
-extern "C" CodeTail write_tail(address image,u64 end,u64 probe,address uses,u64 use_count,address regions,
-    address context,cfn<void,address,u64,address,u64> publish) on cpu requires nonzero(publish) {
-    u64 cursor=end;
+    TailStorage storage=host.reserve(context,bytes,references+u64(first_literal!=probe_end),references);
     u64 count=0u64;
     if(probe!=0u64){
-        cursor=append_stack_probe(image,cursor,probe);
-        tail_region(regions,count,cursor,TailRegionKind::StackProbe);
+        append_stack_probe(storage.image,end,probe);
+        host.probe(context,end,probe);
+        tail_region(storage.regions,count,probe_end,TailRegionKind::StackProbe);
         count+=1u64;
     }
-    u64 base=address_bits(image);
-    if(use_count!=0u64){
-        u64 start = align_literal(base, cursor);
-        if (start != cursor) {
-            cursor = start;
-            tail_region(regions,count,cursor,TailRegionKind::Alignment);
-            count+=1u64;
-        }
+    u64 base=address_bits(storage.image);
+    if(first_literal!=probe_end){
+        literal_padding(base,probe_end,first_literal);
+        tail_region(storage.regions,count,first_literal,TailRegionKind::Alignment);
+        count+=1u64;
     }
-    u64 index=0u64;
+    u64 cursor=first_literal;
+    index=0u64;
     while(index<use_count){
         u64 first=index;
         address group=literal_use_at(uses,first);
@@ -279,8 +278,8 @@ extern "C" CodeTail write_tail(address image,u64 end,u64 probe,address uses,u64 
             patch_relative(unsafe_address(base+item.field),item.field,start);
             index+=1u64;
         }
-        publish(context,start,group,index-first);
-        tail_region(regions,count,cursor,TailRegionKind::Literal);
+        host.literal(context,start,group,index-first);
+        tail_region(storage.regions,count,cursor,TailRegionKind::Literal);
         count+=1u64;
     }
     return CodeTail(cursor,count);
@@ -3261,8 +3260,9 @@ CollectiveLeaf collective_leaf(LeafRange layout, u64 end, CollectiveLeafOutput o
     u64 target = 0u64;
     u64 region_count = 0u64;
     if (reference_count != 0u64) {
-        target = align_literal(base, function_end);
+        target = literal_start(function_end);
         if (target != function_end) {
+            literal_padding(base, function_end, target);
             tail_region(output.regions, region_count, target, TailRegionKind::Alignment);
             region_count += 1u64;
         }

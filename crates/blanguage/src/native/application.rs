@@ -235,7 +235,7 @@ fn emit_value(
         tile_reads: super::Span::EMPTY,
         unwind: Vec::new(),
         prolog: 0,
-        probe: None,
+        probe: 0,
         code: Vec::new(),
         relocations: Vec::new(),
         calls: Vec::new(),
@@ -275,5 +275,5 @@ fn emit_value(
         return Err("应用栈帧超出x64地址编码");
     }
     emission.body_result?;
-    Ok(e.finish(compiled.stack as u32, true))
+    Ok(e.finish(compiled.stack as u32))
 }
