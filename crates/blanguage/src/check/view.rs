@@ -695,17 +695,11 @@ impl Borrow{
         })
     }
     pub(super) fn aliases(&self, needed: &dyn Fn(&MemoryAlias) -> bool) -> Vec<MemoryAlias> {
-        let mut aliases = BTreeSet::new();
-        for (source, when) in &self.sources.0 {
-            if let Source::Position(origin) = source {
-                let selected = origin.aliases_when(
-                    &|alias| !aliases.contains(alias) && needed(alias),
-                    || when.possible(),
-                );
-                aliases.extend(selected);
-            }
-        }
-        aliases.into_iter().collect()
+        address::memory_borrow_aliases(self, needed)
+    }
+
+    pub(super) fn collect_memory_aliases(&self, collector: address::MemoryAliasCollector) {
+        address::collect_borrow_aliases(self.sources.0.iter(), collector);
     }
     pub fn at_call(&self, bindings: &BTreeMap<ValueIdentity, bounds::Proof>) -> Self {
         self.map_sources_at_call(bindings, |source, _| source.at_call(bindings))

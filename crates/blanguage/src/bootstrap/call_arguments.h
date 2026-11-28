@@ -180,6 +180,32 @@ extern "C" OptionalMemoryAccess collect_closed_ir_memory(address known, usize co
 extern "C" void append_ir_memory_aliases(address known, address aliases, usize count, CallAccess access,
     cfn<MemoryIrRow,address,usize,CallAccess> row) on cpu requires nonzero(row);
 
+enum MemoryAliasRoot:u32 { Other=0; Local=1; Data=2; Borrow=3; };
+struct MemoryAliasOrigin { MemoryAliasRoot kind; usize base; usize length; address borrow; };
+struct MemoryAliasCollector {
+    address keys;
+    address parent;
+    address context;
+    cfn<u32,address,MemoryIrRow> needed;
+};
+struct MemoryAliasOriginHost {
+    address context;
+    cfn<u32,address> possible;
+    cfn<void,address,MemoryAliasCollector> borrow;
+};
+struct MemoryAliasBorrowHost {
+    address context;
+    cfn<EffectSourceKind,address> next;
+    cfn<void,address,MemoryAliasCollector> position;
+};
+extern "C" void collect_memory_origin_aliases(MemoryAliasOrigin origin, MemoryAliasCollector collector, MemoryAliasOriginHost host) on cpu
+    requires nonzero(collector.needed) requires nonzero(host.possible) requires nonzero(host.borrow);
+extern "C" void collect_memory_borrow_aliases(MemoryAliasCollector collector, MemoryAliasBorrowHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.position);
+extern "C" void project_memory_aliases(MemoryAliasOrigin origin, MemoryAliasOriginHost host, address context,
+    cfn<u32,address,MemoryIrRow> needed, address output, cfn<void,address,MemoryIrRow> emit) on cpu
+    requires nonzero(host.possible) requires nonzero(host.borrow) requires nonzero(needed) requires nonzero(emit);
+
 struct MemoryIrLocal { usize end; usize length; };
 struct MemoryIrRows { address known; usize known_count; usize locals; CallAccess external; u32 external_present; };
 struct MemoryIrRowsHost {

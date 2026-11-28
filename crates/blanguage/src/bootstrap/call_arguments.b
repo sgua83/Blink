@@ -587,6 +587,117 @@ bool memory_alias_less(array<u64,3> left, array<u64,3> right) on cpu {
     return left[2] < right[2];
 }
 
+struct MemoryAliasCell { OrderedNode links; array<u64,3> key; };
+struct MemoryAliasParent { address keys; address parent; };
+struct MemoryAliasSearch { usize found; usize parent; i32 order; };
+
+address memory_alias_cell(OrderedTree tree, usize at) on cpu {
+    return unsafe_address(address_bits(tree.records) + (at - 1u64) * size_of<MemoryAliasCell>());
+}
+
+MemoryAliasSearch find_memory_alias(OrderedTree tree, array<u64,3> key) on cpu {
+    usize at = tree.root;
+    usize parent = 0u64;
+    i32 order = i32(0);
+    while (at != 0u64) {
+        let cell = unsafe_position<MemoryAliasCell>(memory_alias_cell(tree, at));
+        parent = at;
+        if (memory_alias_less(key, cell.key)) {
+            at = cell.links.left;
+            order = i32(-1);
+        } else if (memory_alias_less(cell.key, key)) {
+            at = cell.links.right;
+            order = i32(1);
+        } else {
+            return MemoryAliasSearch(at, parent, i32(0));
+        }
+    }
+    return MemoryAliasSearch(0u64, parent, order);
+}
+
+void insert_memory_alias(address keys, array<u64,3> key) on cpu {
+    let place = find_memory_alias(unsafe_position<OrderedTree>(keys), key);
+    if (place.found != 0u64) { return; }
+    let width = size_of<MemoryAliasCell>();
+    let row = ordered_tree_prepare(keys, width);
+    unsafe_position<MemoryAliasCell>(row).key = key;
+    ordered_tree_publish(keys, width, place.parent, place.order);
+}
+
+bool needed_memory_alias(MemoryAliasCollector collector, MemoryIrRow row, array<u64,3> key) on cpu
+    requires nonzero(collector.needed) {
+    if (find_memory_alias(unsafe_position<OrderedTree>(collector.keys), key).found != 0u64) { return false; }
+    address parent = collector.parent;
+    while (parent != address()) {
+        let state = unsafe_position<MemoryAliasParent>(parent);
+        if (find_memory_alias(unsafe_position<OrderedTree>(state.keys), key).found != 0u64) { return false; }
+        parent = state.parent;
+    }
+    return collector.needed(collector.context, row) != 0;
+}
+
+void merge_memory_aliases(address output, address incoming) on cpu {
+    let tree = unsafe_position<OrderedTree>(incoming);
+    if (unsafe_position<OrderedTree>(output).count == 0u64) {
+        unsafe_position<OrderedTree>(output) = tree;
+        unsafe_position<OrderedTree>(incoming) = OrderedTree(address(), 0u64, 0u64, 0u64);
+        return;
+    }
+    let width = size_of<MemoryAliasCell>();
+    usize at = ordered_tree_first(tree, width);
+    while (at != 0u64) {
+        insert_memory_alias(output, unsafe_position<MemoryAliasCell>(memory_alias_cell(tree, at)).key);
+        at = ordered_tree_next(tree, width, at);
+    }
+}
+
+extern "C" void collect_memory_origin_aliases(MemoryAliasOrigin origin, MemoryAliasCollector collector, MemoryAliasOriginHost host) on cpu
+    requires nonzero(collector.needed) requires nonzero(host.possible) requires nonzero(host.borrow) {
+    if (origin.kind == MemoryAliasRoot::Other) { return; }
+    if (origin.kind != MemoryAliasRoot::Borrow) {
+        let data = origin.kind == MemoryAliasRoot::Data;
+        let row = MemoryIrRow(data ? MemoryIrRowKind::Data : MemoryIrRowKind::Local, CallAccess::Value, origin.base, origin.length);
+        let key = array<u64,3>(data ? 1u64 : 0u64, row.base, row.length);
+        if (needed_memory_alias(collector, row, key) && host.possible(host.context) != 0) {
+            insert_memory_alias(collector.keys, key);
+        }
+        return;
+    }
+
+    OrderedTree nested = OrderedTree(address(), 0u64, 0u64, 0u64);
+    let parent = MemoryAliasParent(collector.keys, collector.parent);
+    host.borrow(origin.borrow, MemoryAliasCollector(address_of(nested), address_of(parent), collector.context, collector.needed));
+    if (nested.count != 0u64 && host.possible(host.context) != 0) {
+        merge_memory_aliases(collector.keys, address_of(nested));
+    }
+    fact_tree_clear(address_of(nested));
+}
+
+extern "C" void collect_memory_borrow_aliases(MemoryAliasCollector collector, MemoryAliasBorrowHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.position) {
+    while (true) {
+        let kind = host.next(host.context);
+        if (kind == EffectSourceKind::End) { return; }
+        if (kind == EffectSourceKind::Position) { host.position(host.context, collector); }
+    }
+}
+
+extern "C" void project_memory_aliases(MemoryAliasOrigin origin, MemoryAliasOriginHost host, address context,
+    cfn<u32,address,MemoryIrRow> needed, address output, cfn<void,address,MemoryIrRow> emit) on cpu
+    requires nonzero(host.possible) requires nonzero(host.borrow) requires nonzero(needed) requires nonzero(emit) {
+    OrderedTree keys = OrderedTree(address(), 0u64, 0u64, 0u64);
+    collect_memory_origin_aliases(origin, MemoryAliasCollector(address_of(keys), address(), context, needed), host);
+    let width = size_of<MemoryAliasCell>();
+    usize at = ordered_tree_first(keys, width);
+    while (at != 0u64) {
+        let key = unsafe_position<MemoryAliasCell>(memory_alias_cell(keys, at)).key;
+        let kind = key[0] == 0u64 ? MemoryIrRowKind::Local : MemoryIrRowKind::Data;
+        emit(output, MemoryIrRow(kind, CallAccess::Value, key[1], key[2]));
+        at = ordered_tree_next(keys, width, at);
+    }
+    fact_tree_clear(address_of(keys));
+}
+
 extern "C" bool memory_alias_before(address left, address right, address context) on cpu {
     return memory_alias_less(unsafe_position<array<u64,3>>(left), unsafe_position<array<u64,3>>(right));
 }

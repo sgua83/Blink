@@ -563,21 +563,7 @@ impl Origin {
     pub(super) fn aliases_when(
         &self, needed: &dyn Fn(&MemoryAlias) -> bool, possible: impl FnOnce() -> bool,
     ) -> Vec<MemoryAlias> {
-        match &self.root {
-            Root::Local { base, len } => {
-                let alias = MemoryAlias::Local { base: *base, len: *len };
-                if needed(&alias) && possible() { vec![alias] } else { Vec::new() }
-            },
-            Root::Buffer(binding) => {
-                let alias = MemoryAlias::Data(*binding);
-                if needed(&alias) && possible() { vec![alias] } else { Vec::new() }
-            },
-            Root::Derived(borrow)|Root::Dataset{borrow,..}|Root::External(Identity::Storage(borrow)) => {
-                let aliases = borrow.aliases(needed);
-                if aliases.is_empty() || possible() { aliases } else { Vec::new() }
-            },
-            _ => Vec::new(),
-        }
+        project_memory_aliases(MemoryAliasOrigin::of(self), needed, possible)
     }
 
     pub fn memory_positions(&self,path:&bounds::Clause)->Option<Vec<Position>> {
@@ -1501,6 +1487,129 @@ impl MemoryIrRow {
             MemoryIrRowKind::Data => MemoryAlias::Data(self.base),
         }
     }
+}
+
+#[repr(u32)]
+enum MemoryAliasRoot { Other, Local, Data, Borrow }
+
+#[repr(C)]
+struct MemoryAliasOrigin { kind: MemoryAliasRoot, base: usize, length: usize, borrow: *const std::ffi::c_void }
+
+impl MemoryAliasOrigin {
+    fn of(origin: &Origin) -> Self {
+        let empty = std::ptr::null();
+        match &origin.root {
+            Root::Local { base, len } => Self { kind: MemoryAliasRoot::Local, base: *base, length: *len, borrow: empty },
+            Root::Buffer(binding) => Self { kind: MemoryAliasRoot::Data, base: *binding, length: 0, borrow: empty },
+            Root::Derived(borrow) | Root::Dataset { borrow, .. } | Root::External(Identity::Storage(borrow)) => Self::borrow(borrow),
+            _ => Self { kind: MemoryAliasRoot::Other, base: 0, length: 0, borrow: empty },
+        }
+    }
+
+    fn borrow(borrow: &view::Borrow) -> Self {
+        Self { kind: MemoryAliasRoot::Borrow, base: 0, length: 0, borrow: std::ptr::from_ref(borrow).cast() }
+    }
+}
+
+#[repr(C)]
+pub(super) struct MemoryAliasCollector {
+    keys: *mut std::ffi::c_void,
+    parent: *const std::ffi::c_void,
+    context: *const std::ffi::c_void,
+    needed: unsafe extern "C" fn(*const std::ffi::c_void, MemoryIrRow) -> u32,
+}
+
+#[repr(C)]
+struct MemoryAliasOriginHost {
+    context: *mut std::ffi::c_void,
+    possible: unsafe extern "C" fn(*mut std::ffi::c_void) -> u32,
+    borrow: unsafe extern "C" fn(*const std::ffi::c_void, MemoryAliasCollector),
+}
+
+#[repr(C)]
+struct MemoryAliasBorrowHost {
+    context: *mut std::ffi::c_void,
+    next: unsafe extern "C" fn(*mut std::ffi::c_void) -> EffectSourceKind,
+    position: unsafe extern "C" fn(*mut std::ffi::c_void, MemoryAliasCollector),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::collect_memory_origin_aliases"]
+    fn b_collect_memory_origin_aliases(origin: MemoryAliasOrigin, collector: MemoryAliasCollector, host: MemoryAliasOriginHost);
+    #[link_name = "bootstrap.call_arguments::collect_memory_borrow_aliases"]
+    fn b_collect_memory_borrow_aliases(collector: MemoryAliasCollector, host: MemoryAliasBorrowHost);
+    #[link_name = "bootstrap.call_arguments::project_memory_aliases"]
+    fn b_project_memory_aliases(origin: MemoryAliasOrigin, host: MemoryAliasOriginHost, context: *const std::ffi::c_void,
+        needed: unsafe extern "C" fn(*const std::ffi::c_void, MemoryIrRow) -> u32, output: *mut std::ffi::c_void,
+        emit: unsafe extern "C" fn(*mut std::ffi::c_void, MemoryIrRow));
+}
+
+struct AliasPossible<F>(Option<F>);
+
+impl<F: FnOnce() -> bool> AliasPossible<F> {
+    unsafe extern "C" fn possible(context: *mut std::ffi::c_void) -> u32 {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        u32::from(input.0.take().unwrap()())
+    }
+
+    unsafe extern "C" fn borrow(borrow: *const std::ffi::c_void, collector: MemoryAliasCollector) {
+        let borrow = unsafe { &*borrow.cast::<view::Borrow>() };
+        borrow.collect_memory_aliases(collector);
+    }
+
+    fn host(&mut self) -> MemoryAliasOriginHost {
+        MemoryAliasOriginHost { context: std::ptr::from_mut(self).cast(), possible: Self::possible, borrow: Self::borrow }
+    }
+}
+
+fn project_memory_aliases(origin: MemoryAliasOrigin, needed: &dyn Fn(&MemoryAlias) -> bool, possible: impl FnOnce() -> bool) -> Vec<MemoryAlias> {
+    unsafe extern "C" fn is_needed(context: *const std::ffi::c_void, alias: MemoryIrRow) -> u32 {
+        let needed = unsafe { &*context.cast::<&dyn Fn(&MemoryAlias) -> bool>() };
+        u32::from(needed(&alias.alias()))
+    }
+
+    let mut possible = AliasPossible(Some(possible));
+    let mut aliases = Vec::new();
+    // B borrows each source and predicate only for this synchronous traversal.
+    unsafe { b_project_memory_aliases(origin, possible.host(), std::ptr::from_ref(&needed).cast(), is_needed,
+        std::ptr::from_mut(&mut aliases).cast(), IrMemoryRows::alias) };
+    aliases
+}
+
+pub(super) fn memory_borrow_aliases(borrow: &view::Borrow, needed: &dyn Fn(&MemoryAlias) -> bool) -> Vec<MemoryAlias> {
+    project_memory_aliases(MemoryAliasOrigin::borrow(borrow), needed, || true)
+}
+
+struct BorrowMemoryAliases<'a, I> { sources: I, selected: Option<(&'a Origin, &'a bounds::Clause)> }
+
+impl<'a, I: Iterator<Item = (&'a view::Source, &'a bounds::Clause)>> BorrowMemoryAliases<'a, I> {
+    unsafe extern "C" fn next(context: *mut std::ffi::c_void) -> EffectSourceKind {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        match input.sources.next() {
+            Some((view::Source::Position(origin), when)) => {
+                input.selected = Some((origin, when));
+                EffectSourceKind::Position
+            }
+            Some(_) => EffectSourceKind::Other,
+            None => EffectSourceKind::End,
+        }
+    }
+
+    unsafe extern "C" fn position(context: *mut std::ffi::c_void, collector: MemoryAliasCollector) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let (origin, when) = input.selected.take().unwrap();
+        let mut possible = AliasPossible(Some(|| when.possible()));
+        unsafe { b_collect_memory_origin_aliases(MemoryAliasOrigin::of(origin), collector, possible.host()) };
+    }
+
+    fn collect(&mut self, collector: MemoryAliasCollector) {
+        let host = MemoryAliasBorrowHost { context: std::ptr::from_mut(self).cast(), next: Self::next, position: Self::position };
+        unsafe { b_collect_memory_borrow_aliases(collector, host) };
+    }
+}
+
+pub(super) fn collect_borrow_aliases<'a>(sources: impl Iterator<Item = (&'a view::Source, &'a bounds::Clause)>, collector: MemoryAliasCollector) {
+    BorrowMemoryAliases { sources, selected: None }.collect(collector);
 }
 
 #[repr(C)]
