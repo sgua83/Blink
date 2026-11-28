@@ -113,13 +113,10 @@ extern "C" u32 has_loop_slot(address slots, usize slot) on cpu;
 extern "C" void insert_loop_slot(inout OrderedTree slots, usize slot) on cpu;
 
 enum LoopWriteKind:u32 { Move=0; Position=1; Contents=2; Memory=3; External=4; };
-enum LoopProjection:u32 { Ignore=0; External=1; Unknown=2; Contents=3; Memory=4; Position=5; };
-extern "C" LoopProjection loop_projection(LoopWriteKind kind, u32 address_write, u32 iterator) on cpu;
 enum StorageWriteKind:u32 { Descendants=0; Frame=1; Bytes=2; };
 struct LoopBytes { u64 begin; u64 end; };
 struct StorageWrite { usize root; LoopBytes range; StorageWriteKind kind; };
 struct LoopStorage { address data; usize count; usize capacity; };
-extern "C" void push_loop_storage(inout LoopStorage storage, StorageWrite written) on cpu;
 extern "C" void drop_loop_storage(inout LoopStorage storage) on cpu;
 struct LoopStorageSite { usize root; u32 descendants; u32 declared; };
 struct LoopStoragePart { u32 present; u32 word; u32 width; };
@@ -133,12 +130,26 @@ extern "C" void project_loop_storage(inout LoopStorage output, LoopStorageHost h
     requires nonzero(host.site) requires nonzero(host.start_parts) requires nonzero(host.next_part);
 extern "C" LoopBytes loop_array_elements(u64 length, u32 exact, u32 index) on cpu;
 extern "C" u32 loop_part_matches(u32 source_scalar, u32 source_word, u32 target_scalar, u32 target_word, u32 offset) on cpu;
-extern "C" u32 loop_contents_frame(u32 found, u32 owns_resources) on cpu;
+enum LoopProjectionAction:u32 { Done=0; Memory=1; Position=2; };
+struct LoopProjectionCursor { usize next; u32 unknown_storage; u32 external; };
+struct LoopProjectionRequest { usize index; LoopProjectionAction action; };
+struct LoopWriteInfo { LoopWriteKind kind; u32 address_write; u32 iterator; };
+struct LoopContentsInfo { usize root; u32 found; u32 owns_resources; };
+struct LoopProjectionHost {
+    address context;
+    cfn<LoopWriteInfo,address,usize> write;
+    cfn<LoopContentsInfo,address,usize> ensures memory(read) contents;
+};
+extern "C" LoopProjectionRequest advance_loop_projection(inout LoopProjectionCursor cursor,
+    inout LoopStorage storage, usize count, LoopProjectionHost host) on cpu
+    requires nonzero(host.write) requires nonzero(host.contents);
 
 enum LoopPosition:u32 { Missing=0; Local=1; Reference=2; Other=3; };
-struct LoopUncertainty { u32 storage; u32 external; };
-extern "C" LoopUncertainty loop_position_uncertainty(LoopPosition position, u32 written, u32 has_binding, u32 direct) on cpu;
-extern "C" LoopUncertainty loop_memory_uncertainty(LoopPosition position, u32 written) on cpu;
+enum LoopMemoryFact:u32 { Unresolved=0; Resource=1; OtherResource=2; Owner=3; };
+extern "C" void record_loop_memory(inout LoopProjectionCursor cursor, LoopMemoryFact fact,
+    LoopPosition position, u32 present) on cpu;
+extern "C" void record_loop_position(inout LoopProjectionCursor cursor, LoopPosition position,
+    u32 written, u32 has_binding, u32 direct) on cpu;
 enum LoopInvalidation:u32 { Elements=0; Rebind=1; Select=2; Apply=3; Done=4; };
 extern "C" LoopInvalidation loop_invalidation_next(LoopInvalidation phase) on cpu;
 enum LoopElementWrite:u32 { None=0; Bytes=1; Unknown=2; Contents=3; Position=4; };

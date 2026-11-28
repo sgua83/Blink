@@ -31,20 +31,11 @@ extern "C" void insert_loop_slot(inout OrderedTree slots, usize slot) on cpu {
     ordered_tree_publish(owner, size_of<LoopSlotCell>(), selected.parent, selected.order);
 }
 
-extern "C" LoopProjection loop_projection(LoopWriteKind kind, u32 address_write, u32 iterator) on cpu {
-    if (kind == LoopWriteKind::Move) { return LoopProjection::Ignore; }
-    if (kind == LoopWriteKind::External || address_write != 0) { return LoopProjection::External; }
-    if (kind == LoopWriteKind::Memory) { return LoopProjection::Memory; }
-    if (iterator != 0) { return LoopProjection::Unknown; }
-    if (kind == LoopWriteKind::Contents) { return LoopProjection::Contents; }
-    return LoopProjection::Position;
-}
-
 extern "C" address realloc(address data, usize bytes) on cpu from "ucrtbase.dll";
 extern "C" void free(address data) on cpu from "ucrtbase.dll";
 extern "C" never abort() on cpu from "ucrtbase.dll";
 
-extern "C" void push_loop_storage(inout LoopStorage storage, StorageWrite written) on cpu {
+void push_loop_storage(inout LoopStorage storage, StorageWrite written) on cpu {
     if (storage.count == storage.capacity) {
         // The same initialized bytes can be borrowed as a Rust slice.
         let limit = 9223372036854775807u64 / size_of<StorageWrite>();
@@ -100,19 +91,58 @@ extern "C" u32 loop_part_matches(u32 source_scalar, u32 source_word, u32 target_
     return u32(source_scalar == target_scalar && source_word == target_word + offset);
 }
 
-extern "C" u32 loop_contents_frame(u32 found, u32 owns_resources) on cpu {
-    return u32(found != 0 && owns_resources == 0);
+extern "C" LoopProjectionRequest advance_loop_projection(inout LoopProjectionCursor cursor,
+    inout LoopStorage storage, usize count, LoopProjectionHost host) on cpu
+    requires nonzero(host.write) requires nonzero(host.contents) {
+    while (cursor.next < count) {
+        let index = cursor.next;
+        cursor.next += 1u64;
+        let write = host.write(host.context, index);
+        if (write.kind == LoopWriteKind::Move) { continue; }
+        if (write.kind == LoopWriteKind::External || write.address_write != 0) {
+            cursor.unknown_storage = 1;
+            cursor.external = 1;
+        } else if (write.kind == LoopWriteKind::Memory) {
+            return LoopProjectionRequest(index, LoopProjectionAction::Memory);
+        } else if (write.iterator != 0) {
+            cursor.unknown_storage = 1;
+        } else if (write.kind == LoopWriteKind::Contents) {
+            let contents = host.contents(host.context, index);
+            if (contents.found != 0 && contents.owns_resources == 0) {
+                push_loop_storage(storage, StorageWrite(contents.root, LoopBytes(0u64, 0u64), StorageWriteKind::Frame));
+            } else {
+                cursor.unknown_storage = 1;
+            }
+        } else {
+            return LoopProjectionRequest(index, LoopProjectionAction::Position);
+        }
+    }
+    return LoopProjectionRequest(0u64, LoopProjectionAction::Done);
 }
 
-extern "C" LoopUncertainty loop_position_uncertainty(LoopPosition position, u32 written, u32 has_binding, u32 direct) on cpu {
-    if (has_binding == 0) { return LoopUncertainty(u32(direct == 0), 0); }
-    if (position == LoopPosition::Local && written != 0) { return LoopUncertainty(0, 0); }
-    return LoopUncertainty(1, u32(position == LoopPosition::Reference));
+extern "C" void record_loop_memory(inout LoopProjectionCursor cursor, LoopMemoryFact fact,
+    LoopPosition position, u32 present) on cpu {
+    if (fact == LoopMemoryFact::Unresolved) {
+        cursor.unknown_storage = 1;
+        cursor.external = 1;
+    } else if (fact == LoopMemoryFact::Resource) {
+        cursor.unknown_storage |= u32(present == 0);
+    } else if (fact == LoopMemoryFact::OtherResource) {
+        cursor.unknown_storage |= present;
+    } else if (present != 0 && position != LoopPosition::Local) {
+        cursor.unknown_storage = 1;
+        cursor.external |= u32(position == LoopPosition::Reference);
+    }
 }
 
-extern "C" LoopUncertainty loop_memory_uncertainty(LoopPosition position, u32 written) on cpu {
-    if (written == 0 || position == LoopPosition::Local) { return LoopUncertainty(0, 0); }
-    return LoopUncertainty(1, u32(position == LoopPosition::Reference));
+extern "C" void record_loop_position(inout LoopProjectionCursor cursor, LoopPosition position,
+    u32 written, u32 has_binding, u32 direct) on cpu {
+    if (has_binding == 0) {
+        cursor.unknown_storage |= u32(direct == 0);
+    } else if (position != LoopPosition::Local || written == 0) {
+        cursor.unknown_storage = 1;
+        cursor.external |= u32(position == LoopPosition::Reference);
+    }
 }
 
 extern "C" LoopInvalidation loop_invalidation_next(LoopInvalidation phase) on cpu {

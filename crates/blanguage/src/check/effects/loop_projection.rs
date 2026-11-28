@@ -16,10 +16,6 @@ impl Write {
     }
 }
 
-#[repr(u32)]
-#[allow(dead_code)]
-enum LoopProjection { Ignore, External, Unknown, Contents, Memory, Position }
-
 #[repr(C)]
 struct LoopBytes { begin: u64, end: u64 }
 
@@ -93,13 +89,74 @@ fn position(place: Option<&Place>) -> LoopPosition {
     }
 }
 
-#[repr(C)]
-struct LoopUncertainty { storage: u32, external: u32 }
+#[repr(u32)]
+#[allow(dead_code)]
+enum LoopProjectionAction { Done, Memory, Position }
 
-impl LoopWrites {
-    fn include_uncertainty(&mut self, uncertainty: LoopUncertainty) {
-        self.unknown_storage |= uncertainty.storage != 0;
-        self.external |= uncertainty.external != 0;
+#[repr(C)]
+#[derive(Default)]
+struct LoopProjectionCursor {
+    next: usize,
+    unknown_storage: u32,
+    external: u32,
+}
+
+#[repr(C)]
+struct LoopProjectionRequest { index: usize, action: LoopProjectionAction }
+
+#[repr(u32)]
+enum LoopMemoryFact { Unresolved, Resource, OtherResource, Owner }
+
+#[repr(C)]
+struct LoopWriteInfo { kind: LoopWriteKind, address_write: u32, iterator: u32 }
+
+#[repr(C)]
+struct LoopContentsInfo { root: Reg, found: u32, owns_resources: u32 }
+
+#[repr(C)]
+struct LoopProjectionHost {
+    context: *mut std::ffi::c_void,
+    write: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> LoopWriteInfo,
+    contents: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> LoopContentsInfo,
+}
+
+struct LoopProjectionInput<'a, 'w> {
+    builder: &'a Builder<'w>,
+    writes: &'a [Write],
+    root: PlaceRoot<'a>,
+}
+
+impl LoopProjectionInput<'_, '_> {
+    unsafe extern "C" fn write(context: *mut std::ffi::c_void, index: usize) -> LoopWriteInfo {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let write = &input.writes[index];
+        let (root, iterator) = match write {
+            Write::Position { place, iterator, .. } => (place_root(place), iterator.is_some()),
+            _ => (PlaceRoot::Other, false),
+        };
+        input.root = root;
+        LoopWriteInfo { kind: write.loop_kind(), address_write: input.root.is_address().into(), iterator: iterator.into() }
+    }
+
+    unsafe extern "C" fn contents(context: *const std::ffi::c_void, index: usize) -> LoopContentsInfo {
+        let input = unsafe { &*context.cast::<Self>() };
+        let Write::Position { place, .. } = &input.writes[index] else { unreachable!() };
+        match input.builder.written_application_data(place) {
+            Some((data, _, ty)) => LoopContentsInfo {
+                root: data.root.regs[0], found: 1, owns_resources: ty.owns_resources().into(),
+            },
+            None => LoopContentsInfo { root: 0, found: 0, owns_resources: 0 },
+        }
+    }
+
+    fn advance(&mut self, cursor: &mut LoopProjectionCursor, storage: &mut LoopStorage) -> LoopProjectionRequest {
+        let count = self.writes.len();
+        let host = LoopProjectionHost {
+            context: (self as *mut Self).cast(),
+            write: Self::write,
+            contents: Self::contents,
+        };
+        unsafe { advance_loop_projection(cursor, storage, count, host) }
     }
 }
 
@@ -129,22 +186,19 @@ enum LoopComponentWrite { None, All, Memory, OutsideElement, Contents, Position 
 struct LoopMemoryUse { raw: u32, deferred: u32 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.source_writes::loop_projection"]
-    fn loop_projection(kind: LoopWriteKind, address_write: u32, iterator: u32) -> LoopProjection;
+    #[link_name = "bootstrap.source_writes::advance_loop_projection"]
+    fn advance_loop_projection(cursor: &mut LoopProjectionCursor, storage: &mut LoopStorage,
+        count: usize, host: LoopProjectionHost) -> LoopProjectionRequest;
     #[link_name = "bootstrap.source_writes::project_loop_storage"]
     fn project_loop_storage(output: &mut LoopStorage, host: LoopStorageHost, count: usize, constant_index: u32, index: u32);
-    #[link_name = "bootstrap.source_writes::push_loop_storage"]
-    fn push_loop_storage(storage: &mut LoopStorage, written: StorageWrite);
     #[link_name = "bootstrap.source_writes::loop_array_elements"]
     fn loop_array_elements(length: u64, exact: u32, index: u32) -> LoopBytes;
     #[link_name = "bootstrap.source_writes::loop_part_matches"]
     fn loop_part_matches(source_scalar: u32, source_word: u32, target_scalar: u32, target_word: u32, offset: u32) -> u32;
-    #[link_name = "bootstrap.source_writes::loop_contents_frame"]
-    fn loop_contents_frame(found: u32, owns_resources: u32) -> u32;
-    #[link_name = "bootstrap.source_writes::loop_position_uncertainty"]
-    fn loop_position_uncertainty(position: LoopPosition, written: u32, has_binding: u32, direct: u32) -> LoopUncertainty;
-    #[link_name = "bootstrap.source_writes::loop_memory_uncertainty"]
-    fn loop_memory_uncertainty(position: LoopPosition, written: u32) -> LoopUncertainty;
+    #[link_name = "bootstrap.source_writes::record_loop_memory"]
+    fn record_loop_memory(cursor: &mut LoopProjectionCursor, fact: LoopMemoryFact, position: LoopPosition, present: u32);
+    #[link_name = "bootstrap.source_writes::record_loop_position"]
+    fn record_loop_position(cursor: &mut LoopProjectionCursor, position: LoopPosition, written: u32, has_binding: u32, direct: u32);
     #[link_name = "bootstrap.source_writes::loop_invalidation_next"]
     fn loop_invalidation_next(phase: LoopInvalidation) -> LoopInvalidation;
     #[link_name = "bootstrap.source_writes::loop_element_effect"]
@@ -193,7 +247,9 @@ impl Builder<'_> {
         Ok(true)
     }
 
-    async fn project_loop_memory(&self, effect: &mut LoopWrites, borrow: &view::Borrow) -> Result<()> {
+    async fn project_loop_memory(&self, effect: &mut LoopWrites, cursor: &mut LoopProjectionCursor,
+        borrow: &view::Borrow,
+    ) -> Result<()> {
         let mut positions = Vec::new();
         let mut origins = Vec::new();
         if Self::visit_address_writes(borrow, |origin, when| {
@@ -203,7 +259,7 @@ impl Builder<'_> {
             }
             Some(())
         }).is_none() {
-            effect.include_uncertainty(LoopUncertainty { storage: 1, external: 1 });
+            unsafe { record_loop_memory(cursor, LoopMemoryFact::Unresolved, LoopPosition::Missing, 0) };
             return Ok(());
         }
         for origin in origins {
@@ -214,15 +270,17 @@ impl Builder<'_> {
                     for input in self.env.values().flat_map(Binding::application_resources) {
                         located |= self.append_loop_storage(effect, input, borrow, *index, parts.clone()).await?;
                     }
-                    effect.unknown_storage |= !located;
+                    unsafe { record_loop_memory(cursor, LoopMemoryFact::Resource, LoopPosition::Missing, located.into()) };
                 }
-                _ => effect.unknown_storage |= origin.resources().active(),
+                _ => unsafe { record_loop_memory(cursor, LoopMemoryFact::OtherResource, LoopPosition::Missing,
+                    origin.resources().active().into()) },
             }
         }
         for owner in self.env.values().filter_map(Binding::stored_place) {
             let storage = owner.storage();
             let components = self.address_write_components(&positions, &owner);
-            effect.include_uncertainty(unsafe { loop_memory_uncertainty(position(Some(storage)), (!components.is_empty()).into()) });
+            unsafe { record_loop_memory(cursor, LoopMemoryFact::Owner, position(Some(storage)),
+                (!components.is_empty()).into()) };
             if let Place::Local(_, slots, ..) = storage {
                 effect.locals.extend(components.into_iter().map(|component| slots[component]));
             }
@@ -230,62 +288,58 @@ impl Builder<'_> {
         Ok(())
     }
 
+    async fn project_loop_position(
+        &self, effect: &mut LoopWrites, cursor: &mut LoopProjectionCursor, place: &Expr,
+        name: Option<&str>, writes: &[Write],
+    ) -> Result<()> {
+        if let Some((projection, input, _)) = unsafe { self.world.call(self.loop_write_projection(place,
+            &async |index, _| self.loop_index_operand(index, writes).map(|index| (index, None)))).await }?
+        {
+            let parts = projection.value.1.iter().flatten().map(|component| projection.base.components[*component]);
+            let located = self.append_loop_storage(effect, input, &projection.resource, projection.index, parts).await?;
+            unsafe { record_loop_memory(cursor, LoopMemoryFact::Resource, LoopPosition::Missing, located.into()) };
+            return Ok(());
+        }
+        let binding = name.and_then(|name| self.env.get(name));
+        let stored = binding.and_then(Binding::stored_place);
+        let owner = match binding {
+            Some(Binding::ApplicationData(data)) => data.place.as_ref(),
+            _ => stored.as_ref(),
+        };
+        let mut projected = false;
+        if let (Some(name), Some(owner @ Place::Local(_, slots, ..))) = (name, owner)
+            && let Some((_, components)) = unsafe { self.world.call(self.written_projection(place, name, owner, None, writes)).await }?
+        {
+            effect.locals.extend(components.into_iter().flatten().map(|component| slots[component]));
+            projected = true;
+        }
+        let storage = if matches!(stored, Some(Place::Reference { .. })) { stored.as_ref() } else { owner };
+        unsafe { record_loop_position(cursor, position(storage), projected.into(), binding.is_some().into(),
+            matches!(place.kind(), ExprKind::Name(_)).into()) };
+        Ok(())
+    }
+
     pub(super) async fn project_loop_writes(&self, writes: &[Write]) -> Result<LoopWrites> {
         let mut effect = LoopWrites::default();
-        for write in writes {
-            let (root, iterator) = match write {
-                Write::Position { place, iterator, .. } => (place_root(place), iterator.is_some()),
-                _ => (PlaceRoot::Other, false),
-            };
-            let action = unsafe { loop_projection(write.loop_kind(), root.is_address().into(), iterator.into()) };
-            match (action, write) {
-                (LoopProjection::External, _) => effect.include_uncertainty(LoopUncertainty { storage: 1, external: 1 }),
-                (LoopProjection::Unknown, _) => effect.unknown_storage = true,
-                (LoopProjection::Contents, Write::Position { place, .. }) => {
-                    let contents = self.written_application_data(place);
-                    let owns_resources = contents.is_some_and(|(_, _, ty)| ty.owns_resources());
-                    let frame = unsafe { loop_contents_frame(contents.is_some().into(), owns_resources.into()) } != 0;
-                    if let Some((data, _, _)) = contents.filter(|_| frame) {
-                        unsafe { push_loop_storage(&mut effect.storage, StorageWrite::frame(data.root.regs[0])) };
-                    } else {
-                        effect.unknown_storage = true;
-                    }
+        let mut cursor = LoopProjectionCursor::default();
+        let mut input = LoopProjectionInput { builder: self, writes, root: PlaceRoot::Other };
+        loop {
+            let next = input.advance(&mut cursor, &mut effect.storage);
+            match (next.action, writes.get(next.index)) {
+                (LoopProjectionAction::Done, _) => {
+                    effect.unknown_storage = cursor.unknown_storage != 0;
+                    effect.external = cursor.external != 0;
+                    return Ok(effect);
                 }
-                (LoopProjection::Memory, Write::Memory { borrow, .. }) => {
-                    self.project_loop_memory(&mut effect, borrow).await?;
+                (LoopProjectionAction::Memory, Some(Write::Memory { borrow, .. })) => {
+                    self.project_loop_memory(&mut effect, &mut cursor, borrow).await?;
                 }
-                (LoopProjection::Position, Write::Position { place, .. }) => {
-                    if let Some((projection, input, _)) = unsafe { self.world.call(self.loop_write_projection(place,
-                        &async |index, _| self.loop_index_operand(index, writes).map(|index| (index, None)))).await }?
-                    {
-                        let parts = projection.value.1.iter().flatten().map(|component| projection.base.components[*component]);
-                        let located = self.append_loop_storage(&mut effect, input,
-                            &projection.resource, projection.index, parts).await?;
-                        effect.unknown_storage |= !located;
-                        continue;
-                    }
-                    let name = root.name();
-                    let binding = name.and_then(|name| self.env.get(name));
-                    let stored = binding.and_then(Binding::stored_place);
-                    let owner = match binding {
-                        Some(Binding::ApplicationData(data)) => data.place.as_ref(),
-                        _ => stored.as_ref(),
-                    };
-                    let mut projected = false;
-                    if let (Some(name), Some(owner @ Place::Local(_, slots, ..))) = (name, owner)
-                        && let Some((_, components)) = unsafe { self.world.call(self.written_projection(place, name, owner, None, writes)).await }?
-                    {
-                        effect.locals.extend(components.into_iter().flatten().map(|component| slots[component]));
-                        projected = true;
-                    }
-                    let storage = if matches!(stored, Some(Place::Reference { .. })) { stored.as_ref() } else { owner };
-                    effect.include_uncertainty(unsafe { loop_position_uncertainty(position(storage), projected.into(),
-                        binding.is_some().into(), matches!(place.kind(), ExprKind::Name(_)).into()) });
+                (LoopProjectionAction::Position, Some(Write::Position { place, .. })) => {
+                    self.project_loop_position(&mut effect, &mut cursor, place, input.root.name(), writes).await?;
                 }
-                _ => {}
+                _ => unreachable!(),
             }
         }
-        Ok(effect)
     }
 
     pub(super) async fn invalidate_writes(
