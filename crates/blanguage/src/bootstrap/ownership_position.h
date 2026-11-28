@@ -11,6 +11,7 @@ struct PositionView {
     usize selection_width;
 };
 extern "C" PositionIndex read_index(address value, PositionView view) on cpu;
+extern "C" i32 compare_position_index(PositionIndex a, PositionIndex b) on cpu;
 struct PositionNode { u32 kind; u64 owner; u64 member; u64 word; PositionIndex index; address condition; u64 count; };
 extern "C" PositionNode inspect_position(address value, PositionView view) on cpu;
 extern "C" address position_child(address value, u64 at, PositionView view) on cpu;
@@ -22,7 +23,6 @@ struct LoopFieldState { address known; address path; address effects; };
 struct Host {
     PositionView positions;
     cfn<u32,address,address> equal;
-    cfn<u32,address,address> identity_equal;
     cfn<u32,address,address> presence_equal;
     cfn<u32,address,PositionIndex> presence_uses_index;
     cfn<u32,address,address> contains;
@@ -56,7 +56,6 @@ extern "C" address index(address values,PositionIndex selected,u64 width,Host ho
     requires nonzero(host.clone_position);
 extern "C" address word(address value,PositionIndex selected,u32 field,Host host) on cpu
     requires nonzero(host.equal)
-    requires nonzero(host.identity_equal)
     requires nonzero(host.presence_equal)
     requires nonzero(host.fresh_vector)
     requires nonzero(host.push_vector)
@@ -96,7 +95,6 @@ extern "C" address dataset_output_position(address value, DatasetOutputMapping o
 
 extern "C" u32 ready(address value,address known,Host host) on cpu
     requires nonzero(host.equal)
-    requires nonzero(host.identity_equal)
     requires nonzero(host.presence_equal)
     requires nonzero(host.contains)
     requires nonzero(host.contains_parameter)
@@ -114,7 +112,7 @@ struct InitializationReadHost {
 struct InitializationReadSpan { address positions; usize count; usize stride; };
 extern "C" u32 initialization_read(InitializationReadSpan positions, address known, address output,
     InitializationReadMode mode, Host host, InitializationReadHost read) on cpu
-    requires nonzero(host.equal) requires nonzero(host.identity_equal)
+    requires nonzero(host.equal)
     requires nonzero(host.presence_equal)
     requires nonzero(host.contains) requires nonzero(host.contains_parameter)
     requires nonzero(host.contains_element) requires nonzero(host.contains_input)
@@ -124,7 +122,6 @@ extern "C" u32 initialization_read(InitializationReadSpan positions, address kno
 
 extern "C" u32 word_ready(address value,PositionIndex selected,u32 field,address known,Host host) on cpu
     requires nonzero(host.equal)
-    requires nonzero(host.identity_equal)
     requires nonzero(host.presence_equal)
     requires nonzero(host.contains)
     requires nonzero(host.contains_parameter)
@@ -136,7 +133,6 @@ extern "C" u32 word_ready(address value,PositionIndex selected,u32 field,address
     requires nonzero(host.drop_iterator);
 extern "C" u32 prefix_ready(address value,u32 length,u32 field,address known,Host host) on cpu
     requires nonzero(host.equal)
-    requires nonzero(host.identity_equal)
     requires nonzero(host.presence_equal)
     requires nonzero(host.contains)
     requires nonzero(host.contains_parameter)
@@ -157,7 +153,6 @@ struct InitializationHost {
 extern "C" address merge_initialization(address exits, usize count, usize condition_count,
     Host host, InitializationHost initialization) on cpu
     requires nonzero(host.equal)
-    requires nonzero(host.identity_equal)
     requires nonzero(host.presence_equal)
     requires nonzero(host.contains)
     requires nonzero(host.contains_parameter)
@@ -183,7 +178,6 @@ struct LoopFieldHost {
 extern "C" void loop_field_initialization(address context, address output, usize rows, usize states,
     PositionIndex selected, Host host, LoopFieldHost exit) on cpu
     requires nonzero(host.equal)
-    requires nonzero(host.identity_equal)
     requires nonzero(host.presence_equal)
     requires nonzero(host.contains)
     requires nonzero(host.contains_parameter)
@@ -210,7 +204,6 @@ struct ArrayExitHost {
 extern "C" void array_initialization(address context, address output, usize count, ArrayRange range,
     PositionIndex selected, Host host, ArrayExitHost exits) on cpu
     requires nonzero(host.equal)
-    requires nonzero(host.identity_equal)
     requires nonzero(host.presence_equal)
     requires nonzero(host.presence_uses_index)
     requires nonzero(host.contains)

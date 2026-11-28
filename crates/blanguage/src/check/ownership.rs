@@ -27,7 +27,11 @@ impl ApplicationIndex {
 impl PartialEq for ApplicationIndex {fn eq(&self,other:&Self)->bool{self.cmp(other).is_eq()}}
 impl Eq for ApplicationIndex {}
 impl PartialOrd for ApplicationIndex {fn partial_cmp(&self,other:&Self)->Option<std::cmp::Ordering>{Some(self.cmp(other))}}
-impl Ord for ApplicationIndex {fn cmp(&self,other:&Self)->std::cmp::Ordering{match(self,other){(Self::Constant(a),Self::Constant(b))=>a.cmp(b),(Self::Value(a,_),Self::Value(b,_))=>a.cmp(b),(Self::Constant(_),Self::Value(..))=>std::cmp::Ordering::Less,_=>std::cmp::Ordering::Greater}}}
+impl Ord for ApplicationIndex {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        position::compare_index(self, other)
+    }
+}
 #[repr(C, u32)]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum ApplicationSelection {

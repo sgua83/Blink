@@ -30,7 +30,6 @@ struct OwnershipNode { u32 kind; address presence; };
 // actual Rust stack values synchronously; no address survives its owner.
 struct Host {
     address layout;
-    cfn<i32,PositionIndex,PositionIndex> compare_index;
     cfn<i32,address,address> compare_input;
     cfn<u32,address> constant_input;
     cfn<u32,address,PositionIndex> input_uses_index;
@@ -41,7 +40,6 @@ struct Host {
     cfn<void,address,address,address,u32> pair;
     cfn<void,address> wrap_not;
     cfn<u32,address,address,Host,cfn<u32,address,address,address,address,Host>
-    requires nonzero(argument4.compare_index)
     requires nonzero(argument4.compare_input)
     requires nonzero(argument4.constant_input)
     requires nonzero(argument4.input_uses_index)
@@ -70,7 +68,6 @@ struct Host {
     requires nonzero(argument4.ownership_constant)
     requires nonzero(argument4.ownership_conditional)
     requires nonzero(argument4.copy_value)>
-    requires nonzero(argument2.compare_index)
     requires nonzero(argument2.compare_input)
     requires nonzero(argument2.constant_input)
     requires nonzero(argument2.input_uses_index)
@@ -101,7 +98,6 @@ struct Host {
     requires nonzero(argument2.copy_value)
     requires nonzero(argument3) children_scope;
     cfn<u32,Selection,address,Host,cfn<u32,Selection,address,Host>
-    requires nonzero(argument2.compare_index)
     requires nonzero(argument2.compare_input)
     requires nonzero(argument2.constant_input)
     requires nonzero(argument2.input_uses_index)
@@ -130,7 +126,6 @@ struct Host {
     requires nonzero(argument2.ownership_constant)
     requires nonzero(argument2.ownership_conditional)
     requires nonzero(argument2.copy_value)>
-    requires nonzero(argument2.compare_index)
     requires nonzero(argument2.compare_input)
     requires nonzero(argument2.constant_input)
     requires nonzero(argument2.input_uses_index)
@@ -161,7 +156,6 @@ struct Host {
     requires nonzero(argument2.copy_value)
     requires nonzero(argument3) selected_scope;
     cfn<u32,address,address,Host,cfn<u32,address,address,Host>
-    requires nonzero(argument2.compare_index)
     requires nonzero(argument2.compare_input)
     requires nonzero(argument2.constant_input)
     requires nonzero(argument2.input_uses_index)
@@ -190,7 +184,6 @@ struct Host {
     requires nonzero(argument2.ownership_constant)
     requires nonzero(argument2.ownership_conditional)
     requires nonzero(argument2.copy_value)>
-    requires nonzero(argument2.compare_index)
     requires nonzero(argument2.compare_input)
     requires nonzero(argument2.constant_input)
     requires nonzero(argument2.input_uses_index)
@@ -221,7 +214,6 @@ struct Host {
     requires nonzero(argument2.copy_value)
     requires nonzero(argument3) clone_scope;
     cfn<u32,u32,address,Host,cfn<u32,address,address,Host>
-    requires nonzero(argument2.compare_index)
     requires nonzero(argument2.compare_input)
     requires nonzero(argument2.constant_input)
     requires nonzero(argument2.input_uses_index)
@@ -250,7 +242,6 @@ struct Host {
     requires nonzero(argument2.ownership_constant)
     requires nonzero(argument2.ownership_conditional)
     requires nonzero(argument2.copy_value)>
-    requires nonzero(argument2.compare_index)
     requires nonzero(argument2.compare_input)
     requires nonzero(argument2.constant_input)
     requires nonzero(argument2.input_uses_index)
@@ -282,7 +273,6 @@ struct Host {
     requires nonzero(argument3) truth_scope;
     cfn<u32,address,address> position_equal;
     cfn<u32,address,Host,cfn<u32,address,address,Host>
-    requires nonzero(argument2.compare_index)
     requires nonzero(argument2.compare_input)
     requires nonzero(argument2.constant_input)
     requires nonzero(argument2.input_uses_index)
@@ -311,7 +301,6 @@ struct Host {
     requires nonzero(argument2.ownership_constant)
     requires nonzero(argument2.ownership_conditional)
     requires nonzero(argument2.copy_value)>
-    requires nonzero(argument1.compare_index)
     requires nonzero(argument1.compare_input)
     requires nonzero(argument1.constant_input)
     requires nonzero(argument1.input_uses_index)
@@ -342,7 +331,6 @@ struct Host {
     requires nonzero(argument1.copy_value)
     requires nonzero(argument2) condition_scope;
     cfn<u32,address,address,Host,cfn<u32,address,address,Host>
-    requires nonzero(argument2.compare_index)
     requires nonzero(argument2.compare_input)
     requires nonzero(argument2.constant_input)
     requires nonzero(argument2.input_uses_index)
@@ -371,7 +359,6 @@ struct Host {
     requires nonzero(argument2.ownership_constant)
     requires nonzero(argument2.ownership_conditional)
     requires nonzero(argument2.copy_value)>
-    requires nonzero(argument2.compare_index)
     requires nonzero(argument2.compare_input)
     requires nonzero(argument2.constant_input)
     requires nonzero(argument2.input_uses_index)
@@ -416,16 +403,13 @@ struct Host {
 };
 
 extern "C" void relation(address output,Selection value,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.truth)
     requires nonzero(host.selected);
 
 extern "C" i32 compare(address a,address b,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input);
 
 extern "C" u32 uses_index(address value,PositionIndex wanted,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.input_uses_index);
 
 extern "C" void from_value(address output,address value,Host host) on cpu
@@ -434,7 +418,6 @@ extern "C" void from_value(address output,address value,Host host) on cpu
     requires nonzero(host.truth);
 
 extern "C" void combine(address left,address right,u32 any,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -465,7 +448,6 @@ extern "C" void combine(address left,address right,u32 any,Host host) on cpu
     requires nonzero(host.copy_value);
 
 extern "C" void negate(address value,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -496,7 +478,6 @@ extern "C" void negate(address value,Host host) on cpu
     requires nonzero(host.copy_value);
 
 extern "C" void selected(address output,address position,address wanted,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -527,7 +508,6 @@ extern "C" void selected(address output,address position,address wanted,Host hos
     requires nonzero(host.copy_value);
 
 extern "C" void condition(address output,address value,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -558,7 +538,6 @@ extern "C" void condition(address output,address value,Host host) on cpu
     requires nonzero(host.copy_value);
 
 extern "C" void loop_condition(address output,address value,address inputs,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -603,7 +582,6 @@ extern "C" void ownership_from_presence(address output,address value,Host host) 
     requires nonzero(host.ownership_conditional);
 
 extern "C" void ownership_either(address output,address a,address b,address choice,u32 has_choice,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -634,7 +612,6 @@ extern "C" void ownership_either(address output,address a,address b,address choi
     requires nonzero(host.copy_value);
 
 extern "C" void ownership_restricted(address output,address value,address when,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -665,7 +642,6 @@ extern "C" void ownership_restricted(address output,address value,address when,H
     requires nonzero(host.copy_value);
 
 extern "C" u32 ownership_compatible(address a,address b,address inputs,address path,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)

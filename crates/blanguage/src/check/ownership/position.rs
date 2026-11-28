@@ -278,7 +278,6 @@ pub(in crate::check) const POSITION_VIEW: PositionView = PositionView {
 };
 
 pub(in crate::check) unsafe extern "C" fn equal(a:Address,b:Address)->u32 {u32::from(unsafe{&*a.cast::<Position>()==&*b.cast::<Position>()})}
-unsafe extern "C" fn identity_equal(a:Address,b:Address)->u32 {u32::from(unsafe{*a.cast::<ValueIdentity>()==*b.cast::<ValueIdentity>()})}
 unsafe extern "C" fn presence_equal(a:Address,b:Address)->u32 {u32::from(unsafe{&*a.cast::<owned_presence::Presence>()==&*b.cast::<owned_presence::Presence>()})}
 unsafe extern "C" fn presence_uses_index(value:Address,at:PositionIndex)->u32 {
     u32::from(unsafe{&*value.cast::<owned_presence::Presence>()}.uses_index(unsafe{required_index(at)}))
@@ -328,7 +327,6 @@ unsafe extern "C" fn insert_set(set:Address,value:Address) {unsafe{&mut *set.cas
 struct Host {
     positions: PositionView,
     equal:unsafe extern "C" fn(Address,Address)->u32,
-    identity_equal:unsafe extern "C" fn(Address,Address)->u32,
     presence_equal:unsafe extern "C" fn(Address,Address)->u32,
     presence_uses_index:unsafe extern "C" fn(Address,PositionIndex)->u32,
     contains:unsafe extern "C" fn(Address,Address)->u32,
@@ -348,7 +346,7 @@ struct Host {
     fresh_set:unsafe extern "C" fn()->Address,
     insert_set:unsafe extern "C" fn(Address,Address),
 }
-const HOST:Host=Host{positions:POSITION_VIEW,equal,identity_equal,presence_equal,presence_uses_index,contains,contains_parameter,contains_element,contains_input,field_coverage,iterate,next,drop_iterator,fresh_vector,push_vector,vector_count,vector_at,make_position,clone_position,fresh_set,insert_set};
+const HOST:Host=Host{positions:POSITION_VIEW,equal,presence_equal,presence_uses_index,contains,contains_parameter,contains_element,contains_input,field_coverage,iterate,next,drop_iterator,fresh_vector,push_vector,vector_count,vector_at,make_position,clone_position,fresh_set,insert_set};
 #[repr(C)]
 struct DatasetPositionCleanup {
     position: unsafe extern "C" fn(Address),
@@ -359,6 +357,8 @@ unsafe extern "C" fn drop_position(value: Address) { drop(unsafe { Box::from_raw
 unsafe extern "C" fn drop_position_vector(value: Address) { drop(unsafe { Box::from_raw(value.cast::<Vec<Position>>()) }); }
 
 unsafe extern "C" {
+    #[link_name = "bootstrap.ownership_position::compare_position_index"]
+    fn source_compare_index(a: PositionIndex, b: PositionIndex) -> i32;
     #[link_name="bootstrap.ownership_position::select"] fn source_select(when:Address,a:Address,b:Address,equal:EqualPosition)->u32;
     #[link_name="bootstrap.ownership_position::both"] fn source_both(a:Address,b:Address,equal:EqualPosition)->u32;
     #[link_name="bootstrap.ownership_position::index"] fn source_index(values:Address,index:PositionIndex,width:u64,host:Host)->Address;
@@ -375,6 +375,10 @@ unsafe extern "C" {
         initialization: InitializationHost,
     ) -> Address;
 }
+pub(super) fn compare_index(a: &ApplicationIndex, b: &ApplicationIndex) -> std::cmp::Ordering {
+    unsafe { source_compare_index(position_index(Some(a)), position_index(Some(b))) }.cmp(&0)
+}
+
 pub(super) fn selected(when:owned_presence::Presence,a:Position,b:Position)->Position {
     match unsafe{source_select(pointer(&when),pointer(&a),pointer(&b),equal)} {0=>a,1=>b,_=>Position::Conditional(PositionCondition::new(when),PositionChild::new(a),PositionChild::new(b))}
 }

@@ -77,11 +77,10 @@ if(operation==0){return 1;} if(operation==1){return 0;}
 }
 
 extern "C" void relation(address output,Selection value,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.truth)
     requires nonzero(host.selected) {
 Selection current=value;
-    if(host.compare_index(current.a,current.b)==0){host.truth(output,(comparison_mask(current.operation)&2)!=0 ? 1 : 0);return;}
+    if(compare_position_index(current.a,current.b)==0){host.truth(output,(comparison_mask(current.operation)&2)!=0 ? 1 : 0);return;}
     if(current.a.kind==1&&current.b.kind==1){
         u32 bit=current.a.value<current.b.value ? 1 : (current.a.value==current.b.value ? 2 : 4);
         host.truth(output,(comparison_mask(current.operation)&bit)!=0 ? 1 : 0);return;
@@ -101,15 +100,14 @@ Selection current=value;
 }
 
 extern "C" i32 compare(address a,address b,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input) {
 Node left=read_presence(a, host.layout);Node right=read_presence(b, host.layout);
     if(left.kind!=right.kind){return left.kind<right.kind ? i32(-1) : i32(1);}
     if(left.kind==2){return host.compare_input(left.value,right.value);}
     if(left.kind==3){
         if(left.operation!=right.operation){return left.operation<right.operation ? i32(-1) : i32(1);}
-        i32 first=host.compare_index(left.a,right.a);
-        return first!=0 ? first : host.compare_index(left.b,right.b);
+        i32 first=compare_position_index(left.a,right.a);
+        return first!=0 ? first : compare_position_index(left.b,right.b);
     }
     if(left.kind==4){return compare(left.first,right.first,host);}
     if(left.kind==5||left.kind==6){i32 first=compare(left.first,right.first,host);return first!=0 ? first : compare(left.second,right.second,host);}
@@ -117,10 +115,9 @@ Node left=read_presence(a, host.layout);Node right=read_presence(b, host.layout)
 }
 
 extern "C" u32 uses_index(address value,PositionIndex wanted,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.input_uses_index) {
 Node node=read_presence(value, host.layout);
-    if(node.kind==3){return host.compare_index(node.a,wanted)==0||host.compare_index(node.b,wanted)==0 ? 1 : 0;}
+    if(node.kind==3){return compare_position_index(node.a,wanted)==0||compare_position_index(node.b,wanted)==0 ? 1 : 0;}
     if(node.kind==2){return host.input_uses_index(node.value,wanted);}
     if(node.kind==4){return uses_index(node.first,wanted,host);}
     if(node.kind==5||node.kind==6){return uses_index(node.first,wanted,host)!=0||uses_index(node.second,wanted,host)!=0 ? 1 : 0;}
@@ -135,17 +132,15 @@ u32 constant=host.constant_input(value);
     if(constant==0){host.input(output,value);}else{host.truth(output,constant==2 ? 1 : 0);}
 }
 
-u32 pair_mask(Selection left,Node right,u32 any,Host host) on cpu
-    requires nonzero(host.compare_index) {
+u32 pair_mask(Selection left,Node right,u32 any) on cpu {
 if(right.kind!=3){return 8;}
     u32 mask=comparison_mask(right.operation);
-    if(host.compare_index(left.a,right.b)==0&&host.compare_index(left.b,right.a)==0){mask=((mask&1)<<2)|(mask&2)|((mask&4)>>2);}
-    else if(host.compare_index(left.a,right.a)!=0||host.compare_index(left.b,right.b)!=0){return 8;}
+    if(compare_position_index(left.a,right.b)==0&&compare_position_index(left.b,right.a)==0){mask=((mask&1)<<2)|(mask&2)|((mask&4)>>2);}
+    else if(compare_position_index(left.a,right.a)!=0||compare_position_index(left.b,right.b)!=0){return 8;}
     return any!=0 ? (comparison_mask(left.operation)|mask) : (comparison_mask(left.operation)&mask);
 }
 
 void masked_relation(address output,Selection value,u32 mask,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.truth)
     requires nonzero(host.selected) {
 Selection current=value;
@@ -157,7 +152,6 @@ Selection current=value;
 }
 
 extern "C" u32 clone_callback(address temporary,address data,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -193,7 +187,6 @@ CloneContext context=unsafe_position<CloneContext>(data);
 }
 
 void combine_cloned(address output,address other,u32 any,u32 prepend,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -227,7 +220,6 @@ CloneContext context=CloneContext(output,any,prepend);
 }
 
 extern "C" u32 either_callback(address temporary,address data,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -265,7 +257,6 @@ EitherContext context=unsafe_position<EitherContext>(data);
 }
 
 u32 within_selected(address output,address other,Selection original,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -295,7 +286,7 @@ u32 within_selected(address output,address other,Selection original,Host host) o
     requires nonzero(host.ownership_conditional)
     requires nonzero(host.copy_value) {
 Node node=read_presence(other, host.layout);
-    u32 mask=pair_mask(original,node,0,host);
+    u32 mask=pair_mask(original,node,0);
     if(mask!=8){masked_relation(output,original,mask,host);return 1;}
     if(node.kind==5){
         if(within_selected(output,node.first,original,host)!=0){combine_cloned(output,node.second,0,0,host);return 1;}
@@ -309,7 +300,6 @@ Node node=read_presence(other, host.layout);
 }
 
 extern "C" u32 within_callback(Selection original,address data,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -343,7 +333,6 @@ WithinContext context=unsafe_position<WithinContext>(data);
 }
 
 u32 within(address output,address other,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -379,7 +368,6 @@ Node node=read_presence(output, host.layout);
 }
 
 extern "C" void combine(address left,address right,u32 any,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -417,7 +405,7 @@ if(compare(left,right,host)==0){return;}
         if(a.kind==0||b.kind==0){host.truth(left,0);return;}
         if(a.kind==1){host.move_value(left,right);return;}if(b.kind==1){return;}
     }else{
-        if(a.kind==3){u32 mask=pair_mask(Selection(a.operation,a.a,a.b),b,1,host);if(mask!=8){masked_relation(left,Selection(a.operation,a.a,a.b),mask,host);return;}}
+        if(a.kind==3){u32 mask=pair_mask(Selection(a.operation,a.a,a.b),b,1);if(mask!=8){masked_relation(left,Selection(a.operation,a.a,a.b),mask,host);return;}}
         if(a.kind==1||b.kind==1){host.truth(left,1);return;}
         if(a.kind==0){host.move_value(left,right);return;}if(b.kind==0){return;}
     }
@@ -425,7 +413,6 @@ if(compare(left,right,host)==0){return;}
 }
 
 extern "C" u32 not_children(address output,address left,address right,address data,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -460,7 +447,6 @@ NotContext context=unsafe_position<NotContext>(data);
 }
 
 extern "C" u32 not_selected(Selection value,address data,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -494,7 +480,6 @@ Selection current=value;
 }
 
 extern "C" void negate(address value,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -531,7 +516,6 @@ Node node=read_presence(value, host.layout);
 }
 
 extern "C" u32 select_choice(address actual,address data,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -566,7 +550,6 @@ SelectBranchContext context=unsafe_position<SelectBranchContext>(data);
 }
 
 extern "C" u32 select_predicate(address predicate,address data,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -603,7 +586,6 @@ SelectContext context=unsafe_position<SelectContext>(data);
 }
 
 extern "C" void selected(address output,address position,address wanted,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -669,7 +651,6 @@ if(value.operation==0||value.operation==1){host.condition_index(output,0,value.a
 }
 
 extern "C" u32 project_other(address temporary,address data,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -704,7 +685,6 @@ ProjectOther context=unsafe_position<ProjectOther>(data);
 }
 
 extern "C" u32 project_selected(address temporary,address data,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -740,7 +720,6 @@ ProjectSelected context=unsafe_position<ProjectSelected>(data);
 }
 
 void project(address output,address value,address inputs,u32 looped,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -794,7 +773,6 @@ Node node=read_presence(value, host.layout);
 }
 
 extern "C" void condition(address output,address value,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -827,7 +805,6 @@ project(output,value,address(),0,host);
 }
 
 extern "C" void loop_condition(address output,address value,address inputs,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -884,7 +861,6 @@ Node node=read_presence(value, host.layout);
 }
 
 u32 same_ownership(address a,address b,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input) {
 OwnershipNode left=read_ownership(a, host.layout);OwnershipNode right=read_ownership(b, host.layout);
     if(left.kind!=right.kind){return 0;}
@@ -892,7 +868,6 @@ OwnershipNode left=read_ownership(a, host.layout);OwnershipNode right=read_owner
 }
 
 extern "C" u32 choice_right(address right,address data,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -927,7 +902,6 @@ OwnerChoiceRight context=unsafe_position<OwnerChoiceRight>(data);
 }
 
 extern "C" u32 choice_left(address left,address data,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -963,7 +937,6 @@ OwnerChoice context=unsafe_position<OwnerChoice>(data);
 }
 
 extern "C" u32 owner_second(address b,address data,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -1000,7 +973,6 @@ OwnerSecond context=unsafe_position<OwnerSecond>(data);
 }
 
 extern "C" u32 owner_first(address a,address data,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -1036,7 +1008,6 @@ OwnerPair context=unsafe_position<OwnerPair>(data);
 }
 
 extern "C" void ownership_either(address output,address a,address b,address choice,u32 has_choice,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -1073,7 +1044,6 @@ if(same_ownership(a,b,host)!=0){host.ownership_copy(output,a);return;}
 }
 
 extern "C" u32 restrict_right(address right,address data,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -1107,7 +1077,6 @@ OwnerRestrictRight context=unsafe_position<OwnerRestrictRight>(data);
 }
 
 extern "C" u32 restrict_left(address left,address data,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -1143,7 +1112,6 @@ OwnerRestrict context=unsafe_position<OwnerRestrict>(data);
 }
 
 extern "C" void ownership_restricted(address output,address value,address when,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -1179,7 +1147,6 @@ OwnershipNode node=read_ownership(value, host.layout);
 }
 
 extern "C" u32 xor_actual(address right,address data,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -1216,7 +1183,6 @@ XorActual context=unsafe_position<XorActual>(data);
 }
 
 extern "C" u32 xor_expected(address left,address data,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -1251,7 +1217,6 @@ XorExpected context=unsafe_position<XorExpected>(data);
 }
 
 extern "C" u32 actual_condition(address actual,address data,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -1287,7 +1252,6 @@ ActualCondition context=unsafe_position<ActualCondition>(data);
 }
 
 extern "C" u32 actual_presence(address presence,address data,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -1323,7 +1287,6 @@ ActualPresence context=unsafe_position<ActualPresence>(data);
 }
 
 extern "C" u32 expected_condition(address expected,address data,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -1359,7 +1322,6 @@ Expected context=unsafe_position<Expected>(data);
 }
 
 extern "C" u32 expected_presence(address presence,address data,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
@@ -1395,7 +1357,6 @@ Compatible context=unsafe_position<Compatible>(data);
 }
 
 extern "C" u32 ownership_compatible(address a,address b,address inputs,address path,Host host) on cpu
-    requires nonzero(host.compare_index)
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)

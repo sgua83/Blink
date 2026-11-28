@@ -1,4 +1,5 @@
 module bootstrap.ownership_position;
+import bootstrap.fact_key;
 // mode bit 0 applies application_complete; bit 1 applies application_word first.
 // These are stack views of existing nodes, never a materialized projection tree.
 struct Projection { address node; u32 mode; PositionIndex index; u32 word; };
@@ -75,13 +76,13 @@ extern "C" address position_child(address value, u64 at, PositionView view) on c
 PositionIndex absent_index() on cpu { return PositionIndex(0,0,unsafe_address(0u64),0u64);}
 Projection original(address node) on cpu { return Projection(node,0,absent_index(),0);}
 Projection child(Projection value,u64 at,Host host) on cpu { Projection result=value;result.node=position_child(value.node,at,host.positions);return result;}
-bool same_index(PositionIndex a,PositionIndex b,Host host) on cpu
-    requires nonzero(host.identity_equal) { 
-    if(a.kind!=b.kind){return false;}
-    if(a.kind==0){return true;}
-    if(a.kind==1){return a.value==b.value;}
-    return host.identity_equal(a.identity,b.identity)!=0;
+extern "C" i32 compare_position_index(PositionIndex a, PositionIndex b) on cpu {
+    if (a.kind != b.kind) { return a.kind < b.kind ? i32(-1) : i32(1); }
+    if (a.kind == 0) { return i32(0); }
+    if (a.kind == 1) { return i32(a.value > b.value) - i32(a.value < b.value); }
+    return bootstrap.fact_key::order_identity(a.identity, b.identity);
 }
+
 PositionNode node(Projection value,Host host) on cpu { 
     PositionNode result=inspect_position(value.node,host.positions);
     if((value.mode&2)!=0){
@@ -99,7 +100,6 @@ PositionNode node(Projection value,Host host) on cpu {
 // call contract without an independent consumer.
 address normalized(Projection value,Host host) on cpu
     requires nonzero(host.equal)
-    requires nonzero(host.identity_equal)
     requires nonzero(host.presence_equal) { 
     if(value.mode==0){return value.node;}
     PositionNode shape=node(value,host);
@@ -119,17 +119,16 @@ address normalized(Projection value,Host host) on cpu
 }
 bool equal_ready(Projection left_view,Projection right_view,Host host) on cpu
     requires nonzero(host.equal)
-    requires nonzero(host.identity_equal)
     requires nonzero(host.presence_equal) { 
     PositionNode left=node(left_view,host);PositionNode right=node(right_view,host);
     if(left.kind!=right.kind){return false;}
     if(left.kind==0){return true;}
     if(left.kind==7){return left.owner==right.owner&&left.word==right.word;}
-    if(left.kind==8){return left.owner==right.owner&&left.word==right.word&&same_index(left.index,right.index,host);}
-    if(left.kind==9){return left.owner==right.owner&&left.member==right.member&&left.word==right.word&&same_index(left.index,right.index,host);}
+    if(left.kind==8){return left.owner==right.owner&&left.word==right.word&&compare_position_index(left.index, right.index) == 0;}
+    if(left.kind==9){return left.owner==right.owner&&left.member==right.member&&left.word==right.word&&compare_position_index(left.index, right.index) == 0;}
     if(left.kind==10||left.kind==11||left.kind==12){
         if(left.count!=right.count){return false;}
-        if(left.kind==10&&!same_index(left.index,right.index,host)){return false;}
+        if(left.kind==10&&compare_position_index(left.index, right.index) != 0){return false;}
         if(left.kind==11&&host.presence_equal(left.condition,right.condition)==0){return false;}
         u64 i=0u64;while(i<left.count){if(!equivalent(child(left_view,i,host),child(right_view,i,host),host)){return false;}i+=1u64;}
         return true;
@@ -138,7 +137,6 @@ bool equal_ready(Projection left_view,Projection right_view,Host host) on cpu
 }
 bool equivalent(Projection a,Projection b,Host host) on cpu
     requires nonzero(host.equal)
-    requires nonzero(host.identity_equal)
     requires nonzero(host.presence_equal) { 
     Projection left_view=a;left_view.node=normalized(a,host);
     Projection right_view=b;right_view.node=normalized(b,host);
@@ -146,7 +144,6 @@ bool equivalent(Projection a,Projection b,Host host) on cpu
 }
 bool completable(Projection value,Host host) on cpu
     requires nonzero(host.equal)
-    requires nonzero(host.identity_equal)
     requires nonzero(host.presence_equal) { 
     Projection actual=value;actual.node=normalized(value,host);PositionNode shape=node(actual,host);
     if(shape.kind==0||shape.kind==8||shape.kind==9){return true;}
@@ -158,7 +155,6 @@ bool completable(Projection value,Host host) on cpu
 }
 bool contained(Projection value,address initialized,Host host) on cpu
     requires nonzero(host.equal)
-    requires nonzero(host.identity_equal)
     requires nonzero(host.presence_equal)
     requires nonzero(host.contains)
     requires nonzero(host.contains_parameter)
@@ -185,7 +181,6 @@ LoopFieldState unconditional(address known) on cpu {
 bool initialized(Projection value,LoopFieldState edge,Host host) on cpu
     requires nonzero(host.field_coverage)
     requires nonzero(host.equal)
-    requires nonzero(host.identity_equal)
     requires nonzero(host.presence_equal)
     requires nonzero(host.contains)
     requires nonzero(host.contains_parameter)
@@ -210,7 +205,6 @@ bool initialized(Projection value,LoopFieldState edge,Host host) on cpu
 }
 address materialize(Projection value,Host host) on cpu
     requires nonzero(host.equal)
-    requires nonzero(host.identity_equal)
     requires nonzero(host.presence_equal)
     requires nonzero(host.fresh_vector)
     requires nonzero(host.push_vector)
@@ -237,7 +231,6 @@ PositionIndex element_index(address value,Host host) on cpu
 }
 bool prefix(address value,u32 length,u32 word,address known,Host host) on cpu
     requires nonzero(host.equal)
-    requires nonzero(host.identity_equal)
     requires nonzero(host.presence_equal)
     requires nonzero(host.contains)
     requires nonzero(host.contains_parameter)
@@ -271,11 +264,10 @@ bool scope(address value,u64 owner,Host host) on cpu
     return false;
 }
 bool uses_index(address value,PositionIndex index,Host host) on cpu
-    requires nonzero(host.identity_equal)
     requires nonzero(host.presence_uses_index) { 
     if(index.kind==1){return false;}PositionNode shape=inspect_position(value,host.positions);
-    if(shape.kind==8||shape.kind==9){return same_index(shape.index,index,host);}
-    if(shape.kind==10&&same_index(shape.index,index,host)){return true;}
+    if(shape.kind==8||shape.kind==9){return compare_position_index(shape.index, index) == 0;}
+    if(shape.kind==10&&compare_position_index(shape.index, index) == 0){return true;}
     if(shape.kind==11&&host.presence_uses_index(shape.condition,index)!=0){return true;}
     if(shape.kind==10||shape.kind==11||shape.kind==12){u64 i=0u64;while(i<shape.count){if(uses_index(position_child(value,i,host.positions),index,host)){return true;}i+=1u64;}}
     return false;
@@ -313,7 +305,6 @@ extern "C" address index(address values,PositionIndex selected,u64 width,Host ho
 }
 extern "C" address word(address value,PositionIndex selected,u32 field,Host host) on cpu
     requires nonzero(host.equal)
-    requires nonzero(host.identity_equal)
     requires nonzero(host.presence_equal)
     requires nonzero(host.fresh_vector)
     requires nonzero(host.push_vector)
@@ -569,7 +560,6 @@ extern "C" address dataset_output_position(address value, DatasetOutputMapping o
 
 extern "C" u32 ready(address value,address known,Host host) on cpu
     requires nonzero(host.equal)
-    requires nonzero(host.identity_equal)
     requires nonzero(host.presence_equal)
     requires nonzero(host.contains)
     requires nonzero(host.contains_parameter)
@@ -604,7 +594,7 @@ bool visit_missing_read_position(address value, address output, InitializationRe
 
 extern "C" u32 initialization_read(InitializationReadSpan positions, address known, address output,
     InitializationReadMode mode, Host host, InitializationReadHost read) on cpu
-    requires nonzero(host.equal) requires nonzero(host.identity_equal)
+    requires nonzero(host.equal)
     requires nonzero(host.presence_equal)
     requires nonzero(host.contains) requires nonzero(host.contains_parameter)
     requires nonzero(host.contains_element) requires nonzero(host.contains_input)
@@ -628,7 +618,6 @@ extern "C" u32 initialization_read(InitializationReadSpan positions, address kno
 
 extern "C" u32 word_ready(address value,PositionIndex selected,u32 field,address known,Host host) on cpu
     requires nonzero(host.equal)
-    requires nonzero(host.identity_equal)
     requires nonzero(host.presence_equal)
     requires nonzero(host.contains)
     requires nonzero(host.contains_parameter)
@@ -642,7 +631,6 @@ extern "C" u32 word_ready(address value,PositionIndex selected,u32 field,address
 }
 extern "C" u32 prefix_ready(address value,u32 length,u32 field,address known,Host host) on cpu
     requires nonzero(host.equal)
-    requires nonzero(host.identity_equal)
     requires nonzero(host.presence_equal)
     requires nonzero(host.contains)
     requires nonzero(host.contains_parameter)
@@ -656,7 +644,6 @@ extern "C" u32 uses_scope(address value,u64 owner,Host host) on cpu
     { return scope(value,owner,host) ? 1 : 0;}
 address intersect(address a, address b, Host host) on cpu
     requires nonzero(host.equal)
-    requires nonzero(host.identity_equal)
     requires nonzero(host.presence_equal)
     requires nonzero(host.contains)
     requires nonzero(host.contains_parameter)
@@ -692,7 +679,6 @@ address intersect(address a, address b, Host host) on cpu
 extern "C" address merge_initialization(address exits, usize count, usize condition_count,
     Host host, InitializationHost initialization) on cpu
     requires nonzero(host.equal)
-    requires nonzero(host.identity_equal)
     requires nonzero(host.presence_equal)
     requires nonzero(host.contains)
     requires nonzero(host.contains_parameter)
@@ -736,7 +722,6 @@ extern "C" address merge_initialization(address exits, usize count, usize condit
 extern "C" void loop_field_initialization(address context, address output, usize rows, usize states,
     PositionIndex selected, Host host, LoopFieldHost exit) on cpu
     requires nonzero(host.equal)
-    requires nonzero(host.identity_equal)
     requires nonzero(host.presence_equal)
     requires nonzero(host.contains)
     requires nonzero(host.contains_parameter)
@@ -778,7 +763,6 @@ extern "C" void loop_field_initialization(address context, address output, usize
 extern "C" void array_initialization(address context, address output, usize count, ArrayRange range,
     PositionIndex selected, Host host, ArrayExitHost exits) on cpu
     requires nonzero(host.equal)
-    requires nonzero(host.identity_equal)
     requires nonzero(host.presence_equal)
     requires nonzero(host.presence_uses_index)
     requires nonzero(host.contains)
@@ -798,7 +782,7 @@ extern "C" void array_initialization(address context, address output, usize coun
         PositionNode shape = inspect_position(item.node,host.positions);
         bool whole = range.nonempty != 0 && !uses_index(item.node, selected, host);
         bool elements = range.begin < range.limit && shape.kind == 10
-            && u64(range.limit) <= shape.count && same_index(shape.index, selected, host);
+            && u64(range.limit) <= shape.count && compare_position_index(shape.index, selected) == 0;
         if (!whole && !elements) { continue; }
 
         usize at = 0u64;

@@ -28,9 +28,6 @@ fn comparison(value: u32) -> Comparison {
      Comparison::Greater, Comparison::LessEqual, Comparison::GreaterEqual][value as usize]
 }
 unsafe fn take(value: Address) -> Presence { std::mem::replace(unsafe { &mut *value.cast::<Presence>() }, Presence::None) }
-unsafe extern "C" fn compare_index(a: PositionIndex, b: PositionIndex) -> i32 {
-    unsafe { required_index(a) }.cmp(&unsafe { required_index(b) }) as i32
-}
 unsafe extern "C" fn compare_input(a: Address, b: Address) -> i32 {
     unsafe { &*a.cast::<Value>() }.identity().cmp(&unsafe { &*b.cast::<Value>() }.identity()) as i32
 }
@@ -171,7 +168,6 @@ unsafe extern "C" fn copy_value(output: Address, source: Address) {
 #[derive(Clone, Copy)]
 struct Host {
     layout: &'static PresenceView,
-    compare_index: unsafe extern "C" fn(PositionIndex, PositionIndex) -> i32,
     compare_input: unsafe extern "C" fn(Address, Address) -> i32,
     constant_input: unsafe extern "C" fn(Address) -> u32,
     input_uses_index: unsafe extern "C" fn(Address, PositionIndex) -> u32,
@@ -202,7 +198,7 @@ struct Host {
     copy_value: unsafe extern "C" fn(Address, Address),
 }
 const HOST: Host = Host {
-    layout: &PRESENCE_VIEW, compare_index, compare_input, constant_input, input_uses_index,
+    layout: &PRESENCE_VIEW, compare_input, constant_input, input_uses_index,
     truth, selected, input, move_value, pair, wrap_not,
     children_scope, selected_scope, clone_scope, truth_scope,
     position_equal,
