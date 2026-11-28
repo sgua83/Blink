@@ -5175,7 +5175,6 @@ extern "C" u32 packet_plan_uniform_operand(address bytes,u64 reg) on cpu {
 extern "C" u32 packet_plan_mark_operand(address bytes,u64 reg) on cpu {
     packet_plan_set_byte(bytes,reg,packet_plan_byte(bytes,reg)|u8(2));return 1;
 }
-extern "C" u32 packet_plan_width(usize bytes) on cpu { return bytes == 4u64 ? 1 : 0; }
 
 address packet_plan_instruction(Span code, u64 index) on cpu {
     return unsafe_address(address_bits(code.data) + index * u64(code.stride));
@@ -5390,10 +5389,7 @@ extern "C" void packet_plan_drop(Span plan) on cpu {
 }
 
 bool packet_plan(address context, Span code, PacketPlanHeader header, address output, PacketPlanHost host) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.stride) requires nonzero(host.written) requires nonzero(host.scalar)
-    requires nonzero(host.widths) {
-    if (header.tile != 0 || header.writes == 0u64) { return false; }
-    if (host.widths(context, c_function(packet_plan_width)) == 0) { return false; }
+    requires nonzero(host.ir.inspect) requires nonzero(host.stride) requires nonzero(host.written) requires nonzero(host.scalar) {
     PacketPlanState definitions = packet_plan_state(header.registers, HEAP_ZERO_MEMORY);
     PacketPlanState state = packet_plan_state(header.slots, HEAP_ZERO_MEMORY);
     PacketPlanFlow flow = packet_plan_uniform_block(context, code, header, state, definitions.bytes, true, host);

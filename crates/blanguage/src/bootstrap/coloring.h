@@ -9,9 +9,9 @@ import bootstrap.frame_layout;
 
 // The graph owns its scalar rows until the allocation is handed to emission.
 extern "C" void graph_release(address graph) on cpu;
-extern "C" bool prepare_packet(address graph, address context, Span code, PacketPlanHeader header, address output, PacketPlanHost host) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.stride) requires nonzero(host.written) requires nonzero(host.scalar)
-    requires nonzero(host.widths);
+struct PacketStage { u32 writes; u32 tile; u32 selected; };
+extern "C" bool prepare_packet(address graph, address context, Span code, PacketStage stage, address output, PacketPlanHost host) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.stride) requires nonzero(host.written) requires nonzero(host.scalar);
 extern "C" void color_places_drop(Span places) on cpu;
 
 // The original declaration supplies the layout of a marked local.

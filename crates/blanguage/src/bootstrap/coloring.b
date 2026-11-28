@@ -35,6 +35,7 @@ struct GraphData {
     u64 length;
     address adjacency;
     address places;
+    u32 scalar_widths;
 };
 
 address color_offset(address data,u64 bytes) on cpu {
@@ -57,7 +58,7 @@ address graph_storage(u64 count,u64 registers) on cpu {
     address places=HeapAlloc(GetProcessHeap(),HEAP_GENERATE_EXCEPTIONS,count*size_of<ColorPlace>());
     address graph=HeapAlloc(GetProcessHeap(),HEAP_GENERATE_EXCEPTIONS|HEAP_ZERO_MEMORY,
         size_of<GraphData>()+size_of<GraphWalk>()+count*size_of<ColorNode>());
-    unsafe_position<GraphData>(graph)=GraphData(count,registers,0u64,address(),0u64,0u64,address(),places);
+    unsafe_position<GraphData>(graph)=GraphData(count,registers,0u64,address(),0u64,0u64,address(),places,0);
     return graph;
 }
 void release_graph_memory(address memory) on cpu {
@@ -423,14 +424,17 @@ extern "C" ScalarAllocation finish_scalar(address graph,u32 mode,address locals,
 
 struct PreparedPacket { Span code; Span places; ColorLayout layout; };
 
-extern "C" bool prepare_packet(address graph, address context, Span code, PacketPlanHeader header, address output, PacketPlanHost host) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.stride) requires nonzero(host.written) requires nonzero(host.scalar)
-    requires nonzero(host.widths) {
+extern "C" bool prepare_packet(address graph, address context, Span code, PacketStage stage, address output, PacketPlanHost host) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.stride) requires nonzero(host.written) requires nonzero(host.scalar) {
+    if (stage.tile != 0 || stage.writes == 0 || (unsafe_position<GraphData>(graph).scalar_widths | 32) != 32) {
+        return false;
+    }
+    u64 count = unsafe_position<GraphData>(graph).count;
+    PacketPlanHeader header = PacketPlanHeader(unsafe_position<GraphData>(graph).registers, count, stage.selected);
     Span empty = Span(address(), 0u64, 0u64);
     PacketPlanProduct plan = PacketPlanProduct(empty, empty);
     if (!packet_plan(context, code, header, address_of(plan), host)) { return false; }
 
-    u64 count = unsafe_position<GraphData>(graph).count;
     address places = HeapAlloc(GetProcessHeap(), HEAP_GENERATE_EXCEPTIONS, count * size_of<ColorPlace>());
     ColorLayout layout = color_locations(graph, places, 2, plan.uses);
     release_graph_memory(plan.uses.data);
@@ -823,11 +827,12 @@ ScalarEncoding graph_scalar(Span scalars,usize index,cfn<ScalarEncoding,address>
     return scalar(color_offset(scalars.data,index*u64(scalars.stride)));
 }
 
-usize initialize_scalar_span(address places,usize first,Span scalars,
+usize initialize_scalar_span(address places,usize first,Span scalars,inout u32 widths,
     cfn<ScalarEncoding,address> ensures memory(read) scalar) on cpu requires nonzero(scalar) {
     usize index=0u64;
     while(index<scalars.count){
         ScalarEncoding input=graph_scalar(scalars,index,scalar);
+        widths|=input.width;
         unsafe_position<ColorPlace>(place_at(places,first+index))=
             ColorPlace(0u64,ColorPlaceKind::Unseen,u8(input.width/8),input.kind==ScalarKind::Float?u8(1):u8(0));
         index+=1u64;
@@ -850,12 +855,15 @@ extern "C" void mark_private(address graph, usize begin, usize end) on cpu {
 void initialize_scalar_places(address graph,GraphRequest input,GraphHost host) on cpu
     requires nonzero(host.scalar) requires nonzero(host.next_local) requires nonzero(host.live.ir.inspect) {
     address places=unsafe_position<GraphData>(graph).places;
-    usize first=initialize_scalar_span(places,0u64,input.registers,host.scalar);
+    u32 widths=0;
+    usize first=initialize_scalar_span(places,0u64,input.registers,widths,host.scalar);
     while(true){
         Span scalars=host.next_local(input.locals);
         if(address_bits(scalars.data)==0u64){break;}
-        first=initialize_scalar_span(places,first,scalars,host.scalar);
+        first=initialize_scalar_span(places,first,scalars,widths,host.scalar);
     }
+    // Keep logical widths before marking addressable places.
+    unsafe_position<GraphData>(graph).scalar_widths=widths;
     private_spans(input.code,host.live.ir,graph,c_function(mark_private));
 }
 

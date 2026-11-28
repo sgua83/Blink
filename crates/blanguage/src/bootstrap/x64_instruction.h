@@ -632,7 +632,7 @@ struct PrintEncoding {
 // for integer and boolean output. Other fields are relative to output.
 extern "C" PrintEncoding print_helper(ScalarEncoding scalar, address output, address unwind) on cpu;
 
-struct PacketPlanHeader {u64 registers;u64 slots;u64 writes;u32 tile;u32 selected;};
+struct PacketPlanHeader {u64 registers;u64 slots;u32 selected;};
 struct PacketPlanState {address bytes;u64 count;};
 struct PacketPlanFlow {PacketPlanState next;PacketPlanState breaks;PacketPlanState continues;PacketPlanState exits;};
 struct PacketPlanHost {
@@ -640,17 +640,14 @@ struct PacketPlanHost {
     cfn<u32,address,usize> stride;
     cfn<u32,address,usize> written;
     cfn<ScalarEncoding,address,usize> scalar;
-    cfn<u32,address,cfn<u32,usize>> widths;
 };
 struct PacketPlanProduct { Span code; Span uses; };
 // Coloring consumes the uses. The code borrows the original instructions through emission.
 bool packet_plan(address context, Span code, PacketPlanHeader header, address output, PacketPlanHost host) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.stride) requires nonzero(host.written) requires nonzero(host.scalar)
-    requires nonzero(host.widths);
+    requires nonzero(host.ir.inspect) requires nonzero(host.stride) requires nonzero(host.written) requires nonzero(host.scalar);
 extern "C" void packet_plan_drop(Span plan) on cpu;
 extern "C" u32 packet_plan_uniform_operand(address bytes,u64 reg) on cpu;
 extern "C" u32 packet_plan_mark_operand(address bytes,u64 reg) on cpu;
-extern "C" u32 packet_plan_width(usize bytes) on cpu;
 
 enum RangeEntry:u32 {
     Map=0; Reduce=1; CustomReduce=2; CustomScan=3; CustomSegmentedReduce=4;
