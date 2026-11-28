@@ -1,7 +1,7 @@
 //! 按结构化 IR 活跃性着色；调用跨越值使用 ABI 保留寄存器，溢出槽按干涉复用。
 use super::*;
-use crate::ir::dataflow::Span;
-use std::{collections::{BTreeMap, BTreeSet, btree_map, btree_set}, ffi::c_void, ptr};
+use crate::ir::dataflow::{Span, TileLayout};
+use std::{collections::{BTreeMap, BTreeSet, btree_map}, ffi::c_void, ptr};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Location {
@@ -49,70 +49,14 @@ struct FrameSaveLayout {
     end: u64,
 }
 
-#[repr(u32)]
-#[allow(dead_code)] // The B layout selects the stream to visit.
-enum TileFrameBank {
-    Shared = 0,
-    Private = 1,
-}
-
 #[repr(C)]
-struct TileFrameSlot {
-    key: *const c_void,
-    value: u64,
-}
-
-#[repr(C)]
-struct TileFrameHost {
-    next: unsafe extern "C" fn(*mut c_void, TileFrameBank) -> TileFrameSlot,
-    place: unsafe extern "C" fn(*mut c_void, TileFrameBank, *const c_void, u32),
-}
-
-struct TileFrameCursor<'a> {
-    shared: std::slice::Iter<'a, crate::ir::dataflow::TilePlacedWord>,
-    private: btree_set::Iter<'a, PrivateSlot>,
-    registers: &'a [Scalar],
-    locals: &'a BTreeMap<usize, Ty>,
-    frame: &'a mut Frame,
-}
-
-unsafe extern "C" fn next_tile_frame_slot(
-    context: *mut c_void, bank: TileFrameBank,
-) -> TileFrameSlot {
-    let cursor = unsafe { &mut *context.cast::<TileFrameCursor<'_>>() };
-    let slot = match bank {
-        TileFrameBank::Shared => cursor.shared.next().map(|placed| TileFrameSlot {
-            key: ptr::from_ref(&placed.key).cast(),
-            value: placed.slot as u64,
-        }),
-        TileFrameBank::Private => cursor.private.next().map(|key| TileFrameSlot {
-            key: ptr::from_ref(key).cast(),
-            value: u64::from(key.scalar(cursor.registers, cursor.locals).size()),
-        }),
-    };
-    slot.unwrap_or(TileFrameSlot { key: ptr::null(), value: 0 })
-}
-
-unsafe extern "C" fn place_tile_frame_slot(
-    context: *mut c_void, bank: TileFrameBank, key: *const c_void, offset: u32,
-) {
-    let cursor = unsafe { &mut *context.cast::<TileFrameCursor<'_>>() };
-    // Both key collections outlive the synchronous layout.
-    match bank {
-        TileFrameBank::Shared => {
-            cursor.frame.tile_shared.insert(unsafe { (*key.cast::<TileKey>()).word() }, offset);
-        }
-        TileFrameBank::Private => {
-            cursor.frame.tile_private.insert(unsafe { *key.cast::<PrivateSlot>() }, offset);
-        }
-    }
-}
+struct TileFramePrivateSlot { key: PrivateSlot, bytes: u32, offset: u32 }
 
 unsafe extern "C" {
     #[link_name = "bootstrap.frame_layout::frame_save_layout"]
     fn frame_save_layout(scalar: ColorLayout, packet: ColorLayout) -> FrameSaveLayout;
     #[link_name = "bootstrap.frame_layout::tile_frame"]
-    fn tile_frame(data_end: u64, width: u64, steps: u32, context: *mut c_void, host: TileFrameHost) -> u64;
+    fn tile_frame(data_end: u64, width: u64, steps: u32, shared: Span, private_slots: Span) -> u64;
 }
 
 #[derive(Default)]
@@ -120,8 +64,8 @@ pub(super) struct Frame {
     pub saved: SavedLayout,
     pub saved_count: usize,
     pub end: u64,
-    pub tile_shared: std::collections::BTreeMap<SharedWord, u32>,
-    pub tile_private: std::collections::BTreeMap<PrivateSlot, u32>,
+    tile_shared: TileLayout,
+    tile_private: Vec<TileFramePrivateSlot>,
 }
 pub(super) struct Graph {
     pub(super) state: *mut c_void,
@@ -246,24 +190,30 @@ impl Drop for PacketAllocation {
 impl Frame {
     pub fn layout_tile(
         &mut self, registers: &[Scalar], locals: &BTreeMap<usize, Ty>,
-        workgroup: u32, phases: &[TilePhase<'_>], shared: crate::ir::dataflow::TileLayout,
+        workgroup: u32, phases: &[TilePhase<'_>], mut shared: TileLayout,
     ) -> u64 {
         // Multiple phase entries can restore the same physical private stream.
         let private: BTreeSet<_> = phases.iter().skip(1)
             .flat_map(|phase| phase.live_in.iter().copied()).collect();
-        let data_end = self.end;
-        let mut cursor = TileFrameCursor {
-            shared: shared.iter(),
-            private: private.iter(),
-            registers,
-            locals,
-            frame: self,
+        self.tile_private = private.into_iter().map(|key| TileFramePrivateSlot {
+            key, bytes: key.scalar(registers, locals).size(), offset: 0,
+        }).collect();
+        let end = unsafe {
+            tile_frame(self.end, u64::from(workgroup), u32::from(!phases.is_empty()),
+                Span::mutable(&mut shared), Span::mutable(&mut self.tile_private))
         };
-        let host = TileFrameHost { next: next_tile_frame_slot, place: place_tile_frame_slot };
-        unsafe {
-            tile_frame(data_end, u64::from(workgroup), u32::from(!phases.is_empty()),
-                ptr::from_mut(&mut cursor).cast(), host)
-        }
+        self.tile_shared = shared;
+        end
+    }
+
+    pub(super) fn shared_offset(&self, key: TileKey) -> u32 {
+        let index = self.tile_shared.binary_search_by_key(&key, |row| row.key).unwrap();
+        self.tile_shared[index].position as u32
+    }
+
+    pub(super) fn private_offset(&self, key: PrivateSlot) -> u32 {
+        let index = self.tile_private.binary_search_by_key(&key, |row| row.key).unwrap();
+        self.tile_private[index].offset
     }
 
     pub fn new(scalar: &Allocation, packet: Option<&PacketAllocation>) -> Self {
@@ -273,8 +223,8 @@ impl Frame {
             saved,
             saved_count: count,
             end,
-            tile_shared: std::collections::BTreeMap::new(),
-            tile_private: std::collections::BTreeMap::new(),
+            tile_shared: Vec::new(),
+            tile_private: Vec::new(),
         }
     }
 }

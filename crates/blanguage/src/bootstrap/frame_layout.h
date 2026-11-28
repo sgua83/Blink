@@ -1,4 +1,5 @@
 module bootstrap.frame_layout;
+import bootstrap.ir_dataflow;
 
 struct ColorLayout { u64 end; u32 gpr; u32 xmm; };
 struct SavedLayout { u64 gpr_base; u64 xmm_base; u32 gpr; u32 xmm; };
@@ -6,18 +7,9 @@ struct FrameSaveLayout { SavedLayout saved; u64 count; u64 end; };
 // Both the prologue and epilogue consume the same masks and aligned starts.
 extern "C" FrameSaveLayout frame_save_layout(ColorLayout scalar, ColorLayout packet) on cpu;
 
-enum TileFrameBank:u32 { Shared=0; Private=1; };
-struct TileFrameSlot { address key; u64 value; };
-struct TileFrameHost {
-    cfn<TileFrameSlot,address,TileFrameBank> next;
-    cfn<void,address,TileFrameBank,address,u32> place;
-};
-
-// Each borrowed key identifies a shared word slot or a private lane width.
-// The host writes each byte position into the original frame.
-extern "C" u64 tile_frame(u64 data_end, u64 width, bool steps,
-    address context, TileFrameHost host) on cpu
-    requires nonzero(host.next) requires nonzero(host.place);
+// The ordered shared rows become frame byte positions. Private rows receive
+// their byte offsets in the same pass, with one plane per 32-bit part.
+extern "C" u64 tile_frame(u64 data_end, u64 width, bool steps, Span shared, Span private_slots) on cpu;
 
 // Code and unwind rows both belong to the original emitter. Offsets use
 // the image start, including the ordinary function's register-home writes.

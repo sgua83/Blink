@@ -215,7 +215,7 @@ impl Stage {
         let mut placed = PlacementOutput::new();
         let extents = self.place_tile_layout(wide, used, Some(&mut placed));
         let words = placed.into_iter().map(|(key, (unit, slot, part))| {
-            dataflow::TilePlacedWord { key: key.into(), slot, part, unit }
+            dataflow::TilePlacedWord { key: key.into(), position: slot, part, unit }
         }).collect();
         PlacedTiles { words, extents }
     }

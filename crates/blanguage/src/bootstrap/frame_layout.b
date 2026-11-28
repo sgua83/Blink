@@ -1,6 +1,8 @@
 module bootstrap.frame_layout;
 import bootstrap.x64_instruction;
 import bootstrap.unwind;
+import bootstrap.ir_dataflow;
+import bootstrap.stage_fusion;
 
 u64 preserve_registers(SavedLayout saved, u64 offset, address operations, address output) on cpu {
     u64 start = address_bits(output);
@@ -58,25 +60,28 @@ extern "C" FrameSaveLayout frame_save_layout(ColorLayout scalar, ColorLayout pac
     return FrameSaveLayout(SavedLayout(gpr_base, xmm_base, gpr, xmm), gprs + xmms, xmm_base + 16u64 * xmms);
 }
 
-extern "C" u64 tile_frame(u64 data_end, u64 width, bool steps,
-    address context, TileFrameHost host) on cpu
-    requires nonzero(host.next) requires nonzero(host.place) {
+struct TileFramePrivateSlot { TilePrivateKey key; u32 bytes; u32 offset; };
+
+extern "C" u64 tile_frame(u64 data_end, u64 width, bool steps, Span shared, Span private_slots) on cpu {
     u64 stride = width * 4u64;
     u64 base = data_end + 4u64;
     if (steps) { base += 4u64; }
     u64 end = base;
-    TileFrameSlot slot = host.next(context, TileFrameBank::Shared);
-    while (address_bits(slot.key) != 0u64) {
-        u64 position = base + slot.value * stride;
-        host.place(context, TileFrameBank::Shared, slot.key, u32(position));
+    usize index = 0u64;
+    while (index < shared.count) {
+        address row = unsafe_address(address_bits(shared.data) + index * shared.stride);
+        u64 position = base + unsafe_position<TilePlacedWord>(row).position * stride;
+        unsafe_position<TilePlacedWord>(row).position = position;
         end = max(end, position + stride);
-        slot = host.next(context, TileFrameBank::Shared);
+        index += 1u64;
     }
-    slot = host.next(context, TileFrameBank::Private);
-    while (address_bits(slot.key) != 0u64) {
-        host.place(context, TileFrameBank::Private, slot.key, u32(end));
-        end += ((slot.value + 3u64) / 4u64) * stride;
-        slot = host.next(context, TileFrameBank::Private);
+    index = 0u64;
+    while (index < private_slots.count) {
+        address row = unsafe_address(address_bits(private_slots.data) + index * private_slots.stride);
+        u64 bytes = u64(unsafe_position<TileFramePrivateSlot>(row).bytes);
+        unsafe_position<TileFramePrivateSlot>(row).offset = u32(end);
+        end += ((bytes + 3u64) / 4u64) * stride;
+        index += 1u64;
     }
     return end;
 }

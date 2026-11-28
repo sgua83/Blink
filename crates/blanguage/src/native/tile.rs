@@ -88,7 +88,7 @@ impl Emitter<'_> {
         self.frame.end as u32
     }
     pub(super) fn shared_stream(&self, word: SharedWord) -> u32 {
-        self.frame.tile_shared[&word.aligned()]
+        self.frame.shared_offset(word.aligned().into())
     }
     pub(super) fn tile_length(&mut self, dst: Reg) {
         self.copy(self.location(dst), Location::Stack(self.tile_length_slot()));
@@ -99,7 +99,7 @@ impl Emitter<'_> {
         self.store(dst);
     }
     pub(super) fn private_stream(&self, slot: PrivateSlot) -> u32 {
-        self.frame.tile_private[&slot]
+        self.frame.private_offset(slot)
     }
 
     pub(super) fn publish_values(&mut self, publication: View) {

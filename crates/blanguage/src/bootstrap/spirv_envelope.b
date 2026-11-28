@@ -3823,7 +3823,7 @@ extern "C" TileInputRange emit_tile_input(TileInputLayout input, TileInputSource
                 part += 1u64;
             }
         }
-        TileCell cell = TileCell(row.unit, u32(row.slot), row.part, 1);
+        TileCell cell = TileCell(row.unit, u32(row.position), row.part, 1);
         emit_shared_store(cell, input.planes, range.lane, input.width, value, memory);
     }
     if (!loading) { return TileInputRange(range.lane, range.length, input.label); }

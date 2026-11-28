@@ -78,7 +78,7 @@ unsafe extern "C" fn tile_cell(context: *mut c_void, key: TileKey) -> TileCell {
     let layout = emitter.tile_layout;
     layout.binary_search_by_key(&key, |placed| placed.key).map_or(TileCell::ABSENT, |index| {
         let placed = layout[index];
-        TileCell { unit: placed.unit, slot: placed.slot as u32, byte: placed.part, present: 1 }
+        TileCell { unit: placed.unit, slot: placed.position as u32, byte: placed.part, present: 1 }
     })
 }
 

@@ -49,7 +49,7 @@ struct View {
 struct Host { cfn<View,Node> ensures memory(read) inspect; };
 
 struct TileKey { u64 storage; u64 owner; u32 byte; };
-struct TilePlacedWord { TileKey key; usize slot; u32 part; BuiltinScalar unit; };
+struct TilePlacedWord { TileKey key; usize position; u32 part; BuiltinScalar unit; };
 struct TileInputFragment { usize binding; u32 byte; BuiltinScalar unit; };
 TileInputFragment tile_input_fragment(Span fragments, usize index) on cpu;
 TileKey tile_key_for_view(View tile, usize index, u32 byte) on cpu;

@@ -172,7 +172,7 @@ impl IndexedAddressHost {
 
 unsafe extern "C" fn indexed_tile_slot(context: *const std::ffi::c_void, key: TileKey) -> u32 {
     let locations = unsafe { &*context.cast::<ScalarLocations<'_>>() };
-    locations.frame.tile_shared[&key.word()]
+    locations.frame.shared_offset(key)
 }
 
 pub(super) unsafe extern "C" fn value_local(context: *const std::ffi::c_void, local: usize) -> MoveLocation {
@@ -209,7 +209,7 @@ pub(super) unsafe extern "C" fn body_value_scalar(context: *const std::ffi::c_vo
 
 pub(super) unsafe extern "C" fn body_tile_slot(context: *const std::ffi::c_void, key: TileKey) -> u32 {
     let emitter = unsafe { &*context.cast::<Emitter<'_>>() };
-    emitter.frame.tile_shared[&key.word()]
+    emitter.frame.shared_offset(key)
 }
 
 unsafe extern "C" {

@@ -670,7 +670,8 @@ unsafe extern "C" fn emit_word(context: *mut c_void, _: StorageEvent, tile: usiz
 #[derive(Clone, Copy)]
 pub(crate) struct TilePlacedWord {
     pub(crate) key: TileKey,
-    pub(crate) slot: usize,
+    // A slot index until the CPU frame consumes these rows and writes byte offsets.
+    pub(crate) position: usize,
     pub(crate) part: u32,
     pub(crate) unit: ScalarCode,
 }
