@@ -9,16 +9,40 @@ extern "C" LoopProjection loop_projection(LoopWriteKind kind, u32 address_write,
     return LoopProjection::Position;
 }
 
-extern "C" void project_loop_storage(LoopStorageHost host, usize count, u32 constant_index, u32 index) on cpu
-    requires nonzero(host.site) requires nonzero(host.start_parts)
-    requires nonzero(host.next_part) requires nonzero(host.emit) {
+extern "C" address realloc(address data, usize bytes) on cpu from "ucrtbase.dll";
+extern "C" void free(address data) on cpu from "ucrtbase.dll";
+extern "C" never abort() on cpu from "ucrtbase.dll";
+
+extern "C" void push_loop_storage(inout LoopStorage storage, StorageWrite written) on cpu {
+    if (storage.count == storage.capacity) {
+        // The same initialized bytes can be borrowed as a Rust slice.
+        let limit = 9223372036854775807u64 / size_of<StorageWrite>();
+        if (storage.count == limit) { abort(); }
+        let next = min(limit, max(8u64, storage.capacity * 2u64));
+        let data = realloc(storage.data, next * size_of<StorageWrite>());
+        if (data == address()) { abort(); }
+        storage.data = data;
+        storage.capacity = next;
+    }
+    let byte = address_bits(storage.data) + storage.count * size_of<StorageWrite>();
+    unsafe_position<StorageWrite>(unsafe_address(byte)) = written;
+    storage.count += 1u64;
+}
+
+extern "C" void drop_loop_storage(inout LoopStorage storage) on cpu {
+    free(storage.data);
+    storage = LoopStorage(address(), 0u64, 0u64);
+}
+
+extern "C" void project_loop_storage(inout LoopStorage output, LoopStorageHost host, usize count, u32 constant_index, u32 index) on cpu
+    requires nonzero(host.site) requires nonzero(host.start_parts) requires nonzero(host.next_part) {
     usize location = 0u64;
     while (location < count) {
         let site = host.site(host.context, location);
         if (site.descendants != 0) {
-            host.emit(host.context, site.root, LoopStorage::Descendants, LoopBytes(0u64, 0u64));
+            push_loop_storage(output, StorageWrite(site.root, LoopBytes(0u64, 0u64), StorageWriteKind::Descendants));
         } else if (site.declared == 0 || constant_index == 0) {
-            host.emit(host.context, site.root, LoopStorage::Frame, LoopBytes(0u64, 0u64));
+            push_loop_storage(output, StorageWrite(site.root, LoopBytes(0u64, 0u64), StorageWriteKind::Frame));
         } else {
             let stride = host.start_parts(host.context, location);
             // All terms are u32. Their product has room for both additions.
@@ -27,7 +51,7 @@ extern "C" void project_loop_storage(LoopStorageHost host, usize count, u32 cons
                 let part = host.next_part(host.context);
                 if (part.present == 0) { break; }
                 let begin = element + u64(part.word);
-                host.emit(host.context, site.root, LoopStorage::Bytes, LoopBytes(begin, begin + u64(part.width)));
+                push_loop_storage(output, StorageWrite(site.root, LoopBytes(begin, begin + u64(part.width)), StorageWriteKind::Bytes));
             }
         }
         location += 1u64;

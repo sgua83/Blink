@@ -1,5 +1,6 @@
 module bootstrap.application_snapshot;
 import bootstrap.ir_dataflow;
+import bootstrap.source_writes;
 
 enum SnapshotTruth:u32 { Unknown=0; Yes=1; No=2; };
 struct SnapshotSource { address context; usize blocks; usize instructions; Span registers; };
@@ -10,7 +11,6 @@ struct RegisterHost {
     cfn<u32,address,address,address> writes_load;
     cfn<LoopEffects,address,usize> ensures memory(read) loop_effects;
     cfn<u32,address,usize> ensures memory(read) loop_local;
-    cfn<LoopStorage,address> ensures memory(read) loop_storage;
     cfn<u32,address,usize> ensures memory(read) scalar_bytes;
     cfn<Word,address,usize,usize,usize> cast;
 };
@@ -27,14 +27,14 @@ extern "C" Word application_register_constant(SnapshotSource source, RegisterHos
 extern "C" u32 application_register_equal(SnapshotSource source, RegisterHost host, usize left, usize right) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
-    requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
+    requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
     requires nonzero(host.writes_load);
 
 // The result names an existing read in the borrowed instruction blocks.
 extern "C" usize read_snapshot(SnapshotSource source, SnapshotHost host, usize register) on cpu
     requires nonzero(host.registers.ir.inspect) requires nonzero(host.registers.block)
     requires nonzero(host.registers.writes_local) requires nonzero(host.registers.loop_effects) requires nonzero(host.registers.loop_local)
-    requires nonzero(host.registers.loop_storage) requires nonzero(host.registers.scalar_bytes)
+    requires nonzero(host.registers.scalar_bytes)
     requires nonzero(host.registers.cast) requires nonzero(host.registers.writes_load)
  requires nonzero(host.truth);
 
@@ -58,7 +58,6 @@ extern "C" u32 application_block_writes(Span code, WriteQuery query, WriteHost h
 struct ApplicationByteOffset { u64 low; u64 high; };
 struct ApplicationByteRange { ApplicationByteOffset start; ApplicationByteOffset end; };
 struct LoopEffects { address locals; Span storage; u32 external; u32 unknown_storage; };
-struct LoopStorage { usize root; ApplicationByteRange range; u32 descendants; u32 has_range; };
 struct OriginalAddress { usize low; usize high; };
 struct IndexedByteAccess { Node source; u32 word; u32 width; };
 struct DatasetFrameLayout {
@@ -103,7 +102,7 @@ extern "C" ResourceStorageNeed application_resource_storage_step(inout ResourceS
     SnapshotSource source, RegisterHost host, ResourceStorageHost storage, u32 root_matched, u32 unresolved) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
-    requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
+    requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
     requires nonzero(host.writes_load)
     requires nonzero(storage.edge) requires nonzero(storage.parent)
     requires nonzero(storage.field) requires nonzero(storage.element_type)
@@ -111,7 +110,7 @@ extern "C" ResourceStorageNeed application_resource_storage_step(inout ResourceS
 extern "C" u32 application_dataset_position(SnapshotSource source, RegisterHost host, Node source_node, StoredDatasetFrame frame, FrameIndex index) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
-    requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
+    requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
     requires nonzero(host.writes_load) requires nonzero(index.matches);
 
 extern "C" Word application_frame_root(SnapshotSource source, RegisterHost host, OriginalAddress address_parts) on cpu
@@ -123,25 +122,25 @@ extern "C" u32 application_allocated(SnapshotSource source, RegisterHost host, u
 extern "C" u32 application_same_position(SnapshotSource source, RegisterHost host, Node left, Node right, u32 exact_index) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
-    requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
+    requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
     requires nonzero(host.writes_load);
 
 extern "C" ApplicationByteRange application_byte_range(usize index, usize stride, u32 word, u32 width) on cpu;
-extern "C" u32 application_storage_includes_root(SnapshotSource source, RegisterHost host, LoopStorage written, usize root) on cpu
+extern "C" u32 application_storage_includes_root(SnapshotSource source, RegisterHost host, StorageWrite written, usize root) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.writes_load) requires nonzero(host.cast)
     requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
-    requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes);
+    requires nonzero(host.scalar_bytes);
 extern "C" u32 application_storage_changes(SnapshotSource source, RegisterHost host, LoopEffects effects,
     Word root, ApplicationByteRange range, u32 has_range) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.writes_load) requires nonzero(host.cast)
     requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
-    requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes);
+    requires nonzero(host.scalar_bytes);
 
 extern "C" u32 application_store_overlap(IndexedByteAccess read, IndexedByteAccess written,
     Span offset, SnapshotSource source, RegisterHost host) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
-    requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
+    requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
     requires nonzero(host.writes_load);

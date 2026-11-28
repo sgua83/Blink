@@ -65,15 +65,67 @@ impl Write {
     }
 }
 
-pub(super) enum StorageWrite {
-    Frame { root:Reg, range:Option<std::ops::Range<u128>> },
-    Descendants { root:Reg },
+#[repr(u32)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(super) enum StorageWriteKind { Descendants, Frame, Bytes }
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(super) struct StorageWrite {
+    pub root: Reg,
+    begin: u64,
+    end: u64,
+    pub kind: StorageWriteKind,
+}
+
+impl StorageWrite {
+    pub fn frame(root: Reg) -> Self {
+        Self { root, begin: 0, end: 0, kind: StorageWriteKind::Frame }
+    }
+
+    pub fn descendants(root: Reg) -> Self {
+        Self { root, begin: 0, end: 0, kind: StorageWriteKind::Descendants }
+    }
+}
+
+// B appends and frees the initialized prefix. Borrowing the slice excludes
+// mutation and keeps the B buffer alive for the original consumers.
+#[repr(C)]
+#[derive(Default)]
+pub(super) struct LoopStorage {
+    data: *mut StorageWrite,
+    count: usize,
+    capacity: usize,
+}
+
+unsafe impl Send for LoopStorage {}
+unsafe impl Sync for LoopStorage {}
+
+impl std::ops::Deref for LoopStorage {
+    type Target = [StorageWrite];
+
+    fn deref(&self) -> &[StorageWrite] {
+        if self.count == 0 { return &[]; }
+        unsafe { std::slice::from_raw_parts(self.data, self.count) }
+    }
+}
+
+impl Drop for LoopStorage {
+    fn drop(&mut self) {
+        unsafe { drop_loop_storage(self) };
+    }
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.source_writes::drop_loop_storage"]
+    fn drop_loop_storage(storage: &mut LoopStorage);
 }
 // Immutable output of the existing loop write preanalysis, not memory state.
 #[derive(Default)]
 pub(super) struct LoopWrites {
     pub locals: BTreeSet<usize>,
-    pub storage: Vec<StorageWrite>,
+    pub storage: LoopStorage,
     pub unknown_storage: bool,
     pub external: bool,
     pub body_bounds: Vec<(String, (u32, u32))>,

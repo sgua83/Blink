@@ -110,8 +110,12 @@ extern "C" NumericRetention numeric_retention(NumericTransfer effect, NumericRan
 enum LoopWriteKind:u32 { Move=0; Position=1; Contents=2; Memory=3; External=4; };
 enum LoopProjection:u32 { Ignore=0; External=1; Unknown=2; Contents=3; Memory=4; Position=5; };
 extern "C" LoopProjection loop_projection(LoopWriteKind kind, u32 address_write, u32 iterator) on cpu;
-enum LoopStorage:u32 { Descendants=0; Frame=1; Bytes=2; };
+enum StorageWriteKind:u32 { Descendants=0; Frame=1; Bytes=2; };
 struct LoopBytes { u64 begin; u64 end; };
+struct StorageWrite { usize root; LoopBytes range; StorageWriteKind kind; };
+struct LoopStorage { address data; usize count; usize capacity; };
+extern "C" void push_loop_storage(inout LoopStorage storage, StorageWrite written) on cpu;
+extern "C" void drop_loop_storage(inout LoopStorage storage) on cpu;
 struct LoopStorageSite { usize root; u32 descendants; u32 declared; };
 struct LoopStoragePart { u32 present; u32 word; u32 width; };
 struct LoopStorageHost {
@@ -119,11 +123,9 @@ struct LoopStorageHost {
     cfn<LoopStorageSite,address,usize> ensures memory(read) site;
     cfn<u32,address,usize> start_parts;
     cfn<LoopStoragePart,address> next_part;
-    cfn<void,address,usize,LoopStorage,LoopBytes> emit;
 };
-extern "C" void project_loop_storage(LoopStorageHost host, usize count, u32 constant_index, u32 index) on cpu
-    requires nonzero(host.site) requires nonzero(host.start_parts)
-    requires nonzero(host.next_part) requires nonzero(host.emit);
+extern "C" void project_loop_storage(inout LoopStorage output, LoopStorageHost host, usize count, u32 constant_index, u32 index) on cpu
+    requires nonzero(host.site) requires nonzero(host.start_parts) requires nonzero(host.next_part);
 extern "C" LoopBytes loop_array_elements(u64 length, u32 exact, u32 index) on cpu;
 extern "C" u32 loop_part_matches(u32 source_scalar, u32 source_word, u32 target_scalar, u32 target_word, u32 offset) on cpu;
 extern "C" u32 loop_contents_frame(u32 found, u32 owns_resources) on cpu;
