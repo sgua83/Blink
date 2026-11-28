@@ -1038,22 +1038,6 @@ extern "C" void task_return_sources(address context,TaskSourceHost host) on cpu
  }
 }
 
-extern "C" void computed_equalities(address context,ComputedEqualityHost host) on cpu
- requires nonzero(host.begin) requires nonzero(host.step) requires nonzero(host.produced)
- requires nonzero(host.remember) requires nonzero(host.equate) requires nonzero(host.has_equalities)
- requires nonzero(host.extend) requires nonzero(host.compare) {
- while(true){
-  host.begin(context);
-  while(true){
-   ComputedEqualityStep step=host.step(context);if(step.present==0){break;}
-   address previous=host.produced(context);
-   if(previous==address()){host.remember(context);}
-   else if(host.compare(previous,step.result)!=0){host.equate(context,previous,step.result);}
-  }
-  if(host.has_equalities(context)==0){return;}
-  host.extend(context);
- }
-}
 extern "C" void additional_equalities(address context,AdditionalEqualityHost host) on cpu
  requires nonzero(host.next) requires nonzero(host.lookup) requires nonzero(host.expression)
  requires nonzero(host.compare) requires nonzero(host.own) requires nonzero(host.extend)

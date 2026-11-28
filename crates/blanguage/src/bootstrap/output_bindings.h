@@ -11,3 +11,4 @@ extern "C" void copy_output_bindings(address original,address output) on cpu;
 extern "C" u32 same_output_bindings(address left,address right) on cpu;
 extern "C" u32 extend_equality_roots(address roots,address context,cfn<address,address> next) on cpu
     requires nonzero(next);
+extern "C" void resolve_computed_roots(address roots,address sources,usize count) on cpu;

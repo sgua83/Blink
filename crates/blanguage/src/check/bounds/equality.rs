@@ -1,12 +1,10 @@
-//! B controls equality closure and alias projection. The original query owns
-//! roots, typed expression keys, Facts and the final borrowed/owned result.
+//! B owns equality roots and computed expression closure. Rust lends the original
+//! facts and passes borrowed or owned results to the query.
 use super::facts;
-use super::{Fact, Facts, IndexDomain, IntegerExpression, IntegerOperation, Operand, OutputBindingEntries, OutputBindings, QueryFacts, ValueIdentity, fact_fields};
+use super::{Fact, Facts, IndexDomain, OutputBindingEntries, OutputBindings, QueryFacts, ValueIdentity, fact_fields};
 use std::{
     borrow::Cow,
-    collections::{BTreeMap},
     ffi::c_void,
-    mem::MaybeUninit,
     ptr,
 };
 #[derive(Clone, PartialEq, Eq)]
@@ -47,166 +45,28 @@ pub(super) fn extend<'a, I: IntoIterator<Item = &'a Fact>>(roots: &mut Roots, fa
     unsafe { b_extend(roots, ptr::from_mut(&mut facts).cast(), next::<I::IntoIter>) != 0 }
 }
 
-struct ComputedContext<'a> {
-    roots: &'a mut Roots,
-    expressions: Vec<(&'a ValueIdentity, &'a IntegerExpression)>,
-    index: usize,
-    produced: BTreeMap<IntegerExpression, ValueIdentity>,
-    inverse: Option<(ValueIdentity, IntegerExpression)>,
-    equalities: Facts,
-    expression: *mut IntegerExpression,
-    result: *mut ValueIdentity,
-}
-unsafe fn computed_context<'a, 'b>(slot: Slot) -> &'a mut ComputedContext<'b> {
-    unsafe { &mut *slot.cast() }
-}
 unsafe extern "C" fn expression(domain: Borrowed) -> Borrowed {
     match unsafe { &*domain.cast::<IndexDomain>() } {
         IndexDomain::Computed(value) => borrowed(value),
         _ => ptr::null(),
     }
 }
-unsafe extern "C" fn begin(slot: Slot) {
-    let context = unsafe { computed_context(slot) };
-    context.index = 0;
-    context.inverse = None;
-    context.produced.clear();
-    context.equalities.clear();
-}
-#[repr(C)]
-struct ComputedStep {
-    present: u32,
-    result: Borrowed,
-}
-unsafe extern "C" fn step(slot: Slot) -> ComputedStep {
-    let context = unsafe { computed_context(slot) };
-    let (result, expression) = if let Some(inverse) = context.inverse.take() {
-        inverse
-    } else {
-        let Some(&(result, expression)) = context.expressions.get(context.index) else {
-            return ComputedStep {
-                present: 0,
-                result: ptr::null(),
-            };
-        };
-        context.index += 1;
-        let root = |id| context.roots.get(&id).copied().unwrap_or(id);
-        let expression = expression.map(|id| Some(root(id))).unwrap();
-        let resolved = root(*result);
-        if context.roots.get(result).is_some() && let IntegerExpression::Binary(op, scalar, a, b) = expression {
-            use IntegerOperation::{Add, Subtract};
-            use Operand::{Constant, Value};
-            context.inverse = match (op, a, b) {
-                (Add, Value(input), constant @ Constant(..))
-                | (Add, constant @ Constant(..), Value(input)) => Some((
-                    input,
-                    IntegerExpression::Binary(Subtract, scalar, Value(resolved), constant),
-                )),
-                (Subtract, Value(input), constant @ Constant(..)) => Some((
-                    input,
-                    IntegerExpression::Binary(Add, scalar, Value(resolved), constant),
-                )),
-                _ => None,
-            };
-        }
-        (resolved, expression)
-    };
-    unsafe {
-        context.result.write(result);
-        context.expression.write(expression);
-    };
-    ComputedStep {
-        present: 1,
-        result: context.result.cast(),
-    }
-}
-unsafe extern "C" fn produced(slot: Slot) -> Borrowed {
-    let context = unsafe { computed_context(slot) };
-    context
-        .produced
-        .get(unsafe { &*context.expression })
-        .map_or(ptr::null(), borrowed)
-}
-unsafe extern "C" fn remember(slot: Slot) {
-    let context = unsafe { computed_context(slot) };
-    context
-        .produced
-        .insert(unsafe { *context.expression }, unsafe { *context.result });
-}
-unsafe extern "C" fn equate(slot: Slot, left: Borrowed, right: Borrowed) {
-    let (left, right) = unsafe {
-        (
-            *left.cast::<ValueIdentity>(),
-            *right.cast::<ValueIdentity>(),
-        )
-    };
-    unsafe { computed_context(slot) }
-        .equalities
-        .insert(Fact::equal(left, right));
-}
-unsafe extern "C" fn has_equalities(slot: Slot) -> u32 {
-    u32::from(!unsafe { computed_context(slot) }.equalities.is_empty())
-}
-unsafe extern "C" fn extend_computed_equalities(slot: Slot) {
-    let context = unsafe { computed_context(slot) };
-    extend(context.roots, &context.equalities);
-}
-#[repr(C)]
-struct ComputedHost {
-    begin: unsafe extern "C" fn(Slot),
-    step: unsafe extern "C" fn(Slot) -> ComputedStep,
-    produced: unsafe extern "C" fn(Slot) -> Borrowed,
-    remember: unsafe extern "C" fn(Slot),
-    equate: unsafe extern "C" fn(Slot, Borrowed, Borrowed),
-    has_equalities: unsafe extern "C" fn(Slot) -> u32,
-    extend: unsafe extern "C" fn(Slot),
-    compare: unsafe extern "C" fn(Borrowed, Borrowed) -> i32,
-}
+
 unsafe extern "C" {
-    #[link_name = "bootstrap.condition_graph::computed_equalities"]
-    fn b_computed(context: Slot, host: ComputedHost);
+    #[link_name = "bootstrap.output_bindings::resolve_computed_roots"]
+    fn resolve_computed(roots: &mut Roots, sources: *const &Fact, count: usize);
 }
+
 pub(super) fn computed<'a>(roots: &mut Roots, fact_sets: impl IntoIterator<Item = &'a Facts>) {
-    // The ordered facts put Equal and Index before the remaining variants.
-    let expressions: Vec<_> = fact_sets
-        .into_iter()
+    let sources: Vec<_> = fact_sets.into_iter()
         .flat_map(|facts| facts.iter().take_while(|fact| matches!(fact, Fact::Equal(..) | Fact::Index(..))))
-        .filter_map(|fact| match fact {
-            Fact::Index(result, IndexDomain::Computed(expression)) => Some((result, expression)),
-            _ => None,
-        })
+        .filter(|fact| matches!(fact, Fact::Index(_, IndexDomain::Computed(_))))
         .collect();
-    if expressions.is_empty() {
-        return;
+    if !sources.is_empty() {
+        unsafe { resolve_computed(roots, sources.as_ptr(), sources.len()); }
     }
-    let mut expression_slot = MaybeUninit::<IntegerExpression>::uninit();
-    let mut result = MaybeUninit::<ValueIdentity>::uninit();
-    let mut context = ComputedContext {
-        roots,
-        expressions,
-        index: 0,
-        produced: BTreeMap::new(),
-        inverse: None,
-        equalities: Facts::new(),
-        expression: expression_slot.as_mut_ptr(),
-        result: result.as_mut_ptr(),
-    };
-    unsafe {
-        b_computed(
-            (&mut context as *mut ComputedContext<'_>).cast(),
-            ComputedHost {
-                begin: begin,
-                step: step,
-                produced: produced,
-                remember: remember,
-                equate: equate,
-                has_equalities: has_equalities,
-                extend: extend_computed_equalities,
-                compare: fact_fields::compare,
-            },
-        )
-    };
 }
+
 pub(super) fn roots(facts: &Facts) -> Roots {
     let mut roots = Roots::new();
     extend(&mut roots, facts);

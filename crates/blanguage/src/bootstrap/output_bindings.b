@@ -134,33 +134,137 @@ void flatten_equality_roots(address roots) on cpu {
     }
 }
 
+struct EqualityChanges { bool merged; u32 changed; };
+
+EqualityChanges add_equality_root(address roots,address key,EqualityChanges prior) on cpu {
+    let equality = read_fact_fields(key);
+    let left = root_of(roots, equality.first, prior.merged);
+    let right = root_of(roots, equality.second, prior.merged);
+    let order = order_identity(left.root, right.root);
+    if (order == i32(0)) {
+        if (!left.present) { write_output_binding(roots, equality.first, left.root); }
+        return prior;
+    }
+    let child = order < i32(0) ? right : left;
+    // A write may move the root tree; keep the selected representative in a local slot.
+    IdentityKey parent_key = make_key_identity(capture_key_identity(order < i32(0) ? left.root : right.root));
+    let parent = unsafe_address(address_bits(address_of(parent_key)));
+    if (child.present) { write_output_binding(roots, child.root, parent); }
+    if (!left.present) { write_output_binding(roots, equality.first, parent); }
+    if (!right.present) { write_output_binding(roots, equality.second, parent); }
+    return EqualityChanges(prior.merged || child.present, 1);
+}
+
 extern "C" u32 extend_equality_roots(address roots,address context,cfn<address,address> next) on cpu
     requires nonzero(next) {
-    bool merged=false;
-    u32 changed=0;
-    while(true){
-        address key=next(context);
-        if(key==address()||unsafe_position<FactKind>(key)!=FactKind::Equal){break;}
-        FactView equality=read_fact_fields(key);
-        RootResult left=root_of(roots,equality.first,merged);
-        RootResult right=root_of(roots,equality.second,merged);
-        i32 order=order_identity(left.root,right.root);
-        if(order==0){
-            if(!left.present){write_output_binding(roots,equality.first,left.root);}
-            continue;
-        }
-        RootResult child=order<0 ? right : left;
-        // Updating the map can move its cells. Snapshot both identities needed by a write.
-        IdentityKey parent_key=make_key_identity(capture_key_identity(order<0 ? left.root : right.root));
-        address parent=unsafe_address(address_bits(address_of(parent_key)));
-        if(child.present){
-            write_output_binding(roots,child.root,parent);
-            merged=true;
-        }
-        changed=1;
-        if(!left.present){write_output_binding(roots,equality.first,parent);}
-        if(!right.present){write_output_binding(roots,equality.second,parent);}
+    EqualityChanges changes = EqualityChanges(false, 0);
+    while (true) {
+        let key = next(context);
+        if (key == address() || unsafe_position<FactKind>(key) != FactKind::Equal) { break; }
+        changes = add_equality_root(roots, key, changes);
     }
-    if(merged){flatten_equality_roots(roots);}
-    return changed;
+    if (changes.merged) { flatten_equality_roots(roots); }
+    return changes.changed;
+}
+
+void apply_computed_equalities(address roots,address equalities) on cpu {
+    FactCursor cursor = fact_tree_cursor(equalities);
+    EqualityChanges changes = EqualityChanges(false, 0);
+    while (true) {
+        let key = fact_tree_next(equalities, address_of(cursor), 0);
+        if (key == address()) { break; }
+        changes = add_equality_root(roots, key, changes);
+    }
+    if (changes.merged) { flatten_equality_roots(roots); }
+}
+
+extern "C" void RtlMoveMemory(address output,address input,u64 bytes) on cpu from "KERNEL32.dll";
+
+struct ComputedRoot { IndexDomainKey expression; IdentityKey result; };
+struct ComputedBinaryKey {
+    DomainKind domain;
+    u32 reserved;
+    u32 expression;
+    u8 operation;
+    u8 scalar;
+    OperandKey first;
+    OperandKey second;
+    u64 tail;
+};
+
+address computed_field(address domain,u64 offset) on cpu {
+    return unsafe_address(address_bits(domain) + offset);
+}
+
+void remember_computed(address produced,address equalities,address domain,address result) on cpu {
+    let stride = size_of<OrderedNode>() + size_of<ComputedRoot>();
+    let found = ordered_tree_seek(produced, stride, domain, c_function(order_domain));
+    if (found.entry == address()) {
+        let entry = ordered_tree_insert_slot(produced, stride, found.parent, found.order);
+        RtlMoveMemory(entry, domain, size_of<IndexDomainKey>());
+        unsafe_position<ComputedRoot>(entry).result = make_key_identity(capture_key_identity(result));
+        return;
+    }
+    let first = unsafe_address(address_bits(address_of(unsafe_position<ComputedRoot>(found.entry).result)));
+    let order = order_identity(first, result);
+    if (order == i32(0)) { return; }
+    FactKey fact = FactKey(array<u64,18>(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64));
+    let left = order < i32(0) ? first : result;
+    let right = order < i32(0) ? result : first;
+    let fact_slot = unsafe_address(address_bits(address_of(fact)));
+    materialize_fact(FactView(1, FactKind::Equal, left, right, address(), address(), 0u64, 0u64, 0, 0), fact_slot);
+    fact_tree_insert(equalities, fact_slot);
+}
+
+void remember_inverse(address produced,address equalities,address domain,address result) on cpu {
+    // The binary operands follow the Computed tag and the expression header.
+    if (unsafe_position<u32>(computed_field(domain, 8u64)) != 0) { return; }
+    let op = unsafe_position<u8>(computed_field(domain, 12u64));
+    if (op != u8(0) && op != u8(1)) { return; }
+    let left = computed_field(domain, 16u64);
+    let right = computed_field(left, size_of<OperandKey>());
+    let swap = op == u8(0) && unsafe_position<OperandKind>(left) == OperandKind::Constant;
+    let first = swap ? right : left;
+    let second = swap ? left : right;
+    if (unsafe_position<OperandKind>(first) != OperandKind::Value ||
+        unsafe_position<OperandKind>(second) != OperandKind::Constant) { return; }
+
+    IdentityKey input = make_key_identity(capture_key_identity(computed_field(first, 8u64)));
+    let known = capture_key_operand(second);
+    let constant = make_key_operand(known);
+    let resolved = make_key_operand(NumericOperand(OperandKind::Value, capture_key_identity(result), known.scalar, 0u64));
+    ComputedBinaryKey inverse = ComputedBinaryKey(DomainKind::Computed, 0, 0, op == u8(0) ? u8(1) : u8(0),
+        unsafe_position<u8>(computed_field(domain, 13u64)), resolved, constant, 0u64);
+    remember_computed(produced, equalities, unsafe_address(address_bits(address_of(inverse))), unsafe_address(address_bits(address_of(input))));
+}
+
+void remember_expression(address roots,address produced,address equalities,address source) on cpu {
+    IndexDomainKey normalized = IndexDomainKey(array<u64,13>(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64));
+    let fact = read_fact_fields(source);
+    let scratch = unsafe_address(address_bits(address_of(normalized)));
+    let domain = rename_index_domain(fact.payload, scratch, roots, c_function(find_output_binding));
+    let mapped = find_output_binding(roots, fact.first);
+    remember_computed(produced, equalities, domain, mapped == address() ? fact.first : mapped);
+    if (mapped != address()) { remember_inverse(produced, equalities, domain, mapped); }
+}
+
+extern "C" void resolve_computed_roots(address roots,address sources,usize count) on cpu {
+    OrderedTree produced = OrderedTree(address(), 0u64, 0u64, 0u64);
+    OrderedTree equalities = OrderedTree(address(), 0u64, 0u64, 0u64);
+    while (true) {
+        usize index = 0u64;
+        while (index < count) {
+            let slot = computed_field(sources, index * size_of<address>());
+            remember_expression(roots, address_of(produced), address_of(equalities), unsafe_position<address>(slot));
+            index += 1u64;
+        }
+        if (equalities.count == 0u64) { break; }
+        apply_computed_equalities(roots, address_of(equalities));
+        produced.root = 0u64;
+        produced.count = 0u64;
+        equalities.root = 0u64;
+        equalities.count = 0u64;
+    }
+    fact_tree_clear(address_of(equalities));
+    fact_tree_clear(address_of(produced));
 }

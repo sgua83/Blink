@@ -186,21 +186,6 @@ extern "C" void task_return_sources(address context,TaskSourceHost host) on cpu
  requires nonzero(host.copy) requires nonzero(host.intersection) requires nonzero(host.union)
  requires nonzero(host.same_scalar) requires nonzero(host.facts.compare);
 
-struct ComputedEqualityStep { u32 present; address result; };
-struct ComputedEqualityHost {
- cfn<void,address> begin;
- cfn<ComputedEqualityStep,address> step;
- cfn<address,address> ensures memory(read) produced;
- cfn<void,address> remember;
- cfn<void,address,address,address> equate;
- cfn<u32,address> ensures memory(read) has_equalities;
- cfn<void,address> extend;
- cfn<i32,address,address> ensures memory(read) compare;
-};
-extern "C" void computed_equalities(address context,ComputedEqualityHost host) on cpu
- requires nonzero(host.begin) requires nonzero(host.step) requires nonzero(host.produced)
- requires nonzero(host.remember) requires nonzero(host.equate) requires nonzero(host.has_equalities)
- requires nonzero(host.extend) requires nonzero(host.compare);
 struct AdditionalEqualityHost {
  cfn<FactView,address> next;
  cfn<address,address,address> ensures memory(read) lookup;
