@@ -247,16 +247,12 @@ pub(super) fn dataset_origin(data:&Data,field:u32,ty:&Ty,initialized:bool)->addr
 }
 
 impl effects::StorageWrite {
-    pub(super) fn includes_root(&self,builder:&Builder<'_>,root:Reg)->bool {
-        match self {
-            Self::Frame{root:written,..}=>*written==root,
-            Self::Descendants{root:ancestor}=>{
-                let loads=ApplicationLoads(builder);
-                !loads.same(root,*ancestor)&&!loads.frame_descendant(*ancestor,root)
-            },
-        }
+    pub(super) fn includes_root(&self, builder: &Builder<'_>, root: Reg) -> bool {
+        let loads = ApplicationLoads(builder);
+        unsafe { source_storage_includes_root(loads.register_source(), REGISTER_HOST, self.into(), root) != 0 }
     }
 }
+
 // Numeric snapshots query the original emitted operations, including the outer
 // IR owned by active loop contexts. Loop write inputs describe future backedges;
 // no loaded-value or memory-version state is retained beside IR and Proof.
@@ -270,33 +266,14 @@ impl ApplicationLoads<'_, '_> {
         self.0.loop_contexts.iter().flat_map(|context|context.outer.iter()).chain(self.0.code.iter())
     }
     fn len(&self)->usize {self.0.loop_contexts.iter().map(|context|context.outer.len()).sum::<usize>()+self.0.code.len()}
-    fn storage_writes(&self,writes:&effects::LoopWrites,root:Option<Reg>,range:Option<std::ops::Range<u128>>)->bool {
-        writes.unknown_storage||writes.storage.iter().any(|written|match written {
-            effects::StorageWrite::Descendants{..}=>root.is_none_or(|root|written.includes_root(self.0,root)),
-            effects::StorageWrite::Frame{root:written,range:changed}=>match(root,range.as_ref(),changed.as_ref()) {
-                (Some(root),_,_)if self.disjoint_roots(root,*written)||self.frame_descendant(root,*written)||self.frame_descendant(*written,root)=>false,
-                (Some(root),Some(range),Some(changed))if self.same(root,*written)=>Self::byte_overlap(range,changed),
-                _=>true,
-            },
-        })
+    fn storage_writes(&self, writes: &effects::LoopWrites, root: Option<Reg>, range: Option<std::ops::Range<u128>>) -> bool {
+        let bytes = range.as_ref().map(Into::into).unwrap_or_default();
+        unsafe {
+            source_storage_changes(self.register_source(), REGISTER_HOST, writes.into(),
+                AddressWord::from_option(root), bytes, u32::from(range.is_some())) != 0
+        }
     }
-    fn loop_writes(&self,a:usize,b:usize,read:&Inst)->bool {
-        let mut boundary=0;
-        self.0.loop_contexts.iter().any(|context|{
-            boundary+=context.outer.len();
-            a.min(b)<boundary && a.max(b)>=boundary && match &read.kind {
-                InstKind::LoadLocal(_,slot)=>context.writes.external||context.writes.locals.contains(slot),
-                InstKind::Load{..}=>context.writes.external||context.writes.unknown_storage,
-                InstKind::ViewLoad{dst,address,index,stride,word}=>{
-                    let range=self.constant(*index).zip(self.stride(*stride)).map(|(index,stride)|{
-                        application_byte_range(index, stride, *word, self.0.registers[*dst].size())
-                    });
-                    self.storage_writes(&context.writes,self.frame_root(*address),range)
-                },
-                _=>false,
-            }
-        })
-    }
+
     fn register_source(&self) -> SnapshotSource {
         SnapshotSource {
             context: ptr::from_ref(self).cast(),
@@ -340,12 +317,6 @@ impl ApplicationLoads<'_, '_> {
 
     fn allocated(&self, root: Reg) -> bool {
         unsafe { source_allocated(self.register_source(), REGISTER_HOST, root) != 0 }
-    }
-
-    fn disjoint_roots(&self, a: Reg, b: Reg) -> bool { a != b && self.allocated(a) && self.allocated(b) }
-
-    fn frame_descendant(&self, child: Reg, parent: Reg) -> bool {
-        unsafe { source_frame_descendant(self.register_source(), REGISTER_HOST, child, parent) != 0 }
     }
 
     // Resolve only metadata already produced by the original IR. No model register becomes storage.
@@ -397,10 +368,6 @@ impl ApplicationLoads<'_, '_> {
         }
         Ok((!storage.is_empty()).then_some(storage))
     }
-    fn byte_overlap(left: &std::ops::Range<u128>, right: &std::ops::Range<u128>) -> bool {
-        unsafe { source_ranges_overlap(ApplicationByteRange::from(left), ApplicationByteRange::from(right)) != 0 }
-    }
-
     fn store_overlaps(
         &self, read: &IndexedSource, read_word: u32, read_scalar: Scalar,
         source: &IndexedSource, offset: Option<Reg>, word: u32, scalar: Scalar,
@@ -619,6 +586,7 @@ impl Builder<'_> {
     }
 }
 
+#[derive(Default)]
 #[repr(C)]
 struct ApplicationByteOffset { low: u64, high: u64 }
 
@@ -630,6 +598,7 @@ impl From<ApplicationByteOffset> for u128 {
     fn from(value: ApplicationByteOffset) -> Self { u128::from(value.low) | (u128::from(value.high) << 64) }
 }
 
+#[derive(Default)]
 #[repr(C)]
 struct ApplicationByteRange { start: ApplicationByteOffset, end: ApplicationByteOffset }
 
@@ -681,8 +650,11 @@ impl AddressWord {
 unsafe extern "C" {
     #[link_name = "bootstrap.application_snapshot::application_byte_range"]
     fn source_byte_range(index: u64, stride: u64, word: u32, width: u32) -> ApplicationByteRange;
-    #[link_name = "bootstrap.application_snapshot::application_ranges_overlap"]
-    fn source_ranges_overlap(left: ApplicationByteRange, right: ApplicationByteRange) -> u32;
+    #[link_name = "bootstrap.application_snapshot::application_storage_includes_root"]
+    fn source_storage_includes_root(source: SnapshotSource, host: RegisterHost, written: LoopStorage, root: Reg) -> u32;
+    #[link_name = "bootstrap.application_snapshot::application_storage_changes"]
+    fn source_storage_changes(source: SnapshotSource, host: RegisterHost, effects: LoopEffects,
+        root: AddressWord, range: ApplicationByteRange, has_range: u32) -> u32;
     #[link_name = "bootstrap.application_snapshot::application_store_overlap"]
     fn source_store_overlap(read: IndexedByteAccess, target: IndexedByteAccess, offset: dataflow::Span,
         source: SnapshotSource, host: RegisterHost) -> u32;
@@ -690,8 +662,6 @@ unsafe extern "C" {
     fn source_frame_root(source: SnapshotSource, host: RegisterHost, address: OriginalAddress) -> AddressWord;
     #[link_name = "bootstrap.application_snapshot::application_allocated"]
     fn source_allocated(source: SnapshotSource, host: RegisterHost, root: Reg) -> u32;
-    #[link_name = "bootstrap.application_snapshot::application_frame_descendant"]
-    fn source_frame_descendant(source: SnapshotSource, host: RegisterHost, child: Reg, parent: Reg) -> u32;
     #[link_name = "bootstrap.application_snapshot::application_split_address"]
     fn source_split_address(source: SnapshotSource, host: RegisterHost, address: OriginalAddress) -> AddressWord;
     #[link_name = "bootstrap.application_snapshot::application_offset_position"]
@@ -851,6 +821,47 @@ struct SnapshotSource {
     registers: dataflow::Span,
 }
 
+#[repr(C)]
+struct LoopEffects {
+    locals: *const BTreeSet<usize>,
+    storage: dataflow::Span,
+    external: u32,
+    unknown_storage: u32,
+}
+
+impl From<&effects::LoopWrites> for LoopEffects {
+    fn from(writes: &effects::LoopWrites) -> Self {
+        Self {
+            locals: ptr::from_ref(&writes.locals),
+            storage: dataflow::Span::slice(&writes.storage),
+            external: u32::from(writes.external),
+            unknown_storage: u32::from(writes.unknown_storage),
+        }
+    }
+}
+
+#[repr(C)]
+struct LoopStorage {
+    root: Reg,
+    range: ApplicationByteRange,
+    descendants: u32,
+    has_range: u32,
+}
+
+impl From<&effects::StorageWrite> for LoopStorage {
+    fn from(written: &effects::StorageWrite) -> Self {
+        match written {
+            effects::StorageWrite::Frame { root, range } => Self {
+                root: *root, range: range.as_ref().map(Into::into).unwrap_or_default(),
+                descendants: 0, has_range: u32::from(range.is_some()),
+            },
+            effects::StorageWrite::Descendants { root } => Self {
+                root: *root, range: ApplicationByteRange::default(), descendants: 1, has_range: 0,
+            },
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct RegisterHost {
@@ -858,7 +869,10 @@ struct RegisterHost {
     block: unsafe extern "C" fn(*const c_void, usize) -> dataflow::Span,
     writes_local: unsafe extern "C" fn(*const c_void, *const c_void, usize) -> u32,
     writes_load: unsafe extern "C" fn(*const c_void, *const c_void, *const c_void) -> u32,
-    loop_writes: unsafe extern "C" fn(*const c_void, usize, usize, *const c_void) -> u32,
+    loop_effects: unsafe extern "C" fn(*const c_void, usize) -> LoopEffects,
+    loop_local: unsafe extern "C" fn(*const BTreeSet<usize>, usize) -> u32,
+    loop_storage: unsafe extern "C" fn(*const effects::StorageWrite) -> LoopStorage,
+    scalar_bytes: unsafe extern "C" fn(*const c_void, Reg) -> u32,
     cast: unsafe extern "C" fn(*const c_void, Reg, Reg, usize) -> AddressWord,
     pointer_root: unsafe extern "C" fn(*const c_void, *const c_void) -> AddressWord,
     allocation: unsafe extern "C" fn(*const c_void) -> u32,
@@ -866,7 +880,8 @@ struct RegisterHost {
 
 const REGISTER_HOST: RegisterHost = RegisterHost {
     ir: dataflow::HOST, block: snapshot_block, writes_local: snapshot_writes_local,
-    writes_load: snapshot_writes_load, loop_writes: snapshot_loop_writes,
+    writes_load: snapshot_writes_load, loop_effects: snapshot_loop_effects,
+    loop_local: snapshot_loop_local, loop_storage: snapshot_loop_storage, scalar_bytes: snapshot_scalar_bytes,
     cast: snapshot_cast, pointer_root: snapshot_pointer_root, allocation: snapshot_allocation,
 };
 
@@ -907,9 +922,23 @@ unsafe extern "C" fn snapshot_writes_load(context: *const c_void, inst: *const c
     u32::from(loads.writes(unsafe { &*inst.cast::<Inst>() }, unsafe { &*load.cast::<Inst>() }))
 }
 
-unsafe extern "C" fn snapshot_loop_writes(context: *const c_void, a: usize, b: usize, read: *const c_void) -> u32 {
+// The borrowed locals and storage remain part of the original immutable loop summary.
+unsafe extern "C" fn snapshot_loop_effects(context: *const c_void, at: usize) -> LoopEffects {
     let loads = unsafe { &*context.cast::<ApplicationLoads<'_, '_>>() };
-    u32::from(loads.loop_writes(a, b, unsafe { &*read.cast::<Inst>() }))
+    (&loads.0.loop_contexts[at].writes).into()
+}
+
+unsafe extern "C" fn snapshot_loop_local(locals: *const BTreeSet<usize>, slot: usize) -> u32 {
+    u32::from(unsafe { &*locals }.contains(&slot))
+}
+
+unsafe extern "C" fn snapshot_loop_storage(written: *const effects::StorageWrite) -> LoopStorage {
+    unsafe { &*written }.into()
+}
+
+unsafe extern "C" fn snapshot_scalar_bytes(context: *const c_void, reg: Reg) -> u32 {
+    let loads = unsafe { &*context.cast::<ApplicationLoads<'_, '_>>() };
+    loads.0.registers[reg].size()
 }
 
 unsafe extern "C" fn snapshot_cast(context: *const c_void, source: Reg, target: Reg, bits: usize) -> AddressWord {
