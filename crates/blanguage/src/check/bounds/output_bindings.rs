@@ -20,6 +20,10 @@ struct Entry {
 }
 
 unsafe extern "C" {
+    #[link_name = "bootstrap.output_bindings::copy_output_bindings"]
+    fn copy(original: &OutputBindings, output: &mut OutputBindings);
+    #[link_name = "bootstrap.output_bindings::same_output_bindings"]
+    fn same(left: &OutputBindings, right: &OutputBindings) -> u32;
     #[link_name = "bootstrap.output_bindings::write_output_binding"]
     fn insert(owner: &mut OutputBindings, source: &ValueIdentity, target: &ValueIdentity);
     #[link_name = "bootstrap.output_bindings::collect_output_bindings"]
@@ -78,6 +82,22 @@ impl<'a> Iterator for Entries<'a> {
         Some(unsafe { (&*pair.source, &*pair.target) })
     }
 }
+
+impl Clone for OutputBindings {
+    fn clone(&self) -> Self {
+        let mut result = Self::new();
+        unsafe { copy(self, &mut result) };
+        result
+    }
+}
+
+impl PartialEq for OutputBindings {
+    fn eq(&self, other: &Self) -> bool {
+        unsafe { same(self, other) != 0 }
+    }
+}
+
+impl Eq for OutputBindings {}
 
 impl Default for OutputBindings {
     fn default() -> Self { Self::new() }

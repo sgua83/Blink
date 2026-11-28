@@ -15,6 +15,7 @@ mod task_sources;
 mod combination;
 mod canonical;
 mod equality;
+use equality::Roots as EqualityRoots;
 mod integer_relations;
 mod index_domains;
 mod comparison_conditions;
@@ -346,7 +347,7 @@ unsafe extern "C" fn cleanup_zero(facts: *mut Facts, reg: Reg) {
 #[derive(Clone)]
 struct RequiredFacts {
     facts: Facts,
-    roots: BTreeMap<ValueIdentity, ValueIdentity>,
+    roots: EqualityRoots,
 }
 // 固定点环境只由本轮持有；节点仅交接环境之外的事实，保持到最后消费。
 #[derive(Clone)]
@@ -456,7 +457,7 @@ impl Place {
         &mut self,
         identity: ValueIdentity,
         fact: Fact,
-        roots: &BTreeMap<ValueIdentity, ValueIdentity>,
+        roots: &EqualityRoots,
     ) {
         match self {
             Self::ApplicationElement {
@@ -1474,27 +1475,27 @@ impl Fact {
         }
     }
 }
-fn equality_roots(facts: &Facts) -> BTreeMap<ValueIdentity, ValueIdentity> { equality::roots(facts) }
-fn extend_equality_roots<'a>(roots: &mut BTreeMap<ValueIdentity, ValueIdentity>, facts: impl IntoIterator<Item = &'a Fact>) -> bool {
+fn equality_roots(facts: &Facts) -> EqualityRoots { equality::roots(facts) }
+fn extend_equality_roots<'a>(roots: &mut EqualityRoots, facts: impl IntoIterator<Item = &'a Fact>) -> bool {
     equality::extend(roots, facts)
 }
-fn additional_equality_roots<'a>(environment: &Facts, environment_roots: &'a BTreeMap<ValueIdentity, ValueIdentity>, additions: &Facts) -> Cow<'a, BTreeMap<ValueIdentity, ValueIdentity>> {
+fn additional_equality_roots<'a>(environment: &Facts, environment_roots: &'a EqualityRoots, additions: &Facts) -> Cow<'a, EqualityRoots> {
     equality::additional(environment, environment_roots, additions)
 }
 type EqualityMembers<'a> = Vec<(&'a ValueIdentity, &'a ValueIdentity)>;
 
-fn equality_members(roots: &BTreeMap<ValueIdentity, ValueIdentity>) -> EqualityMembers<'_> {
+fn equality_members(roots: &EqualityRoots) -> EqualityMembers<'_> {
     let mut members: Vec<_> = roots.iter().map(|(id, group)| (group, id)).collect();
     members.sort_unstable_by_key(|(group, _)| *group);
     members
 }
 
-fn equivalent_facts<'a>(environment: &Facts, facts: QueryFacts<'a>, roots: &BTreeMap<ValueIdentity, ValueIdentity>, members: &[(&ValueIdentity, &ValueIdentity)], inherited_roots: Option<&BTreeMap<ValueIdentity, ValueIdentity>>) -> QueryFacts<'a> {
+fn equivalent_facts<'a>(environment: &Facts, facts: QueryFacts<'a>, roots: &EqualityRoots, members: &[(&ValueIdentity, &ValueIdentity)], inherited_roots: Option<&EqualityRoots>) -> QueryFacts<'a> {
     equality::equivalent(environment, facts, roots, members, inherited_roots)
 }
 
 impl Proof {
-    fn extend_equalities(&mut self, roots: &BTreeMap<ValueIdentity, ValueIdentity>) {
+    fn extend_equalities(&mut self, roots: &EqualityRoots) {
         for origins in &mut self.origins {
             let groups: BTreeSet<_> = origins
                 .iter()
@@ -2407,7 +2408,7 @@ impl Clause {
         }
         let mut query = condition_graph::RequiredQuery::new(self);
         let mut environment: Cow<'a, Facts> = Cow::Borrowed(environment);
-        let unexpanded = BTreeMap::new();
+        let unexpanded = EqualityRoots::new();
         loop {
             // 共同环境的别名事实只在原环境所有者处生产一次。
             let environment_members = equality_members(&environment_roots);
@@ -2479,7 +2480,7 @@ impl Clause {
 fn contradictory(facts: &Facts) -> bool {
     contradictory_with_roots(facts, &equality_roots(facts))
 }
-fn contradictory_with_roots(facts: &Facts, roots: &BTreeMap<ValueIdentity, ValueIdentity>) -> bool {
+fn contradictory_with_roots(facts: &Facts, roots: &EqualityRoots) -> bool {
     internal_conflicts::conflict(facts, roots)
 }
 
@@ -2811,14 +2812,14 @@ struct IntegerAffine {
 }
 struct IntegerQuery<'a> {
     facts: &'a Facts,
-    roots: &'a BTreeMap<ValueIdentity, ValueIdentity>,
+    roots: &'a EqualityRoots,
     lower: BTreeMap<(ValueIdentity, Scalar), Bits>,
     upper: BTreeMap<(ValueIdentity, Scalar), Bits>,
     coefficients: BTreeMap<(ValueIdentity, Scalar), IntegerAffine>,
     expanding: BTreeSet<(ValueIdentity, Scalar)>,
 }
 impl<'a> IntegerQuery<'a> {
-    fn new(facts: &'a Facts, roots: &'a BTreeMap<ValueIdentity, ValueIdentity>) -> Self {
+    fn new(facts: &'a Facts, roots: &'a EqualityRoots) -> Self {
         let (lower,upper)=numeric_bounds::collect(facts,Some(roots));
         Self { facts, roots, lower, upper, coefficients: BTreeMap::new(), expanding: BTreeSet::new() }
     }
@@ -2862,7 +2863,7 @@ impl<'a> IntegerQuery<'a> {
     fn at_most_zero(&self,output:&mut Facts,value:IntegerAffine,scalar:Scalar)->Option<()> {integer_relations::at_most_zero(self,output,value,scalar)}
 }
 
-fn integer_relation_facts(facts:&Facts,roots:&BTreeMap<ValueIdentity,ValueIdentity>)->Option<Facts> {integer_relations::facts(facts,roots)}
+fn integer_relation_facts(facts:&Facts,roots:&EqualityRoots)->Option<Facts> {integer_relations::facts(facts,roots)}
 /// 数值区间逐分量计算；资源索引域只沿已证明的无符号关系传递。
 pub(super) fn math(op: MathOp, args: &[Value]) -> Proof {
     let width = args.iter().map(|value| value.regs.len()).max().unwrap();

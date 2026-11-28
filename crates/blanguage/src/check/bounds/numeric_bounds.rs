@@ -19,7 +19,7 @@ struct Previous {
 }
 struct Context<'a> {
     input: facts::Iter<'a>,
-    roots: Option<&'a BTreeMap<ValueIdentity, ValueIdentity>>,
+    roots: Option<&'a EqualityRoots>,
     lower: BoundMap,
     upper: BoundMap,
 }
@@ -75,7 +75,7 @@ unsafe extern "C" {
 }
 pub(super) fn collect(
     facts: &Facts,
-    roots: Option<&BTreeMap<ValueIdentity, ValueIdentity>>,
+    roots: Option<&EqualityRoots>,
 ) -> (BoundMap, BoundMap) {
     let mut c = Context {
         input: facts.iter(),

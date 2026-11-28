@@ -1,9 +1,8 @@
 //! B owns the alias fact table and reads it during the original contradiction check.
-use super::{Fact, Facts, Scalar, ValueIdentity, fact_fields, facts};
-use std::{collections::BTreeMap, ffi::c_void, ptr};
+use super::{EqualityRoots as Roots, Fact, Facts, Scalar, ValueIdentity, fact_fields, facts};
+use std::{ffi::c_void, ptr};
 
 type Borrowed = *const c_void;
-type Roots = BTreeMap<ValueIdentity, ValueIdentity>;
 type Lookup = unsafe extern "C" fn(Borrowed, &ValueIdentity) -> *const ValueIdentity;
 
 #[derive(Default)]
@@ -21,6 +20,8 @@ struct Scalars {
 }
 
 unsafe extern "C" {
+    #[link_name = "bootstrap.output_bindings::find_output_binding"]
+    fn lookup(roots: Borrowed, identity: &ValueIdentity) -> *const ValueIdentity;
     #[link_name = "bootstrap.proof_facts::alias_facts_build"]
     fn build_aliases(result: &mut AliasFacts, source: &Facts, roots: Borrowed, lookup: Lookup);
     #[link_name = "bootstrap.proof_facts::alias_facts_insert"]
@@ -30,10 +31,6 @@ unsafe extern "C" {
     #[link_name = "bootstrap.condition_graph::internal_conflict"]
     fn evaluate(owner: Borrowed, aliases: u32, integers: Scalars,
         predicate: unsafe extern "C" fn(Borrowed) -> fact_fields::PredicateView) -> u32;
-}
-
-unsafe extern "C" fn lookup(roots: Borrowed, identity: &ValueIdentity) -> *const ValueIdentity {
-    unsafe { &*roots.cast::<Roots>() }.get(identity).map_or(ptr::null(), ptr::from_ref)
 }
 
 impl AliasFacts {

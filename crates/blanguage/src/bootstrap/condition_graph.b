@@ -1031,28 +1031,6 @@ extern "C" void task_return_sources(address context,TaskSourceHost host) on cpu
  }
 }
 
-extern "C" u32 equality_extend(address context,EqualityHost host) on cpu
- requires nonzero(host.next) requires nonzero(host.lookup) requires nonzero(host.compare)
- requires nonzero(host.merge) requires nonzero(host.insert) {
- u32 changed=0;
- while(true){
-  FactView fact=host.next(context);
-  if(fact.present==0||fact.kind!=FactKind::Equal){return changed;}
-  EqualityLookup left=host.lookup(context,0,fact.first);
-  EqualityLookup right=host.lookup(context,1,fact.second);
-  i32 order=host.compare(left.root,right.root);
-  if(order==0){
-   if(left.present==0){host.insert(context,fact.first,left.root);}
-   continue;
-  }
-  address root=order<0 ? left.root : right.root;
-  EqualityLookup merged=order<0 ? right : left;
-  if(merged.present!=0){host.merge(context,merged.root,root);}
-  changed=1;
-  if(left.present==0){host.insert(context,fact.first,root);}
-  if(right.present==0){host.insert(context,fact.second,root);}
- }
-}
 extern "C" void computed_equalities(address context,ComputedEqualityHost host) on cpu
  requires nonzero(host.begin) requires nonzero(host.step) requires nonzero(host.produced)
  requires nonzero(host.remember) requires nonzero(host.equate) requires nonzero(host.has_equalities)

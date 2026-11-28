@@ -667,7 +667,7 @@ unsafe extern "C" {
 }
 pub(super) fn facts(
     facts: &Facts,
-    roots: &BTreeMap<ValueIdentity, ValueIdentity>,
+    roots: &EqualityRoots,
 ) -> Option<Facts> {
     let mut query = IntegerQuery::new(facts, roots);
     let mut output = Facts::new();

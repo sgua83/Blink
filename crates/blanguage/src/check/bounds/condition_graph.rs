@@ -1185,7 +1185,7 @@ struct RequiredEvaluation<'a, 'b> {
     common_equalities: Option<std::cell::OnceCell<Arc<Facts>>>,
     nodes: *mut RequiredResult<'a>,
     environment: &'b Facts,
-    roots: &'b std::collections::BTreeMap<super::ValueIdentity, super::ValueIdentity>,
+    roots: &'b super::EqualityRoots,
     members: &'b [(&'b super::ValueIdentity, &'b super::ValueIdentity)],
 }
 impl<'a> RequiredEvaluation<'a, '_> {
@@ -1290,7 +1290,7 @@ impl<'a> RequiredQuery<'a> {
     pub(super) fn evaluate(
         &mut self,
         environment: &Facts,
-        roots: &std::collections::BTreeMap<super::ValueIdentity, super::ValueIdentity>,
+        roots: &super::EqualityRoots,
         members: &[(&super::ValueIdentity, &super::ValueIdentity)],
     ) -> Option<super::QueryFacts<'a>> {
         let graph = self.graph();

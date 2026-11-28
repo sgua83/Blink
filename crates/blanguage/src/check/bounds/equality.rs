@@ -1,7 +1,7 @@
 //! B controls equality closure and alias projection. The original query owns
 //! roots, typed expression keys, Facts and the final borrowed/owned result.
 use super::facts;
-use super::{Fact, Facts, IndexDomain, IntegerExpression, IntegerOperation, Operand, QueryFacts, ValueIdentity, fact_fields};
+use super::{Fact, Facts, IndexDomain, IntegerExpression, IntegerOperation, Operand, OutputBindingEntries, OutputBindings, QueryFacts, ValueIdentity, fact_fields};
 use std::{
     borrow::Cow,
     collections::{BTreeMap},
@@ -9,132 +9,43 @@ use std::{
     mem::MaybeUninit,
     ptr,
 };
-type Roots = BTreeMap<ValueIdentity, ValueIdentity>;
+#[derive(Clone, PartialEq, Eq)]
+#[repr(transparent)]
+pub(super) struct Roots(OutputBindings);
+
+impl Roots {
+    pub(super) fn new() -> Self { Self(OutputBindings::new()) }
+    pub(super) fn is_empty(&self) -> bool { self.0.is_empty() }
+    pub(super) fn get(&self, id: &ValueIdentity) -> Option<&ValueIdentity> { self.0.get(id) }
+    pub(super) fn iter(&self) -> OutputBindingEntries<'_> { self.0.iter() }
+}
+
+impl<'a> IntoIterator for &'a Roots {
+    type Item = (&'a ValueIdentity, &'a ValueIdentity);
+    type IntoIter = OutputBindingEntries<'a>;
+
+    fn into_iter(self) -> Self::IntoIter { self.iter() }
+}
+
 type Slot = *mut c_void;
 type Borrowed = *const c_void;
 fn borrowed<T>(value: &T) -> Borrowed {
     ptr::from_ref(value).cast()
 }
-#[repr(C)]
-struct Lookup {
-    present: u32,
-    root: Borrowed,
-}
-fn representative(roots: &Roots, mut identity: ValueIdentity) -> ValueIdentity {
-    while let Some(&parent) = roots.get(&identity) {
-        if parent == identity {
-            break;
-        }
-        identity = parent;
-    }
-    identity
-}
 
-struct EqualContext<'a, I> {
-    roots: &'a mut Roots,
-    input: I,
-    groups: [*mut ValueIdentity; 2],
-    merged: bool,
-}
-unsafe fn equal_context<'a, 'b, I>(slot: Slot) -> &'a mut EqualContext<'b, I> {
-    unsafe { &mut *slot.cast() }
-}
-unsafe extern "C" fn equal_next<'a, I: Iterator<Item = &'a Fact>>(
-    slot: Slot,
-) -> fact_fields::Fields {
-    unsafe { equal_context::<I>(slot) }
-        .input
-        .next()
-        .map(fact_fields::Fields::from)
-        .unwrap_or_default()
-}
-unsafe extern "C" fn equal_lookup<I>(slot: Slot, side: u32, identity: Borrowed) -> Lookup {
-    let id = unsafe { *identity.cast::<ValueIdentity>() };
-    let context = unsafe { equal_context::<I>(slot) };
-    let group = context.roots.get(&id).copied();
-    let snapshot = context.groups[side as usize];
-    let parent = group.unwrap_or(id);
-    let root = if context.merged && parent != id {
-        representative(context.roots, parent)
-    } else {
-        parent
-    };
-    unsafe { snapshot.write(root) };
-    Lookup {
-        present: u32::from(group.is_some()),
-        root: snapshot.cast(),
-    }
-}
-unsafe extern "C" fn merge<I>(slot: Slot, merged: Borrowed, root: Borrowed) {
-    let (merged, root) = unsafe {
-        (*merged.cast::<ValueIdentity>(), *root.cast::<ValueIdentity>())
-    };
-    let context = unsafe { equal_context::<I>(slot) };
-    context.roots.insert(merged, root);
-    context.merged = true;
-}
-unsafe extern "C" fn insert<I>(slot: Slot, identity: Borrowed, root: Borrowed) {
-    let (identity, root) = unsafe {
-        (
-            *identity.cast::<ValueIdentity>(),
-            *root.cast::<ValueIdentity>(),
-        )
-    };
-    unsafe { equal_context::<I>(slot) }
-        .roots
-        .insert(identity, root);
-}
-#[repr(C)]
-struct EqualHost {
-    next: unsafe extern "C" fn(Slot) -> fact_fields::Fields,
-    lookup: unsafe extern "C" fn(Slot, u32, Borrowed) -> Lookup,
-    compare: unsafe extern "C" fn(Borrowed, Borrowed) -> i32,
-    merge: unsafe extern "C" fn(Slot, Borrowed, Borrowed),
-    insert: unsafe extern "C" fn(Slot, Borrowed, Borrowed),
-}
 unsafe extern "C" {
-    #[link_name = "bootstrap.condition_graph::equality_extend"]
-    fn b_extend(context: Slot, host: EqualHost) -> u32;
-}
-fn normalize(roots: &mut Roots) {
-    let affected: Vec<_> = roots.iter().filter_map(|(&identity, parent)| {
-        roots.get(parent).is_some_and(|root| root != parent).then_some(identity)
-    }).collect();
-    // A parent is the smaller representative, so its entry is final when its
-    // dependent members are visited in map order.
-    for identity in affected {
-        let parent = roots[&identity];
-        let root = roots[&parent];
-        roots.insert(identity, root);
-    }
+    #[link_name = "bootstrap.output_bindings::extend_equality_roots"]
+    fn b_extend(roots: &mut Roots, context: Slot, next: unsafe extern "C" fn(Slot) -> Borrowed) -> u32;
 }
 
 pub(super) fn extend<'a, I: IntoIterator<Item = &'a Fact>>(roots: &mut Roots, facts: I) -> bool {
-    let mut left = MaybeUninit::<ValueIdentity>::uninit();
-    let mut right = MaybeUninit::<ValueIdentity>::uninit();
-    let mut context = EqualContext {
-        roots,
-        input: facts.into_iter(),
-        groups: [left.as_mut_ptr(), right.as_mut_ptr()],
-        merged: false,
-    };
-    let changed = unsafe {
-        b_extend(
-            (&mut context as *mut EqualContext<'_, I::IntoIter>).cast(),
-            EqualHost {
-                next: equal_next::<I::IntoIter>,
-                lookup: equal_lookup::<I::IntoIter>,
-                compare: fact_fields::compare,
-                merge: merge::<I::IntoIter>,
-                insert: insert::<I::IntoIter>,
-            },
-        ) != 0
-    };
-    if context.merged {
-        normalize(context.roots);
+    unsafe extern "C" fn next<'a, I: Iterator<Item = &'a Fact>>(context: Slot) -> Borrowed {
+        unsafe { &mut *context.cast::<I>() }.next().map_or(ptr::null(), borrowed)
     }
-    changed
+    let mut facts = facts.into_iter();
+    unsafe { b_extend(roots, ptr::from_mut(&mut facts).cast(), next::<I::IntoIter>) != 0 }
 }
+
 struct ComputedContext<'a> {
     roots: &'a mut Roots,
     expressions: Vec<(&'a ValueIdentity, &'a IntegerExpression)>,
@@ -181,7 +92,7 @@ unsafe extern "C" fn step(slot: Slot) -> ComputedStep {
         let root = |id| context.roots.get(&id).copied().unwrap_or(id);
         let expression = expression.map(|id| Some(root(id))).unwrap();
         let resolved = root(*result);
-        if context.roots.contains_key(result) && let IntegerExpression::Binary(op, scalar, a, b) = expression {
+        if context.roots.get(result).is_some() && let IntegerExpression::Binary(op, scalar, a, b) = expression {
             use IntegerOperation::{Add, Subtract};
             use Operand::{Constant, Value};
             context.inverse = match (op, a, b) {

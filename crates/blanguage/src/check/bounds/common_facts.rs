@@ -1,7 +1,7 @@
 //! B controls common fact production. Original query inputs, roots and result own their storage.
 use super::facts;
 use super::{
-    Fact, Facts, IndexDomain, QueryFacts, Scalar, ValueIdentity,
+    EqualityRoots, Fact, Facts, IndexDomain, OutputBindingEntries, QueryFacts, Scalar, ValueIdentity,
     additional_equality_roots, equality_members, equivalent_facts, fact_fields,
 };
 use std::{
@@ -18,7 +18,7 @@ type Slot = *mut c_void;
 struct Context<'a> {
     environment: &'a Facts,
     sides: [&'a Facts; 2],
-    roots: [btree_map::Iter<'a, ValueIdentity, ValueIdentity>; 2],
+    roots: [OutputBindingEntries<'a>; 2],
     groups: BTreeMap<(ValueIdentity, ValueIdentity), ValueIdentity>,
     union: facts::Merge<'a>,
     cursors: [facts::Iter<'a>; 2],
@@ -203,7 +203,7 @@ unsafe extern "C" {
     fn evaluate(context: Slot, host: Host);
 }
 fn fold<'a>(
-    environment: &'a Facts, sides: [&'a Facts; 2], roots: [btree_map::Iter<'a, ValueIdentity, ValueIdentity>; 2],
+    environment: &'a Facts, sides: [&'a Facts; 2], roots: [OutputBindingEntries<'a>; 2],
 ) -> Facts {
     let mut context = Context {
         environment,
@@ -240,7 +240,7 @@ fn fold<'a>(
 
 pub(super) fn either<'a>(
     environment: &Facts,
-    environment_roots: &BTreeMap<ValueIdentity, ValueIdentity>,
+    environment_roots: &EqualityRoots,
     environment_members: &[(&ValueIdentity, &ValueIdentity)],
     shared_equalities: Option<&OnceCell<Arc<Facts>>>,
     a: Option<QueryFacts<'a>>,
@@ -255,7 +255,7 @@ pub(super) fn either<'a>(
             let left = additional_equality_roots(environment, environment_roots, &a);
             let right = additional_equality_roots(environment, environment_roots, &b);
             let expand =
-                |facts, roots: &Cow<'_, BTreeMap<ValueIdentity, ValueIdentity>>| match roots {
+                |facts, roots: &Cow<'_, EqualityRoots>| match roots {
                     Cow::Borrowed(_) => {
                         equivalent_facts(environment, facts, roots, environment_members, None)
                     }
@@ -278,7 +278,8 @@ pub(super) fn either<'a>(
                     let empty = Facts::new();
                     Arc::new(fold(environment, [&empty, &empty], [environment_roots.iter(), environment_roots.iter()]))
                 });
-                let mut facts = fold(environment, [&a, &b], Default::default());
+                let empty_roots = EqualityRoots::new();
+                let mut facts = fold(environment, [&a, &b], [empty_roots.iter(), empty_roots.iter()]);
                 if facts.is_empty() {
                     return Some(QueryFacts::Owned(Arc::clone(shared)));
                 }
