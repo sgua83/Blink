@@ -293,8 +293,7 @@ impl ApplicationLoads<'_, '_> {
                 InstKind::Load{..}=>context.writes.external||context.writes.unknown_storage,
                 InstKind::ViewLoad{dst,address,index,stride,word}=>{
                     let range=self.constant(*index).zip(self.stride(*stride)).map(|(index,stride)|{
-                        let start=u128::from(index)*u128::from(stride)+u128::from(*word);
-                        start..start+u128::from(self.0.registers[*dst].size())
+                        application_byte_range(index, stride, *word, self.0.registers[*dst].size())
                     });
                     self.storage_writes(&context.writes,self.frame_root(*address),range)
                 },
@@ -459,50 +458,22 @@ impl ApplicationLoads<'_, '_> {
         }
         Ok((!storage.is_empty()).then_some(storage))
     }
-    fn byte_overlap(a:&std::ops::Range<u128>,b:&std::ops::Range<u128>)->bool {a.start<b.end&&b.start<a.end}
-    fn store_overlaps(&self,read:&IndexedSource,read_word:u32,read_scalar:Scalar,source:&IndexedSource,offset:Option<Reg>,word:u32,scalar:Scalar)->bool {
-        if let (IndexedSource::Data{binding:a,index:ai},IndexedSource::Data{binding:b,index:bi})=(read,source) {
-            if a!=b{return false;}
-            let offset=match offset {None=>0,Some(reg)=>match self.constant(reg){Some(value)=>u128::from(value),None=>return true}};
-            if matches!((self.constant(*ai),self.constant(*bi)),(Some(a),Some(b))if a!=b){return false;}
-            let a=u128::from(read_word);let b=offset+u128::from(word);
-            return Self::byte_overlap(&(a..a+u128::from(read_scalar.size())),&(b..b+u128::from(scalar.size())));
-        }
-        let IndexedSource::View{address,index,stride}=read else{return true;};
-        let mut selected=source;let mut written_word=u128::from(word);
-        while let IndexedSource::Pointer{address,index,stride,..}=selected {
-            let Some(pointer)=self.split_address(*address)else{break;};
-            let Some((_,Inst{kind:InstKind::PositionAddress{address:reference,..},..}))=self.definition(pointer)else{break;};
-            let ir::CallStorage::Indexed(storage)=&reference.storage else{break;};
-            let pointer_offset=if *stride==0{0}else{
-                let Some(index)=self.constant(*index)else{return true;};u128::from(index)*u128::from(*stride)
-            };
-            let offset=match reference.offset {None=>0,Some(reg)=>match self.constant(reg){Some(value)=>u128::from(value),None=>return true}};
-            written_word+=pointer_offset+offset+u128::from(reference.word);
-            selected=storage;
-        }
-        let(other,other_index,other_stride,same_stride)=match selected{
-            IndexedSource::View{address,index,stride:other} => (address,index,self.stride(*other),self.same_stride(*stride,*other)),
-            IndexedSource::Pointer{address,index,stride:other,..} => (address,index,Some(u64::from(*other)),self.stride(*stride)==Some(u64::from(*other))),
-            _=>return true,
-        };
-        if !self.same_address(*address,*other) {
-            // A new allocation cannot alias a live input Frame. Other roots
-            // retain the strict owned-child relation; source offsets stay intact.
-            let roots=[*address,*other].map(|parts|self.frame_root(parts)
-                .or_else(||self.offset_position(parts).and_then(|(base,..)|self.frame_root(base))));
-            if let [Some(a),Some(b)]=roots && (self.disjoint_roots(a,b)
-                ||self.allocated(a)&&self.definition(b).is_none()||self.allocated(b)&&self.definition(a).is_none()
-                ||self.frame_descendant(a,b)||self.frame_descendant(b,a)){return false;}
-            return true;
-        }
-        let offset=match offset {None=>0,Some(reg)=>match self.constant(reg){Some(value)=>value,None=>return true}};
-        let size=u128::from(read_scalar.size());let other_size=u128::from(scalar.size());
-        let (a,b)=if let(Some(a),Some(b),Some(stride),Some(other_stride))=(self.constant(*index),self.constant(*other_index),self.stride(*stride),other_stride) {
-            (u128::from(a)*u128::from(stride)+u128::from(read_word),u128::from(b)*u128::from(other_stride)+u128::from(offset)+written_word)
-        }else if same_stride&&self.same(*index,*other_index){(u128::from(read_word),u128::from(offset)+written_word)}else{return true;};
-        Self::byte_overlap(&(a..a+size),&(b..b+other_size))
+    fn byte_overlap(left: &std::ops::Range<u128>, right: &std::ops::Range<u128>) -> bool {
+        unsafe { source_ranges_overlap(ApplicationByteRange::from(left), ApplicationByteRange::from(right)) != 0 }
     }
+
+    fn store_overlaps(
+        &self, read: &IndexedSource, read_word: u32, read_scalar: Scalar,
+        source: &IndexedSource, offset: Option<Reg>, word: u32, scalar: Scalar,
+    ) -> bool {
+        let read = IndexedByteAccess { source: dataflow::Node::indexed(read), word: read_word, width: read_scalar.size() };
+        let target = IndexedByteAccess { source: dataflow::Node::indexed(source), word, width: scalar.size() };
+        unsafe {
+            source_store_overlap(read, target, dataflow::Span::slice(offset.as_slice()),
+                ptr::from_ref(self).cast(), ADDRESS_OVERLAP_HOST) != 0
+        }
+    }
+
     fn call_memory_writes(&self, call: &Call, related: bool, mut writes: impl FnMut(&view::Borrow) -> bool) -> bool {
         if let Some(first) = call.memory_use {
             return self.0.view_model.call_memory_writes(first, related, |borrow| {
@@ -722,6 +693,116 @@ impl Builder<'_> {
             unsafe { source_read_snapshot(source, SNAPSHOT_HOST, reg) }
         }
     }
+}
+
+#[repr(C)]
+struct ApplicationByteOffset { low: u64, high: u64 }
+
+impl From<u128> for ApplicationByteOffset {
+    fn from(value: u128) -> Self { Self { low: value as u64, high: (value >> 64) as u64 } }
+}
+
+impl From<ApplicationByteOffset> for u128 {
+    fn from(value: ApplicationByteOffset) -> Self { u128::from(value.low) | (u128::from(value.high) << 64) }
+}
+
+#[repr(C)]
+struct ApplicationByteRange { start: ApplicationByteOffset, end: ApplicationByteOffset }
+
+impl From<&std::ops::Range<u128>> for ApplicationByteRange {
+    fn from(range: &std::ops::Range<u128>) -> Self {
+        Self { start: range.start.into(), end: range.end.into() }
+    }
+}
+
+fn application_byte_range(index: u64, stride: u64, word: u32, width: u32) -> std::ops::Range<u128> {
+    let range = unsafe { source_byte_range(index, stride, word, width) };
+    range.start.into()..range.end.into()
+}
+
+#[repr(C)]
+struct OriginalAddress { low: Reg, high: Reg }
+
+impl OriginalAddress {
+    fn parts(self) -> [Reg; 2] { [self.low, self.high] }
+}
+
+#[repr(C)]
+struct IndexedByteAccess { source: dataflow::Node, word: u32, width: u32 }
+
+#[repr(C)]
+struct AddressWord { present: u32, value: usize }
+
+impl AddressWord {
+    fn from_option(value: Option<usize>) -> Self {
+        Self { present: u32::from(value.is_some()), value: value.unwrap_or_default() }
+    }
+}
+
+#[repr(C)]
+struct AddressOverlapHost {
+    ir: dataflow::Host,
+    constant: unsafe extern "C" fn(*const c_void, Reg) -> AddressWord,
+    same: unsafe extern "C" fn(*const c_void, Reg, Reg) -> u32,
+    definition: unsafe extern "C" fn(*const c_void, OriginalAddress) -> *const c_void,
+    frame: unsafe extern "C" fn(*const c_void, OriginalAddress) -> AddressWord,
+    allocated: unsafe extern "C" fn(*const c_void, Reg) -> u32,
+    defined: unsafe extern "C" fn(*const c_void, Reg) -> u32,
+    descendant: unsafe extern "C" fn(*const c_void, Reg, Reg) -> u32,
+}
+
+const ADDRESS_OVERLAP_HOST: AddressOverlapHost = AddressOverlapHost {
+    ir: dataflow::HOST, constant: overlap_constant, same: overlap_same,
+    definition: overlap_definition, frame: overlap_frame, allocated: overlap_allocated,
+    defined: overlap_defined, descendant: overlap_descendant,
+};
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.application_snapshot::application_byte_range"]
+    fn source_byte_range(index: u64, stride: u64, word: u32, width: u32) -> ApplicationByteRange;
+    #[link_name = "bootstrap.application_snapshot::application_ranges_overlap"]
+    fn source_ranges_overlap(left: ApplicationByteRange, right: ApplicationByteRange) -> u32;
+    #[link_name = "bootstrap.application_snapshot::application_store_overlap"]
+    fn source_store_overlap(read: IndexedByteAccess, target: IndexedByteAccess, offset: dataflow::Span,
+        context: *const c_void, host: AddressOverlapHost) -> u32;
+}
+
+unsafe extern "C" fn overlap_constant(context: *const c_void, reg: Reg) -> AddressWord {
+    let loads = unsafe { &*context.cast::<ApplicationLoads<'_, '_>>() };
+    AddressWord::from_option(loads.constant(reg).map(|bits| bits as usize))
+}
+
+unsafe extern "C" fn overlap_same(context: *const c_void, left: Reg, right: Reg) -> u32 {
+    let loads = unsafe { &*context.cast::<ApplicationLoads<'_, '_>>() };
+    u32::from(loads.same(left, right))
+}
+
+unsafe extern "C" fn overlap_definition(context: *const c_void, address: OriginalAddress) -> *const c_void {
+    let loads = unsafe { &*context.cast::<ApplicationLoads<'_, '_>>() };
+    loads.split_address(address.parts()).and_then(|reg| loads.definition(reg))
+        .map_or(ptr::null(), |(_, inst)| ptr::from_ref(inst).cast())
+}
+
+unsafe extern "C" fn overlap_frame(context: *const c_void, address: OriginalAddress) -> AddressWord {
+    let loads = unsafe { &*context.cast::<ApplicationLoads<'_, '_>>() };
+    let parts = address.parts();
+    AddressWord::from_option(loads.frame_root(parts)
+        .or_else(|| loads.offset_position(parts).and_then(|(base, ..)| loads.frame_root(base))))
+}
+
+unsafe extern "C" fn overlap_allocated(context: *const c_void, root: Reg) -> u32 {
+    let loads = unsafe { &*context.cast::<ApplicationLoads<'_, '_>>() };
+    u32::from(loads.allocated(root))
+}
+
+unsafe extern "C" fn overlap_defined(context: *const c_void, root: Reg) -> u32 {
+    let loads = unsafe { &*context.cast::<ApplicationLoads<'_, '_>>() };
+    u32::from(loads.definition(root).is_some())
+}
+
+unsafe extern "C" fn overlap_descendant(context: *const c_void, child: Reg, parent: Reg) -> u32 {
+    let loads = unsafe { &*context.cast::<ApplicationLoads<'_, '_>>() };
+    u32::from(loads.frame_descendant(child, parent))
 }
 
 #[repr(u32)]
@@ -4621,8 +4702,7 @@ impl Builder<'_> {
                         effects::StorageWrite::Frame{root,..}=>{
                             let range=match(layout,source.index){
                                 (DataLayout::Declared,Some(bounds::Operand::Constant(Scalar::U32,index)))=>{
-                                    let start=u128::from(index)*u128::from(ir::align_up(element.size,element.align))+u128::from(word);
-                                    Some(start..start+u128::from(scalar.size()))
+                                    Some(application_byte_range(index, u64::from(ir::align_up(element.size, element.align)), word, scalar.size()))
                                 },
                                 _=>None,
                             };

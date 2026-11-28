@@ -20,6 +20,7 @@ enum Kind {
 pub(crate) struct Node { data: *const c_void, kind: Kind }
 impl Node {
     pub(crate) fn instruction(value: &Inst) -> Self { Self::of(value, Kind::Instruction) }
+    pub(crate) fn indexed(value: &IndexedSource) -> Self { Self::of(value, Kind::Indexed) }
     fn of<T>(value: &T, kind: Kind) -> Self { Self { data: ptr::from_ref(value).cast(), kind } }
     pub(crate) fn call(value: &Call) -> Self { Self::of(value, Kind::Call) }
     pub(crate) fn ty(value: &Ty) -> Self { Self::of(value, Kind::Type) }
