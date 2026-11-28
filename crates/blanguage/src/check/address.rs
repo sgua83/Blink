@@ -1057,6 +1057,132 @@ where
     }
 }
 
+#[repr(C)]
+struct HeldPosition { access: Access, whole_dataset: u32 }
+
+#[repr(C)]
+struct RegionAccess { bytes: u8, offset: u32, size: u32 }
+
+#[repr(C)]
+struct AccessConflictHost {
+    context: *mut std::ffi::c_void,
+    next: unsafe extern "C" fn(*mut std::ffi::c_void) -> EffectSourceKind,
+    possible: unsafe extern "C" fn(*mut std::ffi::c_void) -> u32,
+    held_count: unsafe extern "C" fn(*mut std::ffi::c_void) -> usize,
+    held: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> HeldPosition,
+    descendant: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> u32,
+    region_count: unsafe extern "C" fn(*mut std::ffi::c_void) -> usize,
+    region: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> RegionAccess,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::memory_access_conflicts"]
+    fn b_memory_access_conflicts(access: Access, host: AccessConflictHost) -> u32;
+}
+
+struct AccessConflictPosition {
+    effect: MemoryEffect,
+    owners: view::Borrow,
+    index: Option<bounds::Operand>,
+    regions: Option<Vec<MemoryRegion>>,
+}
+
+struct AccessConflict<'a, I> {
+    held: &'a view::Borrow,
+    accessed: I,
+    path: &'a bounds::Clause,
+    access: Access,
+    current: Option<(&'a Origin, bounds::Clause)>,
+    position: Option<AccessConflictPosition>,
+}
+
+impl<'a, I> AccessConflict<'a, I>
+where
+    I: Iterator<Item = (&'a view::Source, bounds::Clause)>,
+{
+    unsafe extern "C" fn next(context: *mut std::ffi::c_void) -> EffectSourceKind {
+        let query = unsafe { &mut *context.cast::<Self>() };
+        query.position = None;
+        query.current = None;
+        match query.accessed.next() {
+            Some((view::Source::Position(origin), when)) => {
+                query.current = Some((origin, when));
+                EffectSourceKind::Position
+            }
+            Some(_) => EffectSourceKind::Other,
+            None => EffectSourceKind::End,
+        }
+    }
+
+    unsafe extern "C" fn possible(context: *mut std::ffi::c_void) -> u32 {
+        let query = unsafe { &mut *context.cast::<Self>() };
+        let (_, when) = query.current.as_mut().unwrap();
+        *when = bounds::Clause::both(query.path, when);
+        u32::from(when.possible())
+    }
+
+    unsafe extern "C" fn held_count(context: *mut std::ffi::c_void) -> usize {
+        let query = unsafe { &mut *context.cast::<Self>() };
+        let (origin, when) = query.current.as_ref().unwrap();
+        let index = match &origin.root {
+            Root::Resource { index, .. } | Root::Dataset { index, .. } => *index,
+            _ => None,
+        };
+        let effect = MemoryEffect::from_sources(query.held.sources.entries(), || when.clone(), Access::Write, || None);
+        let count = effect.known.len();
+        query.position = Some(AccessConflictPosition { effect, owners: origin.owners(), index, regions: None });
+        count
+    }
+
+    unsafe extern "C" fn held(context: *mut std::ffi::c_void, at: usize) -> HeldPosition {
+        let query = unsafe { &*context.cast::<Self>() };
+        let (held, _, access, _) = &query.position.as_ref().unwrap().effect.known[at];
+        HeldPosition { access: *access, whole_dataset: u32::from(matches!(held.root, Root::Dataset { index: None, .. })) }
+    }
+
+    unsafe extern "C" fn descendant(context: *mut std::ffi::c_void, at: usize) -> u32 {
+        let query = unsafe { &*context.cast::<Self>() };
+        let position = query.position.as_ref().unwrap();
+        let (held, active, _, _) = &position.effect.known[at];
+        let Root::Dataset { borrow, .. } = &held.root else { unreachable!() };
+        let held = borrow.resources();
+        u32::from(position.owners.sources.entries().any(|(owner, path)|
+            held.overlaps_source(owner, &bounds::Clause::both(active, &path))))
+    }
+
+    unsafe extern "C" fn region_count(context: *mut std::ffi::c_void) -> usize {
+        let query = unsafe { &mut *context.cast::<Self>() };
+        let (origin, when) = query.current.as_ref().unwrap();
+        let regions = origin.memory_regions(when);
+        let count = regions.as_ref().map_or(0, Vec::len);
+        query.position.as_mut().unwrap().regions = regions;
+        count
+    }
+
+    unsafe extern "C" fn region(context: *mut std::ffi::c_void, at: usize) -> RegionAccess {
+        let query = unsafe { &*context.cast::<Self>() };
+        let position = query.position.as_ref().unwrap();
+        let region = &position.regions.as_ref().unwrap()[at];
+        let bytes = position.effect.accessed_bytes(&region.position, Scalar::U64, position.index, query.access, false);
+        RegionAccess { bytes, offset: region.offset, size: region.size }
+    }
+
+    fn conflicts(mut self) -> bool {
+        let host = AccessConflictHost {
+            context: std::ptr::from_mut(&mut self).cast(),
+            next: Self::next,
+            possible: Self::possible,
+            held_count: Self::held_count,
+            held: Self::held,
+            descendant: Self::descendant,
+            region_count: Self::region_count,
+            region: Self::region,
+        };
+        // The B query borrows these entries only until the current conflict check ends.
+        unsafe { b_memory_access_conflicts(self.access, host) != 0 }
+    }
+}
+
 impl MemoryEffect {
     pub fn of(borrow: &view::Borrow, access: Access, written: Option<&bounds::Proof>) -> Self {
         Self::from_sources(borrow.sources.entries(), bounds::Clause::default, access, || written)
@@ -1101,30 +1227,11 @@ impl MemoryEffect {
     ) -> u8 {
         WriteProjection { origin, when, index, regions }.bytes(position, scalar.size())
     }
-    pub(super) fn access_conflicts(held:&view::Borrow,accessed:&view::Borrow,access:Access,path:&bounds::Clause)->bool {
-        accessed.sources.entries().any(|(source,when)| {
-            let view::Source::Position(origin)=source else {return false;};
-            let when=bounds::Clause::both(path,&when);
-            if !when.possible(){return false;}
-            let index=match &origin.root {
-                Root::Resource{index,..}|Root::Dataset{index,..}=>*index,
-                _=>None,
-            };
-            let effect = Self::from_sources(held.sources.entries(), || when.clone(), Access::Write, || None);
-            let owners=origin.owners();
-            // A whole dataset loan also keeps the original owned element resources readable.
-            let descendant=effect.known.iter().any(|(held,active,held_access,_)| {
-                let Root::Dataset{borrow,index:None}=&held.root else {return false;};
-                if !access.writes() && !held_access.writes() {return false;}
-                let held=borrow.resources();
-                owners.sources.entries().any(|(owner,path)|
-                    held.overlaps_source(owner,&bounds::Clause::both(active,&path)))
-            });
-            descendant || origin.memory_regions(&when).is_some_and(|regions|regions.iter().any(|region| {
-                let bytes=u16::from(effect.accessed_bytes(&region.position,Scalar::U64,index, access, false));
-                (bytes>>region.offset)&((1u16<<region.size)-1)!=0
-            }))
-        })
+    pub(super) fn access_conflicts(
+        held: &view::Borrow, accessed: &view::Borrow, access: Access, path: &bounds::Clause,
+    ) -> bool {
+        AccessConflict { held, accessed: accessed.sources.entries(), path, access, current: None, position: None }
+            .conflicts()
     }
     // The content producer has already selected this position on a feasible write path.
     pub(super) fn position_may_write(origin: &Origin, when: &bounds::Clause, position: &Position) -> bool {

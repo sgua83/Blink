@@ -513,6 +513,37 @@ extern "C" u32 collect_memory_effect_sources(CallAccess request, EffectSourceHos
     }
 }
 
+extern "C" u32 memory_access_conflicts(CallAccess access, AccessConflictHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.possible) requires nonzero(host.held_count)
+    requires nonzero(host.held) requires nonzero(host.descendant) requires nonzero(host.region_count)
+    requires nonzero(host.region) {
+    while (true) {
+        let source = host.next(host.context);
+        if (source == EffectSourceKind::End) { return 0; }
+        if (source != EffectSourceKind::Position || host.possible(host.context) == 0) { continue; }
+
+        // An entire held dataset also covers its elements' owned resources.
+        let held_count = host.held_count(host.context);
+        usize held_at = 0u64;
+        while (held_at < held_count) {
+            let held = host.held(host.context, held_at);
+            if (held.whole_dataset != 0 && (writes(access) || writes(held.access)) &&
+                host.descendant(host.context, held_at) != 0) { return 1; }
+            held_at += 1u64;
+        }
+
+        let regions = host.region_count(host.context);
+        usize at = 0u64;
+        while (at < regions) {
+            let region = host.region(host.context, at);
+            let bytes = u16(region.bytes) >> u16(region.offset);
+            let mask = (u16(1) << u16(region.size)) - u16(1);
+            if ((bytes & mask) != u16(0)) { return 1; }
+            at += 1u64;
+        }
+    }
+}
+
 extern "C" void push_memory_effect_record(address records, usize width, address record) on cpu
     requires nonzero(width) {
     let destination = ordered_tree_prepare(records, width);

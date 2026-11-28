@@ -160,6 +160,23 @@ extern "C" u32 collect_memory_effect_sources(CallAccess request, EffectSourceHos
     requires nonzero(host.next) requires nonzero(host.possible) requires nonzero(host.external)
     requires nonzero(host.record);
 
+struct HeldPosition { CallAccess access; u32 whole_dataset; };
+struct RegionAccess { u8 bytes; u32 offset; u32 size; };
+struct AccessConflictHost {
+    address context;
+    cfn<EffectSourceKind,address> next;
+    cfn<u32,address> possible;
+    cfn<usize,address> held_count;
+    cfn<HeldPosition,address,usize> held;
+    cfn<u32,address,usize> descendant;
+    cfn<usize,address> region_count;
+    cfn<RegionAccess,address,usize> region;
+};
+extern "C" u32 memory_access_conflicts(CallAccess access, AccessConflictHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.possible) requires nonzero(host.held_count)
+    requires nonzero(host.held) requires nonzero(host.descendant) requires nonzero(host.region_count)
+    requires nonzero(host.region);
+
 extern "C" void push_memory_effect_record(address records, usize width, address record) on cpu
     requires nonzero(width);
 extern "C" void append_memory_effect_records(address records, address source, usize width) on cpu
