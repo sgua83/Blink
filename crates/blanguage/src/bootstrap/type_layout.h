@@ -38,12 +38,8 @@ extern "C" void dataset_paths(address value, address context, DatasetPathsHost h
     requires nonzero(host.types.inspect) requires nonzero(host.types.child)
     requires nonzero(host.push) requires nonzero(host.pop) requires nonzero(host.emit);
 
-extern "C" void borrow_fields(address value, u32 base, FieldHost host, address context,
-    cfn<void,address,u32,address> emit) on cpu
-    requires nonzero(host.types.inspect) requires nonzero(host.types.child)
-    requires nonzero(host.part) requires nonzero(emit);
-
-extern "C" void snapshot_addresses(address value, FieldHost host, address context,
+enum FieldSelection:u32 { Borrow=0; Address=1; Task=2; };
+extern "C" void visit_fields(address value, FieldHost host, FieldSelection selection, address context,
     cfn<void,address,u32,address> emit) on cpu
     requires nonzero(host.types.inspect) requires nonzero(host.types.child)
     requires nonzero(host.part) requires nonzero(emit);

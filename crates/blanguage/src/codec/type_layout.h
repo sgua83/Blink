@@ -48,7 +48,7 @@ struct VariantLayout {
 
 extern "C" VariantLayout tagged_variant(u32 payload_size, u32 payload_alignment) on cpu;
 
-enum Property:u32 { Dataset=0; Resources=1; Arrays=3; Views=4; Borrows=5; };
+enum Property:u32 { Dataset=0; Resources=1; Arrays=3; Views=4; Borrows=5; Task=6; };
 enum Child:u32 { Variant=0; Array=1; Field=2; };
 struct TypeNode {
     u32 task; u32 cleanup; u32 dataset; u32 view; u32 array; u32 address;

@@ -81,12 +81,14 @@ extern "C" VariantLayout tagged_variant(u32 payload_size, u32 payload_alignment)
 extern "C" u32 contains(address value, Property property, TypeHost host) on cpu
     requires nonzero(host.inspect) requires nonzero(host.child) {
     TypeNode node=host.inspect(value);
-    bool owner=node.task!=0 || node.cleanup!=0;
+    bool task=node.task!=0;
+    bool owner=task || node.cleanup!=0;
     if ((property==Property::Dataset && node.dataset!=0)
         || (property==Property::Resources && (owner || node.dataset!=0))
         || (property==Property::Arrays && node.array!=0)
         || (property==Property::Views && node.view!=0)
-        || (property==Property::Borrows && (node.task!=0 || node.address!=0 || node.view!=0))) {
+        || (property==Property::Borrows && (task || node.address!=0 || node.view!=0))
+        || (property==Property::Task && task)) {
         return 1;
     }
     usize i=0u64;

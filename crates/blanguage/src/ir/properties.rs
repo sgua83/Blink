@@ -35,6 +35,10 @@ struct NumericHost {
 }
 #[repr(C)]
 struct Part { value: *const c_void, offset: u32 }
+#[cfg(feature = "compiler")]
+#[repr(u32)]
+pub(super) enum FieldSelection { Borrow, Address, Task }
+
 #[repr(C)]
 struct FieldHost {
     types: Host,
@@ -188,12 +192,8 @@ unsafe extern "C" {
     fn b_zero_valid(value: *const c_void, host: Host,
         discriminant: unsafe extern "C" fn(*const c_void, usize) -> u32) -> u32;
     #[cfg(feature = "compiler")]
-    #[link_name = "bootstrap.type_layout::borrow_fields"]
-    fn b_borrow_fields(value: *const c_void, base: u32, host: FieldHost, context: *mut c_void,
-        emit: unsafe extern "C" fn(*mut c_void, u32, *const c_void));
-    #[cfg(feature = "compiler")]
-    #[link_name = "bootstrap.type_layout::snapshot_addresses"]
-    fn b_snapshot_addresses(value: *const c_void, host: FieldHost, context: *mut c_void,
+    #[link_name = "bootstrap.type_layout::visit_fields"]
+    fn b_visit_fields(value: *const c_void, host: FieldHost, selection: FieldSelection, context: *mut c_void,
         emit: unsafe extern "C" fn(*mut c_void, u32, *const c_void));
     #[cfg(feature = "compiler")]
     #[link_name = "bootstrap.type_layout::select_snapshot_columns"]
@@ -317,12 +317,12 @@ unsafe extern "C" fn child(value: *const c_void, kind: Child, index: usize) -> *
 #[cfg(feature = "compiler")]
 pub(super) fn borrows(value: &Ty) -> Vec<(u32, &Ty)> {
     let mut output = Vec::new();
-    visit_borrows(value, |offset, value| output.push((offset, value)));
+    visit_fields(value, FieldSelection::Borrow, |offset, value| output.push((offset, value)));
     output
 }
 
 #[cfg(feature = "compiler")]
-pub(super) fn visit_borrows<'a, F: FnMut(u32, &'a Ty)>(value: &'a Ty, mut visit: F) {
+pub(super) fn visit_fields<'a, F: FnMut(u32, &'a Ty)>(value: &'a Ty, selection: FieldSelection, mut visit: F) {
     unsafe extern "C" fn dispatch<'a, F: FnMut(u32, &'a Ty)>(
         context: *mut c_void, offset: u32, value: *const c_void,
     ) {
@@ -330,7 +330,7 @@ pub(super) fn visit_borrows<'a, F: FnMut(u32, &'a Ty)>(value: &'a Ty, mut visit:
         unsafe { (&mut *context.cast::<F>())(offset, &*value.cast::<Ty>()) };
     }
     unsafe {
-        b_borrow_fields(address(value), 0, FieldHost { types: Host { inspect, child }, part },
+        b_visit_fields(address(value), FieldHost { types: Host { inspect, child }, part }, selection,
             ptr::from_mut(&mut visit).cast(), dispatch::<F>);
     }
 }
@@ -383,8 +383,8 @@ impl Ty {
         let mut columns = vec![SnapshotColumn::Skip; count];
         unsafe {
             let mut marks = Marks { ty: self, columns: &mut columns };
-            b_snapshot_addresses(address(self), FieldHost { types: Host { inspect, child }, part },
-                ptr::from_mut(&mut marks).cast(), mark);
+            b_visit_fields(address(self), FieldHost { types: Host { inspect, child }, part },
+                FieldSelection::Address, ptr::from_mut(&mut marks).cast(), mark);
             let source = Source { ty: self, ranges };
             b_select_snapshot_columns(columns.as_mut_ptr(), count, ranges.len(), u32::from(write),
                 ptr::from_ref(&source).cast(), SnapshotColumnHost { word, metadata });

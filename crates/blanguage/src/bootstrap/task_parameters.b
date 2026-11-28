@@ -8,13 +8,9 @@ extern "C" usize plan_input(address context,TypeRef input_type,usize input,usize
     return input + width;
 }
 
-extern "C" void plan_field(address context,address root,Scope scope,u32 word,address leaf,Host host) on cpu
-    requires nonzero(host.task_result) requires nonzero(host.component) requires nonzero(host.length)
-    requires nonzero(host.slot) requires nonzero(host.same_type) requires nonzero(host.append) requires nonzero(host.visit) {
-    TypeRef result = host.task_result(leaf);
-    if (result.present == 0) { return; }
-
-    usize component = host.component(root,word);
+extern "C" void plan_field(address context,Scope scope,usize component,address result,Host host) on cpu
+    requires nonzero(host.length) requires nonzero(host.slot)
+    requires nonzero(host.same_type) requires nonzero(host.append) requires nonzero(host.visit) {
     usize input = scope.nested == 0 ? scope.input + component : scope.input;
     Slot proposed = Slot(input,scope.argument,scope.parent,component,scope.nested);
     usize end = host.length(context);
@@ -23,12 +19,12 @@ extern "C" void plan_field(address context,address root,Scope scope,u32 word,add
         Slot existing = host.slot(context,index);
         if (existing.input == proposed.input && existing.nested == proposed.nested
             && (proposed.nested == 0 || (existing.parent == proposed.parent && existing.component == proposed.component))
-            && host.same_type(context,index,result.value) != 0) {
+            && host.same_type(context,index,result) != 0) {
             return;
         }
         index += 1u64;
     }
 
-    usize parent = host.append(context,proposed,result.value);
-    host.visit(context,result.value,Scope(input,scope.argument,parent,parent + 1u64,1));
+    usize parent = host.append(context,proposed,result);
+    host.visit(context,result,Scope(input,scope.argument,parent,parent + 1u64,1));
 }

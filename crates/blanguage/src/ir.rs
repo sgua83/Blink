@@ -199,10 +199,11 @@ impl Ty {
     pub(crate) const TASK_RETURN_SOURCE: &'static str = "__blink_task_return_source";
     #[cfg(feature = "compiler")]
     pub(crate) fn task_components(&self) -> Vec<usize> {
-        if !self.owns_resources(){return Vec::new();}
-        self.borrow_fields().into_iter().filter(|(_,ty)|ty.task_result().is_some())
-            .map(|(offset,_)|self.components.iter().position(|(_,at)|*at==offset).unwrap())
-            .collect::<std::collections::BTreeSet<_>>().into_iter().collect()
+        let mut components = Vec::new();
+        self.visit_task_fields(|component, _| components.push(component));
+        components.sort_unstable();
+        components.dedup();
+        components
     }
     pub(crate) fn task_return_layout(components:&[usize]) -> Self {
         let mut ty=Self::unit();
@@ -548,8 +549,11 @@ impl Ty {
     #[cfg(feature = "compiler")]
     pub(crate) fn borrow_fields(&self) -> Vec<(u32, &Ty)> { properties::borrows(self) }
     #[cfg(feature = "compiler")]
-    pub(crate) fn visit_borrow_fields<'a>(&'a self, visit: impl FnMut(u32, &'a Ty)) {
-        properties::visit_borrows(self, visit);
+    pub(crate) fn visit_task_fields<'a>(&'a self, mut visit: impl FnMut(usize, &'a Ty)) {
+        properties::visit_fields(self, properties::FieldSelection::Task, |offset, task| {
+            let component = self.components.iter().position(|(_, at)| *at == offset).unwrap();
+            visit(component, &task.arguments[0]);
+        });
     }
     /// 全部可能的view字段，仅用于类型能力；重叠载荷不同时活动。
     pub fn view_fields(&self) -> Vec<(u32, &Ty)> { crate::codec::types::view_fields(self) }

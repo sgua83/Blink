@@ -58,8 +58,6 @@ type Plan = Vec<TaskCompletionParameter>;
 #[repr(C)]
 struct Host {
     visit: unsafe extern "C" fn(*mut c_void, *const Ty, Scope),
-    task_result: unsafe extern "C" fn(*const Ty) -> TypeRef,
-    component: unsafe extern "C" fn(*const Ty, u32) -> usize,
     length: unsafe extern "C" fn(*const c_void) -> usize,
     slot: unsafe extern "C" fn(*const c_void, usize) -> Slot,
     same_type: unsafe extern "C" fn(*const c_void, usize, *const Ty) -> u32,
@@ -71,24 +69,16 @@ unsafe extern "C" {
     fn plan_input(plan: *mut c_void, ty: TypeRef, input: usize, argument: usize, width: usize, host: Host) -> usize;
 
     #[link_name = "bootstrap.task_parameters::plan_field"]
-    fn plan_field(plan: *mut c_void, root: *const Ty, scope: Scope, word: u32, leaf: *const Ty, host: Host);
+    fn plan_field(plan: *mut c_void, scope: Scope, component: usize, result: *const Ty, host: Host);
 }
 
-const HOST: Host = Host { visit, task_result, component, length, slot, same_type, append };
+const HOST: Host = Host { visit, length, slot, same_type, append };
 
 unsafe extern "C" fn visit(plan: *mut c_void, root: *const Ty, scope: Scope) {
     // root and its children belong to the original argument types, never to the growing plan.
-    unsafe { &*root }.visit_borrow_fields(|word, leaf| {
-        unsafe { plan_field(plan, root, scope, word, leaf, HOST) };
+    unsafe { &*root }.visit_task_fields(|component, result| {
+        unsafe { plan_field(plan, scope, component, result, HOST) };
     });
-}
-
-unsafe extern "C" fn task_result(leaf: *const Ty) -> TypeRef {
-    TypeRef::from(unsafe { &*leaf }.task_result())
-}
-
-unsafe extern "C" fn component(root: *const Ty, word: u32) -> usize {
-    unsafe { &*root }.components.iter().position(|(_, at)| *at == word).unwrap()
 }
 
 unsafe extern "C" fn length(plan: *const c_void) -> usize { unsafe { &*plan.cast::<Plan>() }.len() }

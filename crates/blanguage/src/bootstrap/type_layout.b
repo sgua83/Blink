@@ -178,33 +178,30 @@ extern "C" void dataset_paths(address value, address context, DatasetPathsHost h
     }
 }
 
-extern "C" void borrow_fields(address value, u32 base, FieldHost host, address context,
+extern "C" void visit_fields(address value, FieldHost host, FieldSelection selection, address context,
     cfn<void,address,u32,address> emit) on cpu
     requires nonzero(host.types.inspect) requires nonzero(host.types.child)
     requires nonzero(host.part) requires nonzero(emit) {
-    visit_borrow_fields(value,base,host,context,emit,0);
+    walk_fields(value,0,host,selection,context,emit);
 }
 
-extern "C" void snapshot_addresses(address value, FieldHost host, address context,
-    cfn<void,address,u32,address> emit) on cpu
-    requires nonzero(host.types.inspect) requires nonzero(host.types.child)
-    requires nonzero(host.part) requires nonzero(emit) {
-    visit_borrow_fields(value,0,host,context,emit,1);
-}
-
-void visit_borrow_fields(address value, u32 base, FieldHost host, address context,
-    cfn<void,address,u32,address> emit, u32 addresses_only) on cpu
+void walk_fields(address value, u32 base, FieldHost host, FieldSelection selection,
+    address context, cfn<void,address,u32,address> emit) on cpu
     requires nonzero(host.types.inspect) requires nonzero(host.types.child)
     requires nonzero(host.part) requires nonzero(emit) {
     TypeNode node=host.types.inspect(value);
     if (node.task!=0 || node.view!=0 || node.address!=0) {
-        if (addresses_only==0 || node.address!=0) { emit(context,base,value); }
+        if (selection == FieldSelection::Borrow
+            || (selection == FieldSelection::Address && node.address != 0)
+            || (selection == FieldSelection::Task && node.task != 0)) {
+            emit(context,base,value);
+        }
         return;
     }
     if (node.variants!=0u64) {
         usize i=0u64;
         while (i<node.variants) {
-            visit_borrow_fields(host.types.child(value,Child::Variant,i),base+node.alignment,host,context,emit,addresses_only);
+            walk_fields(host.types.child(value,Child::Variant,i),base+node.alignment,host,selection,context,emit);
             i+=1u64;
         }
         return;
@@ -212,13 +209,14 @@ void visit_borrow_fields(address value, u32 base, FieldHost host, address contex
     if (node.array!=0) {
         if (node.count==0) { return; }
         address element=host.types.child(value,Child::Array,0u64);
-        if (contains(element,Property::Borrows,host.types)==0) { return; }
+        Property needed=selection==FieldSelection::Task ? Property::Task : Property::Borrows;
+        if (contains(element,needed,host.types)==0) { return; }
     }
     usize count=node.array!=0 ? usize(node.count) : node.fields;
     usize i=0u64;
     while (i<count) {
         TypePart part=host.part(value,i);
-        visit_borrow_fields(part.value,base+part.offset,host,context,emit,addresses_only);
+        walk_fields(part.value,base+part.offset,host,selection,context,emit);
         i+=1u64;
     }
 }
