@@ -231,21 +231,78 @@ unsafe extern "C" fn finish_parent_regions(parent: RegionSpan) {
 
 // One original loop input and its actual projections name the same logical storage.
 // Its byte layout does not depend on closing the source/lifetime relation.
-fn same_loop_resource(a:&view::Borrow,b:&view::Borrow)->bool {
-    if !a.calls.is_empty()||!b.calls.is_empty()||!a.reads.is_empty()||!b.reads.is_empty(){return false;}
-    if !a.sources.is_empty()||!b.sources.is_empty(){
-        if !a.inputs.is_empty()||!b.inputs.is_empty(){return false;}
-        let mut a=a.sources.iter();let mut b=b.sources.iter();
-        return match(a.next(),b.next(),a.next(),b.next()){
-            (Some(view::Source::Element{parent,fields,index}),Some(view::Source::Element{parent:other,fields:other_fields,index:other_index}),None,None)
-                if fields==other_fields&&index==other_index=>same_loop_resource(parent,other),
-            (Some(view::Source::Projection{parent,fields}),Some(view::Source::Projection{parent:other,fields:other_fields}),None,None)
-                if fields==other_fields=>same_loop_resource(parent,other),
-            _=>false,
+#[repr(u32)]
+enum ResourceIdentityKind { Unknown, Input, Data, Element, Projection }
+
+#[repr(C)]
+struct ResourceIdentityView {
+    kind: ResourceIdentityKind,
+    key: *const std::ffi::c_void,
+    parent: *const std::ffi::c_void,
+}
+
+#[repr(C)]
+struct ResourceIdentityHost {
+    inspect: unsafe extern "C" fn(*const std::ffi::c_void) -> ResourceIdentityView,
+    equal: unsafe extern "C" fn(ResourceIdentityKind, *const std::ffi::c_void, *const std::ffi::c_void) -> u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::same_position_resource"]
+    fn b_same_position_resource(left: *const std::ffi::c_void, right: *const std::ffi::c_void, host: ResourceIdentityHost) -> u32;
+}
+
+unsafe extern "C" fn inspect_resource_identity(borrow: *const std::ffi::c_void) -> ResourceIdentityView {
+    use ResourceIdentityKind as Kind;
+    use std::ptr::{from_ref, null};
+    let borrow = unsafe { &*borrow.cast::<view::Borrow>() };
+    let unknown = ResourceIdentityView { kind: Kind::Unknown, key: null(), parent: null() };
+    if !borrow.calls.is_empty() || !borrow.reads.is_empty() { return unknown; }
+
+    if borrow.sources.is_empty() {
+        let mut inputs = borrow.inputs.iter();
+        return match (inputs.next(), inputs.next()) {
+            (Some(input), None) => ResourceIdentityView { kind: Kind::Input, key: from_ref(input).cast(), parent: null() },
+            _ => unknown,
         };
     }
-    let mut a=a.inputs.iter();let mut b=b.inputs.iter();
-    matches!((a.next(),b.next(),a.next(),b.next()),(Some(a),Some(b),None,None)if a==b)
+    if !borrow.inputs.is_empty() { return unknown; }
+    let mut sources = borrow.sources.iter();
+    let (Some(source), None) = (sources.next(), sources.next()) else { return unknown; };
+    let (kind, key, parent) = match source {
+        view::Source::Data(id) => (Kind::Data, from_ref(id).cast(), null()),
+        view::Source::Element { parent, .. } => (Kind::Element, from_ref(source).cast(), from_ref(&**parent).cast()),
+        view::Source::Projection { parent, .. } => (Kind::Projection, from_ref(source).cast(), from_ref(&**parent).cast()),
+        _ => return unknown,
+    };
+    ResourceIdentityView { kind, key, parent }
+}
+
+unsafe extern "C" fn equal_resource_identity(
+    kind: ResourceIdentityKind, left: *const std::ffi::c_void, right: *const std::ffi::c_void,
+) -> u32 {
+    use ResourceIdentityKind as Kind;
+    let equal = match kind {
+        Kind::Input => unsafe { *left.cast::<view::LoopInput>() == *right.cast::<view::LoopInput>() },
+        Kind::Data => unsafe { *left.cast::<ValueIdentity>() == *right.cast::<ValueIdentity>() },
+        Kind::Element | Kind::Projection => {
+            let (left, right) = unsafe { (&*left.cast::<view::Source>(), &*right.cast::<view::Source>()) };
+            match (left, right) {
+                (view::Source::Element { fields, index, .. }, view::Source::Element { fields: other, index: other_index, .. }) =>
+                    fields == other && index == other_index,
+                (view::Source::Projection { fields, .. }, view::Source::Projection { fields: other, .. }) => fields == other,
+                _ => unreachable!(),
+            }
+        }
+        Kind::Unknown => unreachable!(),
+    };
+    u32::from(equal)
+}
+
+fn same_position_resource(left: &view::Borrow, right: &view::Borrow) -> bool {
+    let host = ResourceIdentityHost { inspect: inspect_resource_identity, equal: equal_resource_identity };
+    // B borrows each root and existing projection only through this query.
+    unsafe { b_same_position_resource(std::ptr::from_ref(left).cast(), std::ptr::from_ref(right).cast(), host) != 0 }
 }
 #[repr(u32)]
 enum RegionWriteKind { Unrelated, Position, Resource, Selected }
@@ -300,7 +357,7 @@ impl WriteProjection<'_, '_> {
             }
             Position::Borrowed(borrow, _, _) if matches!(&input.origin.root,
                 Root::Resource { borrow: source, .. } | Root::Dataset { borrow: source, .. }
-                    if same_loop_resource(source, borrow))
+                    if same_position_resource(source, borrow))
                 || !borrow.pending() && !borrow.unresolved() && !external_memory(borrow)
                     && !borrow.sources.iter().any(|source| matches!(source, view::Source::Parameter(..))) =>
                 (WritePositionKind::Ranges, 0),
@@ -353,7 +410,7 @@ impl MemoryRegion {
     fn write_facts(&self, position: &Position) -> RegionWriteFacts {
         let (kind, word, target) = match (&self.position, position) {
             (Position::Borrowed(other, base, word), Position::Borrowed(borrow, layout, target)) if base == layout => {
-                let aliases = same_loop_resource(other, borrow)
+                let aliases = same_position_resource(other, borrow)
                     || borrow.sources.entries().any(|(source, when)| other.overlaps_source(source, &when));
                 let kind = if aliases { RegionWriteKind::Resource } else { RegionWriteKind::Unrelated };
                 (kind, *word, *target)
@@ -1209,7 +1266,7 @@ impl MemoryEffect {
     fn same_element(origin:&Origin,when:&bounds::Clause,position:&Position,index:Option<bounds::Operand>)->Option<bool> {
         let (Some(index),Position::Borrowed(borrow,layout,_))=(index,position)else{return None;};
         let(Root::Resource{borrow:source,index:Some(written)}|Root::Dataset{borrow:source,index:Some(written)})=&origin.root else{return None;};
-        if origin.base!=*layout||!same_loop_resource(source,borrow){return None;}
+        if origin.base!=*layout||!same_position_resource(source,borrow){return None;}
         bounds::Condition::index_equal(*written,index).truth_in(when)
     }
     // The loop owner uses this query only for a forward cursor's preceding iterations.

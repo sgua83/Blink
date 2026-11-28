@@ -160,6 +160,15 @@ extern "C" u32 collect_memory_effect_sources(CallAccess request, EffectSourceHos
     requires nonzero(host.next) requires nonzero(host.possible) requires nonzero(host.external)
     requires nonzero(host.record);
 
+enum ResourceIdentityKind:u32 { Unknown=0; Input=1; Data=2; Element=3; Projection=4; };
+struct ResourceIdentityView { ResourceIdentityKind kind; address key; address parent; };
+struct ResourceIdentityHost {
+    cfn<ResourceIdentityView,address> ensures memory(read) inspect;
+    cfn<u32,ResourceIdentityKind,address,address> ensures memory(read) equal;
+};
+extern "C" u32 same_position_resource(address left, address right, ResourceIdentityHost host) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.equal);
+
 struct HeldPosition { CallAccess access; u32 whole_dataset; };
 struct RegionAccess { u8 bytes; u32 offset; u32 size; };
 struct AccessConflictHost {

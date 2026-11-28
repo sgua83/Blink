@@ -513,6 +513,21 @@ extern "C" u32 collect_memory_effect_sources(CallAccess request, EffectSourceHos
     }
 }
 
+extern "C" u32 same_position_resource(address left, address right, ResourceIdentityHost host) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.equal) {
+    address a = left;
+    address b = right;
+    while (true) {
+        let x = host.inspect(a);
+        let y = host.inspect(b);
+        if (x.kind == ResourceIdentityKind::Unknown || x.kind != y.kind ||
+            host.equal(x.kind, x.key, y.key) == 0) { return 0; }
+        if (x.kind == ResourceIdentityKind::Input || x.kind == ResourceIdentityKind::Data) { return 1; }
+        a = x.parent;
+        b = y.parent;
+    }
+}
+
 extern "C" u32 memory_access_conflicts(CallAccess access, AccessConflictHost host) on cpu
     requires nonzero(host.next) requires nonzero(host.possible) requires nonzero(host.held_count)
     requires nonzero(host.held) requires nonzero(host.descendant) requires nonzero(host.region_count)
