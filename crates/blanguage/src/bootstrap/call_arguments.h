@@ -164,6 +164,22 @@ extern "C" u32 collect_memory_effect_sources(CallAccess request, EffectSourceHos
 enum MemoryIrRowKind:u32 { Local=0; Data=1; };
 enum MemoryIrOutput:u32 { Call=0; Pointer=1; };
 struct MemoryIrRow { MemoryIrRowKind kind; CallAccess access; usize base; usize length; };
+struct OptionalMemoryAccess { CallAccess access; u32 present; };
+extern "C" OptionalMemoryAccess merge_external_memory_access(OptionalMemoryAccess left, OptionalMemoryAccess right) on cpu;
+
+struct IrMemorySourceHost {
+    address context;
+    cfn<EffectSourceView,address> next;
+    cfn<u32,address> external;
+    cfn<void,address,address,CallAccess> origin;
+};
+extern "C" OptionalMemoryAccess collect_ir_memory_sources(address known, OptionalMemoryAccess external, CallAccess request,
+    IrMemorySourceHost host) on cpu requires nonzero(host.next) requires nonzero(host.external) requires nonzero(host.origin);
+extern "C" OptionalMemoryAccess collect_closed_ir_memory(address known, usize count, OptionalMemoryAccess external,
+    OptionalMemoryAccess incoming, address context, cfn<void,address,address,usize> origin) on cpu requires nonzero(origin);
+extern "C" void append_ir_memory_aliases(address known, address aliases, usize count, CallAccess access,
+    cfn<MemoryIrRow,address,usize,CallAccess> row) on cpu requires nonzero(row);
+
 struct MemoryIrLocal { usize end; usize length; };
 struct MemoryIrRows { address known; usize known_count; usize locals; CallAccess external; u32 external_present; };
 struct MemoryIrRowsHost {

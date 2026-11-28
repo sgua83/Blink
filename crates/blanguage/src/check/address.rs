@@ -1033,17 +1033,44 @@ fn position_has_external_memory<'a>(origin: &Origin, when: impl FnOnce() -> Opti
     }
 }
 
-fn merged_external_access(left: Option<Access>, right: Option<Access>) -> Option<Access> {
-    match (left, right) {
-        (Some(left), Some(right)) if left != right => Some(Access::InOut),
-        (left, right) => left.or(right),
+#[repr(C)]
+struct OptionalMemoryAccess { access: Access, present: u32 }
+
+impl From<Option<Access>> for OptionalMemoryAccess {
+    fn from(value: Option<Access>) -> Self {
+        Self { access: value.unwrap_or(Access::Value), present: u32::from(value.is_some()) }
     }
+}
+
+impl OptionalMemoryAccess {
+    fn option(self) -> Option<Access> { (self.present != 0).then_some(self.access) }
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::merge_external_memory_access"]
+    fn b_merge_external_memory_access(left: OptionalMemoryAccess, right: OptionalMemoryAccess) -> OptionalMemoryAccess;
+}
+
+fn merged_external_access(left: Option<Access>, right: Option<Access>) -> Option<Access> {
+    unsafe { b_merge_external_memory_access(left.into(), right.into()) }.option()
 }
 #[repr(u32)]
 enum EffectSourceKind { End, Position, External, Other }
 
 #[repr(C)]
 struct EffectSourceView { kind: EffectSourceKind, writable: u32 }
+
+impl EffectSourceView {
+    fn of(source: Option<&view::Source>) -> Self {
+        let (kind, writable) = match source {
+            None => (EffectSourceKind::End, false),
+            Some(view::Source::Position(origin)) => (EffectSourceKind::Position, origin.writable),
+            Some(view::Source::External) => (EffectSourceKind::External, false),
+            _ => (EffectSourceKind::Other, false),
+        };
+        Self { kind, writable: u32::from(writable) }
+    }
+}
 
 #[repr(C)]
 struct EffectSourceHost {
@@ -1076,13 +1103,7 @@ where
     unsafe extern "C" fn next(context: *mut std::ffi::c_void) -> EffectSourceView {
         let input = unsafe { &mut *context.cast::<Self>() };
         input.current = input.sources.next();
-        let (kind, writable) = match input.current.as_ref().map(|(source, _)| *source) {
-            None => (EffectSourceKind::End, false),
-            Some(view::Source::Position(origin)) => (EffectSourceKind::Position, origin.writable),
-            Some(view::Source::External) => (EffectSourceKind::External, false),
-            _ => (EffectSourceKind::Other, false),
-        };
-        EffectSourceView { kind, writable: u32::from(writable) }
+        EffectSourceView::of(input.current.as_ref().map(|(source, _)| *source))
     }
 
     unsafe extern "C" fn possible(context: *mut std::ffi::c_void) -> u32 {
@@ -1335,46 +1356,109 @@ pub(super) struct MemoryAccesses {
     known: NativeMemoryRecords<MemoryIrRow>,
     external: Option<Access>,
 }
+#[repr(C)]
+struct IrMemorySourceHost {
+    context: *mut std::ffi::c_void,
+    next: unsafe extern "C" fn(*mut std::ffi::c_void) -> EffectSourceView,
+    external: unsafe extern "C" fn(*mut std::ffi::c_void) -> u32,
+    origin: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_void, Access),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::collect_ir_memory_sources"]
+    fn b_collect_ir_memory_sources(known: *mut std::ffi::c_void, external: OptionalMemoryAccess, request: Access,
+        host: IrMemorySourceHost) -> OptionalMemoryAccess;
+    #[link_name = "bootstrap.call_arguments::collect_closed_ir_memory"]
+    fn b_collect_closed_ir_memory(known: *mut std::ffi::c_void, count: usize, external: OptionalMemoryAccess,
+        incoming: OptionalMemoryAccess, context: *const std::ffi::c_void,
+        origin: unsafe extern "C" fn(*const std::ffi::c_void, *mut std::ffi::c_void, usize)) -> OptionalMemoryAccess;
+    #[link_name = "bootstrap.call_arguments::append_ir_memory_aliases"]
+    fn b_append_ir_memory_aliases(known: *mut std::ffi::c_void, aliases: *const std::ffi::c_void, count: usize,
+        access: Access, row: unsafe extern "C" fn(*const std::ffi::c_void, usize, Access) -> MemoryIrRow);
+}
+
+unsafe fn ir_memory_origin(known: *mut std::ffi::c_void, origin: &Origin, access: Access, possible: impl FnOnce() -> bool) {
+    unsafe extern "C" fn row(aliases: *const std::ffi::c_void, at: usize, access: Access) -> MemoryIrRow {
+        let alias = unsafe { *aliases.cast::<MemoryAlias>().add(at) };
+        MemoryIrRow::new(alias, access)
+    }
+
+    // The temporary source aliases borrow the current record set only while projecting.
+    let aliases = {
+        let storage = unsafe { &*known.cast::<NativeMemoryRecords<MemoryIrRow>>() };
+        origin.aliases_when(&|alias| unsafe {
+            b_contains_ir_memory_record(storage.as_ptr(), storage.len(), MemoryIrRow::new(*alias, access)) == 0
+        }, possible)
+    };
+    unsafe { b_append_ir_memory_aliases(known, aliases.as_ptr().cast(), aliases.len(), access, row) };
+}
+
+struct IrMemorySources<'a, I, P> {
+    sources: I,
+    path: std::cell::LazyCell<bounds::Clause, P>,
+    current: Option<(&'a view::Source, bounds::Clause)>,
+    active: std::cell::OnceCell<Option<bounds::Clause>>,
+}
+
+impl<'a, I, P> IrMemorySources<'a, I, P>
+where
+    I: Iterator<Item = (&'a view::Source, bounds::Clause)>,
+    P: FnOnce() -> bounds::Clause,
+{
+    fn active(&self) -> Option<&bounds::Clause> {
+        self.active.get_or_init(|| {
+            let (_, when) = self.current.as_ref().unwrap();
+            let when = bounds::Clause::both(when, &self.path);
+            when.possible().then_some(when)
+        }).as_ref()
+    }
+
+    unsafe extern "C" fn next(context: *mut std::ffi::c_void) -> EffectSourceView {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        input.active.take();
+        input.current = input.sources.next();
+        EffectSourceView::of(input.current.as_ref().map(|(source, _)| *source))
+    }
+
+    unsafe extern "C" fn external(context: *mut std::ffi::c_void) -> u32 {
+        let input = unsafe { &*context.cast::<Self>() };
+        let (source, _) = input.current.as_ref().unwrap();
+        u32::from(source_has_external_memory(source, || input.active()))
+    }
+
+    unsafe extern "C" fn origin(context: *mut std::ffi::c_void, known: *mut std::ffi::c_void, access: Access) {
+        let input = unsafe { &*context.cast::<Self>() };
+        let (view::Source::Position(origin), _) = input.current.as_ref().unwrap() else { unreachable!() };
+        unsafe { ir_memory_origin(known, origin, access, || input.active().is_some()) };
+    }
+
+    fn collect(mut self, output: &mut MemoryAccesses, request: Access) {
+        let host = IrMemorySourceHost { context: std::ptr::from_mut(&mut self).cast(), next: Self::next,
+            external: Self::external, origin: Self::origin };
+        output.external = unsafe { b_collect_ir_memory_sources(std::ptr::from_mut(&mut output.known).cast(),
+            output.external.into(), request, host) }.option();
+    }
+}
+
 impl MemoryAccesses {
-    fn contains(&self, alias: MemoryAlias, access: Access) -> bool {
-        unsafe { b_contains_ir_memory_record(self.known.as_ptr(), self.known.len(), MemoryIrRow::new(alias, access)) != 0 }
-    }
-    fn needs_external(&self, access: Access) -> bool {
-        merged_external_access(self.external, Some(access)) != self.external
-    }
     pub(super) fn record(&mut self, effect: &MemoryEffect) {
-        for (origin, _, access, _) in effect.known.iter() {
-            let aliases = origin.aliases_when(&|alias| !self.contains(*alias, *access), || true);
-            for alias in aliases { self.known.push(MemoryIrRow::new(alias, *access)); }
+        unsafe extern "C" fn origin(context: *const std::ffi::c_void, known: *mut std::ffi::c_void, index: usize) {
+            let effect = unsafe { &*context.cast::<MemoryEffect>() };
+            let (origin, _, access, _) = &effect.known[index];
+            unsafe { ir_memory_origin(known, origin, *access, || true) };
         }
-        self.external = merged_external_access(self.external, effect.external);
+        self.external = unsafe { b_collect_closed_ir_memory(std::ptr::from_mut(&mut self.known).cast(),
+            effect.known.len(), self.external.into(), effect.external.into(), std::ptr::from_ref(effect).cast(), origin) }.option();
     }
+
     pub(super) fn extend_sources<'a>(
         &mut self,
         sources: impl Iterator<Item = (&'a view::Source, bounds::Clause)>,
         path: impl FnOnce() -> bounds::Clause,
         access: Access,
     ) {
-        let path = std::cell::LazyCell::new(path);
-        for (source, when) in sources {
-            let origin = match source {
-                view::Source::Position(origin) => Some(origin),
-                view::Source::External if self.needs_external(access) => None,
-                _ => continue,
-            };
-            let when = std::cell::LazyCell::new(|| {
-                let when = bounds::Clause::both(&when, &path);
-                when.possible().then_some(when)
-            });
-            if self.needs_external(access) && source_has_external_memory(source, || when.as_ref()) {
-                self.external = merged_external_access(self.external, Some(access));
-            }
-            if let Some(origin) = origin {
-                let access = if origin.writable { access } else { Access::Read };
-                let aliases = origin.aliases_when(&|alias| !self.contains(*alias, access), || when.is_some());
-                for alias in aliases { self.known.push(MemoryIrRow::new(alias, access)); }
-            }
-        }
+        IrMemorySources { sources, path: std::cell::LazyCell::new(path), current: None, active: std::cell::OnceCell::new() }
+            .collect(self, access);
     }
 
     fn call_effects(&self, locals: &BTreeMap<usize, Ty>) -> Vec<MemoryAccess> {

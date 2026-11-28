@@ -515,6 +515,50 @@ extern "C" u32 collect_memory_effect_sources(CallAccess request, EffectSourceHos
     }
 }
 
+extern "C" OptionalMemoryAccess merge_external_memory_access(OptionalMemoryAccess left, OptionalMemoryAccess right) on cpu {
+    if (left.present == 0) { return right; }
+    if (right.present != 0 && left.access != right.access) { return OptionalMemoryAccess(CallAccess::InOut, 1); }
+    return left;
+}
+
+extern "C" OptionalMemoryAccess collect_ir_memory_sources(address known, OptionalMemoryAccess external, CallAccess request,
+    IrMemorySourceHost host) on cpu requires nonzero(host.next) requires nonzero(host.external) requires nonzero(host.origin) {
+    OptionalMemoryAccess result = external;
+    let incoming = OptionalMemoryAccess(request, 1);
+    while (true) {
+        let source = host.next(host.context);
+        if (source.kind == EffectSourceKind::End) { return result; }
+        let merged = merge_external_memory_access(result, incoming);
+        let needs_external = result.present == 0 || merged.access != result.access;
+        if (source.kind != EffectSourceKind::Position &&
+            (source.kind != EffectSourceKind::External || !needs_external)) { continue; }
+        if (needs_external && host.external(host.context) != 0) { result = merged; }
+        if (source.kind == EffectSourceKind::Position) {
+            host.origin(host.context, known, source.writable != 0 ? request : CallAccess::Read);
+        }
+    }
+}
+
+extern "C" OptionalMemoryAccess collect_closed_ir_memory(address known, usize count, OptionalMemoryAccess external,
+    OptionalMemoryAccess incoming, address context, cfn<void,address,address,usize> origin) on cpu requires nonzero(origin) {
+    usize index = 0u64;
+    while (index < count) {
+        origin(context, known, index);
+        index += 1u64;
+    }
+    return merge_external_memory_access(external, incoming);
+}
+
+extern "C" void append_ir_memory_aliases(address known, address aliases, usize count, CallAccess access,
+    cfn<MemoryIrRow,address,usize,CallAccess> row) on cpu requires nonzero(row) {
+    usize index = 0u64;
+    while (index < count) {
+        let record = row(aliases, index, access);
+        push_memory_effect_record(known, size_of<MemoryIrRow>(), address_of(record));
+        index += 1u64;
+    }
+}
+
 MemoryIrRow recorded_ir_access(address known, usize at) on cpu {
     return unsafe_position<MemoryIrRow>(unsafe_address(address_bits(known) + at * size_of<MemoryIrRow>()));
 }
