@@ -112,35 +112,9 @@ extern "C" void condition_graph_drop(address graph) on cpu {
     drop_identity(unsafe_position<CanonicalGraph>(graph).identities);
 }
 
-u64 intern_condition_pair(address graph,address nodes,address order,NodeKind kind,ClauseFields source,u32 keep_pairs) on cpu {
-    u64 left=condition_node_index(graph,source.first);
-    u64 right=condition_node_index(graph,source.second);
-    if(keep_pairs==0&&left==right){return left;}
-    return intern_condition_shape(nodes,order,NodeFields(kind,address(),left,right));
-}
-
-u64 intern_condition_node(address graph,address nodes,address order,ClauseFields source,u32 keep_pairs) on cpu {
-    if(source.kind==ClauseKind::Facts){
-        return intern_condition_shape(nodes,order,NodeFields(NodeKind::Facts,source.facts,0u64,0u64));
-    }
-    if(source.kind==ClauseKind::Both||source.kind==ClauseKind::Branch){
-        return intern_condition_pair(graph,nodes,order,NodeKind::Both,source,keep_pairs);
-    }
-    if(source.kind==ClauseKind::Either){
-        return intern_condition_pair(graph,nodes,order,NodeKind::Either,source,keep_pairs);
-    }
-    return intern_condition_shape(nodes,order,NodeFields(NodeKind::Impossible,address(),0u64,0u64));
-}
-
-extern "C" void condition_node_ids(address context,address graph,cfn<ClauseFields,address,address> next,u32 keep_pairs)
- on cpu requires nonzero(next) {
+void condition_index_insert(address graph,address order,u64 key,NodeFields shape,u32 keep_pairs) on cpu {
     address nodes=address_of(unsafe_position<CanonicalGraph>(graph).nodes);
-    OrderedTree order=OrderedTree(address(),0u64,0u64,0u64);
-    ClauseFields source=next(context,graph);
-    while(source.present!=0){
-        u64 index=intern_condition_node(graph,nodes,address_of(order),source,keep_pairs);
-        bind_condition_identity(unsafe_position<CanonicalGraph>(graph).identities,source.key,index);
-        source=next(context,graph);
-    }
-    fact_tree_clear(address_of(order));
+    u64 index=keep_pairs==0&&(shape.kind==NodeKind::Both||shape.kind==NodeKind::Either)&&shape.first==shape.second
+        ? shape.first : intern_condition_shape(nodes,order,shape);
+    bind_condition_identity(unsafe_position<CanonicalGraph>(graph).identities,key,index);
 }

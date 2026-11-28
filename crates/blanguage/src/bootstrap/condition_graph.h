@@ -14,6 +14,7 @@ extern "C" void clause_postorder_start(inout TraversalStack stack,address contex
     requires nonzero(next);
 extern "C" address clause_postorder_next(inout TraversalStack stack,address context,
     cfn<u32,address,address> completed) on cpu requires nonzero(completed);
+extern "C" void condition_node_ids(inout TraversalStack stack,address graph,u32 keep_pairs) on cpu;
 extern "C" void traversal_stack_drop(inout TraversalStack stack) on cpu;
 
 struct CallProjectionHost {

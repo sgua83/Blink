@@ -76,6 +76,35 @@ extern "C" address clause_postorder_next(inout TraversalStack stack,address cont
     return address();
 }
 
+u64 numbered_clause_key(address clause) on cpu {
+    return address_bits(unsafe_position<address>(clause));
+}
+
+extern "C" u32 numbered_clause_completed(address graph,address clause) on cpu {
+    return u32(condition_node_index(graph,numbered_clause_key(clause))!=18446744073709551615u64);
+}
+
+NodeFields numbered_clause_shape(address graph,SourceNode source) on cpu {
+    if(source.kind==0){return NodeFields(NodeKind::Impossible,address(),0u64,0u64);}
+    if(source.kind==1){return NodeFields(NodeKind::Facts,source.left,0u64,0u64);}
+    address right=source.kind==4&&source.truth==0 ? source.no : source.right;
+    NodeKind kind=source.kind==3 ? NodeKind::Either : NodeKind::Both;
+    u64 first=condition_node_index(graph,numbered_clause_key(source.left));
+    u64 second=condition_node_index(graph,numbered_clause_key(right));
+    return NodeFields(kind,address(),first,second);
+}
+
+extern "C" void condition_node_ids(inout TraversalStack stack,address graph,u32 keep_pairs) on cpu {
+    OrderedTree order=OrderedTree(address(),0u64,0u64,0u64);
+    address source=clause_postorder_next(stack,graph,c_function(numbered_clause_completed));
+    while(source!=address()){
+        NodeFields shape=numbered_clause_shape(graph,clause_source(source));
+        condition_index_insert(graph,address_of(order),numbered_clause_key(source),shape,keep_pairs);
+        source=clause_postorder_next(stack,graph,c_function(numbered_clause_completed));
+    }
+    fact_tree_clear(address_of(order));
+}
+
 extern "C" void traversal_stack_drop(inout TraversalStack stack) on cpu {
     address records=stack.records;
     if(records!=address()){HeapFree(GetProcessHeap(),0,records);}

@@ -13,26 +13,6 @@ enum NodeKind {
     Both = 2,
     Either = 3,
 }
-#[repr(u32)]
-#[derive(Clone, Copy, Default)]
-enum ClauseKind {
-    #[default]
-    Impossible = 0,
-    Facts = 1,
-    Both = 2,
-    Either = 3,
-    Branch = 4,
-}
-#[repr(C)]
-#[derive(Default)]
-struct ClauseFields {
-    present: u32,
-    kind: ClauseKind,
-    key: usize,
-    facts: *const c_void,
-    first: usize,
-    second: usize,
-}
 #[repr(C)]
 #[derive(Default)]
 struct NodeFields {
@@ -81,9 +61,8 @@ pub(in super::super) struct CanonicalGraph<'a> {
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.condition_index::condition_node_ids"]
-    fn canonical_ids(context: Slot, graph: Slot, next: unsafe extern "C" fn(Slot, *const c_void) -> ClauseFields,
-                     keep_pairs: u32);
+    #[link_name = "bootstrap.condition_graph::condition_node_ids"]
+    fn canonical_ids(stack: &mut TraversalStack, graph: Slot, keep_pairs: u32);
     #[link_name = "bootstrap.condition_index::condition_node_index"]
     fn canonical_index(graph: *const c_void, key: usize) -> usize;
     #[link_name = "bootstrap.condition_index::condition_node_at"]
@@ -126,44 +105,13 @@ impl Drop for CanonicalGraph<'_> {
     }
 }
 
-unsafe extern "C" fn next(context: Slot, graph: *const c_void) -> ClauseFields {
-    let pending = unsafe { &mut *context.cast::<ClausePostorder<'_>>() };
-    let Some(clause) = pending.next(|key| unsafe { canonical_index(graph, key) } != usize::MAX) else {
-        return ClauseFields::default();
-    };
-    let mut result = ClauseFields { present: 1, key: clause.key(), ..Default::default() };
-    match clause.view() {
-        ClauseNode::Impossible => result.kind = ClauseKind::Impossible,
-        ClauseNode::Facts(facts) => {
-            result.kind = ClauseKind::Facts;
-            result.facts = ptr::from_ref(facts).cast();
-        }
-        ClauseNode::Both(a, b) => {
-            result.kind = ClauseKind::Both;
-            result.first = a.key();
-            result.second = b.key();
-        }
-        ClauseNode::Either(a, b) => {
-            result.kind = ClauseKind::Either;
-            result.first = a.key();
-            result.second = b.key();
-        }
-        ClauseNode::Branch(parent, condition, truth) => {
-            result.kind = ClauseKind::Branch;
-            result.first = parent.key();
-            result.second = condition.cases[usize::from(truth)].key();
-        }
-    }
-    result
-}
-
 pub(in super::super) fn node_ids<'a>(
     roots: impl IntoIterator<Item = &'a Clause>,
     keep_pairs: bool,
 ) -> CanonicalGraph<'a> {
     let mut pending = ClausePostorder::new(roots);
     let mut graph = CanonicalGraph::default();
-    unsafe { canonical_ids(slot(&mut pending), slot(&mut graph), next, u32::from(keep_pairs)) };
+    unsafe { canonical_ids(&mut pending.stack, slot(&mut graph), u32::from(keep_pairs)) };
     graph
 }
 
