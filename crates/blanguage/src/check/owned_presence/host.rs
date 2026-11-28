@@ -46,28 +46,17 @@ unsafe extern "C" fn input_uses_index(value: Address, at: PositionIndex) -> u32 
         ownership::ApplicationIndex::Value(id, _) => value.identity() == id || bounds::Condition::of(value).mentions(id),
     })
 }
-unsafe extern "C" fn truth(output: Address, value: u32) {
-    unsafe { *output.cast::<Presence>() = if value == 0 { Presence::None } else { Presence::All }; }
-}
-unsafe extern "C" fn selected(output: Address, value: Selection) {
-    // Read both original indices before replacing the owner that may contain them.
-    let a = unsafe { required_index(value.a) }; let b = unsafe { required_index(value.b) };
-    unsafe { *output.cast::<Presence>() = Presence::Selected(comparison(value.operation), a, b); }
-}
 unsafe extern "C" fn input(output: Address, value: Address) {
     let value = unsafe { &*value.cast::<Value>() }.clone();
     unsafe { *output.cast::<Presence>() = Presence::Input(value); }
-}
-unsafe extern "C" fn move_value(output: Address, source: Address) {
-    let value = unsafe { take(source) }; unsafe { *output.cast::<Presence>() = value; }
 }
 #[repr(C)]
 struct DetachedPresence { children: SharedPositionChildren, input: Address }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.ownership_presence::publish_presence"]
+    #[link_name = "bootstrap.ownership_position::publish_presence"]
     fn publish_presence(value: Address, layout: &PresenceView) -> Address;
-    #[link_name = "bootstrap.ownership_presence::detach_presence"]
+    #[link_name = "bootstrap.ownership_position::detach_presence"]
     fn detach_presence(value: Address, layout: &PresenceView) -> DetachedPresence;
     #[link_name = "bootstrap.ownership_position::take_unique_shared_position"]
     fn take_unique_shared_position(value: Address, output: Address, width: usize) -> u32;
@@ -142,7 +131,6 @@ impl Ord for PresenceNode {
 }
 
 type Children = unsafe extern "C" fn(Address, Address, Address, Address, Host) -> u32;
-type Selected = unsafe extern "C" fn(Selection, Address, Host) -> u32;
 type Scoped = unsafe extern "C" fn(Address, Address, Host) -> u32;
 unsafe extern "C" fn children_scope(value: Address, context: Address, host: Host, apply: Children) -> u32 {
     let (mut left, mut right) = match unsafe { take(value) } {
@@ -151,13 +139,6 @@ unsafe extern "C" fn children_scope(value: Address, context: Address, host: Host
         leaf => (leaf, Presence::None),
     };
     unsafe { apply(value, pointer(&mut left), pointer(&mut right), context, host) }
-}
-unsafe extern "C" fn selected_scope(value: Selection, context: Address, host: Host, apply: Selected) -> u32 {
-    // The mutable target can replace its selected node during the callback.
-    // These actual Copy indices stay on this original Rust stack until return.
-    let a = unsafe { required_index(value.a) }; let b = unsafe { required_index(value.b) };
-    let saved = Selection { operation: value.operation, a: position_index(Some(&a)), b: position_index(Some(&b)) };
-    unsafe { apply(saved, context, host) }
 }
 unsafe extern "C" fn clone_scope(value: Address, context: Address, host: Host, apply: Scoped) -> u32 {
     let mut value = unsafe { &*value.cast::<Presence>() }.clone();
@@ -229,10 +210,6 @@ unsafe extern "C" fn ownership_copy(output: Address, source: Address) {
     let value = unsafe { &*source.cast::<Ownership>() }.clone();
     unsafe { *output.cast::<Ownership>() = value; }
 }
-unsafe extern "C" fn ownership_constant(output: Address, kind: u32) {
-    let value = match kind { 0 => Ownership::Moved, 1 => Ownership::Owned, _ => Ownership::Borrowed };
-    unsafe { *output.cast::<Ownership>() = value; }
-}
 unsafe extern "C" fn copy_value(output: Address, source: Address) {
     let value = unsafe { &*source.cast::<Presence>() }.clone();
     unsafe { *output.cast::<Presence>() = value; }
@@ -244,13 +221,9 @@ struct Host {
     compare_input: unsafe extern "C" fn(Address, Address) -> i32,
     constant_input: unsafe extern "C" fn(Address) -> u32,
     input_uses_index: unsafe extern "C" fn(Address, PositionIndex) -> u32,
-    truth: unsafe extern "C" fn(Address, u32),
-    selected: unsafe extern "C" fn(Address, Selection),
     input: unsafe extern "C" fn(Address, Address),
-    move_value: unsafe extern "C" fn(Address, Address),
     take_presence: unsafe extern "C" fn(Address) -> SharedPositionChildren,
     children_scope: unsafe extern "C" fn(Address, Address, Host, Children) -> u32,
-    selected_scope: unsafe extern "C" fn(Selection, Address, Host, Selected) -> u32,
     clone_scope: unsafe extern "C" fn(Address, Address, Host, Scoped) -> u32,
     truth_scope: unsafe extern "C" fn(u32, Address, Host, Scoped) -> u32,
     position_equal: unsafe extern "C" fn(Address, Address) -> u32,
@@ -265,18 +238,17 @@ struct Host {
     input_offset: unsafe extern "C" fn(Address, PositionIndex) -> u32,
     condition_truth_in: unsafe extern "C" fn(Address, Address) -> u32,
     ownership_copy: unsafe extern "C" fn(Address, Address),
-    ownership_constant: unsafe extern "C" fn(Address, u32),
     copy_value: unsafe extern "C" fn(Address, Address),
 }
 const HOST: Host = Host {
     layout: &PRESENCE_VIEW, compare_input, constant_input, input_uses_index,
-    truth, selected, input, move_value, take_presence,
-    children_scope, selected_scope, clone_scope, truth_scope,
+    input, take_presence,
+    children_scope, clone_scope, truth_scope,
     position_equal,
     condition_scope, condition_clone_scope, condition_truth, condition_input,
     condition_index, condition_negate, condition_logical, condition_substitute,
     input_offset, condition_truth_in, ownership_copy,
-    ownership_constant, copy_value,
+    copy_value,
 };
 unsafe extern "C" {
     #[link_name = "bootstrap.ownership_presence::relation"] fn source_relation(output: Address, value: Selection, host: Host);

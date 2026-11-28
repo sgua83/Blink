@@ -1,4 +1,5 @@
 module bootstrap.ownership_position;
+import bootstrap.fact_key;
 enum PresenceTag:u32 { None=0; All=1; Input=2; Selected=3; Not=4; Both=5; Either=6; };
 struct PositionIndex { u32 kind; u32 value; address identity; u64 reg; };
 struct PositionView {
@@ -11,6 +12,7 @@ struct PositionView {
     usize selection_width;
 };
 extern "C" PositionIndex read_index(address value, PositionView view) on cpu;
+extern "C" void write_index(address output, PositionIndex value, PositionView view) on cpu;
 extern "C" i32 compare_position_index(PositionIndex a, PositionIndex b) on cpu;
 struct PositionNode { u32 kind; u64 owner; u64 member; u64 word; PositionIndex index; address condition; u64 count; };
 extern "C" PositionNode inspect_position(address value, PositionView view) on cpu;
@@ -67,6 +69,40 @@ extern "C" address allocate_shared_positions(usize bytes) on cpu;
 extern "C" void retain_shared_positions(address positions) on cpu;
 extern "C" u32 take_unique_shared_position(address value, address output, usize width) on cpu;
 extern "C" void release_shared_positions(SharedPositionSpan positions, usize width,
+    cfn<SharedPositionChildren,address> take) on cpu requires nonzero(take);
+
+struct PositionFrames { address data; usize capacity; };
+address position_frame(address data, usize index, usize width) on cpu;
+address reserve_position_frame(inout PositionFrames frames, usize depth, usize width) on cpu;
+void release_position_frames(PositionFrames frames) on cpu;
+
+struct PresenceView {
+    usize payload_offset;
+    usize first_index_offset;
+    usize ownership_payload_offset;
+    address positions;
+    usize width;
+};
+struct DetachedPresence { SharedPositionChildren children; address input; };
+extern "C" address publish_presence(address value, address layout) on cpu;
+extern "C" DetachedPresence detach_presence(address value, address layout) on cpu;
+
+struct Selection { u32 operation; PositionIndex a; PositionIndex b; };
+struct PresenceBranches { address first; address second; };
+struct SavedIdentities { IdentityKey a; IdentityKey b; };
+extern "C" SavedIdentities selection_storage() on cpu;
+extern "C" Selection save_selection(Selection value, address a, address b) on cpu;
+extern "C" void write_comparison(address output, Selection value, address layout,
+    cfn<SharedPositionChildren,address> take) on cpu requires nonzero(take);
+extern "C" void write_truth(address output, u32 value, address layout,
+    cfn<SharedPositionChildren,address> take) on cpu requires nonzero(take);
+extern "C" void move_presence(address output, address source, address layout,
+    cfn<SharedPositionChildren,address> take) on cpu requires nonzero(take);
+extern "C" void pair_presence(address left, address right, u32 any, address layout) on cpu;
+extern "C" void wrap_not_presence(address value, address layout) on cpu;
+extern "C" void conditional_ownership(address output, address value, address layout,
+    cfn<SharedPositionChildren,address> take) on cpu requires nonzero(take);
+extern "C" void write_ownership_constant(address output, u32 kind, address layout,
     cfn<SharedPositionChildren,address> take) on cpu requires nonzero(take);
 
 struct DatasetPositionCleanup {

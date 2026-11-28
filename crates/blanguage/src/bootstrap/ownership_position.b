@@ -25,6 +25,17 @@ extern "C" PositionIndex read_index(address value, PositionView view) on cpu {
     return PositionIndex(kind, 0, unsafe_address(payload), reg);
 }
 
+extern "C" void write_index(address output, PositionIndex value, PositionView view) on cpu {
+    let payload = address_bits(output) + view.index_payload_offset;
+    if (value.kind == 1) {
+        unsafe_position<u32>(unsafe_address(payload)) = value.value;
+    } else {
+        RtlMoveMemory(unsafe_address(payload), value.identity, size_of<IdentityKey>());
+        unsafe_position<u64>(unsafe_address(payload + view.index_register_offset)) = value.reg;
+    }
+    unsafe_position<u32>(output) = value.kind;
+}
+
 struct LoopPositionInput { u64 level; u64 index; };
 
 extern "C" PositionNode inspect_position(address value, PositionView view) on cpu {
@@ -327,7 +338,6 @@ struct DatasetFrame {
     usize child;
     address partial;
 };
-struct PositionFrames { address data; usize capacity; };
 
 address position_frame(address data, usize index, usize width) on cpu {
     return unsafe_address(address_bits(data) + index * width);
@@ -343,6 +353,10 @@ address reserve_position_frame(inout PositionFrames frames, usize depth, usize w
         frames.capacity = capacity;
     }
     return position_frame(frames.data, depth, width);
+}
+
+void release_position_frames(PositionFrames frames) on cpu {
+    if (frames.capacity != 0u64) { HeapFree(GetProcessHeap(), 0, frames.data); }
 }
 
 void push_dataset_frame(inout PositionFrames frames, usize depth, DatasetFrame frame) on cpu {
@@ -435,9 +449,151 @@ extern "C" void release_shared_positions(SharedPositionSpan positions, usize wid
         let slot = position_frame(pending.data, depth, size_of<SharedPositionRelease>());
         current = unsafe_position<SharedPositionRelease>(slot);
     }
-    if (pending.capacity != 0u64) { HeapFree(GetProcessHeap(), 0, pending.data); }
+    release_position_frames(pending);
 }
 
+
+void transfer_presence(address output, address source, usize width) on cpu {
+    RtlMoveMemory(output, source, width);
+    unsafe_position<PresenceTag>(source) = PresenceTag::None;
+}
+
+extern "C" address publish_presence(address value, address layout) on cpu {
+    let view = unsafe_position<PresenceView>(layout);
+    let result = allocate_shared_positions(view.width);
+    transfer_presence(result, value, view.width);
+    return result;
+}
+
+SharedPositionSpan presence_span(address value) on cpu { return SharedPositionSpan(value, 1u64); }
+
+extern "C" DetachedPresence detach_presence(address value, address layout) on cpu {
+    let tag = unsafe_position<PresenceTag>(value);
+    let view = unsafe_position<PresenceView>(layout);
+    let payload = unsafe_address(address_bits(value) + view.payload_offset);
+    let empty = SharedPositionSpan(address(), 0u64);
+    DetachedPresence result = DetachedPresence(SharedPositionChildren(empty, empty), address());
+    if (tag == PresenceTag::Input) { result.input = payload; }
+    else if (tag == PresenceTag::Not) {
+        result.children.first = presence_span(unsafe_position<address>(payload));
+    } else if (tag == PresenceTag::Both || tag == PresenceTag::Either) {
+        let pair = unsafe_position<PresenceBranches>(payload);
+        result.children = SharedPositionChildren(presence_span(pair.first), presence_span(pair.second));
+    }
+    unsafe_position<PresenceTag>(value) = PresenceTag::None;
+    return result;
+}
+
+void clear_presence(address value, address layout,
+    cfn<SharedPositionChildren,address> take) on cpu
+    requires nonzero(take) {
+    let tag = unsafe_position<PresenceTag>(value);
+    if (tag == PresenceTag::Input) {
+        take(value);
+    } else if (u32(tag) >= u32(PresenceTag::Not)) {
+        let children = detach_presence(value, layout).children;
+        let view = unsafe_position<PresenceView>(layout);
+        release_shared_positions(children.first, view.width, take);
+        release_shared_positions(children.second, view.width, take);
+    }
+}
+
+extern "C" void move_presence(address output, address source, address layout,
+    cfn<SharedPositionChildren,address> take) on cpu
+    requires nonzero(take) {
+    if (address_bits(output) == address_bits(source)) { return; }
+    // Reduction moves between the original mutable roots and scoped values.
+    clear_presence(output, layout, take);
+    let view = unsafe_position<PresenceView>(layout);
+    transfer_presence(output, source, view.width);
+}
+
+extern "C" void write_truth(address output, u32 value, address layout,
+    cfn<SharedPositionChildren,address> take) on cpu
+    requires nonzero(take) {
+    clear_presence(output, layout, take);
+    unsafe_position<PresenceTag>(output) = value == 0 ? PresenceTag::None : PresenceTag::All;
+}
+
+extern "C" SavedIdentities selection_storage() on cpu {
+    let empty = IdentityKey(IdentityKind::Register, 0, 0u64, 0u64, 0u64);
+    return SavedIdentities(empty, empty);
+}
+
+extern "C" Selection save_selection(Selection value, address a, address b) on cpu {
+    Selection saved = value;
+    if (value.a.kind == 2) {
+        RtlMoveMemory(a, value.a.identity, size_of<IdentityKey>());
+        saved.a.identity = a;
+    }
+    if (value.b.kind == 2) {
+        RtlMoveMemory(b, value.b.identity, size_of<IdentityKey>());
+        saved.b.identity = b;
+    }
+    return saved;
+}
+
+extern "C" void write_comparison(address output, Selection value, address layout,
+    cfn<SharedPositionChildren,address> take) on cpu
+    requires nonzero(take) {
+    // A selected operand can be borrowed from the slot being replaced.
+    SavedIdentities storage = selection_storage();
+    let saved = save_selection(value, address_of(storage.a), address_of(storage.b));
+    clear_presence(output, layout, take);
+    let view = unsafe_position<PresenceView>(layout);
+    let positions = unsafe_position<PositionView>(view.positions);
+    let payload = address_bits(output) + view.payload_offset;
+    let first = payload + view.first_index_offset;
+    unsafe_position<u8>(unsafe_address(payload)) = u8(saved.operation);
+    write_index(unsafe_address(first), saved.a, positions);
+    write_index(unsafe_address(first + positions.index_width), saved.b, positions);
+    unsafe_position<PresenceTag>(output) = PresenceTag::Selected;
+}
+
+extern "C" void pair_presence(address left, address right, u32 any, address layout) on cpu {
+    let a = publish_presence(left, layout);
+    let b = publish_presence(right, layout);
+    let view = unsafe_position<PresenceView>(layout);
+    let payload = unsafe_address(address_bits(left) + view.payload_offset);
+    unsafe_position<PresenceBranches>(payload) = PresenceBranches(a, b);
+    unsafe_position<PresenceTag>(left) = any == 0 ? PresenceTag::Both : PresenceTag::Either;
+}
+
+extern "C" void wrap_not_presence(address value, address layout) on cpu {
+    let child = publish_presence(value, layout);
+    let view = unsafe_position<PresenceView>(layout);
+    let payload = unsafe_address(address_bits(value) + view.payload_offset);
+    unsafe_position<address>(payload) = child;
+    unsafe_position<PresenceTag>(value) = PresenceTag::Not;
+}
+
+void release_ownership_condition(address output, address layout,
+    cfn<SharedPositionChildren,address> take) on cpu
+    requires nonzero(take) {
+    if (unsafe_position<u32>(output) == 3) {
+        let view = unsafe_position<PresenceView>(layout);
+        let payload = unsafe_address(address_bits(output) + view.ownership_payload_offset);
+        release_shared_positions(presence_span(unsafe_position<address>(payload)), view.width, take);
+    }
+}
+
+extern "C" void write_ownership_constant(address output, u32 kind, address layout,
+    cfn<SharedPositionChildren,address> take) on cpu
+    requires nonzero(take) {
+    release_ownership_condition(output, layout, take);
+    unsafe_position<u32>(output) = kind;
+}
+
+extern "C" void conditional_ownership(address output, address value, address layout,
+    cfn<SharedPositionChildren,address> take) on cpu
+    requires nonzero(take) {
+    let owner = publish_presence(value, layout);
+    release_ownership_condition(output, layout, take);
+    let view = unsafe_position<PresenceView>(layout);
+    let payload = unsafe_address(address_bits(output) + view.ownership_payload_offset);
+    unsafe_position<address>(payload) = owner;
+    unsafe_position<u32>(output) = 3;
+}
 
 struct DatasetPositionMapping {
     address context;
@@ -542,7 +698,7 @@ address map_dataset_positions(address value, DatasetPositionMapping mapping, Hos
         }
         if (depth == 0u64) { break; }
     }
-    if (frames.capacity != 0u64) { HeapFree(GetProcessHeap(), 0, frames.data); }
+    release_position_frames(frames);
     return result;
 }
 

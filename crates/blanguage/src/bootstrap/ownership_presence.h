@@ -1,18 +1,6 @@
 module bootstrap.ownership_presence;
 import bootstrap.ownership_position;
 
-struct PresenceView {
-    usize payload_offset;
-    usize first_index_offset;
-    usize ownership_payload_offset;
-    address positions;
-    usize width;
-};
-struct DetachedPresence { SharedPositionChildren children; address input; };
-extern "C" address publish_presence(address value, address layout) on cpu;
-extern "C" DetachedPresence detach_presence(address value, address layout) on cpu;
-
-struct Selection { u32 operation; PositionIndex a; PositionIndex b; };
 struct Node { u32 kind; u32 operation; PositionIndex a; PositionIndex b; address first; address second; address value; };
 struct EmitBranch { address value; u64 slot; u64 condition; u32 either; };
 struct EmitHost {
@@ -38,21 +26,15 @@ struct Host {
     cfn<i32,address,address> compare_input;
     cfn<u32,address> constant_input;
     cfn<u32,address,PositionIndex> input_uses_index;
-    cfn<void,address,u32> truth;
-    cfn<void,address,Selection> selected;
     cfn<void,address,address> input;
-    cfn<void,address,address> move_value;
     cfn<SharedPositionChildren,address> take_presence;
     cfn<u32,address,address,Host,cfn<u32,address,address,address,address,Host>
     requires nonzero(argument4.compare_input)
     requires nonzero(argument4.constant_input)
     requires nonzero(argument4.input_uses_index)
-    requires nonzero(argument4.truth)
-    requires nonzero(argument4.selected)
+    requires nonzero(argument4.take_presence)
     requires nonzero(argument4.input)
-    requires nonzero(argument4.move_value)
     requires nonzero(argument4.children_scope)
-    requires nonzero(argument4.selected_scope)
     requires nonzero(argument4.clone_scope)
     requires nonzero(argument4.truth_scope)
     requires nonzero(argument4.position_equal)
@@ -67,18 +49,13 @@ struct Host {
     requires nonzero(argument4.input_offset)
     requires nonzero(argument4.condition_truth_in)
     requires nonzero(argument4.ownership_copy)
-    requires nonzero(argument4.ownership_constant)
-    requires nonzero(argument4.take_presence)
     requires nonzero(argument4.copy_value)>
     requires nonzero(argument2.compare_input)
     requires nonzero(argument2.constant_input)
     requires nonzero(argument2.input_uses_index)
-    requires nonzero(argument2.truth)
-    requires nonzero(argument2.selected)
+    requires nonzero(argument2.take_presence)
     requires nonzero(argument2.input)
-    requires nonzero(argument2.move_value)
     requires nonzero(argument2.children_scope)
-    requires nonzero(argument2.selected_scope)
     requires nonzero(argument2.clone_scope)
     requires nonzero(argument2.truth_scope)
     requires nonzero(argument2.position_equal)
@@ -93,74 +70,15 @@ struct Host {
     requires nonzero(argument2.input_offset)
     requires nonzero(argument2.condition_truth_in)
     requires nonzero(argument2.ownership_copy)
-    requires nonzero(argument2.ownership_constant)
-    requires nonzero(argument2.take_presence)
     requires nonzero(argument2.copy_value)
     requires nonzero(argument3) children_scope;
-    cfn<u32,Selection,address,Host,cfn<u32,Selection,address,Host>
-    requires nonzero(argument2.compare_input)
-    requires nonzero(argument2.constant_input)
-    requires nonzero(argument2.input_uses_index)
-    requires nonzero(argument2.truth)
-    requires nonzero(argument2.selected)
-    requires nonzero(argument2.input)
-    requires nonzero(argument2.move_value)
-    requires nonzero(argument2.children_scope)
-    requires nonzero(argument2.selected_scope)
-    requires nonzero(argument2.clone_scope)
-    requires nonzero(argument2.truth_scope)
-    requires nonzero(argument2.position_equal)
-    requires nonzero(argument2.condition_scope)
-    requires nonzero(argument2.condition_clone_scope)
-    requires nonzero(argument2.condition_truth)
-    requires nonzero(argument2.condition_input)
-    requires nonzero(argument2.condition_index)
-    requires nonzero(argument2.condition_negate)
-    requires nonzero(argument2.condition_logical)
-    requires nonzero(argument2.condition_substitute)
-    requires nonzero(argument2.input_offset)
-    requires nonzero(argument2.condition_truth_in)
-    requires nonzero(argument2.ownership_copy)
-    requires nonzero(argument2.ownership_constant)
-    requires nonzero(argument2.take_presence)
-    requires nonzero(argument2.copy_value)>
-    requires nonzero(argument2.compare_input)
-    requires nonzero(argument2.constant_input)
-    requires nonzero(argument2.input_uses_index)
-    requires nonzero(argument2.truth)
-    requires nonzero(argument2.selected)
-    requires nonzero(argument2.input)
-    requires nonzero(argument2.move_value)
-    requires nonzero(argument2.children_scope)
-    requires nonzero(argument2.selected_scope)
-    requires nonzero(argument2.clone_scope)
-    requires nonzero(argument2.truth_scope)
-    requires nonzero(argument2.position_equal)
-    requires nonzero(argument2.condition_scope)
-    requires nonzero(argument2.condition_clone_scope)
-    requires nonzero(argument2.condition_truth)
-    requires nonzero(argument2.condition_input)
-    requires nonzero(argument2.condition_index)
-    requires nonzero(argument2.condition_negate)
-    requires nonzero(argument2.condition_logical)
-    requires nonzero(argument2.condition_substitute)
-    requires nonzero(argument2.input_offset)
-    requires nonzero(argument2.condition_truth_in)
-    requires nonzero(argument2.ownership_copy)
-    requires nonzero(argument2.ownership_constant)
-    requires nonzero(argument2.take_presence)
-    requires nonzero(argument2.copy_value)
-    requires nonzero(argument3) selected_scope;
     cfn<u32,address,address,Host,cfn<u32,address,address,Host>
     requires nonzero(argument2.compare_input)
     requires nonzero(argument2.constant_input)
     requires nonzero(argument2.input_uses_index)
-    requires nonzero(argument2.truth)
-    requires nonzero(argument2.selected)
+    requires nonzero(argument2.take_presence)
     requires nonzero(argument2.input)
-    requires nonzero(argument2.move_value)
     requires nonzero(argument2.children_scope)
-    requires nonzero(argument2.selected_scope)
     requires nonzero(argument2.clone_scope)
     requires nonzero(argument2.truth_scope)
     requires nonzero(argument2.position_equal)
@@ -175,18 +93,12 @@ struct Host {
     requires nonzero(argument2.input_offset)
     requires nonzero(argument2.condition_truth_in)
     requires nonzero(argument2.ownership_copy)
-    requires nonzero(argument2.ownership_constant)
-    requires nonzero(argument2.take_presence)
     requires nonzero(argument2.copy_value)>
     requires nonzero(argument2.compare_input)
     requires nonzero(argument2.constant_input)
     requires nonzero(argument2.input_uses_index)
-    requires nonzero(argument2.truth)
-    requires nonzero(argument2.selected)
     requires nonzero(argument2.input)
-    requires nonzero(argument2.move_value)
     requires nonzero(argument2.children_scope)
-    requires nonzero(argument2.selected_scope)
     requires nonzero(argument2.clone_scope)
     requires nonzero(argument2.truth_scope)
     requires nonzero(argument2.position_equal)
@@ -201,20 +113,15 @@ struct Host {
     requires nonzero(argument2.input_offset)
     requires nonzero(argument2.condition_truth_in)
     requires nonzero(argument2.ownership_copy)
-    requires nonzero(argument2.ownership_constant)
-    requires nonzero(argument2.take_presence)
     requires nonzero(argument2.copy_value)
     requires nonzero(argument3) clone_scope;
     cfn<u32,u32,address,Host,cfn<u32,address,address,Host>
     requires nonzero(argument2.compare_input)
     requires nonzero(argument2.constant_input)
     requires nonzero(argument2.input_uses_index)
-    requires nonzero(argument2.truth)
-    requires nonzero(argument2.selected)
+    requires nonzero(argument2.take_presence)
     requires nonzero(argument2.input)
-    requires nonzero(argument2.move_value)
     requires nonzero(argument2.children_scope)
-    requires nonzero(argument2.selected_scope)
     requires nonzero(argument2.clone_scope)
     requires nonzero(argument2.truth_scope)
     requires nonzero(argument2.position_equal)
@@ -229,18 +136,12 @@ struct Host {
     requires nonzero(argument2.input_offset)
     requires nonzero(argument2.condition_truth_in)
     requires nonzero(argument2.ownership_copy)
-    requires nonzero(argument2.ownership_constant)
-    requires nonzero(argument2.take_presence)
     requires nonzero(argument2.copy_value)>
     requires nonzero(argument2.compare_input)
     requires nonzero(argument2.constant_input)
     requires nonzero(argument2.input_uses_index)
-    requires nonzero(argument2.truth)
-    requires nonzero(argument2.selected)
     requires nonzero(argument2.input)
-    requires nonzero(argument2.move_value)
     requires nonzero(argument2.children_scope)
-    requires nonzero(argument2.selected_scope)
     requires nonzero(argument2.clone_scope)
     requires nonzero(argument2.truth_scope)
     requires nonzero(argument2.position_equal)
@@ -255,8 +156,6 @@ struct Host {
     requires nonzero(argument2.input_offset)
     requires nonzero(argument2.condition_truth_in)
     requires nonzero(argument2.ownership_copy)
-    requires nonzero(argument2.ownership_constant)
-    requires nonzero(argument2.take_presence)
     requires nonzero(argument2.copy_value)
     requires nonzero(argument3) truth_scope;
     cfn<u32,address,address> position_equal;
@@ -264,12 +163,9 @@ struct Host {
     requires nonzero(argument2.compare_input)
     requires nonzero(argument2.constant_input)
     requires nonzero(argument2.input_uses_index)
-    requires nonzero(argument2.truth)
-    requires nonzero(argument2.selected)
+    requires nonzero(argument2.take_presence)
     requires nonzero(argument2.input)
-    requires nonzero(argument2.move_value)
     requires nonzero(argument2.children_scope)
-    requires nonzero(argument2.selected_scope)
     requires nonzero(argument2.clone_scope)
     requires nonzero(argument2.truth_scope)
     requires nonzero(argument2.position_equal)
@@ -284,18 +180,13 @@ struct Host {
     requires nonzero(argument2.input_offset)
     requires nonzero(argument2.condition_truth_in)
     requires nonzero(argument2.ownership_copy)
-    requires nonzero(argument2.ownership_constant)
-    requires nonzero(argument2.take_presence)
     requires nonzero(argument2.copy_value)>
     requires nonzero(argument1.compare_input)
     requires nonzero(argument1.constant_input)
     requires nonzero(argument1.input_uses_index)
-    requires nonzero(argument1.truth)
-    requires nonzero(argument1.selected)
+    requires nonzero(argument1.take_presence)
     requires nonzero(argument1.input)
-    requires nonzero(argument1.move_value)
     requires nonzero(argument1.children_scope)
-    requires nonzero(argument1.selected_scope)
     requires nonzero(argument1.clone_scope)
     requires nonzero(argument1.truth_scope)
     requires nonzero(argument1.position_equal)
@@ -310,20 +201,15 @@ struct Host {
     requires nonzero(argument1.input_offset)
     requires nonzero(argument1.condition_truth_in)
     requires nonzero(argument1.ownership_copy)
-    requires nonzero(argument1.ownership_constant)
-    requires nonzero(argument1.take_presence)
     requires nonzero(argument1.copy_value)
     requires nonzero(argument2) condition_scope;
     cfn<u32,address,address,Host,cfn<u32,address,address,Host>
     requires nonzero(argument2.compare_input)
     requires nonzero(argument2.constant_input)
     requires nonzero(argument2.input_uses_index)
-    requires nonzero(argument2.truth)
-    requires nonzero(argument2.selected)
+    requires nonzero(argument2.take_presence)
     requires nonzero(argument2.input)
-    requires nonzero(argument2.move_value)
     requires nonzero(argument2.children_scope)
-    requires nonzero(argument2.selected_scope)
     requires nonzero(argument2.clone_scope)
     requires nonzero(argument2.truth_scope)
     requires nonzero(argument2.position_equal)
@@ -338,18 +224,12 @@ struct Host {
     requires nonzero(argument2.input_offset)
     requires nonzero(argument2.condition_truth_in)
     requires nonzero(argument2.ownership_copy)
-    requires nonzero(argument2.ownership_constant)
-    requires nonzero(argument2.take_presence)
     requires nonzero(argument2.copy_value)>
     requires nonzero(argument2.compare_input)
     requires nonzero(argument2.constant_input)
     requires nonzero(argument2.input_uses_index)
-    requires nonzero(argument2.truth)
-    requires nonzero(argument2.selected)
     requires nonzero(argument2.input)
-    requires nonzero(argument2.move_value)
     requires nonzero(argument2.children_scope)
-    requires nonzero(argument2.selected_scope)
     requires nonzero(argument2.clone_scope)
     requires nonzero(argument2.truth_scope)
     requires nonzero(argument2.position_equal)
@@ -364,8 +244,6 @@ struct Host {
     requires nonzero(argument2.input_offset)
     requires nonzero(argument2.condition_truth_in)
     requires nonzero(argument2.ownership_copy)
-    requires nonzero(argument2.ownership_constant)
-    requires nonzero(argument2.take_presence)
     requires nonzero(argument2.copy_value)
     requires nonzero(argument3) condition_clone_scope;
     cfn<void,address,u32> condition_truth;
@@ -377,13 +255,12 @@ struct Host {
     cfn<u32,address,PositionIndex> input_offset;
     cfn<u32,address,address> condition_truth_in;
     cfn<void,address,address> ownership_copy;
-    cfn<void,address,u32> ownership_constant;
     cfn<void,address,address> copy_value;
 };
 
 extern "C" void relation(address output,Selection value,Host host) on cpu
-    requires nonzero(host.truth)
-    requires nonzero(host.selected);
+    requires nonzero(host.take_presence)
+    ;
 
 extern "C" i32 compare(address a,address b,Host host) on cpu
     requires nonzero(host.compare_input);
@@ -394,18 +271,15 @@ extern "C" u32 uses_index(address value,PositionIndex wanted,Host host) on cpu
 extern "C" void from_value(address output,address value,Host host) on cpu
     requires nonzero(host.constant_input)
     requires nonzero(host.input)
-    requires nonzero(host.truth);
+    requires nonzero(host.take_presence);
 
 extern "C" void combine(address left,address right,u32 any,Host host) on cpu
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
-    requires nonzero(host.truth)
-    requires nonzero(host.selected)
+    requires nonzero(host.take_presence)
     requires nonzero(host.input)
-    requires nonzero(host.move_value)
     requires nonzero(host.children_scope)
-    requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
     requires nonzero(host.position_equal)
@@ -420,20 +294,15 @@ extern "C" void combine(address left,address right,u32 any,Host host) on cpu
     requires nonzero(host.input_offset)
     requires nonzero(host.condition_truth_in)
     requires nonzero(host.ownership_copy)
-    requires nonzero(host.ownership_constant)
-    requires nonzero(host.take_presence)
     requires nonzero(host.copy_value);
 
 extern "C" void negate(address value,Host host) on cpu
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
-    requires nonzero(host.truth)
-    requires nonzero(host.selected)
+    requires nonzero(host.take_presence)
     requires nonzero(host.input)
-    requires nonzero(host.move_value)
     requires nonzero(host.children_scope)
-    requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
     requires nonzero(host.position_equal)
@@ -448,20 +317,15 @@ extern "C" void negate(address value,Host host) on cpu
     requires nonzero(host.input_offset)
     requires nonzero(host.condition_truth_in)
     requires nonzero(host.ownership_copy)
-    requires nonzero(host.ownership_constant)
-    requires nonzero(host.take_presence)
     requires nonzero(host.copy_value);
 
 extern "C" void selected(address output,address position,address wanted,Host host) on cpu
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
-    requires nonzero(host.truth)
-    requires nonzero(host.selected)
+    requires nonzero(host.take_presence)
     requires nonzero(host.input)
-    requires nonzero(host.move_value)
     requires nonzero(host.children_scope)
-    requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
     requires nonzero(host.position_equal)
@@ -476,20 +340,15 @@ extern "C" void selected(address output,address position,address wanted,Host hos
     requires nonzero(host.input_offset)
     requires nonzero(host.condition_truth_in)
     requires nonzero(host.ownership_copy)
-    requires nonzero(host.ownership_constant)
-    requires nonzero(host.take_presence)
     requires nonzero(host.copy_value);
 
 extern "C" void condition(address output,address value,Host host) on cpu
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
-    requires nonzero(host.truth)
-    requires nonzero(host.selected)
+    requires nonzero(host.take_presence)
     requires nonzero(host.input)
-    requires nonzero(host.move_value)
     requires nonzero(host.children_scope)
-    requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
     requires nonzero(host.position_equal)
@@ -504,20 +363,15 @@ extern "C" void condition(address output,address value,Host host) on cpu
     requires nonzero(host.input_offset)
     requires nonzero(host.condition_truth_in)
     requires nonzero(host.ownership_copy)
-    requires nonzero(host.ownership_constant)
-    requires nonzero(host.take_presence)
     requires nonzero(host.copy_value);
 
 extern "C" void loop_condition(address output,address value,address inputs,Host host) on cpu
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
-    requires nonzero(host.truth)
-    requires nonzero(host.selected)
+    requires nonzero(host.take_presence)
     requires nonzero(host.input)
-    requires nonzero(host.move_value)
     requires nonzero(host.children_scope)
-    requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
     requires nonzero(host.position_equal)
@@ -532,8 +386,6 @@ extern "C" void loop_condition(address output,address value,address inputs,Host 
     requires nonzero(host.input_offset)
     requires nonzero(host.condition_truth_in)
     requires nonzero(host.ownership_copy)
-    requires nonzero(host.ownership_constant)
-    requires nonzero(host.take_presence)
     requires nonzero(host.copy_value);
 
 extern "C" u32 ownership_may_own(address value,Host host) on cpu
@@ -544,22 +396,19 @@ extern "C" u32 ownership_available(address value,Host host) on cpu
 
 extern "C" void ownership_presence(address output,address value,Host host) on cpu
     requires nonzero(host.copy_value)
-    requires nonzero(host.truth);
+    requires nonzero(host.take_presence);
 
 extern "C" void ownership_from_presence(address output,address value,Host host) on cpu
-    requires nonzero(host.ownership_constant)
-    requires nonzero(host.take_presence);
+    requires nonzero(host.take_presence)
+    ;
 
 extern "C" void ownership_either(address output,address a,address b,address choice,u32 has_choice,Host host) on cpu
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
-    requires nonzero(host.truth)
-    requires nonzero(host.selected)
+    requires nonzero(host.take_presence)
     requires nonzero(host.input)
-    requires nonzero(host.move_value)
     requires nonzero(host.children_scope)
-    requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
     requires nonzero(host.position_equal)
@@ -574,20 +423,15 @@ extern "C" void ownership_either(address output,address a,address b,address choi
     requires nonzero(host.input_offset)
     requires nonzero(host.condition_truth_in)
     requires nonzero(host.ownership_copy)
-    requires nonzero(host.ownership_constant)
-    requires nonzero(host.take_presence)
     requires nonzero(host.copy_value);
 
 extern "C" void ownership_restricted(address output,address value,address when,Host host) on cpu
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
-    requires nonzero(host.truth)
-    requires nonzero(host.selected)
+    requires nonzero(host.take_presence)
     requires nonzero(host.input)
-    requires nonzero(host.move_value)
     requires nonzero(host.children_scope)
-    requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
     requires nonzero(host.position_equal)
@@ -602,20 +446,15 @@ extern "C" void ownership_restricted(address output,address value,address when,H
     requires nonzero(host.input_offset)
     requires nonzero(host.condition_truth_in)
     requires nonzero(host.ownership_copy)
-    requires nonzero(host.ownership_constant)
-    requires nonzero(host.take_presence)
     requires nonzero(host.copy_value);
 
 extern "C" u32 ownership_compatible(address a,address b,address inputs,address path,Host host) on cpu
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
-    requires nonzero(host.truth)
-    requires nonzero(host.selected)
+    requires nonzero(host.take_presence)
     requires nonzero(host.input)
-    requires nonzero(host.move_value)
     requires nonzero(host.children_scope)
-    requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
     requires nonzero(host.position_equal)
@@ -630,8 +469,6 @@ extern "C" u32 ownership_compatible(address a,address b,address inputs,address p
     requires nonzero(host.input_offset)
     requires nonzero(host.condition_truth_in)
     requires nonzero(host.ownership_copy)
-    requires nonzero(host.ownership_constant)
-    requires nonzero(host.take_presence)
     requires nonzero(host.copy_value);
 
 extern "C" u64 emit_presence(address context,address value,EmitHost host) on cpu
