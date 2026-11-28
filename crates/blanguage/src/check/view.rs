@@ -672,7 +672,16 @@ struct EvaluatedBorrowEdge {
     owned: OrderedEdgeTree,
 }
 
+#[repr(C)]
+struct BorrowSourceSelection {
+    context: *mut std::ffi::c_void,
+    accept: unsafe extern "C" fn(*mut std::ffi::c_void, *const Source) -> u32,
+    destination: unsafe extern "C" fn(*mut std::ffi::c_void) -> *mut std::ffi::c_void,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::union_selected_borrow_sources"]
+    fn union_selected_borrow_sources(source: BorrowEdgeGroup, host: BorrowEdgeMerge, selection: BorrowSourceSelection);
     #[link_name = "bootstrap.call_arguments::merge_evaluated_borrow_edges"]
     fn merge_evaluated_borrow_edges(
         output: BorrowEdgeGroup, count: usize, context: *mut std::ffi::c_void,
@@ -689,6 +698,20 @@ unsafe extern "C" {
 }
 
 impl Edges<Source> {
+    pub(super) fn tree_address(&mut self) -> *mut std::ffi::c_void {
+        std::ptr::from_mut(&mut self.0.tree).cast()
+    }
+
+    pub(super) fn union_selected<C>(
+        &self, context: &mut C,
+        accept: unsafe extern "C" fn(*mut std::ffi::c_void, *const Source) -> u32,
+        destination: unsafe extern "C" fn(*mut std::ffi::c_void) -> *mut std::ffi::c_void,
+    ) {
+        let selection = BorrowSourceSelection { context: std::ptr::from_mut(context).cast(), accept, destination };
+        let host = BorrowEdgeMerge::new::<Source>(clone_edge_key::<Source>, std::ptr::null_mut());
+        unsafe { union_selected_borrow_sources(self.into(), host, selection) };
+    }
+
     unsafe extern "C" fn release_key(source: *mut Source) {
         unsafe { source.drop_in_place() };
     }

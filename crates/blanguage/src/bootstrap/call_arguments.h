@@ -353,6 +353,19 @@ extern "C" void union_borrow_edges(BorrowEdgeGroup group,BorrowEdgeGroup source,
     requires nonzero(host.compare) requires nonzero(host.key) requires nonzero(host.clauses.both)
     requires nonzero(host.clauses.either) requires nonzero(host.clauses.canonical)
     requires nonzero(host.clauses.normalized);
+struct BorrowSourceSelection {
+    address context;
+    cfn<u32,address,address> accept;
+    cfn<address,address> destination;
+};
+
+extern "C" void union_selected_borrow_sources(BorrowEdgeGroup source,BorrowEdgeMerge host,
+    BorrowSourceSelection selection) on cpu
+    requires nonzero(source.stride)
+    requires nonzero(host.compare) requires nonzero(host.key)
+    requires nonzero(host.clauses.either) requires nonzero(host.clauses.canonical)
+    requires nonzero(host.clauses.normalized)
+    requires nonzero(selection.accept) requires nonzero(selection.destination);
 struct BorrowOutputShape { BorrowEdgeGroup inputs; BorrowEdgeGroup calls; BorrowEdgeGroup reads; BorrowEdgeGroup sources; };
 
 struct ReadWritePaths { address written; address unwritten; };

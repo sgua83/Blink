@@ -894,6 +894,30 @@ extern "C" void union_borrow_edges(BorrowEdgeGroup group,BorrowEdgeGroup source,
     }
 }
 
+extern "C" void union_selected_borrow_sources(BorrowEdgeGroup source,BorrowEdgeMerge host,
+    BorrowSourceSelection selection) on cpu
+    requires nonzero(source.stride)
+    requires nonzero(host.compare) requires nonzero(host.key)
+    requires nonzero(host.clauses.either) requires nonzero(host.clauses.canonical)
+    requires nonzero(host.clauses.normalized)
+    requires nonzero(selection.accept) requires nonzero(selection.destination)
+{
+    FactCursor cursor = ordered_tree_cursor(source.tree,source.stride);
+    address destination = address();
+    u64 position = 0u64;
+    while (true) {
+        address edge = ordered_tree_step(source.tree,source.stride,address_of(cursor),0);
+        if (edge == address()) { return; }
+        if (selection.accept(selection.context,edge) == 0) { continue; }
+        if (destination == address()) { destination = selection.destination(selection.context); }
+        address incoming = unsafe_position<address>(borrow_edge_condition(source,edge));
+        clause_retain(incoming);
+        OrderedPlace place = ordered_tree_seek_next(destination,source.stride,edge,position,host.compare);
+        let output = BorrowEdgeGroup(destination,source.stride,source.condition);
+        write_borrow_edge(output,place,edge,incoming,BorrowEdgeMode::Union,host);
+    }
+}
+
 extern "C" void merge_borrow_output(inout address remaining, ReadWritePaths paths,
     BorrowOutputShape output, BorrowOutputShape input, BorrowOutputMerge host,
     cfn<u32,address> conflict) on cpu

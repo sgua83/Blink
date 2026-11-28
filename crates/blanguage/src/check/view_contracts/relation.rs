@@ -2410,16 +2410,11 @@ impl ResidualProjection<'_, '_> {
         if let Some(node) = &mut patch {
             node.seeds.retain_sources(|source| !graph.private(source));
         }
-        if publish != 0 {
-            for (source, when) in query.node(id).sources.entries() {
-                if !graph.references(source) && !Borrow::source_has_local(source) {
-                    patch.get_or_insert_with(|| ResidualNode::seeds_of(original))
-                        .seeds.sources.union_when(source.clone(), &when);
-                }
-            }
-        }
         if let Some(node) = patch {
             projection.result.nodes.insert(id, node);
+        }
+        if publish != 0 {
+            projection.publish_sources(id, false);
         }
     }
 
@@ -2437,15 +2432,37 @@ impl ResidualProjection<'_, '_> {
 
     unsafe extern "C" fn field(context: Slot, id: usize) {
         let projection = unsafe { &mut *context.cast::<Self>() };
-        let query = projection.query;
-        let graph = query.graph;
-        for (source, when) in query.node(id).sources.entries() {
-            if graph.private(source) {
-                projection.result.nodes.entry(id)
-                    .or_insert_with(|| ResidualNode::seeds_of(&graph.nodes[id]))
-                    .seeds.sources.union_when(source.clone(), &when);
-            }
-        }
+        projection.publish_sources(id, true);
+    }
+
+    fn publish_sources(&mut self, id: usize, local: bool) {
+        let query = self.query;
+        let mut selection = ResidualSources { graph: query.graph, nodes: &mut self.result.nodes, id, local };
+        query.node(id).sources.union_selected(&mut selection, ResidualSources::accept, ResidualSources::destination);
+    }
+}
+
+struct ResidualSources<'a> {
+    graph: &'a Graph,
+    nodes: &'a mut BTreeMap<usize, ResidualNode>,
+    id: usize,
+    local: bool,
+}
+
+impl ResidualSources<'_> {
+    unsafe extern "C" fn accept(context: Slot, source: *const Origin) -> u32 {
+        let selection = context.cast::<Self>();
+        let (graph, local) = unsafe { ((*selection).graph, (*selection).local) };
+        let source = unsafe { &*source };
+        u32::from(!graph.references(source) && Borrow::source_has_local(source) == local)
+    }
+
+    unsafe extern "C" fn destination(context: Slot) -> Slot {
+        let selection = unsafe { &mut *context.cast::<Self>() };
+        let graph = selection.graph;
+        let id = selection.id;
+        selection.nodes.entry(id).or_insert_with(|| ResidualNode::seeds_of(&graph.nodes[id]))
+            .seeds.sources.tree_address()
     }
 }
 
