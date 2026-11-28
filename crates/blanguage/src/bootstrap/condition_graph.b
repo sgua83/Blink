@@ -803,11 +803,11 @@ extern "C" FactView negated_fact(FactView value,FactHost host) on cpu
 }
 
 
-extern "C" void project_call_graph(address context,CallProjectionHost host) on cpu
- requires nonzero(host.next) requires nonzero(host.impossible) requires nonzero(host.facts)
+extern "C" void project_call_graph(inout TraversalStack stack,address context,CallProjectionHost host) on cpu
+ requires nonzero(host.completed) requires nonzero(host.impossible) requires nonzero(host.facts)
  requires nonzero(host.both) requires nonzero(host.either) {
  while(true){
-  address next=host.next(context);
+  address next=clause_postorder_next(stack,context,host.completed);
   if(address_bits(next)==0u64){return;}
   SourceNode source=clause_source(next);
   if(source.kind==0){host.impossible(context,next);}

@@ -18,14 +18,14 @@ extern "C" void condition_node_ids(inout TraversalStack stack,address graph,u32 
 extern "C" void traversal_stack_drop(inout TraversalStack stack) on cpu;
 
 struct CallProjectionHost {
- cfn<address,address> next;
+ cfn<u32,address,address> completed;
  cfn<void,address,address> impossible;
  cfn<void,address,address,address> facts;
  cfn<void,address,address,address,address> both;
  cfn<void,address,address,address,address> either;
 };
-extern "C" void project_call_graph(address context,CallProjectionHost host) on cpu
- requires nonzero(host.next) requires nonzero(host.impossible) requires nonzero(host.facts)
+extern "C" void project_call_graph(inout TraversalStack stack,address context,CallProjectionHost host) on cpu
+ requires nonzero(host.completed) requires nonzero(host.impossible) requires nonzero(host.facts)
  requires nonzero(host.both) requires nonzero(host.either);
 struct Gate { usize left; usize right; u32 kind; usize parent_start; usize parent_count; };
 struct Graph { address nodes; usize stride; address values; address parents; };

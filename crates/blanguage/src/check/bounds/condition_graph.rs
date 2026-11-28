@@ -580,16 +580,13 @@ pub(super) fn bind_output_proof(source: &Proof, capture: Option<&Value>, binding
 }
 
 struct CallProjection<'a, P> {
-    pending: ClausePostorder<'a>,
     bindings: &'a P,
     results: HashMap<usize, (Clause, bool)>,
 }
 
-unsafe extern "C" fn call_next<P>(slot: Slot) -> Borrowed {
-    let ctx = unsafe { &mut *slot.cast::<CallProjection<'_, P>>() };
-    let results = &ctx.results;
-    ctx.pending.next(|key| results.contains_key(&key))
-        .map_or(ptr::null(), |clause| ptr::from_ref(clause).cast())
+unsafe extern "C" fn call_completed<P>(slot: Slot, source: Borrowed) -> u32 {
+    let ctx = unsafe { &*slot.cast::<CallProjection<'_, P>>() };
+    u32::from(ctx.results.contains_key(&unsafe { call_key(source) }))
 }
 
 unsafe fn call_key(source: Borrowed) -> usize {
@@ -617,7 +614,7 @@ unsafe extern "C" fn call_pair<P, const EITHER: bool>(slot: Slot, source: Borrow
 
 #[repr(C)]
 struct CallProjectionHost {
-    next: unsafe extern "C" fn(Slot) -> Borrowed,
+    completed: unsafe extern "C" fn(Slot, Borrowed) -> u32,
     impossible: unsafe extern "C" fn(Slot, Borrowed),
     facts: unsafe extern "C" fn(Slot, Borrowed, Borrowed),
     both: unsafe extern "C" fn(Slot, Borrowed, Borrowed, Borrowed),
@@ -626,20 +623,20 @@ struct CallProjectionHost {
 
 unsafe extern "C" {
     #[link_name = "bootstrap.condition_graph::project_call_graph"]
-    fn project_call_graph(slot: Slot, host: CallProjectionHost);
+    fn project_call_graph(stack: &mut TraversalStack, slot: Slot, host: CallProjectionHost);
 }
 
 pub(super) fn project_call<'a, P: CallBindings>(
     roots: impl IntoIterator<Item = &'a Clause>, bindings: &'a P,
 ) -> HashMap<usize, (Clause, bool)> {
+    let mut pending = ClausePostorder::new(roots);
     let mut ctx = CallProjection {
-        pending: ClausePostorder::new(roots),
         bindings,
         results: HashMap::new(),
     };
     unsafe {
-        project_call_graph(std::ptr::from_mut(&mut ctx).cast(), CallProjectionHost {
-            next: call_next::<P>,
+        project_call_graph(&mut pending.stack, ptr::from_mut(&mut ctx).cast(), CallProjectionHost {
+            completed: call_completed::<P>,
             impossible: call_impossible::<P>,
             facts: call_leaf::<P>,
             both: call_pair::<P, false>,
