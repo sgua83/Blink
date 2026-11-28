@@ -393,6 +393,110 @@ pub(super) enum TaskProjection { Returned(usize,Option<ValueIdentity>), Writes, 
 
 #[repr(u32)]
 #[derive(Clone, Copy)]
+enum BorrowFieldKind { Field, Element }
+
+#[repr(u32)]
+enum BorrowFieldAction { Field, Element, ExpandElement }
+
+#[repr(C)]
+struct BorrowFieldSpan { data: *const usize, count: usize }
+
+#[repr(C)]
+struct BorrowFieldHost {
+    context: *mut std::ffi::c_void,
+    next: unsafe extern "C" fn(*mut std::ffi::c_void) -> u32,
+    reserve: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> *mut usize,
+    emit: unsafe extern "C" fn(*mut std::ffi::c_void, BorrowFieldAction, usize),
+    emit_pending: unsafe extern "C" fn(*mut std::ffi::c_void),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::project_borrow_fields"]
+    fn b_project_borrow_fields(fields: BorrowFieldSpan, count: usize, kind: BorrowFieldKind, pending: u32, host: BorrowFieldHost);
+}
+
+struct BorrowFieldProjection {
+    remaining: std::collections::btree_map::IntoIter<Source, bounds::Clause>,
+    current: Option<(Box<Borrow>, bounds::Clause)>,
+    path: Vec<usize>,
+    pending: Borrow,
+    fields: Vec<usize>,
+    kind: BorrowFieldKind,
+    index: Option<bounds::Selector>,
+    result: Borrow,
+}
+
+impl BorrowFieldProjection {
+    unsafe extern "C" fn next(context: *mut std::ffi::c_void) -> u32 {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let (source, when) = input.remaining.next().unwrap();
+        match source {
+            Source::Projection { parent, fields } => {
+                input.path = fields;
+                input.current = Some((parent, when));
+                1
+            }
+            source => {
+                input.current = Some((Box::new(Borrow::source(source)), when));
+                0
+            }
+        }
+    }
+
+    unsafe extern "C" fn reserve(context: *mut std::ffi::c_void, length: usize) -> *mut usize {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        input.path.reserve(length);
+        input.path.spare_capacity_mut().as_mut_ptr().cast()
+    }
+
+    unsafe extern "C" fn emit(context: *mut std::ffi::c_void, action: BorrowFieldAction, appended: usize) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let (parent, when) = input.current.take().unwrap();
+        let mut fields = std::mem::take(&mut input.path);
+        // The B caller writes each reserved field before it hands the path back.
+        unsafe { fields.set_len(fields.len() + appended) };
+        match action {
+            BorrowFieldAction::Field => input.result.sources.insert_when(Source::Projection { parent, fields }, when),
+            BorrowFieldAction::Element => {
+                let selected = Borrow::source(Source::Element { parent, fields, index: input.index });
+                input.result.union_restricted(&selected, &when);
+            }
+            BorrowFieldAction::ExpandElement => {
+                let selected = Borrow::selected_element(*parent, fields, input.index);
+                input.result.union_restricted(&selected, &when);
+            }
+        }
+    }
+
+    unsafe extern "C" fn emit_pending(context: *mut std::ffi::c_void) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let parent = Box::new(std::mem::take(&mut input.pending));
+        let fields = std::mem::take(&mut input.fields);
+        let source = match input.kind {
+            BorrowFieldKind::Field => Source::Projection { parent, fields },
+            BorrowFieldKind::Element => Source::Element { parent, fields, index: input.index },
+        };
+        input.result.sources.insert(source);
+    }
+
+    fn project(parent: Borrow, fields: Vec<usize>, kind: BorrowFieldKind, index: Option<bounds::Selector>) -> Borrow {
+        let Borrow { sources, inputs, calls, reads } = parent;
+        let remaining = sources.0.into_iter();
+        let count = remaining.len();
+        let pending = Borrow { inputs, calls, reads, ..Borrow::default() };
+        let has_pending = u32::from(!pending.empty());
+        let field_span = BorrowFieldSpan { data: fields.as_ptr(), count: fields.len() };
+        let mut input = Self { remaining, current: None, path: Vec::new(), pending, fields, kind, index,
+            result: Borrow::default() };
+        let host = BorrowFieldHost { context: std::ptr::from_mut(&mut input).cast(), next: Self::next,
+            reserve: Self::reserve, emit: Self::emit, emit_pending: Self::emit_pending };
+        unsafe { b_project_borrow_fields(field_span, count, kind, has_pending, host) };
+        input.result
+    }
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy)]
 enum TaskBorrowProjection { Returned, ReturnedWithCompletion, Writes, Places, Initialized }
 
 impl From<&TaskProjection> for TaskBorrowProjection {
@@ -562,23 +666,7 @@ impl Borrow{
     }
 
     pub(super) fn selected_element(parent:Self,fields:Vec<usize>,index:Option<bounds::Selector>)->Self {
-        let mut result=Self::default();
-        for (source, when) in parent.sources.into_entries() {
-            let value = match source {
-                Source::Projection { parent, fields: mut prefix } => {
-                    prefix.extend_from_slice(&fields);
-                    Self::selected_element(*parent, prefix, index)
-                }
-                source => Self::source(Source::Element {
-                    parent: Box::new(Self::source(source)), fields: fields.clone(), index,
-                }),
-            };
-            result.union_restricted(&value,&when);
-        }
-        if !parent.inputs.is_empty()||!parent.calls.is_empty()||!parent.reads.is_empty(){
-            result.sources.insert(Source::Element{parent:Box::new(Self{inputs:parent.inputs,calls:parent.calls,reads:parent.reads,..Self::default()}),fields,index});
-        }
-        result
+        BorrowFieldProjection::project(parent, fields, BorrowFieldKind::Element, index)
     }
     // This projects a common input family; existing caller identities are not rebound.
     pub(super) fn select_elements(&self,indices:&[Option<bounds::Selector>])->Self {
@@ -632,24 +720,8 @@ impl Borrow{
         })
     }
     pub fn projection(parent:Self,fields:Vec<usize>)->Self {
-        if fields.is_empty(){return parent;}
-        let mut result=Self::default();
-        for (source, when) in parent.sources.into_entries() {
-            let projected = match source {
-                Source::Projection { parent, fields: mut prefix } => {
-                    prefix.extend_from_slice(&fields);
-                    Source::Projection { parent, fields: prefix }
-                }
-                source => Source::Projection {
-                    parent: Box::new(Self::source(source)), fields: fields.clone(),
-                },
-            };
-            result.sources.insert_when(projected,when);
-        }
-        if !parent.inputs.is_empty()||!parent.calls.is_empty()||!parent.reads.is_empty(){
-            result.sources.insert(Source::Projection{parent:Box::new(Self{inputs:parent.inputs,calls:parent.calls,reads:parent.reads,..Self::default()}),fields});
-        }
-        result
+        if fields.is_empty() { return parent; }
+        BorrowFieldProjection::project(parent, fields, BorrowFieldKind::Field, None)
     }
     pub(super) fn task_projection(&self,projection:TaskProjection)->Self {
         let pending = !self.inputs.is_empty() || !self.calls.is_empty() || !self.reads.is_empty();

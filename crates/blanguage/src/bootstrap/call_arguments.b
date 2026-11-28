@@ -706,6 +706,32 @@ extern "C" void project_task_borrows(usize count, TaskBorrowProjection projectio
     if (pending != 0) { host.emit_pending(host.context); }
 }
 
+extern "C" void project_borrow_fields(BorrowFieldSpan fields, usize count, BorrowFieldKind kind, u32 pending, BorrowFieldHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.reserve) requires nonzero(host.emit) requires nonzero(host.emit_pending) {
+    usize source = 0u64;
+    while (source < count) {
+        let projected = host.next(host.context);
+        if (fields.count != 0u64) {
+            let tail = host.reserve(host.context, fields.count);
+            usize field = 0u64;
+            while (field < fields.count) {
+                let offset = field * size_of<usize>();
+                let from = unsafe_address(address_bits(fields.data) + offset);
+                let to = unsafe_address(address_bits(tail) + offset);
+                unsafe_position<usize>(to) = unsafe_position<usize>(from);
+                field += 1u64;
+            }
+        }
+        BorrowFieldAction action = BorrowFieldAction::Field;
+        if (kind == BorrowFieldKind::Element) {
+            action = projected != 0 ? BorrowFieldAction::ExpandElement : BorrowFieldAction::Element;
+        }
+        host.emit(host.context, action, fields.count);
+        source += 1u64;
+    }
+    if (pending != 0) { host.emit_pending(host.context); }
+}
+
 extern "C" void map_call_borrows(BorrowCallCounts counts, BorrowCallHost host) on cpu
     requires nonzero(host.collect) requires nonzero(host.project)
     requires nonzero(host.restore) requires nonzero(host.map_source) {

@@ -284,6 +284,19 @@ struct TaskBorrowHost {
 extern "C" void project_task_borrows(usize count, TaskBorrowProjection projection, u32 pending, TaskBorrowHost host) on cpu
     requires nonzero(host.next) requires nonzero(host.emit) requires nonzero(host.emit_pending);
 
+enum BorrowFieldKind:u32 { Field=0; Element=1; };
+enum BorrowFieldAction:u32 { Field=0; Element=1; ExpandElement=2; };
+struct BorrowFieldSpan { address data; usize count; };
+struct BorrowFieldHost {
+    address context;
+    cfn<u32,address> next;
+    cfn<address,address,usize> reserve;
+    cfn<void,address,BorrowFieldAction,usize> emit;
+    cfn<void,address> emit_pending;
+};
+extern "C" void project_borrow_fields(BorrowFieldSpan fields, usize count, BorrowFieldKind kind, u32 pending, BorrowFieldHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.reserve) requires nonzero(host.emit) requires nonzero(host.emit_pending);
+
 struct AddressRequirements { u32 writable; u32 initialized; u32 atomic; };
 enum AddressViolation:u32 { None=0; Inactive=1; Layout=2; Atomic=3; ReadOnly=4; Uninitialized=5; };
 struct AddressRequirementHost {
