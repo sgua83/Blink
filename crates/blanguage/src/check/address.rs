@@ -2480,39 +2480,16 @@ pub(super) struct InitializationRead {
     pub dataset_output: Option<DatasetOutput>,
 }
 impl InitializationRead {
-    pub fn missing(&self)->Vec<&Position> {
-        self.positions.iter().filter(|position|!position.initialized_by(&self.initialized)).collect()
+    pub fn complete(&self) -> bool {
+        ownership::initialization_read_complete(self)
     }
-    pub fn complete(&self)->bool {
-        fn input(position:&Position)->bool {match position {
-            Position::Borrowed(borrow,..)=>!borrow.empty()&&borrow.sources.iter().all(|source|match source {
-                view::Source::Parameter(ValueIdentity::Register(_)|ValueIdentity::ParameterContent(..),_)=>true,
-                view::Source::Position(origin)=>origin.symbolic_input()&&!origin.has_local(),
-                _=>false,
-            })&&borrow.inputs.is_empty()&&borrow.calls.is_empty(),
-            Position::Both(a,b)|Position::Conditional(_,a,b)=>input(a)&&input(b),
-            Position::Indexed(choices,_)=>choices.iter().all(input),
-            Position::Initialized=>true,
-            _=>false,
-        }}
-        self.missing().into_iter().all(input)
+
+    pub fn missing_borrow(&self) -> Option<view::Borrow> {
+        ownership::initialization_read_borrow(self)
     }
-    pub fn borrow(&self)->view::Borrow {
-        fn visit(position:&Position,result:&mut view::Borrow) {match position {
-            Position::ApplicationInput(input,..)=>result.inputs.insert(*input),
-            Position::Borrowed(borrow,layout,word)=>{
-                let(scalar,_)=layout.parts.iter().find(|(_,at)|at==word).unwrap();
-                let part=Layout{size:scalar.size(),align:scalar.size(),parts:Arc::from([(*scalar,0)])};
-                let origin=Origin{root:Root::Derived(borrow.as_ref().clone()),layout:part,base:layout.clone(),words:Arc::from([*word]),positions:Arc::from([]),writable:false,initialized:Arc::from([false])};
-                result.union(&origin.normalize());
-            }
-            Position::Both(a,b)|Position::Conditional(_,a,b)=>{visit(a,result);visit(b,result);}
-            Position::Indexed(choices,_)=>for choice in choices.iter(){visit(choice,result);},
-            _=>{},
-        }}
-        let mut result=view::Borrow::default();
-        for position in self.missing(){visit(position,&mut result);}
-        result
+
+    pub fn borrow(&self) -> view::Borrow {
+        self.missing_borrow().unwrap_or_default()
     }
 }
 

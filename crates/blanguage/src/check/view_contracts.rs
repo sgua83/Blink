@@ -576,7 +576,7 @@ impl Function {
         Some(selected.guards_at_call(parameters))
     }
     fn initialization_access(&self,parameters:&BTreeMap<ValueIdentity,bounds::Proof>,read:&address::InitializationRead,when:&bounds::Clause,project:&impl Fn(&bounds::Clause,&BTreeMap<ValueIdentity,bounds::Proof>)->bounds::Clause)->Option<Access>{
-        if read.missing().is_empty(){return None;}
+        let borrow = read.missing_borrow()?;
         let initialized:Vec<_>=address::initialization_effects(&read.initialized,&bounds::Clause::default()).into_iter().filter_map(|effect|{
             let address::InitializationEffect::Position(mut fact)=effect else{return None;};
             if fact.source.borrow().has_local(){return None;}
@@ -596,7 +596,7 @@ impl Function {
             fact.when=fact.when.guaranteed_at_call(parameters);
             Some(fact)
         }).collect();
-        self.address_access(parameters,read.borrow(),|borrows,when|Access::Initialized{borrows,initialized:address::merge_initializations(initialized),when},when,project)
+        self.address_access(parameters,borrow,|borrows,when|Access::Initialized{borrows,initialized:address::merge_initializations(initialized),when},when,project)
     }
     fn address_access(&self,parameters:&BTreeMap<ValueIdentity,bounds::Proof>,borrow:Borrow,make:impl FnOnce(Borrow,bounds::Condition)->Access,when:&bounds::Clause,project:&impl Fn(&bounds::Clause,&BTreeMap<ValueIdentity,bounds::Proof>)->bounds::Clause)->Option<Access>{
         let borrows = self.public_borrows(parameters,borrow,PublicBorrowKind::Memory)?;

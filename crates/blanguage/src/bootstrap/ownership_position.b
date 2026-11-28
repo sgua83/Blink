@@ -411,6 +411,57 @@ extern "C" u32 ready(address value,address known,Host host) on cpu
     requires nonzero(host.iterate)
     requires nonzero(host.next)
     requires nonzero(host.drop_iterator) { return initialized(original(value),unconditional(known),host) ? 1 : 0;}
+bool visit_missing_read_position(address value, address output, InitializationReadMode mode,
+    Host host, InitializationReadHost read) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.child)
+    requires nonzero(read.input) requires nonzero(read.emit) {
+    let shape = host.inspect(value);
+    if (shape.kind == 10 || shape.kind == 11 || shape.kind == 12) {
+        u64 slot = 0u64;
+        while (slot < shape.count) {
+            if (!visit_missing_read_position(host.child(value, slot), output, mode, host, read)) {
+                return false;
+            }
+            slot += 1u64;
+        }
+        return true;
+    }
+    if (mode == InitializationReadMode::Complete) {
+        return shape.kind == 0 || (shape.kind == 2 && read.input(value) != 0);
+    }
+    if (shape.kind == 2 || shape.kind == 9) {
+        read.emit(output, value);
+    }
+    return true;
+}
+
+extern "C" u32 initialization_read(address positions, address known, address output,
+    InitializationReadMode mode, Host host, InitializationReadHost read) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.child)
+    requires nonzero(host.equal) requires nonzero(host.identity_equal)
+    requires nonzero(host.presence_kind) requires nonzero(host.presence_equal)
+    requires nonzero(host.contains) requires nonzero(host.contains_parameter)
+    requires nonzero(host.contains_element) requires nonzero(host.contains_input)
+    requires nonzero(host.field_coverage) requires nonzero(host.iterate)
+    requires nonzero(host.next) requires nonzero(host.drop_iterator)
+    requires nonzero(host.vector_count) requires nonzero(host.vector_at)
+    requires nonzero(read.input) requires nonzero(read.emit) {
+    u32 missing = 0;
+    let count = host.vector_count(positions);
+    u64 slot = 0u64;
+    while (slot < count) {
+        let value = host.vector_at(positions, slot);
+        if (ready(value, known, host) == 0) {
+            missing = 1;
+            if (!visit_missing_read_position(value, output, mode, host, read)) {
+                return 0;
+            }
+        }
+        slot += 1u64;
+    }
+    return mode == InitializationReadMode::Complete ? 1 : missing;
+}
+
 extern "C" u32 word_ready(address value,PositionIndex selected,u32 field,address known,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.child)

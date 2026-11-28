@@ -171,6 +171,75 @@ pub(super) fn dataset_position(value: &Position, operand: bounds::Operand) -> Op
     let result = unsafe { source_dataset_position(pointer(value), index(selected.as_ref()), HOST, cleanup) };
     (!result.is_null()).then(|| *unsafe { Box::from_raw(result.cast::<Position>()) })
 }
+#[repr(u32)]
+enum InitializationReadMode { Complete, Borrow }
+
+#[repr(C)]
+struct InitializationReadHost {
+    input: unsafe extern "C" fn(Address) -> u32,
+    emit: unsafe extern "C" fn(Address, Address),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ownership_position::initialization_read"]
+    fn source_initialization_read(
+        positions: Address, known: Address, output: Address, mode: InitializationReadMode,
+        host: Host, read: InitializationReadHost,
+    ) -> u32;
+}
+
+unsafe extern "C" fn input_initialization_read(value: Address) -> u32 {
+    let Position::Borrowed(borrow, ..) = (unsafe { &*value.cast::<Position>() }) else { unreachable!() };
+    u32::from(!borrow.empty() && borrow.sources.iter().all(|source| match source {
+        view::Source::Parameter(ValueIdentity::Register(_) | ValueIdentity::ParameterContent(..), _) => true,
+        view::Source::Position(origin) => origin.symbolic_input() && !origin.has_local(),
+        _ => false,
+    }) && borrow.inputs.is_empty() && borrow.calls.is_empty())
+}
+
+unsafe extern "C" fn emit_initialization_read(output: Address, value: Address) {
+    let output = unsafe { &mut *output.cast::<view::Borrow>() };
+    match unsafe { &*value.cast::<Position>() } {
+        Position::ApplicationInput(input, ..) => output.inputs.insert(*input),
+        Position::Borrowed(borrow, layout, word) => {
+            let (scalar, _) = layout.parts.iter().find(|(_, at)| at == word).unwrap();
+            let origin = address::Origin {
+                root: address::Root::Derived(borrow.as_ref().clone()),
+                layout: address::Layout { size: scalar.size(), align: scalar.size(), parts: Arc::from([(*scalar, 0)]) },
+                base: layout.clone(),
+                words: Arc::from([*word]),
+                positions: Arc::from([]),
+                writable: false,
+                initialized: Arc::from([false]),
+            };
+            output.union(&origin.normalize());
+        }
+        _ => unreachable!(),
+    }
+}
+
+// The original read snapshot remains borrowed throughout the B traversal.
+const READ_HOST: InitializationReadHost = InitializationReadHost {
+    input: input_initialization_read,
+    emit: emit_initialization_read,
+};
+
+pub(in crate::check) fn initialization_read_complete(read: &address::InitializationRead) -> bool {
+    unsafe {
+        source_initialization_read(pointer(&read.positions), pointer(&read.initialized),
+            std::ptr::null_mut(), InitializationReadMode::Complete, HOST, READ_HOST) != 0
+    }
+}
+
+pub(in crate::check) fn initialization_read_borrow(read: &address::InitializationRead) -> Option<view::Borrow> {
+    let mut result = view::Borrow::default();
+    let missing = unsafe {
+        source_initialization_read(pointer(&read.positions), pointer(&read.initialized),
+            std::ptr::from_mut(&mut result).cast(), InitializationReadMode::Borrow, HOST, READ_HOST) != 0
+    };
+    missing.then_some(result)
+}
+
 pub(super) fn initialized(value:&Position,known:&BTreeSet<Position>)->bool {unsafe{source_ready(pointer(value),pointer(known),HOST)!=0}}
 pub(super) fn word_initialized(value:&Position,at:Option<ApplicationIndex>,word:u32,known:&BTreeSet<Position>)->bool {
     unsafe{source_word_ready(pointer(value),index(at.as_ref()),word,pointer(known),HOST)!=0}
