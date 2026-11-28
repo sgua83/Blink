@@ -50,11 +50,6 @@ impl TileKey {
 #[cfg(feature = "compiler")]
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
-struct TileCell { byte: u32, bytes: u32 }
-
-#[cfg(feature = "compiler")]
-#[derive(Clone, Copy, Default)]
-#[repr(C)]
 pub(crate) struct TileExtents {
     pub(crate) narrow: usize,
     pub(crate) wide: usize,
@@ -70,7 +65,7 @@ pub(crate) struct PlacedTiles {
 #[cfg(feature = "compiler")]
 #[allow(dead_code)]
 #[repr(u32)]
-enum TileScratch { Rows, Members, Narrow, Wide }
+enum TileScratch { Rows, Members, Narrow, Wide, Cells }
 
 #[cfg(feature = "compiler")]
 #[repr(C)]
@@ -89,8 +84,6 @@ struct TileLayoutHost {
     ir: dataflow::Host,
     context: *mut c_void,
     reserve: unsafe extern "C" fn(*mut c_void, TileScratch, usize) -> *mut c_void,
-    describe: unsafe extern "C" fn(*mut c_void, TileKey, TileCell),
-    cell: unsafe extern "C" fn(*const c_void, TileKey) -> TileCell,
     birth: unsafe extern "C" fn(*const c_void, usize) -> i64,
     publish: unsafe extern "C" fn(*mut c_void, dataflow::TilePlacedWord),
 }
@@ -98,8 +91,7 @@ struct TileLayoutHost {
 #[cfg(feature = "compiler")]
 struct TileStorage<'a> {
     births: &'a BTreeMap<usize, i64>,
-    cells: BTreeMap<SharedWord, TileCell>,
-    scratch: [Vec<MaybeUninit<u64>>; 4],
+    scratch: [Vec<MaybeUninit<u64>>; 5],
     words: dataflow::TileLayout,
 }
 
@@ -115,16 +107,6 @@ unsafe extern "C" fn reserve_tile_storage(context: *mut c_void, bank: TileScratc
     let rows = &mut storage.scratch[bank as usize];
     rows.resize_with(count, MaybeUninit::uninit);
     rows.as_mut_ptr().cast()
-}
-
-#[cfg(feature = "compiler")]
-unsafe extern "C" fn describe_tile_cell(context: *mut c_void, key: TileKey, cell: TileCell) {
-    unsafe { &mut *context.cast::<TileStorage<'_>>() }.cells.insert(key.word(), cell);
-}
-
-#[cfg(feature = "compiler")]
-unsafe extern "C" fn tile_cell(context: *const c_void, key: TileKey) -> TileCell {
-    unsafe { &*context.cast::<TileStorage<'_>>() }.cells.get(&key.word()).copied().unwrap_or_default()
 }
 
 #[cfg(feature = "compiler")]
@@ -226,7 +208,7 @@ impl Stage {
         // Vulkan normalizes the layout input to cells after the exact reads are consumed.
         let inputs = if publish { dataflow::input_fragments(self, &uses) } else { Vec::new() };
         let mut storage = TileStorage {
-            births: &births, cells: BTreeMap::new(), scratch: Default::default(), words: Vec::new(),
+            births: &births, scratch: Default::default(), words: Vec::new(),
         };
         let input = TileLayoutInput {
             tiles: dataflow::Span::slice(&self.tiles), groups: dataflow::Span::slice(&groups),
@@ -235,8 +217,7 @@ impl Stage {
         let extents = unsafe {
             place_tile(input, TileLayoutHost {
                 ir: dataflow::HOST, context: std::ptr::from_mut(&mut storage).cast(),
-                reserve: reserve_tile_storage, describe: describe_tile_cell,
-                cell: tile_cell, birth: tile_birth, publish: push_placed_word,
+                reserve: reserve_tile_storage, birth: tile_birth, publish: push_placed_word,
             })
         };
         (PlacedTiles { words: storage.words, extents }, inputs, uses)

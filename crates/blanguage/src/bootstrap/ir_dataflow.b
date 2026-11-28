@@ -2026,44 +2026,27 @@ bool tile_key_less(TileKey a, TileKey b) on cpu {
     return a.byte < b.byte;
 }
 
-address tile_use_at(Span uses, TileKey key) on cpu {
+address tile_key_row(Span rows, TileKey key) on cpu {
     usize low = 0u64;
-    usize high = uses.count;
+    usize high = rows.count;
     while (low < high) {
         usize middle = low + (high - low) / 2u64;
-        address row = node_at(uses, middle, 0).data;
-        if (tile_key_less(unsafe_position<TileUse>(row).key, key)) {
+        address row = node_at(rows, middle, 0).data;
+        if (tile_key_less(unsafe_position<TileKey>(row), key)) {
             low = middle + 1u64;
         } else {
             high = middle;
         }
     }
-    if (low == uses.count) { return address(); }
-    address row = node_at(uses, low, 0).data;
-    return tile_key_less(key, unsafe_position<TileUse>(row).key) ? address() : row;
+    if (low == rows.count) { return address(); }
+    address row = node_at(rows, low, 0).data;
+    return tile_key_less(key, unsafe_position<TileKey>(row)) ? address() : row;
 }
 
 bool tile_word_read(Span uses, TileKey key) on cpu {
     u32 bit = u32(1) << (key.byte % 4);
-    address row = tile_use_at(uses, TileKey(key.storage, key.owner, key.byte & 0xfffffffc));
+    address row = tile_key_row(uses, TileKey(key.storage, key.owner, key.byte & 0xfffffffc));
     return row != address() && (unsafe_position<TileUse>(row).read_mask & bit) != 0;
-}
-
-address tile_placed_word(Span placed, TileKey key) on cpu {
-    usize low = 0u64;
-    usize high = placed.count;
-    while (low < high) {
-        usize middle = low + (high - low) / 2u64;
-        address row = node_at(placed, middle, 0).data;
-        if (tile_key_less(unsafe_position<TilePlacedWord>(row).key, key)) {
-            low = middle + 1u64;
-        } else {
-            high = middle;
-        }
-    }
-    if (low == placed.count) { return address(); }
-    address row = node_at(placed, low, 0).data;
-    return tile_key_less(key, unsafe_position<TilePlacedWord>(row).key) ? address() : row;
 }
 
 TileInputFragment tile_input_fragment(Span fragments, usize index) on cpu {

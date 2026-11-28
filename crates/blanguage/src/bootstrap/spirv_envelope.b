@@ -3590,7 +3590,7 @@ struct TileLocation { u32 pointer; u32 byte; };
 
 TileCell tile_storage_cell(TileStorage storage, TileKey key) on cpu {
     TileKey aligned = TileKey(key.storage, key.owner, key.byte & 0xfffffffc);
-    address row = tile_placed_word(storage.placed, aligned);
+    address row = tile_key_row(storage.placed, aligned);
     u32 byte = key.byte % 4;
     if (row == address()) { return TileCell(BuiltinScalar::U32, 0, byte, 0); }
     TilePlacedWord placed = unsafe_position<TilePlacedWord>(row);

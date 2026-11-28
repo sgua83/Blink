@@ -4238,7 +4238,7 @@ TilePublishCode tile_publish_value(TilePublishInput input, address output) on cp
 }
 
 u32 tile_frame_offset(Span placed, TileKey key) on cpu {
-    address row = tile_placed_word(placed, key);
+    address row = tile_key_row(placed, key);
     if (row == address()) { abort(); }
     return u32(unsafe_position<TilePlacedWord>(row).position);
 }

@@ -37,7 +37,9 @@ extern "C" u64 merge_bindings(address output, u64 left_count, BindingSpan right)
 
 struct TilePlacement { i64 begin; i64 end; u64 first; u64 count; u64 width; u32 bytes; };
 struct TileBuffer { address data; u64 count; u64 capacity; };
-struct TilePlan { TileBuffer rows; TileBuffer members; };
+struct TileCell { u32 byte; u32 bytes; };
+struct TileCellRow { TileKey key; TileCell cell; u64 ordinal; };
+struct TilePlan { TileBuffer rows; TileBuffer members; Span cells; };
 
 address tile_piece<T>(address data, u64 index) on cpu {
     return unsafe_address(address_bits(data) + index * size_of<T>());
@@ -54,8 +56,17 @@ void tile_push<T>(inout TileBuffer buffer, TileScratch bank, T value, TileLayout
     buffer.count += 1u64;
 }
 
-void tile_describe_cells(Span tiles, TileLayoutHost host) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.describe) {
+extern "C" bool tile_cell_before(address left, address right, address context) on cpu {
+    TileCellRow a = unsafe_position<TileCellRow>(left);
+    TileCellRow b = unsafe_position<TileCellRow>(right);
+    if (tile_key_less(a.key, b.key)) { return true; }
+    if (tile_key_less(b.key, a.key)) { return false; }
+    return a.ordinal < b.ordinal;
+}
+
+Span tile_describe_cells(Span tiles, TileLayoutHost host) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.reserve) {
+    TileBuffer cells = TileBuffer(address(), 0u64, 0u64);
     u64 index = 0u64;
     while (index < tiles.count) {
         View tile = host.ir.inspect(Node(span_item_at(tiles, index), N_TILE));
@@ -65,18 +76,41 @@ void tile_describe_cells(Span tiles, TileLayoutHost host) on cpu
             View field = host.ir.inspect(Node(span_item_at(tile.first, component), N_COMPONENT));
             u32 low = (origin.byte + u32(field.a)) & 0xfffffffc;
             u32 bytes = field.b == 8u64 ? 8 : 4;
-            host.describe(host.context, TileKey(origin.storage, origin.owner, low), TileCell(low, bytes));
+            TileCellRow row = TileCellRow(
+                TileKey(origin.storage, origin.owner, low), TileCell(low, bytes), cells.count);
+            tile_push<TileCellRow>(cells, TileScratch::Cells, row, host);
             if (bytes == 8) {
-                host.describe(host.context, TileKey(origin.storage, origin.owner, low + 4), TileCell(low, bytes));
+                row.key.byte += 4;
+                row.ordinal = cells.count;
+                tile_push<TileCellRow>(cells, TileScratch::Cells, row, host);
             }
             component += 1u64;
         }
         index += 1u64;
     }
+    // Move the complete five-word record. The comparison reads the original key and ordinal.
+    sort_rows<array<u64,5>>(cells.data, cells.count, address(), c_function(tile_cell_before));
+    // Overlapping tile views retain the latest description of the same key.
+    u64 kept = 0u64;
+    index = 0u64;
+    while (index < cells.count) {
+        TileCellRow row = unsafe_position<TileCellRow>(tile_piece<TileCellRow>(cells.data, index));
+        if (kept == 0u64 || tile_key_less(
+                unsafe_position<TileCellRow>(tile_piece<TileCellRow>(cells.data, kept - 1u64)).key, row.key)) {
+            kept += 1u64;
+        }
+        unsafe_position<TileCellRow>(tile_piece<TileCellRow>(cells.data, kept - 1u64)) = row;
+        index += 1u64;
+    }
+    return Span(cells.data, kept, size_of<TileCellRow>());
 }
 
-u64 tile_join_uses(address uses, u64 count, TileLayoutHost host) on cpu
-    requires nonzero(host.cell) {
+TileCell tile_cell(Span cells, TileKey key) on cpu {
+    address row = tile_key_row(cells, key);
+    return row == address() ? TileCell(0, 0) : unsafe_position<TileCellRow>(row).cell;
+}
+
+u64 tile_join_uses(address uses, u64 count, Span cells) on cpu {
     // Normalizing to a low word preserves the order of aligned input keys.
     u64 kept = 0u64;
     u64 index = 0u64;
@@ -84,7 +118,7 @@ u64 tile_join_uses(address uses, u64 count, TileLayoutHost host) on cpu
         TileUse item = unsafe_position<TileUse>(tile_piece<TileUse>(uses, index));
         index += 1u64;
         if (item.end < i64(0)) { continue; }
-        item.key.byte = host.cell(host.context, item.key).byte;
+        item.key.byte = tile_cell(cells, item.key).byte;
         if (kept != 0u64) {
             address previous = tile_piece<TileUse>(uses, kept - 1u64);
             if (!tile_key_less(unsafe_position<TileUse>(previous).key, item.key)) {
@@ -100,7 +134,7 @@ u64 tile_join_uses(address uses, u64 count, TileLayoutHost host) on cpu
 }
 
 i64 tile_take_use(address uses, u64 count, TileKey key) on cpu {
-    address at = tile_use_at(Span(uses, count, size_of<TileUse>()), key);
+    address at = tile_key_row(Span(uses, count, size_of<TileUse>()), key);
     if (at == address()) { return -i64(1); }
     i64 end = unsafe_position<TileUse>(at).end;
     unsafe_position<TileUse>(at).end = -i64(1);
@@ -112,10 +146,10 @@ i64 tile_begin(TileKey key, TileLayoutHost host) on cpu requires nonzero(host.bi
 }
 
 void tile_make_row(inout TilePlan plan, u64 first, i64 end, bool wide, TileLayoutHost host) on cpu
-    requires nonzero(host.reserve) requires nonzero(host.cell) requires nonzero(host.birth) {
+    requires nonzero(host.reserve) requires nonzero(host.birth) {
     TileKey low = unsafe_position<TileKey>(tile_piece<TileKey>(plan.members.data, first));
     TileKey high = unsafe_position<TileKey>(tile_piece<TileKey>(plan.members.data, plan.members.count - 1u64));
-    u32 bytes = wide ? host.cell(host.context, low).bytes : 4;
+    u32 bytes = wide ? tile_cell(plan.cells, low).bytes : 4;
     u32 shift = bytes == 4 ? 2 : 3;
     u64 width = u64((high.byte - low.byte) >> shift) + 1u64;
     TilePlacement row = TilePlacement(tile_begin(low, host), end, first, plan.members.count - first, width, bytes);
@@ -124,13 +158,13 @@ void tile_make_row(inout TilePlan plan, u64 first, i64 end, bool wide, TileLayou
 
 void tile_collect_group(inout TilePlan plan, TileGroup group, u32 bytes, address uses, u64 count,
     bool wide, TileLayoutHost host) on cpu
-    requires nonzero(host.reserve) requires nonzero(host.cell) requires nonzero(host.birth) {
+    requires nonzero(host.reserve) requires nonzero(host.birth) {
     u64 first = plan.members.count;
     i64 end = -i64(1);
     u32 word = group.first;
     while (word < group.end) {
         TileKey key = TileKey(group.storage, group.owner, word * 4);
-        TileCell cell = wide ? host.cell(host.context, key) : TileCell(key.byte, 4);
+        TileCell cell = wide ? tile_cell(plan.cells, key) : TileCell(key.byte, 4);
         if (cell.bytes == bytes) {
             key.byte = cell.byte;
             // A high word can only repeat the immediately preceding low word.
@@ -165,17 +199,17 @@ extern "C" bool tile_row_before(address left, address right, address context) on
     return a.end < b.end;
 }
 
-void tile_publish_word(TileKey key, BuiltinScalar unit, u64 slot, bool wide, TileLayoutHost host) on cpu
-    requires nonzero(host.cell) requires nonzero(host.publish) {
+void tile_publish_word(TileKey key, BuiltinScalar unit, u64 slot, bool wide, Span cells, TileLayoutHost host) on cpu
+    requires nonzero(host.publish) {
     if (!wide) {
         host.publish(host.context, TilePlacedWord(key, usize(slot), 0, unit));
     } else {
-        TileCell low = host.cell(host.context, key);
+        TileCell low = tile_cell(cells, key);
         if (low.bytes != 0 && low.byte == key.byte) {
             host.publish(host.context, TilePlacedWord(key, usize(slot), 0, unit));
         }
         TileKey next = TileKey(key.storage, key.owner, key.byte + 4);
-        TileCell cell = host.cell(host.context, next);
+        TileCell cell = tile_cell(cells, next);
         if (cell.bytes != 0 && cell.byte == key.byte) {
             host.publish(host.context, TilePlacedWord(next, usize(slot), 4, unit));
         }
@@ -183,7 +217,7 @@ void tile_publish_word(TileKey key, BuiltinScalar unit, u64 slot, bool wide, Til
 }
 
 TileExtents tile_place_rows(TilePlan plan, bool wide, bool publish, TileLayoutHost host) on cpu
-    requires nonzero(host.reserve) requires nonzero(host.cell) requires nonzero(host.publish) {
+    requires nonzero(host.reserve) requires nonzero(host.publish) {
     TileExtents capacity = TileExtents(0u64, 0u64);
     u64 index = 0u64;
     while (index < plan.rows.count) {
@@ -229,7 +263,7 @@ TileExtents tile_place_rows(TilePlan plan, bool wide, bool publish, TileLayoutHo
             u64 member = 0u64;
             while (member < row.count) {
                 TileKey key = unsafe_position<TileKey>(tile_piece<TileKey>(plan.members.data, row.first + member));
-                tile_publish_word(key, unit, slot + u64((key.byte - first.byte) >> shift), wide, host);
+                tile_publish_word(key, unit, slot + u64((key.byte - first.byte) >> shift), wide, plan.cells, host);
                 member += 1u64;
             }
         }
@@ -239,16 +273,17 @@ TileExtents tile_place_rows(TilePlan plan, bool wide, bool publish, TileLayoutHo
 }
 
 extern "C" TileExtents place_tile(TileLayoutInput input, TileLayoutHost host) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.reserve) requires nonzero(host.describe)
-    requires nonzero(host.cell) requires nonzero(host.birth) requires nonzero(host.publish) {
+    requires nonzero(host.ir.inspect) requires nonzero(host.reserve)
+    requires nonzero(host.birth) requires nonzero(host.publish) {
     bool wide = input.wide != 0;
     u64 count = input.use_count;
+    Span cells = Span(address(), 0u64, 0u64);
     if (wide) {
-        tile_describe_cells(input.tiles, host);
-        count = tile_join_uses(input.uses, count, host);
+        cells = tile_describe_cells(input.tiles, host);
+        count = tile_join_uses(input.uses, count, cells);
     }
     TileBuffer empty = TileBuffer(address(), 0u64, 0u64);
-    TilePlan plan = TilePlan(empty, empty);
+    TilePlan plan = TilePlan(empty, empty, cells);
     u64 index = 0u64;
     while (index < input.groups.count) {
         TileGroup group = unsafe_position<TileGroup>(span_item_at(input.groups, index));

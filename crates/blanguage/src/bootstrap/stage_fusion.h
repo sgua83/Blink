@@ -9,8 +9,7 @@ struct BindingSpan {
 // The returned index starts the sorted union in that same output buffer.
 extern "C" u64 merge_bindings(address output, u64 left_count, BindingSpan right) on cpu;
 
-struct TileCell { u32 byte; u32 bytes; };
-enum TileScratch:u32 { Rows=0; Members=1; Narrow=2; Wide=3; };
+enum TileScratch:u32 { Rows=0; Members=1; Narrow=2; Wide=3; Cells=4; };
 struct TileExtents { u64 narrow; u64 wide; };
 struct TileLayoutInput {
     Span tiles;
@@ -24,14 +23,12 @@ struct TileLayoutHost {
     Host ir;
     address context;
     cfn<address,address,TileScratch,u64> reserve;
-    cfn<void,address,TileKey,TileCell> describe;
-    cfn<TileCell,address,TileKey> ensures memory(read) cell;
     cfn<i64,address,u64> ensures memory(read) birth;
     cfn<void,address,TilePlacedWord> publish;
 };
 extern "C" TileExtents place_tile(TileLayoutInput input, TileLayoutHost host) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.reserve) requires nonzero(host.describe)
-    requires nonzero(host.cell) requires nonzero(host.birth) requires nonzero(host.publish);
+    requires nonzero(host.ir.inspect) requires nonzero(host.reserve)
+    requires nonzero(host.birth) requires nonzero(host.publish);
 
 
 struct WriteEnd { u32 end; u32 present; };
