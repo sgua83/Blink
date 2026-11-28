@@ -27,12 +27,12 @@ struct Host {
     cfn<u32,address> constant_input;
     cfn<u32,address,PositionIndex> input_uses_index;
     cfn<void,address,address> input;
-    cfn<SharedPositionChildren,address> take_presence;
+    cfn<void,address,SharedNodeKind> drop_payload;
     cfn<u32,address,address,Host,cfn<u32,address,address,address,address,Host>
     requires nonzero(argument4.compare_input)
     requires nonzero(argument4.constant_input)
     requires nonzero(argument4.input_uses_index)
-    requires nonzero(argument4.take_presence)
+    requires nonzero(argument4.drop_payload)
     requires nonzero(argument4.input)
     requires nonzero(argument4.children_scope)
     requires nonzero(argument4.clone_scope)
@@ -53,7 +53,7 @@ struct Host {
     requires nonzero(argument2.compare_input)
     requires nonzero(argument2.constant_input)
     requires nonzero(argument2.input_uses_index)
-    requires nonzero(argument2.take_presence)
+    requires nonzero(argument2.drop_payload)
     requires nonzero(argument2.input)
     requires nonzero(argument2.children_scope)
     requires nonzero(argument2.clone_scope)
@@ -76,7 +76,7 @@ struct Host {
     requires nonzero(argument2.compare_input)
     requires nonzero(argument2.constant_input)
     requires nonzero(argument2.input_uses_index)
-    requires nonzero(argument2.take_presence)
+    requires nonzero(argument2.drop_payload)
     requires nonzero(argument2.input)
     requires nonzero(argument2.children_scope)
     requires nonzero(argument2.clone_scope)
@@ -119,7 +119,7 @@ struct Host {
     requires nonzero(argument2.compare_input)
     requires nonzero(argument2.constant_input)
     requires nonzero(argument2.input_uses_index)
-    requires nonzero(argument2.take_presence)
+    requires nonzero(argument2.drop_payload)
     requires nonzero(argument2.input)
     requires nonzero(argument2.children_scope)
     requires nonzero(argument2.clone_scope)
@@ -163,7 +163,7 @@ struct Host {
     requires nonzero(argument2.compare_input)
     requires nonzero(argument2.constant_input)
     requires nonzero(argument2.input_uses_index)
-    requires nonzero(argument2.take_presence)
+    requires nonzero(argument2.drop_payload)
     requires nonzero(argument2.input)
     requires nonzero(argument2.children_scope)
     requires nonzero(argument2.clone_scope)
@@ -184,7 +184,7 @@ struct Host {
     requires nonzero(argument1.compare_input)
     requires nonzero(argument1.constant_input)
     requires nonzero(argument1.input_uses_index)
-    requires nonzero(argument1.take_presence)
+    requires nonzero(argument1.drop_payload)
     requires nonzero(argument1.input)
     requires nonzero(argument1.children_scope)
     requires nonzero(argument1.clone_scope)
@@ -207,7 +207,7 @@ struct Host {
     requires nonzero(argument2.compare_input)
     requires nonzero(argument2.constant_input)
     requires nonzero(argument2.input_uses_index)
-    requires nonzero(argument2.take_presence)
+    requires nonzero(argument2.drop_payload)
     requires nonzero(argument2.input)
     requires nonzero(argument2.children_scope)
     requires nonzero(argument2.clone_scope)
@@ -259,7 +259,7 @@ struct Host {
 };
 
 extern "C" void relation(address output,Selection value,Host host) on cpu
-    requires nonzero(host.take_presence)
+    requires nonzero(host.drop_payload)
     ;
 
 extern "C" i32 compare(address a,address b,Host host) on cpu
@@ -271,13 +271,13 @@ extern "C" u32 uses_index(address value,PositionIndex wanted,Host host) on cpu
 extern "C" void from_value(address output,address value,Host host) on cpu
     requires nonzero(host.constant_input)
     requires nonzero(host.input)
-    requires nonzero(host.take_presence);
+    requires nonzero(host.drop_payload);
 
 extern "C" void combine(address left,address right,u32 any,Host host) on cpu
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
-    requires nonzero(host.take_presence)
+    requires nonzero(host.drop_payload)
     requires nonzero(host.input)
     requires nonzero(host.children_scope)
     requires nonzero(host.clone_scope)
@@ -300,7 +300,7 @@ extern "C" void negate(address value,Host host) on cpu
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
-    requires nonzero(host.take_presence)
+    requires nonzero(host.drop_payload)
     requires nonzero(host.input)
     requires nonzero(host.children_scope)
     requires nonzero(host.clone_scope)
@@ -323,7 +323,7 @@ extern "C" void selected(address output,address position,address wanted,Host hos
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
-    requires nonzero(host.take_presence)
+    requires nonzero(host.drop_payload)
     requires nonzero(host.input)
     requires nonzero(host.children_scope)
     requires nonzero(host.clone_scope)
@@ -346,7 +346,7 @@ extern "C" void condition(address output,address value,Host host) on cpu
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
-    requires nonzero(host.take_presence)
+    requires nonzero(host.drop_payload)
     requires nonzero(host.input)
     requires nonzero(host.children_scope)
     requires nonzero(host.clone_scope)
@@ -369,7 +369,7 @@ extern "C" void loop_condition(address output,address value,address inputs,Host 
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
-    requires nonzero(host.take_presence)
+    requires nonzero(host.drop_payload)
     requires nonzero(host.input)
     requires nonzero(host.children_scope)
     requires nonzero(host.clone_scope)
@@ -396,17 +396,17 @@ extern "C" u32 ownership_available(address value,Host host) on cpu
 
 extern "C" void ownership_presence(address output,address value,Host host) on cpu
     requires nonzero(host.copy_value)
-    requires nonzero(host.take_presence);
+    requires nonzero(host.drop_payload);
 
 extern "C" void ownership_from_presence(address output,address value,Host host) on cpu
-    requires nonzero(host.take_presence)
+    requires nonzero(host.drop_payload)
     ;
 
 extern "C" void ownership_either(address output,address a,address b,address choice,u32 has_choice,Host host) on cpu
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
-    requires nonzero(host.take_presence)
+    requires nonzero(host.drop_payload)
     requires nonzero(host.input)
     requires nonzero(host.children_scope)
     requires nonzero(host.clone_scope)
@@ -429,7 +429,7 @@ extern "C" void ownership_restricted(address output,address value,address when,H
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
-    requires nonzero(host.take_presence)
+    requires nonzero(host.drop_payload)
     requires nonzero(host.input)
     requires nonzero(host.children_scope)
     requires nonzero(host.clone_scope)
@@ -452,7 +452,7 @@ extern "C" u32 ownership_compatible(address a,address b,address inputs,address p
     requires nonzero(host.compare_input)
     requires nonzero(host.constant_input)
     requires nonzero(host.input_uses_index)
-    requires nonzero(host.take_presence)
+    requires nonzero(host.drop_payload)
     requires nonzero(host.input)
     requires nonzero(host.children_scope)
     requires nonzero(host.clone_scope)

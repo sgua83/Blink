@@ -64,12 +64,14 @@ extern "C" address word(address value,PositionIndex selected,u32 field,Host host
     requires nonzero(host.make_position)
     requires nonzero(host.clone_position);
 struct SharedPositionSpan { address positions; usize count; };
-struct SharedPositionChildren { SharedPositionSpan first; SharedPositionSpan second; };
+enum SharedNodeKind:u32 { Position=0; Presence=1; };
 extern "C" address allocate_shared_positions(usize bytes) on cpu;
 extern "C" void retain_shared_positions(address positions) on cpu;
 extern "C" u32 take_unique_shared_position(address value, address output, usize width) on cpu;
-extern "C" void release_shared_positions(SharedPositionSpan positions, usize width,
-    cfn<SharedPositionChildren,address> take) on cpu requires nonzero(take);
+extern "C" void release_shared_positions(SharedPositionSpan positions, address layout,
+    cfn<void,address,SharedNodeKind> drop_payload) on cpu requires nonzero(drop_payload);
+extern "C" void release_shared_presence(address value, address layout,
+    cfn<void,address,SharedNodeKind> drop_payload) on cpu requires nonzero(drop_payload);
 
 struct PositionFrames { address data; usize capacity; };
 address position_frame(address data, usize index, usize width) on cpu;
@@ -83,9 +85,7 @@ struct PresenceView {
     address positions;
     usize width;
 };
-struct DetachedPresence { SharedPositionChildren children; address input; };
 extern "C" address publish_presence(address value, address layout) on cpu;
-extern "C" DetachedPresence detach_presence(address value, address layout) on cpu;
 
 struct Selection { u32 operation; PositionIndex a; PositionIndex b; };
 struct PresenceBranches { address first; address second; };
@@ -93,17 +93,17 @@ struct SavedIdentities { IdentityKey a; IdentityKey b; };
 extern "C" SavedIdentities selection_storage() on cpu;
 extern "C" Selection save_selection(Selection value, address a, address b) on cpu;
 extern "C" void write_comparison(address output, Selection value, address layout,
-    cfn<SharedPositionChildren,address> take) on cpu requires nonzero(take);
+    cfn<void,address,SharedNodeKind> drop_payload) on cpu requires nonzero(drop_payload);
 extern "C" void write_truth(address output, u32 value, address layout,
-    cfn<SharedPositionChildren,address> take) on cpu requires nonzero(take);
+    cfn<void,address,SharedNodeKind> drop_payload) on cpu requires nonzero(drop_payload);
 extern "C" void move_presence(address output, address source, address layout,
-    cfn<SharedPositionChildren,address> take) on cpu requires nonzero(take);
+    cfn<void,address,SharedNodeKind> drop_payload) on cpu requires nonzero(drop_payload);
 extern "C" void pair_presence(address left, address right, u32 any, address layout) on cpu;
 extern "C" void wrap_not_presence(address value, address layout) on cpu;
 extern "C" void conditional_ownership(address output, address value, address layout,
-    cfn<SharedPositionChildren,address> take) on cpu requires nonzero(take);
+    cfn<void,address,SharedNodeKind> drop_payload) on cpu requires nonzero(drop_payload);
 extern "C" void write_ownership_constant(address output, u32 kind, address layout,
-    cfn<SharedPositionChildren,address> take) on cpu requires nonzero(take);
+    cfn<void,address,SharedNodeKind> drop_payload) on cpu requires nonzero(drop_payload);
 
 struct DatasetPositionCleanup {
     cfn<void,address> position;

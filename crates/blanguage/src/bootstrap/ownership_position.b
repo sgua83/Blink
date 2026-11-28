@@ -397,52 +397,104 @@ extern "C" u32 take_unique_shared_position(address value, address output, usize 
     return 1;
 }
 
+struct SharedNode { SharedPositionSpan span; SharedNodeKind kind; };
+struct SharedChildren { SharedNode first; SharedNode second; SharedNode third; };
 struct SharedPositionRelease {
-    SharedPositionSpan span;
+    SharedNode node;
     usize next;
     bool owns_payload;
 };
+
+SharedNode position_tree(SharedPositionSpan span) on cpu {
+    return SharedNode(span, SharedNodeKind::Position);
+}
+
+SharedNode presence_tree(address value) on cpu {
+    return SharedNode(SharedPositionSpan(value, 1u64), SharedNodeKind::Presence);
+}
+
+SharedChildren detach_shared_children(address value, SharedNodeKind kind, usize offset,
+    cfn<void,address,SharedNodeKind> drop_payload) on cpu
+    requires nonzero(drop_payload) {
+    let empty = position_tree(SharedPositionSpan(address(), 0u64));
+    SharedChildren children = SharedChildren(empty, empty, empty);
+    let payload = unsafe_address(address_bits(value) + offset);
+    if (kind == SharedNodeKind::Presence) {
+        let tag = unsafe_position<PresenceTag>(value);
+        unsafe_position<PresenceTag>(value) = PresenceTag::None;
+        if (tag == PresenceTag::Input) { drop_payload(payload, kind); }
+        else if (tag == PresenceTag::Not) {
+            children.first = presence_tree(unsafe_position<address>(payload));
+        } else if (tag == PresenceTag::Both || tag == PresenceTag::Either) {
+            let branches = unsafe_position<PresenceBranches>(payload);
+            children.first = presence_tree(branches.first);
+            children.second = presence_tree(branches.second);
+        }
+    } else {
+        let tag = position_kind(value);
+        if (tag == 10) {
+            children.first = position_tree(unsafe_position<SharedPositionSpan>(payload));
+        } else if (tag == 11) {
+            let fields = unsafe_position<PositionConditionalFields>(payload);
+            children.first = presence_tree(fields.condition);
+            children.second = position_tree(fields.branches.first);
+            children.third = position_tree(fields.branches.second);
+        } else if (tag == 12) {
+            let fields = unsafe_position<PositionPairFields>(payload);
+            children.first = position_tree(fields.first);
+            children.second = position_tree(fields.second);
+        } else if (tag == 2 || tag == 3) {
+            drop_payload(value, kind);
+        }
+    }
+    return children;
+}
 
 void push_shared_position_release(inout PositionFrames frames, usize depth, SharedPositionRelease release) on cpu {
     let slot = reserve_position_frame(frames, depth, size_of<SharedPositionRelease>());
     unsafe_position<SharedPositionRelease>(slot) = release;
 }
 
-extern "C" void release_shared_positions(SharedPositionSpan positions, usize width,
-    cfn<SharedPositionChildren,address> take) on cpu requires nonzero(take) {
-    if (positions.count == 0u64 || !release_position_reference(positions.positions)) { return; }
+void release_shared_nodes(SharedNode root, PresenceView view,
+    cfn<void,address,SharedNodeKind> drop_payload) on cpu
+    requires nonzero(drop_payload) {
+    if (root.span.count == 0u64 || !release_position_reference(root.span.positions)) { return; }
+    let positions = unsafe_position<PositionView>(view.positions);
     PositionFrames pending = PositionFrames(address(), 0u64);
     usize depth = 0u64;
-    SharedPositionRelease current = SharedPositionRelease(positions, 0u64, true);
+    SharedPositionRelease current = SharedPositionRelease(root, 0u64, true);
     while (true) {
         if (!current.owns_payload) {
-            current.owns_payload = release_position_reference(current.span.positions);
+            current.owns_payload = release_position_reference(current.node.span.positions);
         }
+        let condition = current.node.kind == SharedNodeKind::Presence;
+        let width = condition ? view.width : positions.stride;
+        let offset = condition ? view.payload_offset : positions.payload_offset;
         bool descend = false;
-        while (current.owns_payload && current.next < current.span.count) {
-            let value = position_frame(current.span.positions, current.next, width);
-            let children = take(value);
+        while (current.owns_payload && current.next < current.node.span.count) {
+            let value = position_frame(current.node.span.positions, current.next, width);
+            let children = detach_shared_children(value, current.node.kind, offset, drop_payload);
             current.next += 1u64;
-            if (children.first.count == 0u64 && children.second.count == 0u64) { continue; }
+            if (children.first.span.count == 0u64) { continue; }
 
             push_shared_position_release(pending, depth, current);
             depth += 1u64;
-            if (children.first.count == 0u64) {
-                current = SharedPositionRelease(children.second, 0u64, false);
-            } else {
-                if (children.second.count != 0u64) {
-                    push_shared_position_release(pending, depth, SharedPositionRelease(children.second, 0u64, false));
-                    depth += 1u64;
-                }
-                current = SharedPositionRelease(children.first, 0u64, false);
+            if (children.third.span.count != 0u64) {
+                push_shared_position_release(pending, depth, SharedPositionRelease(children.third, 0u64, false));
+                depth += 1u64;
             }
+            if (children.second.span.count != 0u64) {
+                push_shared_position_release(pending, depth, SharedPositionRelease(children.second, 0u64, false));
+                depth += 1u64;
+            }
+            current = SharedPositionRelease(children.first, 0u64, false);
             descend = true;
             break;
         }
         if (descend) { continue; }
 
         if (current.owns_payload) {
-            HeapFree(GetProcessHeap(), 0, shared_position_header(current.span.positions));
+            HeapFree(GetProcessHeap(), 0, shared_position_header(current.node.span.positions));
         }
         if (depth == 0u64) { break; }
         depth -= 1u64;
@@ -452,6 +504,17 @@ extern "C" void release_shared_positions(SharedPositionSpan positions, usize wid
     release_position_frames(pending);
 }
 
+extern "C" void release_shared_positions(SharedPositionSpan positions, address layout,
+    cfn<void,address,SharedNodeKind> drop_payload) on cpu
+    requires nonzero(drop_payload) {
+    release_shared_nodes(position_tree(positions), unsafe_position<PresenceView>(layout), drop_payload);
+}
+
+extern "C" void release_shared_presence(address value, address layout,
+    cfn<void,address,SharedNodeKind> drop_payload) on cpu
+    requires nonzero(drop_payload) {
+    release_shared_nodes(presence_tree(value), unsafe_position<PresenceView>(layout), drop_payload);
+}
 
 void transfer_presence(address output, address source, usize width) on cpu {
     RtlMoveMemory(output, source, width);
@@ -465,53 +528,31 @@ extern "C" address publish_presence(address value, address layout) on cpu {
     return result;
 }
 
-SharedPositionSpan presence_span(address value) on cpu { return SharedPositionSpan(value, 1u64); }
-
-extern "C" DetachedPresence detach_presence(address value, address layout) on cpu {
-    let tag = unsafe_position<PresenceTag>(value);
-    let view = unsafe_position<PresenceView>(layout);
-    let payload = unsafe_address(address_bits(value) + view.payload_offset);
-    let empty = SharedPositionSpan(address(), 0u64);
-    DetachedPresence result = DetachedPresence(SharedPositionChildren(empty, empty), address());
-    if (tag == PresenceTag::Input) { result.input = payload; }
-    else if (tag == PresenceTag::Not) {
-        result.children.first = presence_span(unsafe_position<address>(payload));
-    } else if (tag == PresenceTag::Both || tag == PresenceTag::Either) {
-        let pair = unsafe_position<PresenceBranches>(payload);
-        result.children = SharedPositionChildren(presence_span(pair.first), presence_span(pair.second));
-    }
-    unsafe_position<PresenceTag>(value) = PresenceTag::None;
-    return result;
-}
-
 void clear_presence(address value, address layout,
-    cfn<SharedPositionChildren,address> take) on cpu
-    requires nonzero(take) {
+    cfn<void,address,SharedNodeKind> drop_payload) on cpu
+    requires nonzero(drop_payload) {
     let tag = unsafe_position<PresenceTag>(value);
-    if (tag == PresenceTag::Input) {
-        take(value);
-    } else if (u32(tag) >= u32(PresenceTag::Not)) {
-        let children = detach_presence(value, layout).children;
-        let view = unsafe_position<PresenceView>(layout);
-        release_shared_positions(children.first, view.width, take);
-        release_shared_positions(children.second, view.width, take);
-    }
+    if (tag != PresenceTag::Input && u32(tag) < u32(PresenceTag::Not)) { return; }
+    let view = unsafe_position<PresenceView>(layout);
+    let children = detach_shared_children(value, SharedNodeKind::Presence, view.payload_offset, drop_payload);
+    release_shared_nodes(children.first, view, drop_payload);
+    release_shared_nodes(children.second, view, drop_payload);
 }
 
 extern "C" void move_presence(address output, address source, address layout,
-    cfn<SharedPositionChildren,address> take) on cpu
-    requires nonzero(take) {
+    cfn<void,address,SharedNodeKind> drop_payload) on cpu
+    requires nonzero(drop_payload) {
     if (address_bits(output) == address_bits(source)) { return; }
     // Reduction moves between the original mutable roots and scoped values.
-    clear_presence(output, layout, take);
+    clear_presence(output, layout, drop_payload);
     let view = unsafe_position<PresenceView>(layout);
     transfer_presence(output, source, view.width);
 }
 
 extern "C" void write_truth(address output, u32 value, address layout,
-    cfn<SharedPositionChildren,address> take) on cpu
-    requires nonzero(take) {
-    clear_presence(output, layout, take);
+    cfn<void,address,SharedNodeKind> drop_payload) on cpu
+    requires nonzero(drop_payload) {
+    clear_presence(output, layout, drop_payload);
     unsafe_position<PresenceTag>(output) = value == 0 ? PresenceTag::None : PresenceTag::All;
 }
 
@@ -534,12 +575,12 @@ extern "C" Selection save_selection(Selection value, address a, address b) on cp
 }
 
 extern "C" void write_comparison(address output, Selection value, address layout,
-    cfn<SharedPositionChildren,address> take) on cpu
-    requires nonzero(take) {
+    cfn<void,address,SharedNodeKind> drop_payload) on cpu
+    requires nonzero(drop_payload) {
     // A selected operand can be borrowed from the slot being replaced.
     SavedIdentities storage = selection_storage();
     let saved = save_selection(value, address_of(storage.a), address_of(storage.b));
-    clear_presence(output, layout, take);
+    clear_presence(output, layout, drop_payload);
     let view = unsafe_position<PresenceView>(layout);
     let positions = unsafe_position<PositionView>(view.positions);
     let payload = address_bits(output) + view.payload_offset;
@@ -568,27 +609,27 @@ extern "C" void wrap_not_presence(address value, address layout) on cpu {
 }
 
 void release_ownership_condition(address output, address layout,
-    cfn<SharedPositionChildren,address> take) on cpu
-    requires nonzero(take) {
+    cfn<void,address,SharedNodeKind> drop_payload) on cpu
+    requires nonzero(drop_payload) {
     if (unsafe_position<u32>(output) == 3) {
         let view = unsafe_position<PresenceView>(layout);
         let payload = unsafe_address(address_bits(output) + view.ownership_payload_offset);
-        release_shared_positions(presence_span(unsafe_position<address>(payload)), view.width, take);
+        release_shared_nodes(presence_tree(unsafe_position<address>(payload)), view, drop_payload);
     }
 }
 
 extern "C" void write_ownership_constant(address output, u32 kind, address layout,
-    cfn<SharedPositionChildren,address> take) on cpu
-    requires nonzero(take) {
-    release_ownership_condition(output, layout, take);
+    cfn<void,address,SharedNodeKind> drop_payload) on cpu
+    requires nonzero(drop_payload) {
+    release_ownership_condition(output, layout, drop_payload);
     unsafe_position<u32>(output) = kind;
 }
 
 extern "C" void conditional_ownership(address output, address value, address layout,
-    cfn<SharedPositionChildren,address> take) on cpu
-    requires nonzero(take) {
+    cfn<void,address,SharedNodeKind> drop_payload) on cpu
+    requires nonzero(drop_payload) {
     let owner = publish_presence(value, layout);
-    release_ownership_condition(output, layout, take);
+    release_ownership_condition(output, layout, drop_payload);
     let view = unsafe_position<PresenceView>(layout);
     let payload = unsafe_address(address_bits(output) + view.ownership_payload_offset);
     unsafe_position<address>(payload) = owner;

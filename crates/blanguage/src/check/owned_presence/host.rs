@@ -1,8 +1,8 @@
 //! Native storage operations for the original Presence and Position owners.
 use super::*;
 use ownership::{
-    PositionIndex, PositionView, POSITION_VIEW, SharedPositionChildren, SharedPositionSpan,
-    position_equal, position_index, release_shared_positions, required_index, retain_shared_positions,
+    PositionIndex, PositionView, POSITION_VIEW,
+    position_equal, position_index, required_index, retain_shared_positions,
 };
 use std::ffi::c_void;
 
@@ -11,7 +11,7 @@ type Address = *mut c_void;
 #[derive(Clone, Copy)]
 struct Selection { operation: u32, a: PositionIndex, b: PositionIndex }
 #[repr(C)]
-struct PresenceView {
+pub(in crate::check) struct PresenceView {
     payload_offset: usize,
     first_index_offset: usize,
     ownership_payload_offset: usize,
@@ -19,7 +19,7 @@ struct PresenceView {
     width: usize,
 }
 
-const PRESENCE_VIEW: PresenceView = PresenceView {
+pub(in crate::check) const PRESENCE_VIEW: PresenceView = PresenceView {
     payload_offset: size_of::<u32>().next_multiple_of(align_of::<Presence>()),
     first_index_offset: size_of::<Comparison>().next_multiple_of(align_of::<ownership::ApplicationIndex>()),
     ownership_payload_offset: size_of::<u32>().next_multiple_of(align_of::<Ownership>()),
@@ -50,24 +50,26 @@ unsafe extern "C" fn input(output: Address, value: Address) {
     let value = unsafe { &*value.cast::<Value>() }.clone();
     unsafe { *output.cast::<Presence>() = Presence::Input(value); }
 }
-#[repr(C)]
-struct DetachedPresence { children: SharedPositionChildren, input: Address }
+#[repr(u32)]
+pub(in crate::check) enum SharedNodeKind { Position = 0, Presence = 1 }
 
 unsafe extern "C" {
     #[link_name = "bootstrap.ownership_position::publish_presence"]
     fn publish_presence(value: Address, layout: &PresenceView) -> Address;
-    #[link_name = "bootstrap.ownership_position::detach_presence"]
-    fn detach_presence(value: Address, layout: &PresenceView) -> DetachedPresence;
+    #[link_name = "bootstrap.ownership_position::release_shared_presence"]
+    fn release_shared_presence(value: Address, layout: &PresenceView,
+        drop_payload: unsafe extern "C" fn(Address, SharedNodeKind));
     #[link_name = "bootstrap.ownership_position::take_unique_shared_position"]
     fn take_unique_shared_position(value: Address, output: Address, width: usize) -> u32;
 }
 
-unsafe extern "C" fn take_presence(value: Address) -> SharedPositionChildren {
-    let detached = unsafe { detach_presence(value, &PRESENCE_VIEW) };
-    if !detached.input.is_null() {
-        unsafe { detached.input.cast::<Value>().drop_in_place() };
+pub(in crate::check) unsafe extern "C" fn drop_payload(value: Address, kind: SharedNodeKind) {
+    unsafe {
+        match kind {
+            SharedNodeKind::Position => value.cast::<Position>().drop_in_place(),
+            SharedNodeKind::Presence => value.cast::<Value>().drop_in_place(),
+        }
     }
-    detached.children
 }
 
 #[repr(transparent)]
@@ -112,8 +114,7 @@ impl Clone for PresenceNode {
 }
 impl Drop for PresenceNode {
     fn drop(&mut self) {
-        let span = SharedPositionSpan::single(self.0.cast().as_ptr());
-        unsafe { release_shared_positions(span, size_of::<Presence>(), take_presence) };
+        unsafe { release_shared_presence(self.0.cast().as_ptr(), &PRESENCE_VIEW, drop_payload) };
     }
 }
 impl PartialEq for PresenceNode {
@@ -222,7 +223,7 @@ struct Host {
     constant_input: unsafe extern "C" fn(Address) -> u32,
     input_uses_index: unsafe extern "C" fn(Address, PositionIndex) -> u32,
     input: unsafe extern "C" fn(Address, Address),
-    take_presence: unsafe extern "C" fn(Address) -> SharedPositionChildren,
+    drop_payload: unsafe extern "C" fn(Address, SharedNodeKind),
     children_scope: unsafe extern "C" fn(Address, Address, Host, Children) -> u32,
     clone_scope: unsafe extern "C" fn(Address, Address, Host, Scoped) -> u32,
     truth_scope: unsafe extern "C" fn(u32, Address, Host, Scoped) -> u32,
@@ -242,7 +243,7 @@ struct Host {
 }
 const HOST: Host = Host {
     layout: &PRESENCE_VIEW, compare_input, constant_input, input_uses_index,
-    input, take_presence,
+    input, drop_payload,
     children_scope, clone_scope, truth_scope,
     position_equal,
     condition_scope, condition_clone_scope, condition_truth, condition_input,

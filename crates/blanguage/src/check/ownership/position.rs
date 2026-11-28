@@ -1,28 +1,13 @@
 //! The original Position, Arc, set and vector containers remain native owners.
 use super::*;
-use owned_presence::Presence;
+use owned_presence::{Presence, PresenceView, SharedNodeKind, PRESENCE_VIEW, drop_payload};
 use std::{ffi::c_void, collections::btree_set};
 type Address = *mut c_void;
 type EqualPosition = unsafe extern "C" fn(Address, Address) -> u32;
 #[repr(C)]
-pub(in crate::check) struct SharedPositionSpan {
+struct SharedPositionSpan {
     positions: Address,
     count: usize,
-}
-
-impl SharedPositionSpan {
-    pub(in crate::check) fn single(value: Address) -> Self {
-        Self { positions: value, count: 1 }
-    }
-    fn empty() -> Self {
-        Self { positions: std::ptr::null_mut(), count: 0 }
-    }
-}
-
-#[repr(C)]
-pub(in crate::check) struct SharedPositionChildren {
-    first: SharedPositionSpan,
-    second: SharedPositionSpan,
 }
 
 unsafe extern "C" {
@@ -31,9 +16,9 @@ unsafe extern "C" {
     #[link_name = "bootstrap.ownership_position::retain_shared_positions"]
     pub(in crate::check) fn retain_shared_positions(positions: Address);
     #[link_name = "bootstrap.ownership_position::release_shared_positions"]
-    pub(in crate::check) fn release_shared_positions(
-        span: SharedPositionSpan, width: usize,
-        take: unsafe extern "C" fn(Address) -> SharedPositionChildren,
+    fn release_shared_positions(
+        span: SharedPositionSpan, layout: &PresenceView,
+        drop_payload: unsafe extern "C" fn(Address, SharedNodeKind),
     );
 }
 
@@ -52,9 +37,6 @@ impl SharedPositions {
         SharedPositionSpan { positions: self.positions.cast::<c_void>().as_ptr(), count: self.count }
     }
 
-    fn into_span(self) -> SharedPositionSpan {
-        std::mem::ManuallyDrop::new(self).span()
-    }
 }
 
 fn allocate_shared<T>(count: usize) -> std::ptr::NonNull<T> {
@@ -126,25 +108,9 @@ impl Ord for SharedPositions {
 
 impl Drop for SharedPositions {
     fn drop(&mut self) {
-        unsafe extern "C" fn take(value: Address) -> SharedPositionChildren {
-            // B calls this once for an initialized slot after the final reference.
-            match unsafe { value.cast::<Position>().read() } {
-                Position::Both(left, right) | Position::Conditional(_, left, right) => {
-                    SharedPositionChildren { first: left.0.into_span(), second: right.0.into_span() }
-                }
-                Position::Indexed(choices, _) => {
-                    SharedPositionChildren { first: choices.into_span(), second: SharedPositionSpan::empty() }
-                }
-                value => {
-                    drop(value);
-                    SharedPositionChildren { first: SharedPositionSpan::empty(), second: SharedPositionSpan::empty() }
-                }
-            }
-        }
-
         let span = self.span();
         if span.count != 0 {
-            unsafe { release_shared_positions(span, size_of::<Position>(), take) };
+            unsafe { release_shared_positions(span, &PRESENCE_VIEW, drop_payload) };
         }
     }
 }

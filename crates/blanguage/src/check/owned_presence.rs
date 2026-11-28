@@ -14,7 +14,7 @@ pub(super) enum Presence {
     Either(PresenceNode, PresenceNode) = 6,
 }
 mod host;
-pub(in crate::check) use host::PresenceNode;
+pub(in crate::check) use host::{PresenceNode, PresenceView, SharedNodeKind, PRESENCE_VIEW, drop_payload};
 pub(super) mod path;
 
 impl PartialEq for Presence { fn eq(&self, other: &Self) -> bool { host::compare(self, other).is_eq() } }

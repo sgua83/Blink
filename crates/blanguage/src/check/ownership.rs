@@ -7,8 +7,8 @@ mod place;
 use owned_presence::PresenceNode;
 use position::PositionChild;
 pub(in crate::check) use position::{
-    PositionIndex, PositionView, POSITION_VIEW, SharedPositionChildren, SharedPositionSpan,
-    equal as position_equal, position_index, release_shared_positions, required_index, retain_shared_positions,
+    PositionIndex, PositionView, POSITION_VIEW,
+    equal as position_equal, position_index, required_index, retain_shared_positions,
 };
 
 #[repr(C, u32)]
