@@ -381,7 +381,7 @@ impl Builder<'_> {
 
     fn loop_has_resource_exit(&self, body: &Block) -> bool {
         if self.application.is_none()
-            || !self.env.values().any(|binding| !binding.application_resources().is_empty())
+            || !self.env.values().any(|binding| binding.any_application_resource(|_| true))
         {
             return false;
         }

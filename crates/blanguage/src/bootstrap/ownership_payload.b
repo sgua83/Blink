@@ -415,28 +415,37 @@ extern "C" address data_at(address value, Indices path, u32 live, DataPathHost h
     return item.node;
 }
 
-void walk(address value,u32 retain_moved,address context,cfn<void,address,address> visit,Host host) on cpu
+u32 walk(address value,u32 retain_moved,address context,cfn<u32,address,address> visit,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.ownership)
     requires nonzero(host.child)
     requires nonzero(host.state)
-    requires nonzero(visit) { 
-    if(retain_moved==0&&host.state(host.state_context,host.ownership(value))==PayloadState::Moved){return;}
-    u64 count=host.inspect(value).count;u64 i=0u64;
-    while(i<count){Item item=host.child(value,i);if(item.kind==3){visit(item.node,context);}else if(item.kind==4){walk(item.node,retain_moved,context,visit,host);}i+=1u64;}
+    requires nonzero(visit) {
+    if(retain_moved==0&&host.state(host.state_context,host.ownership(value))==PayloadState::Moved){return 0;}
+    u64 count=host.inspect(value).count;
+    u64 i=0u64;
+    while(i<count){
+        Item item=host.child(value,i);
+        u32 stop=0;
+        if(item.kind==3){stop=visit(item.node,context);}
+        else if(item.kind==4){stop=walk(item.node,retain_moved,context,visit,host);}
+        if(stop!=0){return stop;}
+        i+=1u64;
+    }
+    return 0;
 }
-extern "C" void handles(address value,address context,cfn<void,address,address> visit,Host host) on cpu
+extern "C" void handles(address value,address context,cfn<u32,address,address> visit,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.ownership)
     requires nonzero(host.child)
     requires nonzero(host.state)
     requires nonzero(visit) { walk(value,1,context,visit,host);}
-extern "C" void resources(address value,address context,cfn<void,address,address> visit,Host host) on cpu
+extern "C" u32 resources(address value,address context,cfn<u32,address,address> visit,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.ownership)
     requires nonzero(host.child)
     requires nonzero(host.state)
-    requires nonzero(visit) { walk(value,0,context,visit,host);}
+    requires nonzero(visit) { return walk(value,0,context,visit,host);}
 
 extern "C" u32 live_paths(address value, u32 independent, address context, LivePathHost host) on cpu
     requires nonzero(host.inspect)

@@ -272,8 +272,8 @@ unsafe extern "C" {
     #[link_name="bootstrap.ownership_payload::invalidate"] fn source_invalidate(value:Address,host:Host);
     #[link_name="bootstrap.ownership_payload::invalidate_components"] fn source_components(value:Address,components:Indices,borrowed:Address,host:Host);
     #[link_name="bootstrap.ownership_payload::mark_moved"] fn source_moved(value:Address,host:Host);
-    #[link_name="bootstrap.ownership_payload::handles"] fn source_handles(value:Address,context:Address,visit:unsafe extern "C" fn(Address,Address),host:Host);
-    #[link_name="bootstrap.ownership_payload::resources"] fn source_resources(value:Address,context:Address,visit:unsafe extern "C" fn(Address,Address),host:Host);
+    #[link_name="bootstrap.ownership_payload::handles"] fn source_handles(value:Address,context:Address,visit:unsafe extern "C" fn(Address,Address)->u32,host:Host);
+    #[link_name="bootstrap.ownership_payload::resources"] fn source_resources(value:Address,context:Address,visit:unsafe extern "C" fn(Address,Address)->u32,host:Host)->u32;
     #[link_name="bootstrap.ownership_payload::visit_values"] fn source_values(value:Item,context:Address,visit:unsafe extern "C" fn(Address,Address),host:Host);
     #[link_name = "bootstrap.ownership_payload::data_at"]
     fn source_data_at(value: Address, path: Indices, live: u32, host: DataPathHost) -> *mut Data;
@@ -434,14 +434,43 @@ async unsafe fn compare_loop_child(
 pub(super) fn invalidate(value:&mut OwnedValuePayload){unsafe{source_invalidate(pointer_mut(value),MUT_HOST)};}
 pub(super) fn invalidate_components(value:&mut OwnedValuePayload,components:&[usize],borrowed:Option<ValueIdentity>){unsafe{source_components(pointer_mut(value),indices(components),borrowed.as_ref().map_or(std::ptr::null_mut(),pointer),MUT_HOST)};}
 pub(super) fn mark_moved(value:&mut OwnedValuePayload){unsafe{source_moved(pointer_mut(value),MUT_HOST)};}
-unsafe extern "C" fn push_handle(data:Address,context:Address){unsafe{&mut *context.cast::<Vec<ValueIdentity>>()}.push(unsafe{&*data.cast::<Data>()}.root.identity());}
+unsafe extern "C" fn push_handle(data: Address, context: Address) -> u32 {
+    unsafe { &mut *context.cast::<Vec<ValueIdentity>>() }.push(unsafe { &*data.cast::<Data>() }.root.identity());
+    0
+}
 pub(super) fn handles(value:&OwnedValuePayload)->Vec<ValueIdentity>{let mut values=Vec::<ValueIdentity>::new();unsafe{source_handles(pointer(value),(&mut values as *mut Vec<ValueIdentity>).cast(),push_handle,HOST)};values}
-unsafe extern "C" fn push_resource(data:Address,context:Address){unsafe{&mut *context.cast::<Vec<&Data>>()}.push(unsafe{&*data.cast::<Data>()});}
-pub(super) fn resources(value:&OwnedValuePayload)->Vec<&Data>{let mut values=Vec::<&Data>::new();unsafe{source_resources(pointer(value),(&mut values as *mut Vec<&Data>).cast(),push_resource,HOST)};values}
-unsafe extern "C" fn visit_resource<F:FnMut(&Data)>(data:Address,context:Address){(unsafe{&mut *context.cast::<F>()})(unsafe{&*data.cast::<Data>()});}
-pub(super) fn visit_resources<F:FnMut(&Data)>(value:&OwnedValuePayload,visit:&mut F){unsafe{source_resources(pointer(value),(visit as *mut F).cast(),visit_resource::<F>,HOST)};}
-unsafe extern "C" fn visit_mut<F:FnMut(&mut Data)>(data:Address,context:Address){(unsafe{&mut *context.cast::<F>()})(unsafe{&mut *data.cast::<Data>()});}
-pub(super) fn resources_mut<F:FnMut(&mut Data)>(value:&mut OwnedValuePayload,visit:&mut F){unsafe{source_resources(pointer_mut(value),(visit as *mut F).cast(),visit_mut::<F>,MUT_HOST)};}
+
+unsafe extern "C" fn test_resource<'a, F: FnMut(&'a Data) -> bool>(data: Address, context: Address) -> u32 {
+    u32::from((unsafe { &mut *context.cast::<F>() })(unsafe { &*data.cast::<Data>() }))
+}
+
+pub(super) fn any_resource<'a, F: FnMut(&'a Data) -> bool>(value: &'a OwnedValuePayload, visit: &mut F) -> bool {
+    // The synchronous traversal only lends leaves from this immutable owner.
+    unsafe { source_resources(pointer(value), std::ptr::from_mut(visit).cast(), test_resource::<F>, HOST) != 0 }
+}
+
+pub(super) fn resources(value: &OwnedValuePayload) -> Vec<&Data> {
+    let mut values = Vec::new();
+    any_resource(value, &mut |data| {
+        values.push(data);
+        false
+    });
+    values
+}
+
+pub(super) fn visit_resources(value: &OwnedValuePayload, visit: &mut impl FnMut(&Data)) {
+    any_resource(value, &mut |data| {
+        visit(data);
+        false
+    });
+}
+
+unsafe extern "C" fn visit_mut<F: FnMut(&mut Data)>(data: Address, context: Address) -> u32 {
+    (unsafe { &mut *context.cast::<F>() })(unsafe { &mut *data.cast::<Data>() });
+    0
+}
+
+pub(super) fn resources_mut<F: FnMut(&mut Data)>(value:&mut OwnedValuePayload,visit:&mut F){unsafe{source_resources(pointer_mut(value),(visit as *mut F).cast(),visit_mut::<F>,MUT_HOST)};}
 unsafe extern "C" fn visit_value<F:FnMut(&mut Value)>(value:Address,context:Address){
     (unsafe{&mut *context.cast::<F>()})(unsafe{&mut *value.cast::<Value>()});
 }

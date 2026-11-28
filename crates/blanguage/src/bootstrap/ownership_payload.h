@@ -156,7 +156,7 @@ extern "C" void mark_moved(address value,Host host) on cpu
     requires nonzero(host.state_set_moved)
     requires nonzero(host.data_ownership)
     requires nonzero(host.data_clear_residency);
-extern "C" void handles(address value,address context,cfn<void,address,address> visit,Host host) on cpu
+extern "C" void handles(address value,address context,cfn<u32,address,address> visit,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.ownership)
     requires nonzero(host.child)
@@ -172,7 +172,7 @@ extern "C" address data_at(address value, Indices path, u32 live, DataPathHost h
     requires nonzero(host.child)
     requires nonzero(host.moved);
 
-extern "C" void resources(address value,address context,cfn<void,address,address> visit,Host host) on cpu
+extern "C" u32 resources(address value,address context,cfn<u32,address,address> visit,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.ownership)
     requires nonzero(host.child)

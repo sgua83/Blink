@@ -155,8 +155,22 @@ impl DataPayload {
     }
 }
 impl Binding {
-    pub(super) fn application_resources(&self)->Vec<&Data> {
-        match self {Self::ApplicationData(data)=>vec![data],Self::DataReference(data)=>vec![&data.data],Self::OwnedValue(value)=>value.resources(),_=>Vec::new()}
+    pub(super) fn any_application_resource<'a>(&'a self, mut visit: impl FnMut(&'a Data) -> bool) -> bool {
+        match self {
+            Self::ApplicationData(data) => visit(data),
+            Self::DataReference(data) => visit(&data.data),
+            Self::OwnedValue(value) => value.any_resource(&mut visit),
+            _ => false,
+        }
+    }
+
+    pub(super) fn application_resources(&self) -> Vec<&Data> {
+        let mut resources = Vec::new();
+        self.any_application_resource(|data| {
+            resources.push(data);
+            false
+        });
+        resources
     }
 }
 // 更新描述只属于原共同元素模型，不成为运行期状态。
@@ -2326,19 +2340,26 @@ impl Builder<'_> {
         resources: &[&Data],
         path:&bounds::Clause,
     ) -> Result<()> {
-        let mut matching = self
-            .env
-            .values()
-            .flat_map(|binding| match binding {
-                Binding::ApplicationData(d) => vec![d],
-                Binding::OwnedValue(v) => v.resources(),
-                _ => Vec::new(),
-            })
-            .chain(resources.iter().copied())
-            .filter(|d| d.root.proof.known_identity(0) == Some(identity)
-                || self.owned_resource_borrow(d).restricted(path).resources().sources.contains(&view::Source::Data(identity)))
-            .peekable();
-        if matching.peek().is_some() && matching.all(|data|match &data.ownership {Ownership::Conditional(when)=>self.condition_truth(&when.condition(),Some(&bounds::Condition::guard(path.clone())))!=Some(true),ownership=>!ownership.available()}) {
+        let mut found = false;
+        let mut usable = |data: &Data| {
+            if data.root.proof.known_identity(0) == Some(identity)
+                || self.owned_resource_borrow(data).restricted(path).resources().sources.contains(&view::Source::Data(identity))
+            {
+                found = true;
+                match &data.ownership {
+                    Ownership::Conditional(when) => self.condition_truth(&when.condition(), Some(&bounds::Condition::guard(path.clone()))) == Some(true),
+                    ownership => ownership.available(),
+                }
+            } else {
+                false
+            }
+        };
+        let available = self.env.values().any(|binding| match binding {
+            Binding::ApplicationData(data) => usable(data),
+            Binding::OwnedValue(value) => value.any_resource(&mut usable),
+            _ => false,
+        }) || resources.iter().copied().any(usable);
+        if found && !available {
             return self.fail(
                 span,
                 "B227",
