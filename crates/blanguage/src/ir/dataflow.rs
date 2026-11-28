@@ -3,7 +3,7 @@
 //! results nor own, copy, retain, or rewrite the IR containers.
 use super::*;
 use crate::builtin_types::ScalarCode;
-use std::{ffi::c_void, marker::PhantomData, mem::size_of, ptr};
+use std::{ffi::c_void, marker::PhantomData, mem::{MaybeUninit, size_of}, ptr};
 
 #[derive(Clone, Copy)]
 #[repr(u32)]
@@ -623,26 +623,28 @@ struct StorageHost {
     scalar_bytes: unsafe extern "C" fn(*const c_void, usize) -> u32,
 }
 
-#[repr(u32)]
-enum StorageEvent { Read, Group }
-
 #[repr(C)]
 struct StorageOutput {
     context: *mut c_void,
-    emit: unsafe extern "C" fn(*mut c_void, StorageEvent, usize, u32, i64),
+    read: unsafe extern "C" fn(*mut c_void, usize, u32, i64),
     publication_phases: Span,
+    group_storage: *mut c_void,
+    reserve_groups: unsafe extern "C" fn(*mut c_void, usize) -> *mut c_void,
 }
+
+#[repr(C)]
+struct StorageFacts { preserve: u32, group_count: usize }
 
 unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::storage_facts"]
-    fn b_storage_facts(code: Span, tiles: Span, host: StorageHost, phase: i64, output: StorageOutput) -> u32;
+    fn b_storage_facts(code: Span, tiles: Span, host: StorageHost, phase: i64, output: StorageOutput) -> StorageFacts;
 }
 
 unsafe extern "C" fn register_bytes(stage: *const c_void, register: usize) -> u32 {
     unsafe { &*stage.cast::<Stage>() }.registers[register].size()
 }
 
-fn storage_facts(stage: &Stage, phase: i64, output: StorageOutput) -> u32 {
+fn storage_facts(stage: &Stage, phase: i64, output: StorageOutput) -> StorageFacts {
     unsafe {
         b_storage_facts(
             Span::slice(&stage.code), Span::slice(&stage.tiles),
@@ -658,13 +660,14 @@ pub(crate) fn storage_usage(stage: &Stage) -> (BTreeSet<SharedWord>, u32) {
     let mut output = WordOutput { stage, words: BTreeSet::new() };
     let preserve = if stage.tiles.is_empty() { 0 } else {
         storage_facts(stage, -1, StorageOutput {
-            context: ptr::from_mut(&mut output).cast(), emit: emit_word, publication_phases: Span::EMPTY,
-        })
+            context: ptr::from_mut(&mut output).cast(), read: emit_word, publication_phases: Span::EMPTY,
+            group_storage: ptr::null_mut(), reserve_groups: reserve_tile_groups,
+        }).preserve
     };
     (output.words, preserve)
 }
 
-unsafe extern "C" fn emit_word(context: *mut c_void, _: StorageEvent, tile: usize, byte: u32, _: i64) {
+unsafe extern "C" fn emit_word(context: *mut c_void, tile: usize, byte: u32, _: i64) {
     let output = unsafe { &mut *context.cast::<WordOutput<'_>>() };
     output.words.insert(output.stage.shared_word(tile, byte));
 }
@@ -692,65 +695,45 @@ pub(super) struct TileGroup {
     end: u32,
 }
 
-impl TileGroup {
-    fn new(word: SharedWord, count: u32) -> Self {
-        let (storage, owner, offset) = match word {
-            SharedWord::Input { binding, word } => (0, binding, word),
-            SharedWord::Published { tile, word } => (1, tile, word),
-        };
-        let first = offset / 4;
-        Self { storage, owner, first, end: first + count }
-    }
+unsafe extern "C" fn reserve_tile_groups(storage: *mut c_void, count: usize) -> *mut c_void {
+    let groups = unsafe { &mut *storage.cast::<Vec<MaybeUninit<TileGroup>>>() };
+    groups.resize_with(count, MaybeUninit::uninit);
+    groups.as_mut_ptr().cast()
 }
 
-unsafe extern "C" {
-    #[link_name = "bootstrap.ir_dataflow::coalesce_tile_groups"]
-    fn b_coalesce_tile_groups(groups: *mut TileGroup, count: usize) -> usize;
-}
-
-#[derive(Default)]
 pub(super) struct LayoutFacts {
     pub(super) reads: BTreeMap<SharedWord, (i64, u32)>,
     pub(super) publication_phases: Vec<i64>,
-    pub(super) groups: Vec<TileGroup>,
+    pub(super) groups: Vec<MaybeUninit<TileGroup>>,
 }
 
 struct LayoutOutput<'a> {
     stage: &'a Stage,
-    facts: LayoutFacts,
+    reads: BTreeMap<SharedWord, (i64, u32)>,
 }
 
 pub(super) fn tile_layout_facts(stage: &Stage) -> LayoutFacts {
-    let mut output = LayoutOutput { stage, facts: LayoutFacts::default() };
+    let mut output = LayoutOutput { stage, reads: BTreeMap::new() };
     let mut publication_phases = vec![-1i64; stage.tiles.len()];
-    storage_facts(stage, 0, StorageOutput {
-        context: ptr::from_mut(&mut output).cast(), emit: emit_layout,
+    let mut groups = Vec::new();
+    let facts = storage_facts(stage, 0, StorageOutput {
+        context: ptr::from_mut(&mut output).cast(), read: emit_layout,
         publication_phases: Span::mutable(&mut publication_phases),
+        group_storage: ptr::from_mut(&mut groups).cast(), reserve_groups: reserve_tile_groups,
     });
-    output.facts.publication_phases = publication_phases;
-    let groups = &mut output.facts.groups;
-    let count = unsafe { b_coalesce_tile_groups(groups.as_mut_ptr(), groups.len()) };
-    groups.truncate(count);
-    output.facts
+    groups.truncate(facts.group_count);
+    LayoutFacts { reads: output.reads, publication_phases, groups }
 }
 
-unsafe extern "C" fn emit_layout(context: *mut c_void, event: StorageEvent, tile: usize, offset_or_count: u32, phase: i64) {
+unsafe extern "C" fn emit_layout(context: *mut c_void, tile: usize, offset: u32, phase: i64) {
     let output = unsafe { &mut *context.cast::<LayoutOutput<'_>>() };
-    match event {
-        StorageEvent::Read => {
-            let word = output.stage.shared_word(tile, offset_or_count);
-            let byte = match word {
-                SharedWord::Input { word, .. } | SharedWord::Published { word, .. } => word,
-            };
-            let (end, mask) = output.facts.reads.entry(word.aligned()).or_insert((-1, 0));
-            *end = (*end).max(phase);
-            *mask |= 1 << (byte % 4);
-        }
-        StorageEvent::Group => {
-            let first = output.stage.shared_word(tile, 0);
-            output.facts.groups.push(TileGroup::new(first, offset_or_count));
-        }
-    }
+    let word = output.stage.shared_word(tile, offset);
+    let byte = match word {
+        SharedWord::Input { word, .. } | SharedWord::Published { word, .. } => word,
+    };
+    let (end, mask) = output.reads.entry(word.aligned()).or_insert((-1, 0));
+    *end = (*end).max(phase);
+    *mask |= 1 << (byte % 4);
 }
 
 #[repr(C)]

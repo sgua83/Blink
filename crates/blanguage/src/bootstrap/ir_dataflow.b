@@ -1921,17 +1921,50 @@ void private_spans(Span code,Host host,address context,
  }
 }
 
+struct TileGroupBuffer { address data; usize count; usize capacity; };
+
+address tile_group_at(address groups,usize index) on cpu {
+ return unsafe_address(address_bits(groups)+u64(index)*size_of<TileGroup>());
+}
+
+void add_tile_group(inout TileGroupBuffer groups,TileGroup next,StorageOutput output) on cpu
+ requires nonzero(output.reserve_groups) {
+ TileGroup current=next;
+ usize kept=0u64;
+ usize read=0u64;
+ while(read<groups.count) {
+  TileGroup prior=unsafe_position<TileGroup>(tile_group_at(groups.data,read));
+  if(prior.storage==current.storage && prior.owner==current.owner
+      && max(prior.first,current.first)<min(prior.end,current.end)) {
+   current.first=min(prior.first,current.first);
+   current.end=max(prior.end,current.end);
+  }else{
+   unsafe_position<TileGroup>(tile_group_at(groups.data,kept))=prior;
+   kept+=1u64;
+  }
+  read+=1u64;
+ }
+ if(kept==groups.capacity) {
+  groups.capacity=max(8u64,groups.capacity*2u64);
+  groups.data=output.reserve_groups(output.group_storage,groups.capacity);
+ }
+ unsafe_position<TileGroup>(tile_group_at(groups.data,kept))=current;
+ groups.count=kept+1u64;
+}
+
 void shared_parts(usize tile,u32 byte,u32 bytes,i64 phase,StorageOutput output) on cpu
- requires nonzero(output.emit) {
+ requires nonzero(output.read) {
  u32 part=0;
  while(part<(bytes+3)/4) {
-  output.emit(output.context,StorageEvent::Read,tile,byte+part*4,phase);
+  output.read(output.context,tile,byte+part*4,phase);
   part+=1;
  }
 }
 
-u32 storage_visit(Span code,Span tiles,StorageHost host,i64 first_phase,bool root,StorageOutput output) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.scalar_bytes) requires nonzero(output.emit) {
+u32 storage_visit(Span code,Span tiles,StorageHost host,i64 first_phase,bool root,
+ inout TileGroupBuffer groups,StorageOutput output) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar_bytes)
+ requires nonzero(output.read) requires nonzero(output.reserve_groups) {
  i64 phase=first_phase;
  u32 preserve=0;
  usize index=0u64;
@@ -1951,8 +1984,10 @@ u32 storage_visit(Span code,Span tiles,StorageHost host,i64 first_phase,bool roo
       component+=1u64;
      }
      if(phase>=i64(0)) {
-      u32 bias=tile.tag==0 ? u32(tile.b)%4 : 0;
-      output.emit(output.context,StorageEvent::Group,source.a,u32((u64(tile.c)+u64(bias)+3u64)/4u64),phase);
+      TileKey origin=tile_key_for_view(tile,source.a,0);
+      u32 first=origin.byte/4;
+      u32 count=u32((u64(tile.c)+u64(origin.byte%4)+3u64)/4u64);
+      add_tile_group(groups,TileGroup(origin.storage,origin.owner,first,first+count),output);
      }
     }
    }
@@ -1967,8 +2002,8 @@ u32 storage_visit(Span code,Span tiles,StorageHost host,i64 first_phase,bool roo
     result+=1u64;
    }
   }else if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE) {
-   preserve|=storage_visit(value.first,tiles,host,phase,false,output);
-   preserve|=storage_visit(value.second,tiles,host,phase,false,output);
+   preserve|=storage_visit(value.first,tiles,host,phase,false,groups,output);
+   preserve|=storage_visit(value.second,tiles,host,phase,false,groups,output);
   }else if(value.tag==OP_APPEND || value.tag==OP_SUBGROUP) {
    preserve=1;
   }
@@ -1985,39 +2020,12 @@ u32 storage_visit(Span code,Span tiles,StorageHost host,i64 first_phase,bool roo
  return preserve;
 }
 
-extern "C" u32 storage_facts(Span code,Span tiles,StorageHost host,i64 phase,StorageOutput output) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.scalar_bytes) requires nonzero(output.emit) {
- return storage_visit(code,tiles,host,phase,true,output);
-}
-
-address tile_group_at(address groups,u64 index) on cpu {
- return unsafe_address(address_bits(groups)+index*size_of<TileGroup>());
-}
-
-extern "C" u64 coalesce_tile_groups(address groups,u64 count) on cpu {
- u64 used=0u64;
- u64 index=0u64;
- while(index<count) {
-  TileGroup current=unsafe_position<TileGroup>(tile_group_at(groups,index));
-  u64 kept=0u64;
-  u64 read=0u64;
-  while(read<used) {
-   TileGroup prior=unsafe_position<TileGroup>(tile_group_at(groups,read));
-   if(prior.storage==current.storage && prior.owner==current.owner
-       && max(prior.first,current.first)<min(prior.end,current.end)) {
-    current.first=min(prior.first,current.first);
-    current.end=max(prior.end,current.end);
-   }else{
-    unsafe_position<TileGroup>(tile_group_at(groups,kept))=prior;
-    kept+=1u64;
-   }
-   read+=1u64;
-  }
-  unsafe_position<TileGroup>(tile_group_at(groups,kept))=current;
-  used=kept+1u64;
-  index+=1u64;
- }
- return used;
+extern "C" StorageFacts storage_facts(Span code,Span tiles,StorageHost host,i64 phase,StorageOutput output) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar_bytes)
+ requires nonzero(output.read) requires nonzero(output.reserve_groups) {
+ TileGroupBuffer groups=TileGroupBuffer(address(),0u64,0u64);
+ u32 preserve=storage_visit(code,tiles,host,phase,true,groups,output);
+ return StorageFacts(preserve,groups.count);
 }
 
 bool tile_key_less(TileKey a, TileKey b) on cpu {

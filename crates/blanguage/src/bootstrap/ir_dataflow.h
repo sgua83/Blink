@@ -509,7 +509,6 @@ extern "C" u32 float_preserve(Node source,u32 requested,RegisterHost host) on cp
 // Query only the tile usage facts consumed by the original Stage caller.
 bool tile_phase_step(u32 tag) on cpu;
 struct TileGroup { u64 storage; u64 owner; u32 first; u32 end; };
-extern "C" u64 coalesce_tile_groups(address groups,u64 count) on cpu;
 void private_spans(Span code,Host host,address context,
                               cfn<void,address,usize,usize> emit) on cpu
  requires nonzero(host.inspect) requires nonzero(emit);
@@ -518,16 +517,19 @@ struct StorageHost {
  Host ir; address stage;
  cfn<u32,address,usize> ensures memory(read) scalar_bytes;
 };
-enum StorageEvent : u32 { Read = 0; Group = 1; };
 struct StorageOutput {
  address context;
- cfn<void,address,StorageEvent,usize,u32,i64> emit;
+ cfn<void,address,usize,u32,i64> read;
  Span publication_phases;
+ address group_storage;
+ cfn<address,address,usize> reserve_groups;
 };
-// Layout starts at phase zero and lends one phase slot per tile.
-// The standalone word query uses phase -1 and an empty span.
-extern "C" u32 storage_facts(Span code,Span tiles,StorageHost host,i64 phase,StorageOutput output) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.scalar_bytes) requires nonzero(output.emit);
+struct StorageFacts { u32 preserve; usize group_count; };
+// Layout starts at phase zero and lends its phase slots and group storage.
+// The standalone word query uses phase -1 and produces only reads.
+extern "C" StorageFacts storage_facts(Span code,Span tiles,StorageHost host,i64 phase,StorageOutput output) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar_bytes)
+ requires nonzero(output.read) requires nonzero(output.reserve_groups);
 
 // Borrow the Stage tiles and used words for this call and deliver only matching input fragments.
 extern "C" void tile_input_words(Span tiles,Host host,Span uses,address output,
