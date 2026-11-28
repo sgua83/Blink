@@ -66,6 +66,22 @@ extern "C" address dataset_position(address value, PositionIndex selected, Host 
     requires nonzero(host.fresh_vector) requires nonzero(host.push_vector)
     requires nonzero(host.make_position) requires nonzero(host.clone_position)
     requires nonzero(cleanup.position) requires nonzero(cleanup.vector);
+enum DatasetLeafAction:u32 { Unchanged=0; Rejected=1; Rewrite=2; Materialized=3; };
+struct DatasetMappedLeaf { PositionNode shape; address position; DatasetLeafAction action; };
+struct DatasetOutputMapping {
+    address context;
+    u64 scope;
+    cfn<DatasetMappedLeaf,address,PositionNode> field;
+};
+extern "C" address dataset_output_position(address value, DatasetOutputMapping output, Host host,
+    DatasetPositionCleanup cleanup) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.child)
+    requires nonzero(host.equal) requires nonzero(host.presence_kind)
+    requires nonzero(host.fresh_vector) requires nonzero(host.push_vector)
+    requires nonzero(host.make_position) requires nonzero(host.clone_position)
+    requires nonzero(cleanup.position) requires nonzero(cleanup.vector)
+    requires nonzero(output.field);
+
 extern "C" u32 ready(address value,address known,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.child)

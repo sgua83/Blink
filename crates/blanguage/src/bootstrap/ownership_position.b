@@ -316,13 +316,37 @@ void push_dataset_frame(inout DatasetFrames frames, usize depth, DatasetFrame fr
     unsafe_position<DatasetFrame>(dataset_frame(frames.data, depth)) = frame;
 }
 
-extern "C" address dataset_position(address value, PositionIndex selected, Host host,
+struct DatasetPositionMapping {
+    address context;
+    u64 scope;
+    bool scoped;
+    bool descend;
+    cfn<DatasetMappedLeaf,address,PositionNode> terminal;
+};
+
+extern "C" DatasetMappedLeaf dataset_element_leaf(address context, PositionNode shape) on cpu {
+    let absent = address();
+    if (shape.kind == 0 || shape.kind == 4 || shape.kind == 8) {
+        return DatasetMappedLeaf(shape, absent, DatasetLeafAction::Unchanged);
+    }
+    let selected = unsafe_position<PositionIndex>(context);
+    if (selected.kind != 0 && (shape.kind == 7 || shape.kind == 9)) {
+        PositionNode rewrite = shape;
+        rewrite.kind = shape.kind == 7 ? 8 : 9;
+        rewrite.index = selected;
+        return DatasetMappedLeaf(rewrite, absent, DatasetLeafAction::Rewrite);
+    }
+    return DatasetMappedLeaf(shape, absent, DatasetLeafAction::Rejected);
+}
+
+address map_dataset_positions(address value, DatasetPositionMapping mapping, Host host,
     DatasetPositionCleanup cleanup) on cpu
     requires nonzero(host.inspect) requires nonzero(host.child)
     requires nonzero(host.equal) requires nonzero(host.presence_kind)
     requires nonzero(host.fresh_vector) requires nonzero(host.push_vector)
     requires nonzero(host.make_position) requires nonzero(host.clone_position)
-    requires nonzero(cleanup.position) requires nonzero(cleanup.vector) {
+    requires nonzero(cleanup.position) requires nonzero(cleanup.vector)
+    requires nonzero(mapping.terminal) {
     let absent = address();
     DatasetFrames frames = DatasetFrames(absent, 0u64);
     usize depth = 0u64;
@@ -330,15 +354,7 @@ extern "C" address dataset_position(address value, PositionIndex selected, Host 
     address result = absent;
     while (true) {
         PositionNode shape = host.inspect(current);
-        if (shape.kind == 0 || shape.kind == 4 || shape.kind == 8) {
-            result = host.clone_position(current);
-        } else if (selected.kind == 0) {
-            result = absent;
-        } else if (shape.kind == 7 || shape.kind == 9) {
-            if (shape.kind == 7) { shape.kind = 8; }
-            shape.index = selected;
-            result = host.make_position(shape, absent, absent, absent);
-        } else if (shape.kind == 10 || shape.kind == 11 || shape.kind == 12) {
+        if (mapping.descend && (shape.kind == 10 || shape.kind == 11 || shape.kind == 12)) {
             address partial = shape.kind == 10 ? host.fresh_vector() : absent;
             if (shape.kind == 10 && shape.count == 0u64) {
                 result = host.make_position(shape, absent, absent, partial);
@@ -349,7 +365,19 @@ extern "C" address dataset_position(address value, PositionIndex selected, Host 
                 continue;
             }
         } else {
-            result = absent;
+            DatasetMappedLeaf leaf = DatasetMappedLeaf(shape, absent, DatasetLeafAction::Unchanged);
+            if (!mapping.scoped || ((shape.kind == 7 || shape.kind == 8) && shape.owner == mapping.scope)) {
+                leaf = mapping.terminal(mapping.context, shape);
+            }
+            if (leaf.action == DatasetLeafAction::Unchanged) {
+                // The owned Rust input can be returned directly when its root needs no projection.
+                if (mapping.scoped && depth == 0u64) { return absent; }
+                result = host.clone_position(current);
+            } else if (leaf.action == DatasetLeafAction::Rewrite) {
+                result = host.make_position(leaf.shape, absent, absent, absent);
+            } else {
+                result = leaf.position;
+            }
         }
 
         // A frame holds only children which have returned and still belong to this node.
@@ -394,6 +422,30 @@ extern "C" address dataset_position(address value, PositionIndex selected, Host 
     }
     if (frames.capacity != 0u64) { HeapFree(GetProcessHeap(), 0, frames.data); }
     return result;
+}
+
+extern "C" address dataset_position(address value, PositionIndex selected, Host host,
+    DatasetPositionCleanup cleanup) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.child)
+    requires nonzero(host.equal) requires nonzero(host.presence_kind)
+    requires nonzero(host.fresh_vector) requires nonzero(host.push_vector)
+    requires nonzero(host.make_position) requires nonzero(host.clone_position)
+    requires nonzero(cleanup.position) requires nonzero(cleanup.vector) {
+    let mapping = DatasetPositionMapping(address_of(selected), 0u64, false, selected.kind != 0,
+        c_function(dataset_element_leaf));
+    return map_dataset_positions(value, mapping, host, cleanup);
+}
+
+extern "C" address dataset_output_position(address value, DatasetOutputMapping output, Host host,
+    DatasetPositionCleanup cleanup) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.child)
+    requires nonzero(host.equal) requires nonzero(host.presence_kind)
+    requires nonzero(host.fresh_vector) requires nonzero(host.push_vector)
+    requires nonzero(host.make_position) requires nonzero(host.clone_position)
+    requires nonzero(cleanup.position) requires nonzero(cleanup.vector)
+    requires nonzero(output.field) {
+    let mapping = DatasetPositionMapping(output.context, output.scope, true, true, output.field);
+    return map_dataset_positions(value, mapping, host, cleanup);
 }
 
 extern "C" u32 ready(address value,address known,Host host) on cpu

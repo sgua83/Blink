@@ -2432,7 +2432,7 @@ impl DatasetOutput {
         Some(Self { scope: *scope, input: data.root.identity(), layout: Layout::of(&data.ty) })
     }
 
-    fn field(&self, index: Option<bounds::Operand>, word: u32) -> Position {
+    pub(super) fn field(&self, index: Option<bounds::Operand>, word: u32) -> Position {
         let root = Root::Dataset {
             borrow: view::Borrow::source(view::Source::Parameter(self.input, Vec::new())),
             index,
@@ -2451,25 +2451,9 @@ impl DatasetOutput {
     }
 
     pub(super) fn project(&self, position: Position) -> Position {
-        match position {
-            Position::Parameter(scope, word) if scope == self.scope => self.field(None, word as u32),
-            Position::ApplicationElement(scope, index, word) if scope == self.scope => {
-                let index = match index {
-                    ownership::ApplicationIndex::Constant(index) => bounds::Operand::Constant(Scalar::U32, Bits::from(index)),
-                    ownership::ApplicationIndex::Value(id, _) => bounds::Operand::Value(id),
-                };
-                self.field(Some(index), word)
-            }
-            Position::Both(a, b) => Position::both(self.project(Arc::unwrap_or_clone(a)), self.project(Arc::unwrap_or_clone(b))),
-            Position::Conditional(when, a, b) => Position::selected(
-                Arc::unwrap_or_clone(when), self.project(Arc::unwrap_or_clone(a)), self.project(Arc::unwrap_or_clone(b)),
-            ),
-            Position::Indexed(choices, index) => Position::Indexed(
-                choices.iter().cloned().map(|position| self.project(position)).collect(), index,
-            ),
-            position => position,
-        }
+        ownership::project_dataset_output(position, self.scope, self)
     }
+
 }
 
 /// Reads retain the facts at their own use, before later calls or writes.

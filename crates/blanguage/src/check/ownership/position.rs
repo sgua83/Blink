@@ -171,6 +171,41 @@ pub(super) fn dataset_position(value: &Position, operand: bounds::Operand) -> Op
     let result = unsafe { source_dataset_position(pointer(value), index(selected.as_ref()), HOST, cleanup) };
     (!result.is_null()).then(|| *unsafe { Box::from_raw(result.cast::<Position>()) })
 }
+#[repr(C)]
+struct DatasetMappedLeaf { shape: Node, position: Address, action: u32 }
+
+#[repr(C)]
+struct DatasetOutputMapping {
+    context: Address,
+    scope: u64,
+    field: unsafe extern "C" fn(Address, Node) -> DatasetMappedLeaf,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ownership_position::dataset_output_position"]
+    fn source_dataset_output_position(value: Address, output: DatasetOutputMapping, host: Host,
+        cleanup: DatasetPositionCleanup) -> Address;
+}
+
+pub(in crate::check) fn project_dataset_output(
+    value: Position, scope: usize, output: &address::DatasetOutput,
+) -> Position {
+    unsafe extern "C" fn make_field(context: Address, node: Node) -> DatasetMappedLeaf {
+        let output = unsafe { &*context.cast::<address::DatasetOutput>() };
+        let index = unsafe { actual_index(node.index) }.map(|index| match index {
+            ApplicationIndex::Constant(value) => bounds::Operand::Constant(Scalar::U32, Bits::from(value)),
+            ApplicationIndex::Value(identity, _) => bounds::Operand::Value(identity),
+        });
+        let position = Box::into_raw(Box::new(output.field(index, node.word as u32))).cast();
+        DatasetMappedLeaf { shape: node, position, action: 3 }
+    }
+
+    let mapping = DatasetOutputMapping { context: pointer(output), scope: scope as u64, field: make_field };
+    let cleanup = DatasetPositionCleanup { position: drop_position, vector: drop_position_vector };
+    let result = unsafe { source_dataset_output_position(pointer(&value), mapping, HOST, cleanup) };
+    if result.is_null() { value } else { *unsafe { Box::from_raw(result.cast::<Position>()) } }
+}
+
 #[repr(u32)]
 enum InitializationReadMode { Complete, Borrow }
 
