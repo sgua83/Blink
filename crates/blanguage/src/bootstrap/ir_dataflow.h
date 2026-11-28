@@ -521,16 +521,11 @@ extern "C" void tile_input_words(Span tiles,Host host,Span uses,address output,
 struct ShaderSubgroups {
  SubgroupFlags capabilities; u32 builtins; u32 maximal_reconvergence;
 };
-struct ProgramCodeRequirements {
- SubgroupFlags subgroup; u32 atomic64; u32 float_preserve; u32 maximal_reconvergence;
-};
 struct ShaderCodeRequirements {
  ShaderSubgroups subgroups; u32 atomic64; u32 float_preserve;
 };
 extern "C" ShaderCodeRequirements shader_code_requirements(
  Node operation,Span code,Span registers,u32 requested,bool subgroups,RegisterHost host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.scalar);
-extern "C" ProgramCodeRequirements program_code_requirements(Span stages,u32 requested,RegisterHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar);
 
 const u32 RAY_POSITIONS = 1;
@@ -556,12 +551,17 @@ extern "C" u32 shader_ray_usage(Span code,Span queries,bool closest,RayHost host
  requires nonzero(host.fields);
 
 struct NumericRequirements { u32 float64; u32 integer8; u32 integer16; };
-struct NumericHost {
- Host ir;
+struct ProgramRequirements {
+ SubgroupFlags subgroup; u32 atomic64; u32 float_preserve; u32 maximal_reconvergence;
+ NumericRequirements numeric; u32 sorting;
+};
+struct RequirementHost {
+ RegisterHost registers;
  cfn<void,address,address,cfn<void,address,u32>> locals;
 };
-extern "C" NumericRequirements numeric_requirements(Span stages,Span buffers,Span uniforms,NumericHost host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.locals);
+extern "C" ProgramRequirements program_requirements(
+ Span stages,Span buffers,Span uniforms,u32 requested,bool full,RequirementHost host) on cpu
+ requires nonzero(host.registers.ir.inspect) requires nonzero(host.registers.scalar) requires nonzero(host.locals);
 
 
 // The original program's buffers and type storage are borrowed synchronously.

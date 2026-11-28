@@ -1869,10 +1869,9 @@ u32 float_value_remaining(Node source,u32 requested,RegisterHost host) on cpu
  return code_requirements<0>(value.first,value.second,host,CodeRequirements(0,0,requested)).remaining_floats;
 }
 
-u32 float_operation_remaining(Node source,u32 requested,RegisterHost host) on cpu
+u32 float_operation_remaining(View operation,u32 requested,RegisterHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
  if(requested==0){return 0;}
- View operation=host.ir.inspect(source);
  u32 remaining=requested;
  if(operation.tag==1 || operation.tag==5 || operation.tag==6) {
   remaining&=~float_kind(host.ir.inspect(operation.left).tag);
@@ -1890,7 +1889,8 @@ u32 float_operation_remaining(Node source,u32 requested,RegisterHost host) on cp
 CodeRequirements stage_code_requirements<const Queries:u32>(
  Node operation,Span code,Span registers,RegisterHost host,CodeRequirements initial) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
- u32 remaining=float_operation_remaining(operation,initial.remaining_floats,host);
+ u32 remaining=initial.remaining_floats;
+ if(remaining!=0){remaining=float_operation_remaining(host.ir.inspect(operation),remaining,host);}
  return code_requirements<Queries>(code,registers,host,
   CodeRequirements(initial.subgroup,initial.atomic64,remaining));
 }
@@ -2033,19 +2033,6 @@ extern "C" ShaderCodeRequirements shader_code_requirements(
   u32((used&SUBGROUP_APPEND)!=0));
  return ShaderCodeRequirements(uses,facts.atomic64,requested^facts.remaining_floats);
 }
-extern "C" ProgramCodeRequirements program_code_requirements(Span stages,u32 requested,RegisterHost host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
- CodeRequirements facts=CodeRequirements(0,0,requested);
- usize index=0u64;
- while(index<stages.count) {
-  View stage=host.ir.inspect(node_at(stages,index,N_STAGE));
-  facts=stage_code_requirements<7>(stage.left,stage.first,stage.second,host,facts);
-  index+=1u64;
- }
- return ProgramCodeRequirements(subgroup_flags(facts.subgroup),facts.atomic64,
-  requested^facts.remaining_floats,u32((facts.subgroup&SUBGROUP_APPEND)!=0));
-}
-
 void collect_ray_operands(Span code,RayHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.include) {
  usize index=0u64;
@@ -2149,41 +2136,59 @@ extern "C" void numeric_local_scalar(address context,u32 scalar) on cpu {
  numeric_scalar(flags,scalar,true);
  unsafe_position<NumericRequirements>(context)=flags;
 }
-void numeric_code(inout NumericRequirements flags,Node source,NumericHost host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.locals) {
- View value=host.ir.inspect(source);usize index=0u64;
+void numeric_code(inout NumericRequirements flags,View value,RequirementHost host) on cpu
+ requires nonzero(host.registers.ir.inspect) requires nonzero(host.locals) {
+ usize index=0u64;
  while(index<value.second.count) {
-  View scalar=host.ir.inspect(node_at(value.second,index,N_SCALAR));
+  View scalar=host.registers.ir.inspect(node_at(value.second,index,N_SCALAR));
   numeric_scalar(flags,scalar.tag,true);index+=1u64;
  }
  host.locals(unsafe_address(u64(value.c)),address_of(flags),c_function(numeric_local_scalar));
 }
-extern "C" NumericRequirements numeric_requirements(Span stages,Span buffers,Span uniforms,NumericHost host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.locals) {
- NumericRequirements flags=NumericRequirements(0,0,0);usize index=0u64;
+extern "C" ProgramRequirements program_requirements(
+ Span stages,Span buffers,Span uniforms,u32 requested,bool full,RequirementHost host) on cpu
+ requires nonzero(host.registers.ir.inspect) requires nonzero(host.registers.scalar) requires nonzero(host.locals) {
+ NumericRequirements flags=NumericRequirements(0,0,0);
+ CodeRequirements code=CodeRequirements(0,0,requested);
+ u32 sorting=0;
+ usize index=0u64;
  while(index<buffers.count) {
-  View buffer=host.ir.inspect(node_at(buffers,index,N_BUFFER));numeric_components(flags,buffer.first,false,host.ir);index+=1u64;
+  View buffer=host.registers.ir.inspect(node_at(buffers,index,N_BUFFER));
+  numeric_components(flags,buffer.first,false,host.registers.ir);
+  index+=1u64;
  }
  index=0u64;
  while(index<uniforms.count) {
-  View uniform=host.ir.inspect(node_at(uniforms,index,N_UNIFORM));numeric_components(flags,uniform.first,false,host.ir);index+=1u64;
+  View uniform=host.registers.ir.inspect(node_at(uniforms,index,N_UNIFORM));
+  numeric_components(flags,uniform.first,false,host.registers.ir);
+  index+=1u64;
  }
  index=0u64;
  while(index<stages.count) {
-  Node source=node_at(stages,index,N_STAGE);numeric_code(flags,source,host);
-  View stage=host.ir.inspect(source);View operation=host.ir.inspect(stage.left);
+  View stage=host.registers.ir.inspect(node_at(stages,index,N_STAGE));
+  View operation=host.registers.ir.inspect(stage.left);
+  numeric_code(flags,stage,host);
   if(operation.tag==1 || operation.tag==5 || operation.tag==6) {
-   numeric_components(flags,operation.first,true,host.ir);
+   numeric_components(flags,operation.first,true,host.registers.ir);
   }else if(operation.tag==2 || operation.tag==3 || operation.tag==4) {
-   View custom=host.ir.inspect(operation.left);numeric_code(flags,custom.left,host);numeric_code(flags,custom.right,host);
+   View custom=host.registers.ir.inspect(operation.left);
+   numeric_code(flags,host.registers.ir.inspect(custom.left),host);
+   numeric_code(flags,host.registers.ir.inspect(custom.right),host);
    usize project=0u64;
    while(project<custom.first.count) {
-    numeric_code(flags,node_at(custom.first,project,N_VALUE_CODE),host);project+=1u64;
+    numeric_code(flags,host.registers.ir.inspect(node_at(custom.first,project,N_VALUE_CODE)),host);
+    project+=1u64;
    }
+  }
+  if(full) {
+   code.remaining_floats=float_operation_remaining(operation,code.remaining_floats,host.registers);
+   code=code_requirements<7>(stage.first,stage.second,host.registers,code);
+   sorting|=u32(operation.tag==8);
   }
   index+=1u64;
  }
- return flags;
+ return ProgramRequirements(subgroup_flags(code.subgroup),code.atomic64,requested^code.remaining_floats,
+  u32((code.subgroup&SUBGROUP_APPEND)!=0),flags,sorting);
 }
 
 const u32 N_PAGE_BUFFER=28;

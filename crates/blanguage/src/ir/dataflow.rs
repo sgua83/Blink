@@ -751,19 +751,10 @@ impl ShaderCodeRequirements {
 
     pub(crate) fn float_modes(&self) -> (bool, bool) { float_modes(self.float_preserve) }
 }
-#[repr(C)]
-struct ProgramCodeRequirements {
-    subgroup: SubgroupFlags,
-    atomic64: u32,
-    float_preserve: u32,
-    maximal_reconvergence: u32,
-}
 unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::shader_code_requirements"]
     fn b_shader_code_requirements(operation: Node, code: Span, registers: Span, requested: u32,
         subgroups: bool, host: RegisterHost) -> ShaderCodeRequirements;
-    #[link_name = "bootstrap.ir_dataflow::program_code_requirements"]
-    fn b_program_code_requirements(stages: Span, requested: u32, host: RegisterHost) -> ProgramCodeRequirements;
 }
 pub(crate) fn shader_code_requirements(
     operation: &Operation, code: &[Inst], registers: &[Scalar], float_preserve: bool, subgroups: bool,
@@ -774,20 +765,6 @@ pub(crate) fn shader_code_requirements(
             requested, subgroups, REGISTER_HOST)
     }
 }
-pub(super) fn program_code_requirements(program: &Program) -> DeviceRequirements {
-    let facts = unsafe {
-        b_program_code_requirements(Span::slice(program.stages()), PRESERVE_FLOATS, REGISTER_HOST)
-    };
-    let (atomic64, shared_atomic64) = atomic64_flags(facts.atomic64);
-    let (float32_preserve, float64_preserve) = float_modes(facts.float_preserve);
-    DeviceRequirements {
-        atomic64, shared_atomic64, float32_preserve, float64_preserve,
-        subgroup: facts.subgroup.into(),
-        maximal_reconvergence: facts.maximal_reconvergence != 0,
-        ..DeviceRequirements::default()
-    }
-}
-
 #[repr(C)]
 struct RayHost {
     ir: Host, used: *mut c_void,
@@ -878,8 +855,8 @@ unsafe extern "C" fn visit_ray_query<F: FnMut(usize, Reg) -> bool>(context: *mut
 #[repr(C)]
 struct NumericRequirements { float64: u32, integer8: u32, integer16: u32 }
 #[repr(C)]
-struct NumericHost {
-    ir: Host,
+struct RequirementHost {
+    registers: RegisterHost,
     locals: unsafe extern "C" fn(*const c_void, *mut c_void, unsafe extern "C" fn(*mut c_void, u32)),
 }
 unsafe extern "C" fn numeric_locals(source: *const c_void, context: *mut c_void,
@@ -891,14 +868,51 @@ unsafe extern "C" fn numeric_locals(source: *const c_void, context: *mut c_void,
         }
     }
 }
-unsafe extern "C" {
-    #[link_name = "bootstrap.ir_dataflow::numeric_requirements"]
-    fn b_numeric_requirements(stages: Span, buffers: Span, uniforms: Span, host: NumericHost) -> NumericRequirements;
+#[repr(C)]
+struct ProgramRequirements {
+    subgroup: SubgroupFlags,
+    atomic64: u32,
+    float_preserve: u32,
+    maximal_reconvergence: u32,
+    numeric: NumericRequirements,
+    sorting: u32,
 }
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ir_dataflow::program_requirements"]
+    fn b_program_requirements(stages: Span, buffers: Span, uniforms: Span,
+        requested: u32, full: bool, host: RequirementHost) -> ProgramRequirements;
+}
+
+fn requirement_facts(program: &Program, requested: u32, full: bool) -> ProgramRequirements {
+    unsafe {
+        b_program_requirements(Span::slice(program.stages()), Span::slice(&program.buffers),
+            Span::slice(&program.uniforms), requested, full,
+            RequirementHost { registers: REGISTER_HOST, locals: numeric_locals })
+    }
+}
+
 pub(crate) fn numeric_requirements(program: &Program) -> (bool, bool, bool) {
-    let flags = unsafe { b_numeric_requirements(Span::slice(program.stages()), Span::slice(&program.buffers),
-        Span::slice(&program.uniforms), NumericHost { ir: HOST, locals: numeric_locals }) };
+    let flags = requirement_facts(program, 0, false).numeric;
     (flags.float64 != 0, flags.integer8 != 0, flags.integer16 != 0)
+}
+
+pub(super) fn program_requirements(program: &Program) -> DeviceRequirements {
+    let facts = requirement_facts(program, PRESERVE_FLOATS, true);
+    let (atomic64, shared_atomic64) = atomic64_flags(facts.atomic64);
+    let (float32_preserve, float64_preserve) = float_modes(facts.float_preserve);
+    DeviceRequirements {
+        float64: facts.numeric.float64 != 0,
+        integer8: facts.numeric.integer8 != 0,
+        integer16: facts.numeric.integer16 != 0,
+        atomic64, shared_atomic64, float32_preserve, float64_preserve,
+        subgroup: facts.subgroup.into(),
+        maximal_reconvergence: facts.maximal_reconvergence != 0,
+        sorting: facts.sorting != 0,
+        ray_query: !program.accelerations.is_empty(),
+        texture_indexing: program.requires_texture_indexing(),
+        position_fetch: program.requires_ray_position_fetch(),
+    }
 }
 
 fn atomic64_flags(flags: u32) -> (bool, bool) { (flags & 1 != 0, flags & 2 != 0) }

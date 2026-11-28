@@ -192,15 +192,7 @@ macro_rules! interface_fields {
 impl ProgramInterface for Program {
     interface_fields!(,);
     fn requirements(&self) -> DeviceRequirements {
-        let (float64, integer8, integer16) = dataflow::numeric_requirements(self);
-        DeviceRequirements {
-            float64, integer8, integer16,
-            ray_query: !self.accelerations.is_empty(),
-            sorting: self.requires_sort(),
-            texture_indexing: self.requires_texture_indexing(),
-            position_fetch: self.requires_ray_position_fetch(),
-            ..dataflow::program_code_requirements(self)
-        }
+        dataflow::program_requirements(self)
     }
 }
 impl<T: Deref> ProgramInterface for T
