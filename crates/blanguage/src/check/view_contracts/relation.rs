@@ -1374,11 +1374,11 @@ impl Builder<'_> {
     }
     fn position(&mut self,value:&address::Origin,epoch:&Epoch)->usize{
         if let address::Root::Parameter(parameter)=&value.root && let Some(&from)=self.parameters.get(&ValueIdentity::ParameterStorage(*parameter)){
-            let id=self.empty();let mut template=value.clone();template.root=address::Root::Derived(Borrow::default());template.positions=Arc::from([]);self.edge(id,from,Op::Position(template),bounds::Clause::default());return id;
+            let id=self.empty();let mut template=value.clone();template.root=address::Root::Derived(Borrow::default());template.positions=Default::default();self.edge(id,from,Op::Position(template),bounds::Clause::default());return id;
         }
         let parent=match &value.root{address::Root::Derived(b)|address::Root::Resource{borrow:b,..}|address::Root::Dataset{borrow:b,..}|address::Root::External(address::Identity::Storage(b))=>Some(b),_=>None};
         let id=self.empty();
-        if let Some(parent)=parent{let from=self.borrow(parent,epoch);let mut template=value.map_borrows(|_|Borrow::default());template.positions=Arc::from([]);self.edge(id,from,Op::Position(template),bounds::Clause::default());}
+        if let Some(parent)=parent{let from=self.borrow(parent,epoch);let mut template=value.map_borrows(|_|Borrow::default());template.positions=Default::default();self.edge(id,from,Op::Position(template),bounds::Clause::default());}
         else{self.graph.nodes[id].seeds.sources.insert(Origin::Position(Arc::new(value.clone())));}
         id
     }
@@ -1568,7 +1568,7 @@ impl Builder<'_> {
                     Some(id)
                 };
                 let layout=address::Layout::of(&Ty::scalar(Scalar::U64));
-                let origin=address::Origin{root:address::Root::Local{base:slot,len:1},layout:layout.clone(),base:layout,words:Arc::from([0]),positions:Arc::from([Position::Local(slot)]),writable:true,initialized:Arc::from([true])};
+                let origin=address::Origin{root:address::Root::Local{base:slot,len:1},layout:layout.clone(),base:layout,words:Arc::from([0]),positions:vec![Position::Local(slot)].into(),writable:true,initialized:Arc::from([true])};
                 let path = self.function.uses[memory].path.clone();
                 self.graph.nodes[id].edges.push(Edge {
                     from,

@@ -612,7 +612,7 @@ impl Builder<'_> {
                         let (_,ty)=reference.element_layout();
                         address::Origin{
                             root:address::Root::Derived(source),layout:address::Layout::of(ty),
-                            base:address::Layout::of(&reference.data.ty),words:reference.words().into(),positions:Arc::from([]),
+                            base:address::Layout::of(&reference.data.ty),words:reference.words().into(),positions:Default::default(),
                             writable:p.access.writes(),initialized:vec![true;ty.components.len()].into(),
                         }.normalize()
                     }else{source};
@@ -810,7 +810,7 @@ impl Builder<'_> {
                             let raw=reference.root.ty.components[0].0==Scalar::U64;
                             let root=if raw {address::Root::Derived(view::Borrow::source(view::Source::Parameter(reference.root.identity(),Vec::new())))}
                                 else{address::Root::Resource{borrow:view::resource_borrow(&reference.data),index:None}};
-                            let positions=if raw{Arc::from([])}else{
+                            let positions=if raw{Default::default()}else{
                                 let scope=reference.initialization.as_ref().unwrap();
                                 words.iter().map(|word|match(reference.length.minimum(),reference.length.maximum()){
                                     (0,0)=>Position::Initialized,
@@ -944,7 +944,7 @@ impl Builder<'_> {
                             initialized: vec![true; layout.parts.len()].into(),
                             layout: layout.clone(),
                             base: layout,
-                            positions: Arc::from([]),
+                            positions: Default::default(),
                             writable: false,
                         }.normalize());
                     }

@@ -4,7 +4,7 @@ use super::*;
 mod position;
 #[path="ownership/place.rs"]
 mod place;
-use position::{PositionChild, SharedPositions};
+use position::PositionChild;
 
 #[derive(Clone, Copy)]
 pub(super) enum ApplicationIndex {
@@ -53,7 +53,7 @@ impl Position {
     pub(super) fn application_prefix_initialized(&self,length:u32,word:u32,initialized:&BTreeSet<Position>)->bool{position::prefix(self,length,word,initialized)}
     pub(super) fn uses_scope(&self,scope:usize)->bool{position::scope(self,scope)}
 }
-pub(super) use position::{initialization_read_borrow, initialization_read_complete, merge_initialization, project_dataset_output, resolve_initialization};
+pub(super) use position::{initialization_read_borrow, initialization_read_complete, merge_initialization, project_dataset_output, resolve_initialization, SharedPositions};
 impl Place {
     pub(super) fn data_positions(&self)->Vec<Position>{place::data(self)}
     pub(super) fn owned_positions(&self)->Option<Vec<Position>>{place::owned(self)}

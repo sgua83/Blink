@@ -588,13 +588,13 @@ impl<'b, 'w> Scope<'b, 'w> {
                 if !ty.is_address(){return Ok(None);}
                 let ty=unsafe { builder.world.call(builder.world.ty(&syntax,builder.scope.source(),expr.span(),builder.scope.module(),builder.scope.imports())).await }?;
                 let layout=address::Layout::of(&ty);
-                let origin=address::Origin{root:address::Root::Derived(proof.view_borrow(0)),base:layout.clone(),layout,words:ty.components.iter().map(|(_,word)|*word).collect(),positions:Arc::from([]),writable:true,initialized:vec![false;ty.components.len()].into()};
+                let origin=address::Origin{root:address::Root::Derived(proof.view_borrow(0)),base:layout.clone(),layout,words:ty.components.iter().map(|(_,word)|*word).collect(),positions:Default::default(),writable:true,initialized:vec![false;ty.components.len()].into()};
                 return Ok(Some((ty.clone(),bounds::Proof::default().with_external_borrows(&ty),origin.normalize())));
             },
             ExprKind::Member(base,field)if place_root(&base).is_address()=>{
                 let Some((ty,proof,borrow))=unsafe { self.world.call(self.input_snapshot(&base,limit,access,element,ordinal)).await }?else{return Ok(None);};
                 let(selected,parts)=member_type(&ty,field,builder.scope.source(),expr.span())?;
-                let origin=address::Origin{root:address::Root::Derived(borrow),base:address::Layout::of(&ty),layout:address::Layout::of(&selected),words:parts.iter().map(|part|ty.components[*part].1).collect(),positions:Arc::from([]),writable:true,initialized:vec![false;selected.components.len()].into()};
+                let origin=address::Origin{root:address::Root::Derived(borrow),base:address::Layout::of(&ty),layout:address::Layout::of(&selected),words:parts.iter().map(|part|ty.components[*part].1).collect(),positions:Default::default(),writable:true,initialized:vec![false;selected.components.len()].into()};
                 return Ok(Some((selected,proof.project(&parts,ty.components.len()),origin.normalize())));
             },
             ExprKind::Index(base,index)if place_root(&base).is_address()=>{
@@ -604,7 +604,7 @@ impl<'b, 'w> Scope<'b, 'w> {
                 let mut locations=view::Borrow::default();
                 for at in (0..ty.values[0]).filter(|at|known.is_none_or(|known|known==u64::from(*at))) {
                     let(offset,_)=ty.aggregate_part(at as usize);
-                    let origin=address::Origin{root:address::Root::Derived(borrow.clone()),base:address::Layout::of(&ty),layout:address::Layout::of(selected),words:selected.components.iter().map(|(_,word)|offset+word).collect(),positions:Arc::from([]),writable:true,initialized:vec![false;selected.components.len()].into()};locations.union(&origin.normalize());
+                    let origin=address::Origin{root:address::Root::Derived(borrow.clone()),base:address::Layout::of(&ty),layout:address::Layout::of(selected),words:selected.components.iter().map(|(_,word)|offset+word).collect(),positions:Default::default(),writable:true,initialized:vec![false;selected.components.len()].into()};locations.union(&origin.normalize());
                 }
                 return Ok(Some((selected.clone(),bounds::Proof::default().with_external_borrows(selected),locations)));
             },
@@ -679,7 +679,7 @@ impl<'b, 'w> Scope<'b, 'w> {
             for choice in 0..parts.first().map_or(0,Vec::len) {
                 let origin=address::Origin {
                     root:address::Root::Resource{borrow:projection.resource.clone(),index:projection.index},base:address::Layout::of(&projection.base),layout:address::Layout::of(&ty),
-                    words:parts.iter().map(|part|projection.base.components[part[choice]].1).collect(),positions:Arc::from([]),
+                    words:parts.iter().map(|part|projection.base.components[part[choice]].1).collect(),positions:Default::default(),
                     writable:projection.access.writes(),initialized:vec![false;ty.components.len()].into(),
                 };
                 borrow.union(&origin.normalize());
@@ -1347,7 +1347,7 @@ impl Builder<'_> {
                     if parts.iter().flatten().any(|component|changed.contains(component)){return Ok(true);}
                 }
             }
-            let(scalar,word)=target.base.components[*component];let origin=address::Origin{root:address::Root::Resource{borrow:target.resource.clone(),index:target.index},layout:address::Layout{size:scalar.size(),align:scalar.size(),parts:vec![(scalar,0)].into()},base:address::Layout::of(&target.base),words:vec![word].into(),positions:Arc::from([]),writable:true,initialized:vec![false].into()};
+            let(scalar,word)=target.base.components[*component];let origin=address::Origin{root:address::Root::Resource{borrow:target.resource.clone(),index:target.index},layout:address::Layout{size:scalar.size(),align:scalar.size(),parts:vec![(scalar,0)].into()},base:address::Layout::of(&target.base),words:vec![word].into(),positions:Default::default(),writable:true,initialized:vec![false].into()};
             let borrow=view::Borrow::source(view::Source::Position(Arc::new(origin)));let changed=self.memory_effect_components(Self::address_write_effect(&borrow).as_ref(), &owner, false);
             return Ok(parts.iter().flatten().any(|component|changed.contains(component)));
         }

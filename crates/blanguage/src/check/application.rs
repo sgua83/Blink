@@ -241,7 +241,7 @@ impl DataReference {
 pub(super) fn dataset_origin(data:&Data,field:u32,ty:&Ty,initialized:bool)->address::Origin {
     address::Origin {
         root:address::Root::Resource{borrow:view::resource_borrow(data),index:None},base:address::Layout::of(&data.ty),layout:address::Layout::of(ty),
-        words:ty.components.iter().map(|(_,word)|field+word).collect(),positions:Arc::from([]),
+        words:ty.components.iter().map(|(_,word)|field+word).collect(),positions:Default::default(),
         writable:data.access.writes(),initialized:vec![initialized;ty.components.len()].into(),
     }
 }
@@ -3990,7 +3990,7 @@ impl Builder<'_> {
                         parts: components.iter().map(|&component| ty.components[component]).collect(),
                     },
                     words: words.clone().into(),
-                    positions: Arc::from([]),
+                    positions: Default::default(),
                     writable: reference.access.writes(),
                     initialized: vec![false; words.len()].into(),
                 };

@@ -30,7 +30,7 @@ pub(super) struct Origin {
     pub layout: Layout,
     pub base: Layout,
     pub words: Arc<[u32]>,
-    pub positions: Arc<[Position]>,
+    pub positions: ownership::SharedPositions,
     pub writable: bool,
     pub initialized: Arc<[bool]>,
 }
@@ -931,7 +931,7 @@ impl AddressOriginBinding<'_> {
     }
 
     unsafe extern "C" fn clear_positions(context: *mut std::ffi::c_void) {
-        unsafe { &mut *context.cast::<Self>() }.value.positions = Arc::from([]);
+        unsafe { &mut *context.cast::<Self>() }.value.positions = Default::default();
     }
 
     unsafe extern "C" fn index(context: *mut std::ffi::c_void) -> u32 {
@@ -2473,7 +2473,7 @@ impl DatasetOutput {
             layout: self.layout.clone(),
             base: self.layout.clone(),
             words: self.layout.parts.iter().map(|(_, word)| *word).collect(),
-            positions: Arc::from([]),
+            positions: Default::default(),
             writable: true,
             initialized: vec![false; self.layout.parts.len()].into(),
         };
@@ -2714,7 +2714,7 @@ fn borrowed_initialization(
         layout: part,
         base: layout.clone(),
         words: Arc::from([word]),
-        positions: Arc::from([]),
+        positions: Default::default(),
         writable: true,
         initialized: Arc::from([true]),
     };
@@ -4531,7 +4531,7 @@ const _: () = {
                 words: <Arc<[u32]> as Native>::empty(),
                 writable: <bool as Native>::empty(),
                 initialized: <Arc<[bool]> as Native>::empty(),
-                positions: Arc::from([]),
+                positions: Default::default(),
             }
         }
         unsafe fn write(&self, output: Slot) {

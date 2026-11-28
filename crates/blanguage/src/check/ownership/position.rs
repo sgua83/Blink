@@ -45,9 +45,6 @@ unsafe impl Sync for SharedPositions {}
 impl SharedPositions {
     fn allocate(count: usize) -> std::ptr::NonNull<Position> {
         const { assert!(size_of::<Position>() != 0 && align_of::<Position>() <= 16); }
-        if count == 0 {
-            return std::ptr::NonNull::dangling();
-        }
         let result = unsafe { allocate_shared_positions(count * size_of::<Position>()) };
         unsafe { std::ptr::NonNull::new_unchecked(result.cast()) }
     }
@@ -61,9 +58,18 @@ impl SharedPositions {
     }
 }
 
+impl Default for SharedPositions {
+    fn default() -> Self {
+        Self(std::ptr::NonNull::slice_from_raw_parts(std::ptr::NonNull::dangling(), 0))
+    }
+}
+
 impl From<Vec<Position>> for SharedPositions {
     fn from(mut values: Vec<Position>) -> Self {
         let count = values.len();
+        if count == 0 {
+            return Self::default();
+        }
         let positions = Self::allocate(count);
         unsafe {
             std::ptr::copy_nonoverlapping(values.as_ptr(), positions.as_ptr(), count);
@@ -415,7 +421,7 @@ unsafe extern "C" fn emit_initialization_read(output: Address, value: Address) {
                 layout: address::Layout { size: scalar.size(), align: scalar.size(), parts: Arc::from([(*scalar, 0)]) },
                 base: layout.clone(),
                 words: Arc::from([*word]),
-                positions: Arc::from([]),
+                positions: Default::default(),
                 writable: false,
                 initialized: Arc::from([false]),
             };

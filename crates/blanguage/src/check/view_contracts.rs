@@ -1235,7 +1235,7 @@ impl BorrowEvaluation<'_>{
                     (Position::Borrowed(borrow,base,word),Some(index))=>Some(address::Origin{
                         root:address::Root::Resource{borrow:borrow.as_ref().clone(),index:Some(*index)},
                         layout:address::Layout::of(&Ty::scalar(Scalar::U64)),base:base.clone(),
-                        words:Arc::from([*word]),positions:Arc::from([]),writable:false,initialized:Arc::from([true]),
+                        words:Arc::from([*word]),positions:Default::default(),writable:false,initialized:Arc::from([true]),
                     }),
                     _=>None,
                 };
@@ -1424,7 +1424,7 @@ fn canonical_address(
         }
     }
     if !matches!(value.root, address::Root::Local { .. }) {
-        value.positions = Arc::from([]);
+        value.positions = Default::default();
     }
     value
 }
@@ -1830,7 +1830,7 @@ fn initializations(function:&Function,state:&State,known:&States,exit_paths:Opti
                     when.truth_in(&path)==Some(true)&&read.base==origin.base&&same_content_storage(&read.root,&origin.root)
                         &&read.layout.parts.iter().zip(read.words.iter()).any(|((read_scalar,_),read_word)|read_scalar==scalar&&read_word==word)
                 })){return None;}
-                origin.positions=Arc::from([]);
+                origin.positions=Default::default();
                 address::InitializationSource::Position(origin)
             },
             address::InitializationSource::Task(borrow)=>{
@@ -2948,7 +2948,7 @@ impl Builder<'_> {
                     Position::Borrowed(_,_,word)=>{
                         let origin=address::Origin{
                             root:address::Root::Derived(borrow.clone()),layout:address::Layout::of(&Ty::scalar(*scalar)),
-                            base:element_layout.clone(),words:Arc::from([word]),positions:Arc::from([]),
+                            base:element_layout.clone(),words:Arc::from([word]),positions:Default::default(),
                             writable:access.writes(),initialized:Arc::from([access.reads()]),
                         };
                         let usage=self.view_model.uses.len();
