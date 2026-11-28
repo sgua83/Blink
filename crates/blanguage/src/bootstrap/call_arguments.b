@@ -510,6 +510,61 @@ extern "C" u8 memory_effect_bytes(MemoryEffectCoverage effect, MemoryEffectCover
     return bytes;
 }
 
+u32 exact_written_value(u32 width, u8 all, WrittenValueHost host) on cpu
+    requires nonzero(host.regions) requires nonzero(host.region) requires nonzero(host.retain) {
+    let count = host.regions(host.context);
+    usize at = 0u64;
+    u32 exact = 0;
+    while (at < count) {
+        let region = host.region(host.context, at);
+        if (region.bytes != u8(0)) {
+            if (region.offset != 0 || region.size != width || region.bytes != all ||
+                host.retain(host.context, at) == 0) {
+                return 0;
+            }
+            exact = 1;
+        }
+        at += 1u64;
+    }
+    return exact;
+}
+
+extern "C" u32 written_memory_value(WrittenValueFacts facts, WrittenValueHost host) on cpu
+    requires nonzero(host.access) requires nonzero(host.project) requires nonzero(host.regions)
+    requires nonzero(host.region) requires nonzero(host.retain) requires nonzero(host.merge) {
+    if (writes(facts.external)) { return 1; }
+    let all = scalar_write_mask(facts.width);
+    usize at = 0u64;
+    while (at < facts.count) {
+        if (writes(host.access(host.context, at))) {
+            let source = host.project(host.context, at);
+            if (source.bytes != u8(0)) {
+                u32 exact = 0;
+                if (source.proof != 0) { exact = exact_written_value(facts.width, all, host); }
+                u64 changed = 0u64;
+                u64 kept = 0u64;
+                u64 ordered = 0u64;
+                u32 partial_integer = 0;
+                if (exact == 0 && facts.integer != 0 && source.bytes != all) {
+                    u32 byte = 0;
+                    while (byte < facts.width) {
+                        if ((u32(source.bytes) & (1 << byte)) != 0) {
+                            changed |= 255u64 << u64(byte * 8);
+                        }
+                        byte += 1;
+                    }
+                    kept = facts.mask & ~changed;
+                    ordered = kept ^ facts.bias;
+                    partial_integer = 1;
+                }
+                host.merge(host.context, WrittenValueBits(changed, kept, ordered, exact, partial_integer));
+            }
+        }
+        at += 1u64;
+    }
+    return 0;
+}
+
 extern "C" u32 address_tail(address context,u64 count,u32 size,u32 first,AddressTailHost host) on cpu
  requires nonzero(host.offset) requires nonzero(host.append) {
  u64 i=0u64;while(i<count){u32 at=host.offset(context,i);if(at>=first){host.append(context,i,at-first);}i+=1u64;}return size-first;

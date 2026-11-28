@@ -164,6 +164,30 @@ struct MemoryEffectCoverageHost {
 extern "C" u8 memory_effect_bytes(MemoryEffectCoverage effect, MemoryEffectCoverageHost host) on cpu
     requires nonzero(host.access) requires nonzero(host.same_element) requires nonzero(host.project);
 
+struct WrittenValueFacts {
+    usize count;
+    u64 mask;
+    u64 bias;
+    u32 width;
+    u32 integer;
+    CallAccess external;
+};
+struct WrittenValueSource { u8 bytes; u32 proof; };
+struct WrittenValueRegion { u8 bytes; u32 offset; u32 size; };
+struct WrittenValueBits { u64 changed; u64 kept; u64 ordered; u32 exact; u32 partial_integer; };
+struct WrittenValueHost {
+    address context;
+    cfn<CallAccess,address,usize> ensures memory(read) access;
+    cfn<WrittenValueSource,address,usize> project;
+    cfn<usize,address> regions;
+    cfn<WrittenValueRegion,address,usize> region;
+    cfn<u32,address,usize> retain;
+    cfn<void,address,WrittenValueBits> merge;
+};
+extern "C" u32 written_memory_value(WrittenValueFacts facts, WrittenValueHost host) on cpu
+    requires nonzero(host.access) requires nonzero(host.project) requires nonzero(host.regions)
+    requires nonzero(host.region) requires nonzero(host.retain) requires nonzero(host.merge);
+
 extern "C" u32 address_tail(address context,u64 count,u32 size,u32 first,AddressTailHost host) on cpu
  requires nonzero(host.offset) requires nonzero(host.append);
 // explicit_type: 0 is not one type, 1 is a type, 2 is a root dataset.

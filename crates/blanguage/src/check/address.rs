@@ -759,6 +759,134 @@ impl EffectCoverage<'_> {
     }
 }
 
+#[repr(C)]
+struct WrittenValueFacts { count: usize, mask: u64, bias: u64, width: u32, integer: u32, external: Access }
+
+#[repr(C)]
+struct WrittenValueSource { bytes: u8, proof: u32 }
+
+#[repr(C)]
+struct WrittenValueRegion { bytes: u8, offset: u32, size: u32 }
+
+#[repr(C)]
+struct WrittenValueBits { changed: u64, kept: u64, ordered: u64, exact: u32, partial_integer: u32 }
+
+#[repr(C)]
+struct WrittenValueHost {
+    context: *mut std::ffi::c_void,
+    access: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> Access,
+    project: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> WrittenValueSource,
+    regions: unsafe extern "C" fn(*mut std::ffi::c_void) -> usize,
+    region: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> WrittenValueRegion,
+    retain: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> u32,
+    merge: unsafe extern "C" fn(*mut std::ffi::c_void, WrittenValueBits),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::written_memory_value"]
+    fn b_written_memory_value(facts: WrittenValueFacts, host: WrittenValueHost) -> u32;
+}
+
+struct WrittenValue<'a> {
+    coverage: EffectCoverage<'a>,
+    previous: &'a bounds::Proof,
+    source: usize,
+    regions: Option<Option<Vec<MemoryRegion>>>,
+    incoming: Option<bounds::Proof>,
+    combined: Option<(bounds::Proof, bounds::Proof)>,
+}
+
+impl WrittenValue<'_> {
+    unsafe extern "C" fn access(context: *mut std::ffi::c_void, at: usize) -> Access {
+        let query = unsafe { &*context.cast::<Self>() };
+        query.coverage.effect.known[at].2
+    }
+
+    unsafe extern "C" fn project(context: *mut std::ffi::c_void, at: usize) -> WrittenValueSource {
+        let query = unsafe { &mut *context.cast::<Self>() };
+        query.source = at;
+        let (origin, when, _, written) = &query.coverage.effect.known[at];
+        let regions = std::cell::OnceCell::new();
+        let bytes = MemoryEffect::project_written_bytes(origin, when, query.coverage.position,
+            query.coverage.scalar, query.coverage.index, &|| regions.get_or_init(|| origin.memory_regions(when)).as_deref());
+        query.regions = regions.into_inner();
+        WrittenValueSource { bytes, proof: u32::from(written.is_some()) }
+    }
+
+    unsafe extern "C" fn regions(context: *mut std::ffi::c_void) -> usize {
+        let query = unsafe { &mut *context.cast::<Self>() };
+        let (origin, when, _, _) = &query.coverage.effect.known[query.source];
+        query.regions.get_or_insert_with(|| origin.memory_regions(when)).as_ref().map_or(0, Vec::len)
+    }
+
+    unsafe extern "C" fn region(context: *mut std::ffi::c_void, at: usize) -> WrittenValueRegion {
+        let query = unsafe { &*context.cast::<Self>() };
+        let region = &query.regions.as_ref().unwrap().as_ref().unwrap()[at];
+        let bytes = region.written_bytes(query.coverage.position, query.coverage.scalar);
+        WrittenValueRegion { bytes, offset: region.offset, size: region.size }
+    }
+
+    unsafe extern "C" fn retain(context: *mut std::ffi::c_void, at: usize) -> u32 {
+        let query = unsafe { &mut *context.cast::<Self>() };
+        let region = &query.regions.as_ref().unwrap().as_ref().unwrap()[at];
+        let (origin, _, _, written) = &query.coverage.effect.known[query.source];
+        let Some(component) = origin.layout.parts.iter().position(|part| *part == (query.coverage.scalar, region.word)) else {
+            return 0;
+        };
+        let proof = written.as_ref().unwrap().project_numeric_at_call(&[component], origin.layout.parts.len(), &BTreeMap::new());
+        if let Some(incoming) = &mut query.incoming {
+            incoming.join(&proof, 1, None);
+        } else {
+            query.incoming = Some(proof);
+        }
+        1
+    }
+
+    unsafe extern "C" fn merge(context: *mut std::ffi::c_void, bits: WrittenValueBits) {
+        let query = unsafe { &mut *context.cast::<Self>() };
+        let (old_numeric, result) = query.combined.get_or_insert_with(|| {
+            let old_numeric = query.previous.numeric_at_call(&BTreeMap::new());
+            let result = old_numeric.clone();
+            (old_numeric, result)
+        });
+        let incoming = query.incoming.take();
+        let proof = if bits.exact != 0 {
+            incoming.unwrap()
+        } else if bits.partial_integer != 0 {
+            old_numeric.written_integer_bits(0, query.coverage.scalar, bits.changed, bits.kept, bits.ordered)
+        } else {
+            bounds::Proof::default()
+        };
+        result.join(&proof, 1, None);
+    }
+
+    fn value(mut self) -> bounds::Proof {
+        let scalar = self.coverage.scalar;
+        let facts = WrittenValueFacts {
+            count: self.coverage.effect.known.len(),
+            mask: scalar.bit_mask(),
+            bias: scalar.order_bias(),
+            width: scalar.size(),
+            integer: u32::from(scalar.is_integer()),
+            external: self.coverage.effect.external.unwrap_or(Access::Value),
+        };
+        let host = WrittenValueHost {
+            context: std::ptr::from_mut(&mut self).cast(),
+            access: Self::access,
+            project: Self::project,
+            regions: Self::regions,
+            region: Self::region,
+            retain: Self::retain,
+            merge: Self::merge,
+        };
+        // The callbacks borrow the original sources and keep only the current source's temporary proof.
+        if unsafe { b_written_memory_value(facts, host) } != 0 {
+            return bounds::Proof::default();
+        }
+        self.combined.map_or_else(|| self.previous.clone(), |(_, result)| result)
+    }
+}
+
 pub(super) fn external_memory(borrow: &view::Borrow) -> bool {
     borrow.sources.entries().any(|(source, when)| {
         source_has_external_memory(source, || when.possible().then_some(&when))
@@ -892,40 +1020,17 @@ impl MemoryEffect {
     }
 
     // A possible write joins its value with the old value; it is never a must-write guarantee.
-    pub(super) fn written_value(&self,position:&Position,scalar:Scalar,index:Option<bounds::Operand>,previous:&bounds::Proof)->bounds::Proof {
-        if self.has_external_write() {
-            return bounds::Proof::default();
-        }
-        let mut writes = self.known.iter().filter(|(_, _, access, _)| access.writes())
-            .filter_map(|(origin, when, _, written)| {
-                let regions = std::cell::LazyCell::new(move || origin.memory_regions(when));
-                let bytes = Self::project_written_bytes(origin, when, position, scalar, index,
-                    &|| regions.as_deref());
-                (bytes != 0).then_some((origin, written, bytes, regions))
-            });
-        let Some(first) = writes.next() else {
-            return previous.clone();
-        };
-        let previous = previous.numeric_at_call(&BTreeMap::new());
-        let mut result = previous.clone();
-        let all = ((1u16 << scalar.size()) - 1) as u8;
-        for (origin, written, bytes, regions) in std::iter::once(first).chain(writes) {
-            let incoming=written.as_ref().and_then(|proof|{
-                let mut incoming=None;
-                for region in regions.as_deref()? {
-                    let region_bytes = region.written_bytes(position, scalar);
-                    if region_bytes == 0 { continue; }
-                    let component=origin.layout.parts.iter().position(|part|*part==(scalar,region.word))?;
-                    if region.offset!=0||region.size!=scalar.size()||region_bytes!=all{return None;}
-                    let proof=proof.project_numeric_at_call(&[component],origin.layout.parts.len(),&BTreeMap::new());
-                    if let Some(incoming)=&mut incoming{bounds::Proof::join(incoming,&proof,1,None);}else{incoming=Some(proof);}
-                }
-                incoming
-            });
-            let incoming=match incoming{Some(incoming)=>incoming,None=>previous.written_range(0,scalar,bytes)};
-            result.join(&incoming,1,None);
-        }
-        result
+    pub(super) fn written_value(
+        &self, position: &Position, scalar: Scalar, index: Option<bounds::Operand>, previous: &bounds::Proof,
+    ) -> bounds::Proof {
+        WrittenValue {
+            coverage: EffectCoverage { effect: self, position, scalar, index },
+            previous,
+            source: 0,
+            regions: None,
+            incoming: None,
+            combined: None,
+        }.value()
     }
 }
 

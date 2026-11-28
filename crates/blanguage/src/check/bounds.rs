@@ -1007,10 +1007,7 @@ impl Proof {
         let domains = self.domains.get(component).map(Domains::iter).unwrap_or_default();
         known_bits::from_proof(scalar, ranges, domains)
     }
-    pub(super) fn written_range(&self,component:usize,scalar:Scalar,bytes:u8)->Self {
-        if !scalar.is_integer()||bytes==((1u16<<scalar.size())-1) as u8{return Self::default();}
-        let mask=(0..scalar.size()).filter(|byte|bytes&(1<<byte)!=0).fold(0,|mask,byte|mask|(255u64<<(byte*8)));
-        let kept=scalar.bit_mask()&!mask;let ordered=kept^scalar.order_bias();
+    pub(super) fn written_integer_bits(&self,component:usize,scalar:Scalar,mask:u64,kept:u64,ordered:u64)->Self {
         let range=arithmetic_ranges("&",scalar,&self.range_set(component).restrict(0,scalar.bit_mask()),&ScalarRanges::interval(ordered,ordered));
         let changed=ScalarRanges::interval(0,mask).cast(Scalar::U64,scalar,false);
         let mut proof=Self{ranges:vec![arithmetic_ranges("|",scalar,&range,&changed)],..Self::default()};
