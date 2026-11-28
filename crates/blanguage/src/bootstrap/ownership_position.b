@@ -14,7 +14,7 @@ address position_payload(address value, PositionView view) on cpu {
     return unsafe_address(address_bits(value) + view.payload_offset);
 }
 
-PositionIndex read_index(address value, PositionView view) on cpu {
+extern "C" PositionIndex read_index(address value, PositionView view) on cpu {
     let kind = unsafe_position<u32>(value);
     let payload = address_bits(value) + view.index_payload_offset;
     if (kind == 1) {
@@ -100,7 +100,6 @@ PositionNode node(Projection value,Host host) on cpu {
 address normalized(Projection value,Host host) on cpu
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
-    requires nonzero(host.presence_kind)
     requires nonzero(host.presence_equal) { 
     if(value.mode==0){return value.node;}
     PositionNode shape=node(value,host);
@@ -112,8 +111,8 @@ address normalized(Projection value,Host host) on cpu
             if(node(a,host).kind==0){return b.node;}
             if(node(b,host).kind==0){return a.node;}
         }else{
-            u32 when=host.presence_kind(shape.condition);
-            if(when==1){return a.node;}if(when==0){return b.node;}
+            let when=unsafe_position<PresenceTag>(shape.condition);
+            if(when==PresenceTag::All){return a.node;}if(when==PresenceTag::None){return b.node;}
         }
     }
     return value.node;
@@ -121,7 +120,6 @@ address normalized(Projection value,Host host) on cpu
 bool equal_ready(Projection left_view,Projection right_view,Host host) on cpu
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
-    requires nonzero(host.presence_kind)
     requires nonzero(host.presence_equal) { 
     PositionNode left=node(left_view,host);PositionNode right=node(right_view,host);
     if(left.kind!=right.kind){return false;}
@@ -141,7 +139,6 @@ bool equal_ready(Projection left_view,Projection right_view,Host host) on cpu
 bool equivalent(Projection a,Projection b,Host host) on cpu
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
-    requires nonzero(host.presence_kind)
     requires nonzero(host.presence_equal) { 
     Projection left_view=a;left_view.node=normalized(a,host);
     Projection right_view=b;right_view.node=normalized(b,host);
@@ -150,7 +147,6 @@ bool equivalent(Projection a,Projection b,Host host) on cpu
 bool completable(Projection value,Host host) on cpu
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
-    requires nonzero(host.presence_kind)
     requires nonzero(host.presence_equal) { 
     Projection actual=value;actual.node=normalized(value,host);PositionNode shape=node(actual,host);
     if(shape.kind==0||shape.kind==8||shape.kind==9){return true;}
@@ -163,7 +159,6 @@ bool completable(Projection value,Host host) on cpu
 bool contained(Projection value,address initialized,Host host) on cpu
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
-    requires nonzero(host.presence_kind)
     requires nonzero(host.presence_equal)
     requires nonzero(host.contains)
     requires nonzero(host.contains_parameter)
@@ -191,7 +186,6 @@ bool initialized(Projection value,LoopFieldState edge,Host host) on cpu
     requires nonzero(host.field_coverage)
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
-    requires nonzero(host.presence_kind)
     requires nonzero(host.presence_equal)
     requires nonzero(host.contains)
     requires nonzero(host.contains_parameter)
@@ -217,7 +211,6 @@ bool initialized(Projection value,LoopFieldState edge,Host host) on cpu
 address materialize(Projection value,Host host) on cpu
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
-    requires nonzero(host.presence_kind)
     requires nonzero(host.presence_equal)
     requires nonzero(host.fresh_vector)
     requires nonzero(host.push_vector)
@@ -245,7 +238,6 @@ PositionIndex element_index(address value,Host host) on cpu
 bool prefix(address value,u32 length,u32 word,address known,Host host) on cpu
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
-    requires nonzero(host.presence_kind)
     requires nonzero(host.presence_equal)
     requires nonzero(host.contains)
     requires nonzero(host.contains_parameter)
@@ -288,12 +280,11 @@ bool uses_index(address value,PositionIndex index,Host host) on cpu
     if(shape.kind==10||shape.kind==11||shape.kind==12){u64 i=0u64;while(i<shape.count){if(uses_index(position_child(value,i,host.positions),index,host)){return true;}i+=1u64;}}
     return false;
 }
-extern "C" u32 select(address when,address a,address b,cfn<u32,address,address> equal,cfn<u32,address> presence_kind) on cpu
-    requires nonzero(equal)
-    requires nonzero(presence_kind) {
+extern "C" u32 select(address when,address a,address b,cfn<u32,address,address> equal) on cpu
+    requires nonzero(equal) {
     if(equal(a,b)!=0){return 0;}
-    u32 kind=presence_kind(when);
-    return kind==1 ? 0 : (kind==0 ? 1 : 2);
+    let kind=unsafe_position<PresenceTag>(when);
+    return kind==PresenceTag::All ? 0 : (kind==PresenceTag::None ? 1 : 2);
 }
 extern "C" u32 both(address a,address b,cfn<u32,address,address> equal) on cpu
     requires nonzero(equal) {
@@ -323,7 +314,6 @@ extern "C" address index(address values,PositionIndex selected,u64 width,Host ho
 extern "C" address word(address value,PositionIndex selected,u32 field,Host host) on cpu
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
-    requires nonzero(host.presence_kind)
     requires nonzero(host.presence_equal)
     requires nonzero(host.fresh_vector)
     requires nonzero(host.push_vector)
@@ -473,7 +463,7 @@ extern "C" DatasetMappedLeaf dataset_element_leaf(address context, PositionNode 
 
 address map_dataset_positions(address value, DatasetPositionMapping mapping, Host host,
     DatasetPositionCleanup cleanup) on cpu
-    requires nonzero(host.equal) requires nonzero(host.presence_kind)
+    requires nonzero(host.equal)
     requires nonzero(host.fresh_vector) requires nonzero(host.push_vector)
     requires nonzero(host.make_position) requires nonzero(host.clone_position)
     requires nonzero(cleanup.position) requires nonzero(cleanup.vector)
@@ -536,7 +526,7 @@ address map_dataset_positions(address value, DatasetPositionMapping mapping, Hos
                 address left = frame.partial;
                 address right = result;
                 u32 choice = frame.shape.kind == 11
-                    ? select(frame.shape.condition, left, right, host.equal, host.presence_kind)
+                    ? select(frame.shape.condition, left, right, host.equal)
                     : both(left, right, host.equal);
                 if (choice == 0) {
                     cleanup.position(right);
@@ -557,7 +547,7 @@ address map_dataset_positions(address value, DatasetPositionMapping mapping, Hos
 
 extern "C" address dataset_position(address value, PositionIndex selected, Host host,
     DatasetPositionCleanup cleanup) on cpu
-    requires nonzero(host.equal) requires nonzero(host.presence_kind)
+    requires nonzero(host.equal)
     requires nonzero(host.fresh_vector) requires nonzero(host.push_vector)
     requires nonzero(host.make_position) requires nonzero(host.clone_position)
     requires nonzero(cleanup.position) requires nonzero(cleanup.vector) {
@@ -568,7 +558,7 @@ extern "C" address dataset_position(address value, PositionIndex selected, Host 
 
 extern "C" address dataset_output_position(address value, DatasetOutputMapping output, Host host,
     DatasetPositionCleanup cleanup) on cpu
-    requires nonzero(host.equal) requires nonzero(host.presence_kind)
+    requires nonzero(host.equal)
     requires nonzero(host.fresh_vector) requires nonzero(host.push_vector)
     requires nonzero(host.make_position) requires nonzero(host.clone_position)
     requires nonzero(cleanup.position) requires nonzero(cleanup.vector)
@@ -580,7 +570,6 @@ extern "C" address dataset_output_position(address value, DatasetOutputMapping o
 extern "C" u32 ready(address value,address known,Host host) on cpu
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
-    requires nonzero(host.presence_kind)
     requires nonzero(host.presence_equal)
     requires nonzero(host.contains)
     requires nonzero(host.contains_parameter)
@@ -616,7 +605,7 @@ bool visit_missing_read_position(address value, address output, InitializationRe
 extern "C" u32 initialization_read(InitializationReadSpan positions, address known, address output,
     InitializationReadMode mode, Host host, InitializationReadHost read) on cpu
     requires nonzero(host.equal) requires nonzero(host.identity_equal)
-    requires nonzero(host.presence_kind) requires nonzero(host.presence_equal)
+    requires nonzero(host.presence_equal)
     requires nonzero(host.contains) requires nonzero(host.contains_parameter)
     requires nonzero(host.contains_element) requires nonzero(host.contains_input)
     requires nonzero(host.field_coverage) requires nonzero(host.iterate)
@@ -640,7 +629,6 @@ extern "C" u32 initialization_read(InitializationReadSpan positions, address kno
 extern "C" u32 word_ready(address value,PositionIndex selected,u32 field,address known,Host host) on cpu
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
-    requires nonzero(host.presence_kind)
     requires nonzero(host.presence_equal)
     requires nonzero(host.contains)
     requires nonzero(host.contains_parameter)
@@ -655,7 +643,6 @@ extern "C" u32 word_ready(address value,PositionIndex selected,u32 field,address
 extern "C" u32 prefix_ready(address value,u32 length,u32 field,address known,Host host) on cpu
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
-    requires nonzero(host.presence_kind)
     requires nonzero(host.presence_equal)
     requires nonzero(host.contains)
     requires nonzero(host.contains_parameter)
@@ -670,7 +657,6 @@ extern "C" u32 uses_scope(address value,u64 owner,Host host) on cpu
 address intersect(address a, address b, Host host) on cpu
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
-    requires nonzero(host.presence_kind)
     requires nonzero(host.presence_equal)
     requires nonzero(host.contains)
     requires nonzero(host.contains_parameter)
@@ -707,7 +693,6 @@ extern "C" address merge_initialization(address exits, usize count, usize condit
     Host host, InitializationHost initialization) on cpu
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
-    requires nonzero(host.presence_kind)
     requires nonzero(host.presence_equal)
     requires nonzero(host.contains)
     requires nonzero(host.contains_parameter)
@@ -752,7 +737,6 @@ extern "C" void loop_field_initialization(address context, address output, usize
     PositionIndex selected, Host host, LoopFieldHost exit) on cpu
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
-    requires nonzero(host.presence_kind)
     requires nonzero(host.presence_equal)
     requires nonzero(host.contains)
     requires nonzero(host.contains_parameter)
@@ -795,7 +779,6 @@ extern "C" void array_initialization(address context, address output, usize coun
     PositionIndex selected, Host host, ArrayExitHost exits) on cpu
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
-    requires nonzero(host.presence_kind)
     requires nonzero(host.presence_equal)
     requires nonzero(host.presence_uses_index)
     requires nonzero(host.contains)
@@ -895,7 +878,6 @@ extern "C" u32 visit_initialization_effects(address initialized, address context
 
 extern "C" void resolve_position(address value,address context,ResolutionHost resolver) on cpu
     requires nonzero(resolver.equal)
-    requires nonzero(resolver.presence_kind)
     requires nonzero(resolver.truth)
     requires nonzero(resolver.assume)
     requires nonzero(resolver.leave)
@@ -922,7 +904,7 @@ extern "C" void resolve_position(address value,address context,ResolutionHost re
         resolve_position(position_child(value,1u64,resolver.positions),context,resolver);
         resolver.leave(context);
         ResolutionPair pair=resolver.pair(context);
-        resolver.finish_pair(context,value,select(shape.condition,pair.left,pair.right,resolver.equal,resolver.presence_kind));
+        resolver.finish_pair(context,value,select(shape.condition,pair.left,pair.right,resolver.equal));
         return;
     }
     if(shape.kind==12){

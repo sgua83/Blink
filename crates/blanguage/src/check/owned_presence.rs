@@ -2,8 +2,17 @@
 use super::*;
 use application::Ownership;
 use returns::Returned;
+#[repr(C, u32)]
 #[derive(Clone)]
-pub(super) enum Presence {All,None,Input(Value),Selected(Comparison,ownership::ApplicationIndex,ownership::ApplicationIndex),Not(Box<Presence>),Both(Box<Presence>,Box<Presence>),Either(Box<Presence>,Box<Presence>)}
+pub(super) enum Presence {
+    None = 0,
+    All = 1,
+    Input(Value) = 2,
+    Selected(Comparison, ownership::ApplicationIndex, ownership::ApplicationIndex) = 3,
+    Not(Box<Presence>) = 4,
+    Both(Box<Presence>, Box<Presence>) = 5,
+    Either(Box<Presence>, Box<Presence>) = 6,
+}
 mod host;
 pub(super) mod path;
 

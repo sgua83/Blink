@@ -8,31 +8,26 @@ type Address = *mut c_void;
 #[derive(Clone, Copy)]
 struct Selection { operation: u32, a: PositionIndex, b: PositionIndex }
 #[repr(C)]
-struct Node {
-    kind: u32, operation: u32, a: PositionIndex, b: PositionIndex,
-    first: Address, second: Address, value: Address,
+struct PresenceView {
+    payload_offset: usize,
+    first_index_offset: usize,
+    ownership_payload_offset: usize,
+    positions: &'static PositionView,
 }
+
+const PRESENCE_VIEW: PresenceView = PresenceView {
+    payload_offset: size_of::<u32>().next_multiple_of(align_of::<Presence>()),
+    first_index_offset: size_of::<Comparison>().next_multiple_of(align_of::<ownership::ApplicationIndex>()),
+    ownership_payload_offset: size_of::<u32>().next_multiple_of(align_of::<Ownership>()),
+    positions: &POSITION_VIEW,
+};
+
 fn pointer<T>(value: &T) -> Address { (value as *const T).cast_mut().cast() }
 fn comparison(value: u32) -> Comparison {
     [Comparison::Equal, Comparison::NotEqual, Comparison::Less,
      Comparison::Greater, Comparison::LessEqual, Comparison::GreaterEqual][value as usize]
 }
 unsafe fn take(value: Address) -> Presence { std::mem::replace(unsafe { &mut *value.cast::<Presence>() }, Presence::None) }
-unsafe extern "C" fn inspect(value: Address) -> Node {
-    let mut node = Node {
-        kind: 0, operation: 0, a: position_index(None), b: position_index(None),
-        first: std::ptr::null_mut(), second: std::ptr::null_mut(), value: std::ptr::null_mut(),
-    };
-    match unsafe { &*value.cast::<Presence>() } {
-        Presence::None => {}, Presence::All => node.kind = 1,
-        Presence::Input(value) => { node.kind = 2; node.value = pointer(value); },
-        Presence::Selected(operation, a, b) => { node.kind = 3; node.operation = *operation as u32; node.a = position_index(Some(a)); node.b = position_index(Some(b)); },
-        Presence::Not(value) => { node.kind = 4; node.first = pointer(value.as_ref()); },
-        Presence::Both(a, b) => { node.kind = 5; node.first = pointer(a.as_ref()); node.second = pointer(b.as_ref()); },
-        Presence::Either(a, b) => { node.kind = 6; node.first = pointer(a.as_ref()); node.second = pointer(b.as_ref()); },
-    }
-    node
-}
 unsafe extern "C" fn compare_index(a: PositionIndex, b: PositionIndex) -> i32 {
     unsafe { required_index(a) }.cmp(&unsafe { required_index(b) }) as i32
 }
@@ -156,17 +151,6 @@ unsafe extern "C" fn condition_truth_in(value: Address, path: Address) -> u32 {
         None => 0, Some(false) => 1, Some(true) => 2,
     }
 }
-#[repr(C)]
-struct OwnershipNode { kind: u32, presence: Address }
-unsafe extern "C" fn ownership_read(value: Address) -> OwnershipNode {
-    let (kind, presence) = match unsafe { &*value.cast::<Ownership>() } {
-        Ownership::Moved => (0, std::ptr::null_mut()),
-        Ownership::Owned => (1, std::ptr::null_mut()),
-        Ownership::Borrowed => (2, std::ptr::null_mut()),
-        Ownership::Conditional(value) => (3, pointer(value.as_ref())),
-    };
-    OwnershipNode { kind, presence }
-}
 unsafe extern "C" fn ownership_copy(output: Address, source: Address) {
     let value = unsafe { &*source.cast::<Ownership>() }.clone();
     unsafe { *output.cast::<Ownership>() = value; }
@@ -186,7 +170,7 @@ unsafe extern "C" fn copy_value(output: Address, source: Address) {
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Host {
-    inspect: unsafe extern "C" fn(Address) -> Node,
+    layout: &'static PresenceView,
     compare_index: unsafe extern "C" fn(PositionIndex, PositionIndex) -> i32,
     compare_input: unsafe extern "C" fn(Address, Address) -> i32,
     constant_input: unsafe extern "C" fn(Address) -> u32,
@@ -201,7 +185,6 @@ struct Host {
     selected_scope: unsafe extern "C" fn(Selection, Address, Host, Selected) -> u32,
     clone_scope: unsafe extern "C" fn(Address, Address, Host, Scoped) -> u32,
     truth_scope: unsafe extern "C" fn(u32, Address, Host, Scoped) -> u32,
-    positions: &'static PositionView,
     position_equal: unsafe extern "C" fn(Address, Address) -> u32,
     condition_scope: unsafe extern "C" fn(Address, Host, Scoped) -> u32,
     condition_clone_scope: unsafe extern "C" fn(Address, Address, Host, Scoped) -> u32,
@@ -213,20 +196,19 @@ struct Host {
     condition_substitute: unsafe extern "C" fn(Address, Address, PositionIndex, PositionIndex),
     input_offset: unsafe extern "C" fn(Address, PositionIndex) -> u32,
     condition_truth_in: unsafe extern "C" fn(Address, Address) -> u32,
-    ownership_read: unsafe extern "C" fn(Address) -> OwnershipNode,
     ownership_copy: unsafe extern "C" fn(Address, Address),
     ownership_constant: unsafe extern "C" fn(Address, u32),
     ownership_conditional: unsafe extern "C" fn(Address, Address),
     copy_value: unsafe extern "C" fn(Address, Address),
 }
 const HOST: Host = Host {
-    inspect, compare_index, compare_input, constant_input, input_uses_index,
+    layout: &PRESENCE_VIEW, compare_index, compare_input, constant_input, input_uses_index,
     truth, selected, input, move_value, pair, wrap_not,
     children_scope, selected_scope, clone_scope, truth_scope,
-    positions: &POSITION_VIEW, position_equal,
+    position_equal,
     condition_scope, condition_clone_scope, condition_truth, condition_input,
     condition_index, condition_negate, condition_logical, condition_substitute,
-    input_offset, condition_truth_in, ownership_read, ownership_copy,
+    input_offset, condition_truth_in, ownership_copy,
     ownership_constant, ownership_conditional, copy_value,
 };
 unsafe extern "C" {
@@ -300,7 +282,7 @@ struct EmitBranch { value: Address, slot: usize, condition: Reg, either: u32 }
 
 #[repr(C)]
 struct EmitHost {
-    inspect: unsafe extern "C" fn(Address) -> Node,
+    layout: &'static PresenceView,
     constant: unsafe extern "C" fn(Address, u32, u32) -> Reg,
     input_register: unsafe extern "C" fn(Address) -> Reg,
     compare: unsafe extern "C" fn(Address, u32, Reg, Reg) -> Reg,
@@ -315,7 +297,7 @@ struct EmitHost {
 }
 
 const EMITTER: EmitHost = EmitHost {
-    inspect, constant: emit_constant, input_register, compare: emit_compare,
+    layout: &PRESENCE_VIEW, constant: emit_constant, input_register, compare: emit_compare,
     invert: emit_invert, slot: bool_slot, store: store_bool, load: load_bool,
     scoped_branch, swap_code, fixed_store, branch: emit_branch,
 };

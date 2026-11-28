@@ -4,7 +4,6 @@ use owned_presence::Presence;
 use std::{ffi::c_void, collections::btree_set};
 type Address = *mut c_void;
 type EqualPosition = unsafe extern "C" fn(Address, Address) -> u32;
-type PresenceKind = unsafe extern "C" fn(Address) -> u32;
 #[repr(C)]
 struct SharedPositionSpan {
     positions: Address,
@@ -280,9 +279,6 @@ pub(in crate::check) const POSITION_VIEW: PositionView = PositionView {
 
 pub(in crate::check) unsafe extern "C" fn equal(a:Address,b:Address)->u32 {u32::from(unsafe{&*a.cast::<Position>()==&*b.cast::<Position>()})}
 unsafe extern "C" fn identity_equal(a:Address,b:Address)->u32 {u32::from(unsafe{*a.cast::<ValueIdentity>()==*b.cast::<ValueIdentity>()})}
-unsafe extern "C" fn presence_kind(value:Address)->u32 {
-    match unsafe{&*value.cast::<owned_presence::Presence>()} {owned_presence::Presence::All=>1,owned_presence::Presence::None=>0,_=>2}
-}
 unsafe extern "C" fn presence_equal(a:Address,b:Address)->u32 {u32::from(unsafe{&*a.cast::<owned_presence::Presence>()==&*b.cast::<owned_presence::Presence>()})}
 unsafe extern "C" fn presence_uses_index(value:Address,at:PositionIndex)->u32 {
     u32::from(unsafe{&*value.cast::<owned_presence::Presence>()}.uses_index(unsafe{required_index(at)}))
@@ -333,7 +329,6 @@ struct Host {
     positions: PositionView,
     equal:unsafe extern "C" fn(Address,Address)->u32,
     identity_equal:unsafe extern "C" fn(Address,Address)->u32,
-    presence_kind:unsafe extern "C" fn(Address)->u32,
     presence_equal:unsafe extern "C" fn(Address,Address)->u32,
     presence_uses_index:unsafe extern "C" fn(Address,PositionIndex)->u32,
     contains:unsafe extern "C" fn(Address,Address)->u32,
@@ -353,7 +348,7 @@ struct Host {
     fresh_set:unsafe extern "C" fn()->Address,
     insert_set:unsafe extern "C" fn(Address,Address),
 }
-const HOST:Host=Host{positions:POSITION_VIEW,equal,identity_equal,presence_kind,presence_equal,presence_uses_index,contains,contains_parameter,contains_element,contains_input,field_coverage,iterate,next,drop_iterator,fresh_vector,push_vector,vector_count,vector_at,make_position,clone_position,fresh_set,insert_set};
+const HOST:Host=Host{positions:POSITION_VIEW,equal,identity_equal,presence_equal,presence_uses_index,contains,contains_parameter,contains_element,contains_input,field_coverage,iterate,next,drop_iterator,fresh_vector,push_vector,vector_count,vector_at,make_position,clone_position,fresh_set,insert_set};
 #[repr(C)]
 struct DatasetPositionCleanup {
     position: unsafe extern "C" fn(Address),
@@ -364,7 +359,7 @@ unsafe extern "C" fn drop_position(value: Address) { drop(unsafe { Box::from_raw
 unsafe extern "C" fn drop_position_vector(value: Address) { drop(unsafe { Box::from_raw(value.cast::<Vec<Position>>()) }); }
 
 unsafe extern "C" {
-    #[link_name="bootstrap.ownership_position::select"] fn source_select(when:Address,a:Address,b:Address,equal:EqualPosition,presence_kind:PresenceKind)->u32;
+    #[link_name="bootstrap.ownership_position::select"] fn source_select(when:Address,a:Address,b:Address,equal:EqualPosition)->u32;
     #[link_name="bootstrap.ownership_position::both"] fn source_both(a:Address,b:Address,equal:EqualPosition)->u32;
     #[link_name="bootstrap.ownership_position::index"] fn source_index(values:Address,index:PositionIndex,width:u64,host:Host)->Address;
     #[link_name="bootstrap.ownership_position::word"] fn source_word(value:Address,index:PositionIndex,word:u32,host:Host)->Address;
@@ -381,7 +376,7 @@ unsafe extern "C" {
     ) -> Address;
 }
 pub(super) fn selected(when:owned_presence::Presence,a:Position,b:Position)->Position {
-    match unsafe{source_select(pointer(&when),pointer(&a),pointer(&b),equal,presence_kind)} {0=>a,1=>b,_=>Position::Conditional(PositionCondition::new(when),PositionChild::new(a),PositionChild::new(b))}
+    match unsafe{source_select(pointer(&when),pointer(&a),pointer(&b),equal)} {0=>a,1=>b,_=>Position::Conditional(PositionCondition::new(when),PositionChild::new(a),PositionChild::new(b))}
 }
 pub(super) fn both(a:Position,b:Position)->Position {match unsafe{source_both(pointer(&a),pointer(&b),equal)} {0=>a,1=>b,_=>Position::Both(PositionChild::new(a),PositionChild::new(b))}}
 pub(super) fn indexed(values:Vec<Position>,at:ApplicationIndex,width:usize)->Vec<Position> {*unsafe{Box::from_raw(source_index(pointer(&values),position_index(Some(&at)),width as u64,HOST).cast::<Vec<Position>>())}}
@@ -991,7 +986,6 @@ unsafe extern "C" fn resolution_finish_indexed(context: Address, index: Position
 struct ResolutionHost {
     positions: PositionView,
     equal: EqualPosition,
-    presence_kind: PresenceKind,
     truth: unsafe extern "C" fn(Address,Address) -> u32,
     assume: unsafe extern "C" fn(Address,Address,u32),
     leave: unsafe extern "C" fn(Address),
@@ -1022,7 +1016,7 @@ pub(in crate::check) fn resolve_initialization(
         assumptions: Vec::new(), choices: Vec::new(), results: Vec::new(),
     };
     let resolver = ResolutionHost {
-        positions: POSITION_VIEW, equal, presence_kind,
+        positions: POSITION_VIEW, equal,
         truth: resolution_truth, assume: resolution_assume, leave: resolution_leave,
         mark: resolution_mark, query_choice: resolution_query_choice, assume_choice: resolution_assume_choice,
         release_choices: resolution_release_choices, emit: resolution_emit, pair: resolution_pair,

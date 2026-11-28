@@ -17,12 +17,13 @@ pub(super) struct Context {
     pub frame: Option<Vec<Reg>>,
     pub range: bool,
 }
+#[repr(C, u32)]
 #[derive(Clone, PartialEq, Eq)]
 pub(super) enum Ownership {
-    Owned,
-    Borrowed,
-    Moved,
-    Conditional(Box<owned_presence::Presence>),
+    Moved = 0,
+    Owned = 1,
+    Borrowed = 2,
+    Conditional(Box<owned_presence::Presence>) = 3,
 }
 // Current element facts belong to this Data, including conditional cleanup
 // premises supplied by a real input declaration. They are not type invariants.

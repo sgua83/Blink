@@ -1,4 +1,5 @@
 module bootstrap.ownership_position;
+enum PresenceTag:u32 { None=0; All=1; Input=2; Selected=3; Not=4; Both=5; Either=6; };
 struct PositionIndex { u32 kind; u32 value; address identity; u64 reg; };
 struct PositionView {
     usize payload_offset;
@@ -9,6 +10,7 @@ struct PositionView {
     usize selection_payload_offset;
     usize selection_width;
 };
+extern "C" PositionIndex read_index(address value, PositionView view) on cpu;
 struct PositionNode { u32 kind; u64 owner; u64 member; u64 word; PositionIndex index; address condition; u64 count; };
 extern "C" PositionNode inspect_position(address value, PositionView view) on cpu;
 extern "C" address position_child(address value, u64 at, PositionView view) on cpu;
@@ -21,7 +23,6 @@ struct Host {
     PositionView positions;
     cfn<u32,address,address> equal;
     cfn<u32,address,address> identity_equal;
-    cfn<u32,address> presence_kind;
     cfn<u32,address,address> presence_equal;
     cfn<u32,address,PositionIndex> presence_uses_index;
     cfn<u32,address,address> contains;
@@ -42,9 +43,8 @@ struct Host {
     cfn<void,address,address> insert_set;
 };
 
-extern "C" u32 select(address when,address a,address b,cfn<u32,address,address> equal,cfn<u32,address> presence_kind) on cpu
-    requires nonzero(equal)
-    requires nonzero(presence_kind);
+extern "C" u32 select(address when,address a,address b,cfn<u32,address,address> equal) on cpu
+    requires nonzero(equal);
 extern "C" u32 both(address a,address b,cfn<u32,address,address> equal) on cpu
     requires nonzero(equal);
 extern "C" address index(address values,PositionIndex selected,u64 width,Host host) on cpu
@@ -57,7 +57,6 @@ extern "C" address index(address values,PositionIndex selected,u64 width,Host ho
 extern "C" address word(address value,PositionIndex selected,u32 field,Host host) on cpu
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
-    requires nonzero(host.presence_kind)
     requires nonzero(host.presence_equal)
     requires nonzero(host.fresh_vector)
     requires nonzero(host.push_vector)
@@ -76,7 +75,7 @@ struct DatasetPositionCleanup {
 };
 extern "C" address dataset_position(address value, PositionIndex selected, Host host,
     DatasetPositionCleanup cleanup) on cpu
-    requires nonzero(host.equal) requires nonzero(host.presence_kind)
+    requires nonzero(host.equal)
     requires nonzero(host.fresh_vector) requires nonzero(host.push_vector)
     requires nonzero(host.make_position) requires nonzero(host.clone_position)
     requires nonzero(cleanup.position) requires nonzero(cleanup.vector);
@@ -89,7 +88,7 @@ struct DatasetOutputMapping {
 };
 extern "C" address dataset_output_position(address value, DatasetOutputMapping output, Host host,
     DatasetPositionCleanup cleanup) on cpu
-    requires nonzero(host.equal) requires nonzero(host.presence_kind)
+    requires nonzero(host.equal)
     requires nonzero(host.fresh_vector) requires nonzero(host.push_vector)
     requires nonzero(host.make_position) requires nonzero(host.clone_position)
     requires nonzero(cleanup.position) requires nonzero(cleanup.vector)
@@ -98,7 +97,6 @@ extern "C" address dataset_output_position(address value, DatasetOutputMapping o
 extern "C" u32 ready(address value,address known,Host host) on cpu
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
-    requires nonzero(host.presence_kind)
     requires nonzero(host.presence_equal)
     requires nonzero(host.contains)
     requires nonzero(host.contains_parameter)
@@ -117,7 +115,7 @@ struct InitializationReadSpan { address positions; usize count; usize stride; };
 extern "C" u32 initialization_read(InitializationReadSpan positions, address known, address output,
     InitializationReadMode mode, Host host, InitializationReadHost read) on cpu
     requires nonzero(host.equal) requires nonzero(host.identity_equal)
-    requires nonzero(host.presence_kind) requires nonzero(host.presence_equal)
+    requires nonzero(host.presence_equal)
     requires nonzero(host.contains) requires nonzero(host.contains_parameter)
     requires nonzero(host.contains_element) requires nonzero(host.contains_input)
     requires nonzero(host.field_coverage) requires nonzero(host.iterate)
@@ -127,7 +125,6 @@ extern "C" u32 initialization_read(InitializationReadSpan positions, address kno
 extern "C" u32 word_ready(address value,PositionIndex selected,u32 field,address known,Host host) on cpu
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
-    requires nonzero(host.presence_kind)
     requires nonzero(host.presence_equal)
     requires nonzero(host.contains)
     requires nonzero(host.contains_parameter)
@@ -140,7 +137,6 @@ extern "C" u32 word_ready(address value,PositionIndex selected,u32 field,address
 extern "C" u32 prefix_ready(address value,u32 length,u32 field,address known,Host host) on cpu
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
-    requires nonzero(host.presence_kind)
     requires nonzero(host.presence_equal)
     requires nonzero(host.contains)
     requires nonzero(host.contains_parameter)
@@ -162,7 +158,6 @@ extern "C" address merge_initialization(address exits, usize count, usize condit
     Host host, InitializationHost initialization) on cpu
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
-    requires nonzero(host.presence_kind)
     requires nonzero(host.presence_equal)
     requires nonzero(host.contains)
     requires nonzero(host.contains_parameter)
@@ -189,7 +184,6 @@ extern "C" void loop_field_initialization(address context, address output, usize
     PositionIndex selected, Host host, LoopFieldHost exit) on cpu
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
-    requires nonzero(host.presence_kind)
     requires nonzero(host.presence_equal)
     requires nonzero(host.contains)
     requires nonzero(host.contains_parameter)
@@ -217,7 +211,6 @@ extern "C" void array_initialization(address context, address output, usize coun
     PositionIndex selected, Host host, ArrayExitHost exits) on cpu
     requires nonzero(host.equal)
     requires nonzero(host.identity_equal)
-    requires nonzero(host.presence_kind)
     requires nonzero(host.presence_equal)
     requires nonzero(host.presence_uses_index)
     requires nonzero(host.contains)
@@ -267,7 +260,6 @@ struct ResolutionPair {
 struct ResolutionHost {
     PositionView positions;
     cfn<u32,address,address> equal;
-    cfn<u32,address> presence_kind;
     cfn<u32,address,address> truth;
     cfn<void,address,address,u32> assume;
     cfn<void,address> leave;
@@ -283,7 +275,6 @@ struct ResolutionHost {
 };
 extern "C" void resolve_position(address value,address context,ResolutionHost resolver) on cpu
     requires nonzero(resolver.equal)
-    requires nonzero(resolver.presence_kind)
     requires nonzero(resolver.truth)
     requires nonzero(resolver.assume)
     requires nonzero(resolver.leave)
