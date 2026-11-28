@@ -19,16 +19,12 @@ pub(in crate::check) struct Normalizer {
     nodes: Vec<Option<Arc<Decision>>>,
     unique: BTreeMap<Arc<Decision>, usize>,
     operations: HashMap<(bool, usize, usize), usize>,
-    negatives: HashMap<usize, usize>,
-    // Retain each original input while its pointer is a local memo key.
-    clauses: HashMap<usize, (Clause, usize)>,
-    emitted: HashMap<usize, Clause>,
+    memo: native::ClauseMemo,
 }
 impl Normalizer {
     pub(in crate::check) fn new() -> Self {
         Self { types: BTreeMap::new(), lengths: BTreeMap::new(), nodes: vec![None,None], unique:BTreeMap::new(),
-            operations:HashMap::new(), negatives:HashMap::from([(0,1),(1,0)]), clauses:HashMap::new(),
-            emitted:HashMap::from([(0,Clause::impossible()),(1,Clause::default())]) }
+            operations:HashMap::new(), memo: native::ClauseMemo::new() }
     }
     pub(in crate::check) fn storage(&self) -> crate::compiler::ConditionStorage {
         use crate::compiler::{AnalysisStorage, ConditionStorage};
@@ -37,9 +33,9 @@ impl Normalizer {
             unique: AnalysisStorage::entries::<Arc<Decision>, usize>(self.unique.len(), None),
             operations: AnalysisStorage::entries::<(bool, usize, usize), usize>(
                 self.operations.len(), Some(self.operations.capacity())),
-            negatives: AnalysisStorage::entries::<usize, usize>(self.negatives.len(), Some(self.negatives.capacity())),
-            imported: AnalysisStorage::entries::<usize, (Clause, usize)>(self.clauses.len(), Some(self.clauses.capacity())),
-            emitted: AnalysisStorage::entries::<usize, Clause>(self.emitted.len(), Some(self.emitted.capacity())),
+            negatives: self.memo.negatives.storage(),
+            imported: self.memo.imported.storage(),
+            emitted: self.memo.emitted.storage(),
         }
     }
 

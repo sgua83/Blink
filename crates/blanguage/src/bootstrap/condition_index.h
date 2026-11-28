@@ -14,3 +14,17 @@ extern "C" NodeFields condition_node_at(address graph,u64 index) on cpu;
 extern "C" ConditionNodes condition_seal(address graph) on cpu;
 extern "C" void condition_graph_drop(address graph) on cpu;
 
+struct ContractClauseMemo {
+    IdentityTable imported;
+    IdentityTable emitted;
+    IdentityTable negatives;
+};
+
+extern "C" void start_contract_clause_memo(address memo) on cpu;
+extern "C" void drop_contract_clause_memo(address memo) on cpu;
+extern "C" u64 contract_memo_imported(address memo,address clause) on cpu;
+extern "C" void remember_contract_import(address memo,address clause,u64 node) on cpu;
+extern "C" address contract_memo_emitted(address memo,u64 node,u32 retain) on cpu;
+extern "C" void remember_contract_emission(address memo,u64 node,address owned) on cpu;
+extern "C" u64 contract_memo_negative(address memo,u64 node) on cpu;
+extern "C" void remember_contract_negative(address memo,u64 node,u64 negative) on cpu;

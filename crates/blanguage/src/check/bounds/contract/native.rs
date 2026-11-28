@@ -6,6 +6,97 @@ use super::*;
 use std::{ffi::c_void, mem::MaybeUninit, ptr};
 type Slot = *mut c_void;
 type Borrowed = *const c_void;
+
+#[repr(C)]
+#[derive(Default)]
+pub(super) struct IdentityTable {
+    entries: *mut c_void,
+    count: usize,
+    capacity: usize,
+}
+
+impl IdentityTable {
+    pub(super) fn storage(&self) -> crate::compiler::AnalysisStorage {
+        crate::compiler::AnalysisStorage::entries::<usize, usize>(self.count, Some(self.capacity))
+    }
+}
+
+#[repr(C)]
+#[derive(Default)]
+pub(super) struct ClauseMemo {
+    pub(super) imported: IdentityTable,
+    pub(super) emitted: IdentityTable,
+    pub(super) negatives: IdentityTable,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.condition_index::start_contract_clause_memo"]
+    fn start_clause_memo(memo: &mut ClauseMemo);
+    #[link_name = "bootstrap.condition_index::drop_contract_clause_memo"]
+    fn drop_clause_memo(memo: &mut ClauseMemo);
+    #[link_name = "bootstrap.condition_index::contract_memo_imported"]
+    fn memo_imported(memo: &ClauseMemo, clause: Borrowed) -> usize;
+    #[link_name = "bootstrap.condition_index::remember_contract_import"]
+    fn remember_import(memo: &mut ClauseMemo, clause: Borrowed, node: usize);
+    #[link_name = "bootstrap.condition_index::contract_memo_emitted"]
+    fn memo_emitted(memo: &ClauseMemo, node: usize, retain: u32) -> *mut c_void;
+    #[link_name = "bootstrap.condition_index::remember_contract_emission"]
+    fn remember_emission(memo: &mut ClauseMemo, node: usize, owned: *mut c_void);
+    #[link_name = "bootstrap.condition_index::contract_memo_negative"]
+    fn memo_negative(memo: &ClauseMemo, node: usize) -> usize;
+    #[link_name = "bootstrap.condition_index::remember_contract_negative"]
+    fn remember_negative(memo: &mut ClauseMemo, node: usize, negative: usize);
+}
+
+// The memo has unique storage. A stored Clause is an immutable, retained handle.
+unsafe impl Send for ClauseMemo {}
+unsafe impl Sync for ClauseMemo {}
+
+impl ClauseMemo {
+    pub(super) fn new() -> Self {
+        let mut memo = Self::default();
+        unsafe { start_clause_memo(&mut memo) };
+        memo
+    }
+
+    fn imported(&self, clause: &Clause) -> Option<usize> {
+        let value = unsafe { memo_imported(self, clause.raw()) };
+        (value != usize::MAX).then_some(value)
+    }
+
+    fn remember_import(&mut self, clause: &Clause, node: usize) {
+        unsafe { remember_import(self, clause.raw(), node) };
+    }
+
+    fn emitted(&self, node: usize) -> Option<Clause> {
+        std::ptr::NonNull::new(unsafe { memo_emitted(self, node, 1) })
+            .map(|value| Clause(value.cast()))
+    }
+
+    fn has_emitted(&self, node: usize) -> bool {
+        !unsafe { memo_emitted(self, node, 0) }.is_null()
+    }
+
+    fn remember_emitted(&mut self, node: usize, clause: Clause) {
+        unsafe { remember_emission(self, node, clause.into_raw()) };
+    }
+
+    fn negative(&self, node: usize) -> Option<usize> {
+        let value = unsafe { memo_negative(self, node) };
+        (value != usize::MAX).then_some(value)
+    }
+
+    fn remember_negative(&mut self, node: usize, negative: usize) {
+        unsafe { remember_negative(self, node, negative) };
+    }
+}
+
+impl Drop for ClauseMemo {
+    fn drop(&mut self) {
+        unsafe { drop_clause_memo(self) };
+    }
+}
+
 fn borrow<T>(value: &T) -> Borrowed {
     ptr::from_ref(value).cast()
 }
@@ -373,16 +464,12 @@ unsafe extern "C" fn not_push(s: Slot, index: usize, ready: u32) {
 }
 unsafe extern "C" fn not_lookup(s: Slot, index_: usize) -> Index {
     index(
-        unsafe { &*frame::<Negate>(s).normal }
-            .negatives
-            .get(&index_)
-            .copied(),
+        unsafe { &*frame::<Negate>(s).normal }.memo.negative(index_),
     )
 }
 unsafe extern "C" fn not_remember(s: Slot, index: usize, value: usize) {
     unsafe { &mut *frame::<Negate>(s).normal }
-        .negatives
-        .insert(index, value);
+        .memo.remember_negative(index, value);
 }
 unsafe extern "C" fn not_load(s: Slot, index: usize) {
     let c = unsafe { frame::<Negate>(s) };
@@ -654,8 +741,7 @@ unsafe extern "C" fn operand_imported(s: Slot, clause: Borrowed) -> u32 {
     u32::from(
         unsafe { frame::<Operands<'_, '_>>(s) }
             .normal
-            .clauses
-            .contains_key(&unsafe { &*clause.cast::<Clause>() }.key()),
+            .memo.imported(unsafe { &*clause.cast::<Clause>() }).is_some(),
     )
 }
 unsafe extern "C" fn operand_emit(s: Slot, clause: Borrowed, priority: u32) {
@@ -809,9 +895,7 @@ unsafe extern "C" fn import_resume(s: Slot, clause: Borrowed, or: u32, next: usi
 unsafe extern "C" fn import_lookup(s: Slot, clause: Borrowed) -> Index {
     index(
         unsafe { &*frame::<Import<'_>>(s).normal }
-            .clauses
-            .get(&unsafe { &*clause.cast::<Clause>() }.key())
-            .map(|(_, i)| *i),
+            .memo.imported(unsafe { &*clause.cast::<Clause>() }),
     )
 }
 unsafe extern "C" fn import_begin(s: Slot, facts: Borrowed) {
@@ -839,8 +923,7 @@ unsafe extern "C" fn import_remember(s: Slot, clause: Borrowed, value: usize) {
     let clause = unsafe { &*clause.cast::<Clause>() };
     let c = unsafe { frame::<Import<'_>>(s) };
     unsafe { &mut *c.normal }
-        .clauses
-        .insert(clause.key(), (clause.clone(), value));
+        .memo.remember_import(clause, value);
     c.operands = OrderedOperands::default();
 }
 #[repr(C)]
@@ -918,8 +1001,7 @@ unsafe extern "C" fn emit_push(s: Slot, index: usize, ready: u32) {
 unsafe extern "C" fn emit_known(s: Slot, index: usize) -> u32 {
     u32::from(
         unsafe { &*frame::<Emit>(s).normal }
-            .emitted
-            .contains_key(&index),
+            .memo.has_emitted(index),
     )
 }
 unsafe extern "C" fn emit_load(s: Slot, index: usize) {
@@ -967,9 +1049,11 @@ unsafe extern "C" fn emit_guard(s: Slot, begin: End, end: End) {
         cells.push((limit, 0));
     }
     let interval = normal.node(variable, cells);
-    let guard = normal.emitted.entry(interval)
-        .or_insert_with(|| Clause::facts(c.facts.iter().copied().collect()))
-        .clone();
+    let guard = normal.memo.emitted(interval).unwrap_or_else(|| {
+        let guard = Clause::facts(c.facts.iter().copied().collect());
+        normal.memo.remember_emitted(interval, guard.clone());
+        guard
+    });
     c.facts.clear();
     unsafe { c.guard.write(guard) };
 }
@@ -991,7 +1075,7 @@ unsafe extern "C" fn emit_guard_clause(s: Slot) -> Borrowed {
 }
 unsafe extern "C" fn emit_child(s: Slot, index: usize) {
     let c = unsafe { frame::<Emit>(s) };
-    let child = unsafe { &*c.normal }.emitted[&index].clone();
+    let child = unsafe { &*c.normal }.memo.emitted(index).unwrap();
     unsafe {
         c.guard.drop_in_place();
         c.guard.write(child)
@@ -999,7 +1083,7 @@ unsafe extern "C" fn emit_child(s: Slot, index: usize) {
 }
 unsafe extern "C" fn emit_both(s: Slot, index: usize) {
     let c = unsafe { frame::<Emit>(s) };
-    let child = unsafe { &*c.normal }.emitted[&index].clone();
+    let child = unsafe { &*c.normal }.memo.emitted(index).unwrap();
     let guard = unsafe { c.guard.read() };
     unsafe { c.guard.write(Clause::both_node(guard, child)) };
 }
@@ -1022,7 +1106,7 @@ unsafe extern "C" fn emit_remember(s: Slot, index: usize, found: u32) {
     } else {
         Clause::impossible()
     };
-    unsafe { &mut *c.normal }.emitted.insert(index, result);
+    unsafe { &mut *c.normal }.memo.remember_emitted(index, result);
 }
 unsafe extern "C" fn emit_release(s: Slot) {
     unsafe { frame::<Emit>(s).snapshot.drop_in_place() };
@@ -1090,7 +1174,7 @@ pub(super) fn emit(normal: &mut Normalizer, root: usize) -> Clause {
             },
         )
     };
-    normal.emitted[&root].clone()
+    normal.memo.emitted(root).unwrap()
 }
 
 struct Union<'a> {

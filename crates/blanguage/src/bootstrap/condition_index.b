@@ -1,4 +1,5 @@
 module bootstrap.condition_index;
+import bootstrap.clause_storage;
 
 extern "C" handle GetProcessHeap() on cpu from "KERNEL32.dll";
 extern "C" address HeapAlloc(handle heap,u32 flags,u64 bytes) on cpu from "KERNEL32.dll";
@@ -78,22 +79,86 @@ void grow_identity(inout IdentityTable table) on cpu {
     table=grown;
 }
 
-void bind_condition_identity(inout IdentityTable table,u64 key,u64 result) on cpu {
+u64 bind_condition_identity(inout IdentityTable table,u64 key,u64 result) on cpu {
     if(table.count==table.capacity/2u64){grow_identity(table);}
     address slot=identity_slot(table,key);
-    if(unsafe_position<IdentitySlot>(slot).index_plus_one==0u64){table.count+=1u64;}
+    let previous=unsafe_position<IdentitySlot>(slot).index_plus_one;
+    if(previous==0u64){table.count+=1u64;}
     unsafe_position<IdentitySlot>(slot)=IdentitySlot(key,result+1u64);
+    return previous-1u64;
+}
+
+u64 identity_value(IdentityTable table,u64 key) on cpu {
+    if(table.capacity==0u64){return 18446744073709551615u64;}
+    return unsafe_position<IdentitySlot>(identity_slot(table,key)).index_plus_one-1u64;
 }
 
 extern "C" u64 condition_node_index(address graph,u64 key) on cpu {
-    IdentityTable table=unsafe_position<CanonicalGraph>(graph).identities;
-    if(table.capacity==0u64){return 18446744073709551615u64;}
-    return unsafe_position<IdentitySlot>(identity_slot(table,key)).index_plus_one-1u64;
+    return identity_value(unsafe_position<CanonicalGraph>(graph).identities,key);
 }
 
 void drop_identity(inout IdentityTable table) on cpu {
     if(table.entries!=address()){HeapFree(GetProcessHeap(),0,table.entries);}
     table=IdentityTable(address(),0u64,0u64);
+}
+
+extern "C" u64 contract_memo_imported(address memo,address clause) on cpu {
+    return identity_value(unsafe_position<ContractClauseMemo>(memo).imported,address_bits(clause));
+}
+
+extern "C" void remember_contract_import(address memo,address clause,u64 node) on cpu {
+    u64 previous=bind_condition_identity(unsafe_position<ContractClauseMemo>(memo).imported,address_bits(clause),node);
+    // The live input prevents address reuse for the lifetime of the memo.
+    if(previous==18446744073709551615u64){clause_retain(clause);}
+}
+
+extern "C" address contract_memo_emitted(address memo,u64 node,u32 retain) on cpu {
+    u64 value=identity_value(unsafe_position<ContractClauseMemo>(memo).emitted,node);
+    if(value==18446744073709551615u64){return address();}
+    address result=unsafe_address(value);
+    if(retain!=0){clause_retain(result);}
+    return result;
+}
+
+extern "C" void remember_contract_emission(address memo,u64 node,address owned) on cpu {
+    u64 previous=bind_condition_identity(unsafe_position<ContractClauseMemo>(memo).emitted,node,address_bits(owned));
+    if(previous!=18446744073709551615u64){clause_release(unsafe_address(previous));}
+}
+
+extern "C" u64 contract_memo_negative(address memo,u64 node) on cpu {
+    return identity_value(unsafe_position<ContractClauseMemo>(memo).negatives,node);
+}
+
+extern "C" void remember_contract_negative(address memo,u64 node,u64 negative) on cpu {
+    bind_condition_identity(unsafe_position<ContractClauseMemo>(memo).negatives,node,negative);
+}
+
+extern "C" void start_contract_clause_memo(address memo) on cpu {
+    OrderedTree facts=OrderedTree(address(),0u64,0u64,0u64);
+    remember_contract_emission(memo,0u64,clause_impossible());
+    remember_contract_emission(memo,1u64,clause_facts(address_of(facts)));
+    remember_contract_negative(memo,0u64,1u64);
+    remember_contract_negative(memo,1u64,0u64);
+}
+
+void drop_contract_clauses(inout IdentityTable table,bool keys_are_clauses) on cpu {
+    u64 index=0u64;
+    while(index<table.capacity){
+        address slot=unsafe_address(address_bits(table.entries)+index*size_of<IdentitySlot>());
+        let value=unsafe_position<IdentitySlot>(slot);
+        if(value.index_plus_one!=0u64){
+            u64 bits=keys_are_clauses?value.key:value.index_plus_one-1u64;
+            clause_release(unsafe_address(bits));
+        }
+        index+=1u64;
+    }
+    drop_identity(table);
+}
+
+extern "C" void drop_contract_clause_memo(address memo) on cpu {
+    drop_contract_clauses(unsafe_position<ContractClauseMemo>(memo).imported,true);
+    drop_contract_clauses(unsafe_position<ContractClauseMemo>(memo).emitted,false);
+    drop_identity(unsafe_position<ContractClauseMemo>(memo).negatives);
 }
 
 extern "C" NodeFields condition_node_at(address graph,u64 index) on cpu {
