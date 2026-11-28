@@ -118,10 +118,6 @@ pub(super) unsafe extern "C" fn same_scalar(a: Borrowed, b: Borrowed) -> u32 {
     u32::from(unsafe { *a.cast::<Scalar>() == *b.cast::<Scalar>() })
 }
 
-pub(super) unsafe extern "C" fn compare_scalars(a: Borrowed, b: Borrowed) -> i32 {
-    unsafe { (&*a.cast::<Scalar>()).cmp(&*b.cast::<Scalar>()) as i32 }
-}
-
 #[repr(C)]
 pub(super) struct UpperView {
     identity: Borrowed,

@@ -54,8 +54,7 @@ impl From<Bound<&Fact>> for KeyBound {
 #[repr(u32)]
 enum MergeOperation {
     Union,
-    Intersection,
-    Difference,
+    Difference = 2,
 }
 
 unsafe extern "C" {
@@ -139,10 +138,6 @@ impl Facts {
 
     pub(super) fn union<'a>(&'a self, other: &'a Self) -> Merge<'a> {
         Merge::new(self, other, MergeOperation::Union)
-    }
-
-    pub(super) fn intersection<'a>(&'a self, other: &'a Self) -> Merge<'a> {
-        Merge::new(self, other, MergeOperation::Intersection)
     }
 
     pub(super) fn difference<'a>(&'a self, other: &'a Self) -> Merge<'a> {

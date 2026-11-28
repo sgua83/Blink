@@ -157,33 +157,6 @@ extern "C" u32 internal_conflict(address owner,u32 aliases,CrossScalars integers
  cfn<InternalPredicate,address> ensures memory(read) read_predicate) on cpu
  requires nonzero(read_predicate);
 
-struct CommonRoot { address identity; address root; };
-struct CommonKnown { address identity; address scalar; u32 present; };
-struct CommonBits { u64 mask; u64 value; u32 present; };
-struct CommonLimit { FactView value; FactView next; };
-struct CommonHost {
- cfn<void,address> intersection;
- cfn<CommonRoot,address,u32> root_next;
- cfn<address,address,address,address,address> representative;
- cfn<u32,address,FactView> ensures memory(read) contains;
- cfn<void,address,FactView> emit;
- cfn<CommonKnown,address> known_next;
- cfn<CommonBits,address,u32,address,address> ensures memory(read) known_bits;
- cfn<u32,address,address,address,u64,u64> ensures memory(read) contains_known;
- cfn<void,address,address,address,u64,u64> emit_known;
- cfn<FactView,address,u32> bound_next;
- cfn<u32,address,FactView,FactView> ensures memory(read) range;
- cfn<i32,address,address> ensures memory(read) compare;
- cfn<i32,address,address> ensures memory(read) scalar_compare;
- cfn<InternalScalar,address> ensures memory(read) scalar;
-};
-extern "C" void common_facts(address context,CommonHost host) on cpu
- requires nonzero(host.intersection) requires nonzero(host.root_next) requires nonzero(host.representative)
- requires nonzero(host.contains) requires nonzero(host.emit) requires nonzero(host.known_next)
- requires nonzero(host.known_bits) requires nonzero(host.contains_known)
- requires nonzero(host.emit_known) requires nonzero(host.bound_next) requires nonzero(host.range)
- requires nonzero(host.compare) requires nonzero(host.scalar_compare) requires nonzero(host.scalar);
-
 // The original synchronous task-return query owns all sets and node results.
 struct TaskSourceSet { u32 known; address values; };
 struct TaskSourceHost {

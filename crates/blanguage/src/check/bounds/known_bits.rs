@@ -1,8 +1,7 @@
 //! Numerical values cross synchronously; the original Proof owns every fact.
-use super::facts;
-use super::{Bits, Fact, Facts, IndexDomain, KnownBits, Scalar, ValueIdentity};
+use super::{Bits, Facts, IndexDomain, KnownBits, Scalar, ValueIdentity};
 use crate::ir::scalar_ranges::{self, BitRange as Range};
-use std::{ffi::c_void, slice};
+use std::ffi::c_void;
 
 #[derive(Clone, Copy)]
 #[repr(u32)]
@@ -53,12 +52,6 @@ impl KnownDomain {
 }
 
 #[repr(C)]
-struct KnownBounds {
-    range: Range,
-    zero: u32,
-}
-
-#[repr(C)]
 struct KnownProjection {
     pattern: Pattern,
     present: u32,
@@ -86,15 +79,8 @@ unsafe extern "C" {
         domains: *mut c_void,
         next_domain: unsafe extern "C" fn(*mut c_void) -> KnownDomain,
     ) -> Pattern;
-    #[link_name = "bootstrap.scalar_fold::known_facts"]
-    fn read_facts(
-        mask: Bits,
-        bias: Bits,
-        context: *mut c_void,
-        count: u64,
-        read_bound: unsafe extern "C" fn(*const c_void, u64) -> KnownBounds,
-        next_domain: unsafe extern "C" fn(*mut c_void) -> KnownDomain,
-    ) -> KnownProjection;
+    #[link_name = "bootstrap.common_facts::known_fact_values"]
+    fn read_facts(sets: *const &Facts, count: usize, identity: &ValueIdentity, scalar: &Scalar) -> KnownProjection;
     #[link_name = "bootstrap.scalar_fold::known_shifted"]
     fn shift(
         mask: Bits,
@@ -194,80 +180,9 @@ fn read_ranges(
     })
 }
 
-struct FactInput<'a> {
-    sets: &'a [&'a Facts],
-    groups: slice::Iter<'a, &'a Facts>,
-    domains: Option<facts::Iter<'a>>,
-    identity: ValueIdentity,
-    scalar: Scalar,
-}
-
-unsafe extern "C" fn fact_bounds(context: *const c_void, index: u64) -> KnownBounds {
-    let input = unsafe { &*context.cast::<FactInput<'_>>() };
-    let facts = input.sets[index as usize];
-    let identity = input.identity;
-    let scalar = input.scalar;
-    let mask = scalar.bit_mask();
-    let lower = match facts
-        .range(Fact::Minimum(identity, scalar, 0)..=Fact::Minimum(identity, scalar, mask))
-        .next_back()
-    {
-        Some(Fact::Minimum(_, _, bound)) => *bound,
-        _ => 0,
-    };
-    let upper = match facts
-        .range(Fact::Maximum(identity, scalar, 0)..=Fact::Maximum(identity, scalar, mask))
-        .next()
-    {
-        Some(Fact::Maximum(_, _, bound)) => *bound,
-        _ => mask,
-    };
-    KnownBounds {
-        range: Range { lower, upper },
-        zero: u32::from(facts.contains(&Fact::Zero(identity))),
-    }
-}
-
-unsafe extern "C" fn next_fact_domain(context: *mut c_void) -> KnownDomain {
-    let input = unsafe { &mut *context.cast::<FactInput<'_>>() };
-    let identity = input.identity;
-    let scalar = input.scalar;
-    loop {
-        match input.domains.as_mut().and_then(Iterator::next) {
-            Some(Fact::Index(_, IndexDomain::KnownBits(source, mask, value))) => {
-                return KnownDomain::new(*source, *mask, *value);
-            }
-            Some(_) => continue,
-            None => {}
-        }
-        let Some(facts) = input.groups.next() else {
-            return KnownDomain::END;
-        };
-        input.domains = Some(facts.range(
-            Fact::Index(identity, IndexDomain::KnownBits(scalar, 0, 0))
-                ..=Fact::Index(identity, IndexDomain::KnownBits(scalar, Bits::MAX, Bits::MAX)),
-        ));
-    }
-}
 
 pub(super) fn from_facts(scalar: Scalar, identity: ValueIdentity, sets: &[&Facts]) -> Option<KnownBits> {
-    let mut input = FactInput {
-        sets,
-        groups: sets.iter(),
-        domains: None,
-        identity,
-        scalar,
-    };
-    let result = unsafe {
-        read_facts(
-            scalar.bit_mask(),
-            scalar.order_bias(),
-            std::ptr::from_mut(&mut input).cast(),
-            sets.len() as u64,
-            fact_bounds,
-            next_fact_domain,
-        )
-    };
+    let result = unsafe { read_facts(sets.as_ptr(), sets.len(), &identity, &scalar) };
     (result.present != 0).then(|| value(scalar, result.pattern))
 }
 
