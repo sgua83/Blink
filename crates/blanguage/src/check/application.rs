@@ -551,6 +551,7 @@ impl ApplicationLoads<'_, '_> {
                 let allocated=matches!(read,IndexedSource::View{address,..}if self.frame_root(*address).is_some_and(|root|self.allocated(root)));
                 self.call_memory_writes(call,false,|borrow|{
                     if let CallTarget::Defined(name)=&call.target
+                        && call.memory_use.is_some_and(|memory| self.0.view_model.call_at_memory(memory, false).is_some())
                         && self.0.functions.writes_only_references(name) {
                         return call.memory.iter().any(|effect|effect.access.writes());
                     }
@@ -3718,6 +3719,7 @@ impl Builder<'_> {
                 if !proven { return self.fail(span, "B226", "整域调用前尚未证明共同字段输入前提"); }
             }
         }
+        let mut write_effects = Vec::new();
         for (&binding, written) in &interface.write_regions {
             let reference = &data[binding];
             let ty = &interface.buffers[binding].ty;
@@ -3727,6 +3729,21 @@ impl Builder<'_> {
             ).collect::<Vec<_>>();
             let offset = reference.element_layout().0;
             let words = components.iter().map(|&i| offset + ty.components[i].1).collect::<Vec<_>>();
+            if !words.is_empty() {
+                let origin = address::Origin {
+                    root: address::Root::Resource { borrow: view::resource_borrow(&reference.data), index: None },
+                    base: address::Layout::of(&reference.data.ty),
+                    layout: address::Layout {
+                        size: ty.size, align: ty.align,
+                        parts: components.iter().map(|&component| ty.components[component]).collect(),
+                    },
+                    words: words.clone().into(),
+                    positions: Arc::from([]),
+                    writable: reference.access.writes(),
+                    initialized: vec![false; words.len()].into(),
+                };
+                write_effects.push(origin.normalize());
+            }
             let output = interface.elements.get(&binding).map(|proof| proof.project(&components, ty.components.len())
                 .element_facts(|target| {
                     let target = &data[target];
@@ -3752,7 +3769,17 @@ impl Builder<'_> {
             DomainCallArgument::Uniform(value) => argument(value),
             DomainCallArgument::Texture(value) => value,
         }));
-        self.call_domain(input.name(), target, physical);
+        let memory_use = (!write_effects.is_empty()).then_some(self.view_model.uses.len());
+        if let Some(first) = memory_use {
+            for borrow in write_effects {
+                self.check_view_requirement(view::Requirement::Memory {
+                    target: address::MemoryTarget::Call(first),
+                    borrow, access: Some(Access::Write), written: None,
+                    snapshots: None, span, address_fields: Arc::from([]),
+                })?;
+            }
+        }
+        self.call_domain(input.name(), target, physical, memory_use);
         for relation in &interface.prefix_guarantees {
             let count=&data[relation.count.binding];
             let word=count.element_layout().0+relation.count.word;

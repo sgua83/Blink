@@ -2819,6 +2819,7 @@ impl Builder<'_> {
         name: &str,
         target: Target,
         arguments: Vec<CallArgument>,
+        memory_use: Option<usize>,
     ) {
         let origin = Arc::new(GeneratedOrigin {
             reason: GenerationReason::ApplicationDomainCall,
@@ -2831,7 +2832,7 @@ impl Builder<'_> {
             target: CallTarget::Defined(crate::module::domain::symbol(name, target)),
             arguments,
             memory: Vec::new(),
-            memory_use: None,
+            memory_use,
             result: None,
             values: Vec::new(),
         }), origin));
