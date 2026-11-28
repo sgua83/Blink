@@ -37,17 +37,6 @@ impl From<SharedWord> for TileKey {
 }
 
 #[cfg(feature = "compiler")]
-impl TileKey {
-    pub(crate) fn word(self) -> SharedWord {
-        if self.storage == 0 {
-            SharedWord::Input { binding: self.owner, word: self.byte }
-        } else {
-            SharedWord::Published { tile: self.owner, word: self.byte }
-        }
-    }
-}
-
-#[cfg(feature = "compiler")]
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
 pub(crate) struct TileExtents {
@@ -61,6 +50,10 @@ pub(crate) struct PlacedTiles {
     pub(crate) words: dataflow::TileLayout,
     pub(crate) extents: TileExtents,
 }
+
+#[cfg(feature = "compiler")]
+#[repr(C)]
+struct TileLayoutResult { extents: TileExtents, count: usize }
 
 #[cfg(feature = "compiler")]
 #[allow(dead_code)]
@@ -85,7 +78,7 @@ struct TileLayoutHost {
     ir: dataflow::Host,
     context: *mut c_void,
     reserve: unsafe extern "C" fn(*mut c_void, TileScratch, usize) -> *mut c_void,
-    publish: unsafe extern "C" fn(*mut c_void, dataflow::TilePlacedWord),
+    words: unsafe extern "C" fn(*mut c_void, usize) -> *mut dataflow::TilePlacedWord,
 }
 
 #[cfg(feature = "compiler")]
@@ -97,7 +90,7 @@ struct TileStorage {
 #[cfg(feature = "compiler")]
 unsafe extern "C" {
     #[link_name = "bootstrap.stage_fusion::place_tile"]
-    fn place_tile(input: TileLayoutInput, host: TileLayoutHost) -> TileExtents;
+    fn place_tile(input: TileLayoutInput, host: TileLayoutHost) -> TileLayoutResult;
 }
 
 #[cfg(feature = "compiler")]
@@ -109,8 +102,10 @@ unsafe extern "C" fn reserve_tile_storage(context: *mut c_void, bank: TileScratc
 }
 
 #[cfg(feature = "compiler")]
-unsafe extern "C" fn push_placed_word(context: *mut c_void, word: dataflow::TilePlacedWord) {
-    unsafe { &mut *context.cast::<TileStorage>() }.words.push(word);
+unsafe extern "C" fn reserve_placed_words(context: *mut c_void, count: usize) -> *mut dataflow::TilePlacedWord {
+    let words = unsafe { &mut (*context.cast::<TileStorage>()).words };
+    words.reserve_exact(count);
+    words.as_mut_ptr()
 }
 
 
@@ -342,15 +337,7 @@ impl Stage {
     pub(crate) fn tile_layout(
         &self, wide: bool,
     ) -> (PlacedTiles, dataflow::InputFragments, Vec<dataflow::TileUse>) {
-        let (mut placed, inputs, uses) = self.place_tile_layout(wide, true);
-        placed.words.sort_by_key(|row| row.key.word());
-        // A stable order keeps the last placement for a repeated key.
-        placed.words.dedup_by(|later, earlier| {
-            if later.key.word() != earlier.key.word() { return false; }
-            *earlier = *later;
-            true
-        });
-        (placed, inputs, uses)
+        self.place_tile_layout(wide, true)
     }
 
     #[cfg(feature = "compiler")]
@@ -371,13 +358,15 @@ impl Stage {
             publication_phases: dataflow::Span::slice(&publication_phases),
             uses: uses.as_mut_ptr(), use_count: uses.len(), wide: u32::from(wide), publish: u32::from(publish),
         };
-        let extents = unsafe {
+        let result = unsafe {
             place_tile(input, TileLayoutHost {
                 ir: dataflow::HOST, context: std::ptr::from_mut(&mut storage).cast(),
-                reserve: reserve_tile_storage, publish: push_placed_word,
+                reserve: reserve_tile_storage, words: reserve_placed_words,
             })
         };
-        (PlacedTiles { words: storage.words, extents }, inputs, uses)
+        // B initialized and compacted precisely this prefix of the output storage.
+        unsafe { storage.words.set_len(result.count); }
+        (PlacedTiles { words: storage.words, extents: result.extents }, inputs, uses)
     }
 
 

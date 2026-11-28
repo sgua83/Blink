@@ -11,6 +11,7 @@ extern "C" u64 merge_bindings(address output, u64 left_count, BindingSpan right)
 
 enum TileScratch:u32 { Rows=0; Members=1; Narrow=2; Wide=3; Cells=4; };
 struct TileExtents { u64 narrow; u64 wide; };
+struct TileLayoutResult { TileExtents extents; u64 count; };
 struct TileLayoutInput {
     Span tiles;
     Span groups;
@@ -24,11 +25,11 @@ struct TileLayoutHost {
     Host ir;
     address context;
     cfn<address,address,TileScratch,u64> reserve;
-    cfn<void,address,TilePlacedWord> publish;
+    cfn<address,address,u64> words;
 };
-extern "C" TileExtents place_tile(TileLayoutInput input, TileLayoutHost host) on cpu
+extern "C" TileLayoutResult place_tile(TileLayoutInput input, TileLayoutHost host) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.reserve)
-    requires nonzero(host.publish);
+    requires nonzero(host.words);
 
 
 struct WriteEnd { u32 end; u32 present; };
