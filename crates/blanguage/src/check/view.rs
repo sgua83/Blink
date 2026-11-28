@@ -658,10 +658,10 @@ impl BorrowOutputMerge {
 unsafe extern "C" {
     #[link_name = "bootstrap.call_arguments::merge_borrow_output"]
     fn merge_borrow_output(
-        remaining: *mut std::ffi::c_void, paths: ReadWritePaths,
+        remaining: &mut Option<bounds::Clause>, paths: ReadWritePaths,
         output: BorrowOutputShape, input: BorrowOutputShape, host: BorrowOutputMerge,
         conflict: unsafe extern "C" fn(*const std::ffi::c_void) -> u32,
-    ) -> *mut std::ffi::c_void;
+    );
 }
 
 #[repr(u32)]
@@ -1421,22 +1421,22 @@ impl Borrow{
     }
     pub fn empty(&self)->bool{self.sources.is_empty()&&self.inputs.is_empty()&&self.calls.is_empty()&&self.reads.is_empty()}
     pub fn union(&mut self, other: &Self) {
-        self.merge_paths(other, None, None, None);
+        self.merge_paths(other, None, None, &mut None);
     }
 
     pub(super) fn union_restricted(&mut self, other: &Self, path: &bounds::Clause) {
-        self.merge_paths(other, Some(path), None, None);
+        self.merge_paths(other, Some(path), None, &mut None);
     }
 
     pub(super) fn merge_paths(
         &mut self, incoming: &Self, written: Option<&bounds::Clause>,
-        unwritten: Option<&bounds::Clause>, remaining: Option<bounds::Clause>,
-    ) -> *mut std::ffi::c_void {
+        unwritten: Option<&bounds::Clause>, remaining: &mut Option<bounds::Clause>,
+    ) {
         let paths = ReadWritePaths {
             written: written.map_or(std::ptr::null_mut(), bounds::Clause::raw),
             unwritten: unwritten.map_or(std::ptr::null_mut(), bounds::Clause::raw),
         };
-        let remaining = remaining.map_or(std::ptr::null_mut(), bounds::Clause::into_raw);
+        // Clause is a transparent NonNull handle, with absence represented by null.
         unsafe {
             merge_borrow_output(remaining, paths, BorrowOutputShape::writable(self), incoming.into(),
                 BorrowOutputMerge::OPERATIONS, bounds::clause_conflict)

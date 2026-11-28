@@ -820,8 +820,7 @@ impl ContentAtRead {
     }
 
     fn fold(&mut self, incoming: &Borrow, written: Option<&bounds::Clause>, unwritten: Option<&bounds::Clause>) {
-        let remaining = self.writes.merge_paths(incoming, written, unwritten, self.earlier.take());
-        self.earlier = std::ptr::NonNull::new(remaining).map(|path| unsafe { bounds::Clause::from_raw(path) });
+        self.writes.merge_paths(incoming, written, unwritten, &mut self.earlier);
     }
 
     fn write_with_history(&mut self, incoming: &Borrow, when: &bounds::Condition, complete: bool,

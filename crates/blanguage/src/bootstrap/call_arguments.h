@@ -368,7 +368,7 @@ struct BorrowOutputMerge {
     BorrowOutputKey reads;
 };
 
-extern "C" address merge_borrow_output(address remaining, ReadWritePaths paths,
+extern "C" void merge_borrow_output(inout address remaining, ReadWritePaths paths,
     BorrowOutputShape output, BorrowOutputShape input, BorrowOutputMerge host,
     cfn<u32,address> conflict) on cpu
     requires nonzero(output.sources.stride) requires nonzero(output.inputs.stride)

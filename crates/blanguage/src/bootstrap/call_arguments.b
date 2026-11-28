@@ -894,7 +894,7 @@ extern "C" void union_borrow_edges(BorrowEdgeGroup group,BorrowEdgeGroup source,
     }
 }
 
-extern "C" address merge_borrow_output(address remaining, ReadWritePaths paths,
+extern "C" void merge_borrow_output(inout address remaining, ReadWritePaths paths,
     BorrowOutputShape output, BorrowOutputShape input, BorrowOutputMerge host,
     cfn<u32,address> conflict) on cpu
     requires nonzero(output.sources.stride) requires nonzero(output.inputs.stride)
@@ -924,14 +924,15 @@ extern "C" address merge_borrow_output(address remaining, ReadWritePaths paths,
     if (remaining != address() && paths.written != address()) {
         clause_release(visible);
     }
-    if (paths.unwritten == address()) { return remaining; }
+    if (paths.unwritten == address()) { return; }
     if (remaining == address()) {
         clause_retain(paths.unwritten);
-        return paths.unwritten;
+        remaining = paths.unwritten;
+    } else {
+        address earlier = combine_clause_both(remaining,paths.unwritten,conflict);
+        clause_release(remaining);
+        remaining = earlier;
     }
-    address earlier = combine_clause_both(remaining,paths.unwritten,conflict);
-    clause_release(remaining);
-    return earlier;
 }
 
 extern "C" void restrict_borrow_edges(BorrowEdgeGroup group,address path,cfn<address,address,address> both) on cpu
