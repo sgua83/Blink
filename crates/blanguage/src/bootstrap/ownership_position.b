@@ -591,21 +591,33 @@ extern "C" void write_comparison(address output, Selection value, address layout
     unsafe_position<PresenceTag>(output) = PresenceTag::Selected;
 }
 
+void store_shared_presence(address output, PresenceTag tag, PresenceBranches branches, PresenceView view) on cpu {
+    let payload = unsafe_address(address_bits(output) + view.payload_offset);
+    if (tag == PresenceTag::Not) { unsafe_position<address>(payload) = branches.first; }
+    else { unsafe_position<PresenceBranches>(payload) = branches; }
+    unsafe_position<PresenceTag>(output) = tag;
+}
+
+extern "C" void clone_presence_branches(address output, PresenceTag tag, PresenceBranches branches, address layout,
+    cfn<void,address,SharedNodeKind> drop_payload) on cpu
+    requires nonzero(drop_payload) {
+    retain_shared_positions(branches.first);
+    if (tag != PresenceTag::Not) { retain_shared_positions(branches.second); }
+    // The source may belong to the tree this output is about to release.
+    clear_presence(output, layout, drop_payload);
+    store_shared_presence(output, tag, branches, unsafe_position<PresenceView>(layout));
+}
+
 extern "C" void pair_presence(address left, address right, u32 any, address layout) on cpu {
     let a = publish_presence(left, layout);
     let b = publish_presence(right, layout);
-    let view = unsafe_position<PresenceView>(layout);
-    let payload = unsafe_address(address_bits(left) + view.payload_offset);
-    unsafe_position<PresenceBranches>(payload) = PresenceBranches(a, b);
-    unsafe_position<PresenceTag>(left) = any == 0 ? PresenceTag::Both : PresenceTag::Either;
+    store_shared_presence(left, any == 0 ? PresenceTag::Both : PresenceTag::Either,
+        PresenceBranches(a, b), unsafe_position<PresenceView>(layout));
 }
 
 extern "C" void wrap_not_presence(address value, address layout) on cpu {
     let child = publish_presence(value, layout);
-    let view = unsafe_position<PresenceView>(layout);
-    let payload = unsafe_address(address_bits(value) + view.payload_offset);
-    unsafe_position<address>(payload) = child;
-    unsafe_position<PresenceTag>(value) = PresenceTag::Not;
+    store_shared_presence(value, PresenceTag::Not, PresenceBranches(child, address()), unsafe_position<PresenceView>(layout));
 }
 
 void release_ownership_condition(address output, address layout,
@@ -625,15 +637,33 @@ extern "C" void write_ownership_constant(address output, u32 kind, address layou
     unsafe_position<u32>(output) = kind;
 }
 
-extern "C" void conditional_ownership(address output, address value, address layout,
+void store_ownership_condition(address output, address owner, address layout,
     cfn<void,address,SharedNodeKind> drop_payload) on cpu
     requires nonzero(drop_payload) {
-    let owner = publish_presence(value, layout);
     release_ownership_condition(output, layout, drop_payload);
     let view = unsafe_position<PresenceView>(layout);
     let payload = unsafe_address(address_bits(output) + view.ownership_payload_offset);
     unsafe_position<address>(payload) = owner;
     unsafe_position<u32>(output) = 3;
+}
+
+extern "C" void conditional_ownership(address output, address value, address layout,
+    cfn<void,address,SharedNodeKind> drop_payload) on cpu
+    requires nonzero(drop_payload) {
+    store_ownership_condition(output, publish_presence(value, layout), layout, drop_payload);
+}
+
+extern "C" void clone_ownership(address output, address source, address layout,
+    cfn<void,address,SharedNodeKind> drop_payload) on cpu
+    requires nonzero(drop_payload) {
+    if (address_bits(output) == address_bits(source)) { return; }
+    let kind = unsafe_position<u32>(source);
+    if (kind != 3) { write_ownership_constant(output, kind, layout, drop_payload); return; }
+    let view = unsafe_position<PresenceView>(layout);
+    let payload = unsafe_address(address_bits(source) + view.ownership_payload_offset);
+    let child = unsafe_position<address>(payload);
+    retain_shared_positions(child);
+    store_ownership_condition(output, child, layout, drop_payload);
 }
 
 struct DatasetPositionMapping {

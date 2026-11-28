@@ -207,14 +207,6 @@ unsafe extern "C" fn condition_truth_in(value: Address, path: Address) -> u32 {
         None => 0, Some(false) => 1, Some(true) => 2,
     }
 }
-unsafe extern "C" fn ownership_copy(output: Address, source: Address) {
-    let value = unsafe { &*source.cast::<Ownership>() }.clone();
-    unsafe { *output.cast::<Ownership>() = value; }
-}
-unsafe extern "C" fn copy_value(output: Address, source: Address) {
-    let value = unsafe { &*source.cast::<Presence>() }.clone();
-    unsafe { *output.cast::<Presence>() = value; }
-}
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Host {
@@ -238,8 +230,6 @@ struct Host {
     condition_substitute: unsafe extern "C" fn(Address, Address, PositionIndex, PositionIndex),
     input_offset: unsafe extern "C" fn(Address, PositionIndex) -> u32,
     condition_truth_in: unsafe extern "C" fn(Address, Address) -> u32,
-    ownership_copy: unsafe extern "C" fn(Address, Address),
-    copy_value: unsafe extern "C" fn(Address, Address),
 }
 const HOST: Host = Host {
     layout: &PRESENCE_VIEW, compare_input, constant_input, input_uses_index,
@@ -248,8 +238,7 @@ const HOST: Host = Host {
     position_equal,
     condition_scope, condition_clone_scope, condition_truth, condition_input,
     condition_index, condition_negate, condition_logical, condition_substitute,
-    input_offset, condition_truth_in, ownership_copy,
-    copy_value,
+    input_offset, condition_truth_in,
 };
 unsafe extern "C" {
     #[link_name = "bootstrap.ownership_presence::relation"] fn source_relation(output: Address, value: Selection, host: Host);
@@ -269,6 +258,26 @@ unsafe extern "C" {
     #[link_name = "bootstrap.ownership_presence::ownership_restricted"] fn source_restricted(output: Address, value: Address, when: Address, host: Host);
     #[link_name = "bootstrap.ownership_presence::ownership_compatible"] fn source_compatible(a: Address, b: Address, inputs: Address, path: Address, host: Host) -> u32;
 }
+unsafe extern "C" {
+    #[link_name = "bootstrap.ownership_presence::clone_presence"]
+    fn source_clone_presence(output: Address, source: Address, host: Host);
+    #[link_name = "bootstrap.ownership_position::clone_ownership"]
+    fn source_clone_ownership(output: Address, source: Address, layout: &PresenceView,
+        drop_payload: unsafe extern "C" fn(Address, SharedNodeKind));
+}
+
+pub(super) fn clone_presence(value: &Presence) -> Presence {
+    let mut output = Presence::None;
+    unsafe { source_clone_presence(std::ptr::from_mut(&mut output).cast(), pointer(value), HOST); }
+    output
+}
+
+pub(super) fn clone_ownership(value: &Ownership) -> Ownership {
+    let mut output = Ownership::Moved;
+    unsafe { source_clone_ownership(std::ptr::from_mut(&mut output).cast(), pointer(value), &PRESENCE_VIEW, drop_payload); }
+    output
+}
+
 pub(super) fn relation(operation: Comparison, a: ownership::ApplicationIndex, b: ownership::ApplicationIndex) -> Presence {
     let mut output = Presence::None;
     unsafe { source_relation(pointer(&mut output), Selection { operation: operation as u32, a: position_index(Some(&a)), b: position_index(Some(&b)) }, HOST); }

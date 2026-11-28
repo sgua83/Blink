@@ -98,8 +98,14 @@ extern "C" void write_truth(address output, u32 value, address layout,
     cfn<void,address,SharedNodeKind> drop_payload) on cpu requires nonzero(drop_payload);
 extern "C" void move_presence(address output, address source, address layout,
     cfn<void,address,SharedNodeKind> drop_payload) on cpu requires nonzero(drop_payload);
+extern "C" void clone_presence_branches(address output, PresenceTag tag, PresenceBranches branches, address layout,
+    cfn<void,address,SharedNodeKind> drop_payload) on cpu
+    requires nonzero(drop_payload);
 extern "C" void pair_presence(address left, address right, u32 any, address layout) on cpu;
 extern "C" void wrap_not_presence(address value, address layout) on cpu;
+extern "C" void clone_ownership(address output, address source, address layout,
+    cfn<void,address,SharedNodeKind> drop_payload) on cpu
+    requires nonzero(drop_payload);
 extern "C" void conditional_ownership(address output, address value, address layout,
     cfn<void,address,SharedNodeKind> drop_payload) on cpu requires nonzero(drop_payload);
 extern "C" void write_ownership_constant(address output, u32 kind, address layout,

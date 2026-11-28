@@ -3,7 +3,6 @@ use super::*;
 use application::Ownership;
 use returns::Returned;
 #[repr(C, u32)]
-#[derive(Clone)]
 pub(super) enum Presence {
     None = 0,
     All = 1,
@@ -17,6 +16,8 @@ mod host;
 pub(in crate::check) use host::{PresenceNode, PresenceView, SharedNodeKind, PRESENCE_VIEW, drop_payload};
 pub(super) mod path;
 
+impl Clone for Presence { fn clone(&self) -> Self { host::clone_presence(self) } }
+impl Clone for Ownership { fn clone(&self) -> Self { host::clone_ownership(self) } }
 impl PartialEq for Presence { fn eq(&self, other: &Self) -> bool { host::compare(self, other).is_eq() } }
 impl Eq for Presence {}
 impl PartialOrd for Presence { fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) } }

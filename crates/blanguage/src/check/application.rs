@@ -18,7 +18,7 @@ pub(super) struct Context {
     pub range: bool,
 }
 #[repr(C, u32)]
-#[derive(Clone, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub(super) enum Ownership {
     Moved = 0,
     Owned = 1,
