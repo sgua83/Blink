@@ -1974,7 +1974,7 @@ u32 storage_visit(Span code,Span tiles,StorageHost host,i64 first_phase,bool roo
   }
   if(root && phase>=i64(0)) {
    if(value.tag==OP_TILE_PUBLISH) {
-    output.emit(output.context,StorageEvent::Birth,value.a,0,phase);
+    unsafe_position<i64>(node_at(output.publication_phases,value.a,0).data)=phase;
    }
    if(tile_phase_step(value.tag)) {
     phase+=i64(1);

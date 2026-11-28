@@ -518,12 +518,14 @@ struct StorageHost {
  Host ir; address stage;
  cfn<u32,address,usize> ensures memory(read) scalar_bytes;
 };
-enum StorageEvent : u32 { Read = 0; Birth = 1; Group = 2; };
+enum StorageEvent : u32 { Read = 0; Group = 1; };
 struct StorageOutput {
  address context;
  cfn<void,address,StorageEvent,usize,u32,i64> emit;
+ Span publication_phases;
 };
-// Use phase zero for layout and -1 for the standalone word query.
+// Layout starts at phase zero and lends one phase slot per tile.
+// The standalone word query uses phase -1 and an empty span.
 extern "C" u32 storage_facts(Span code,Span tiles,StorageHost host,i64 phase,StorageOutput output) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar_bytes) requires nonzero(output.emit);
 

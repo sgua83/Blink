@@ -3,6 +3,8 @@ import bootstrap.ir_dataflow;
 import bootstrap.names;
 import codec.builtin_type;
 
+extern "C" void abort() on cpu from "ucrtbase.dll";
+
 u64 binding_at(address data, u64 index) on cpu {
     return unsafe_position<u64>(unsafe_address(address_bits(data) + index * 8u64));
 }
@@ -39,7 +41,7 @@ struct TilePlacement { i64 begin; i64 end; u64 first; u64 count; u64 width; u32 
 struct TileBuffer { address data; u64 count; u64 capacity; };
 struct TileCell { u32 byte; u32 bytes; };
 struct TileCellRow { TileKey key; TileCell cell; u64 ordinal; };
-struct TilePlan { TileBuffer rows; TileBuffer members; Span cells; };
+struct TilePlan { TileBuffer rows; TileBuffer members; Span cells; Span publication_phases; };
 
 address tile_piece<T>(address data, u64 index) on cpu {
     return unsafe_address(address_bits(data) + index * size_of<T>());
@@ -141,24 +143,28 @@ i64 tile_take_use(address uses, u64 count, TileKey key) on cpu {
     return end;
 }
 
-i64 tile_begin(TileKey key, TileLayoutHost host) on cpu requires nonzero(host.birth) {
-    return key.storage == 0u64 ? -i64(1) : host.birth(host.context, key.owner);
+i64 tile_begin(TileKey key, Span publication_phases) on cpu {
+    if (key.storage == 0u64) { return -i64(1); }
+    i64 phase = unsafe_position<i64>(span_item_at(publication_phases, key.owner));
+    // A placed publication has its original defining step in this Stage.
+    if (phase < i64(0)) { abort(); }
+    return phase;
 }
 
 void tile_make_row(inout TilePlan plan, u64 first, i64 end, bool wide, TileLayoutHost host) on cpu
-    requires nonzero(host.reserve) requires nonzero(host.birth) {
+    requires nonzero(host.reserve) {
     TileKey low = unsafe_position<TileKey>(tile_piece<TileKey>(plan.members.data, first));
     TileKey high = unsafe_position<TileKey>(tile_piece<TileKey>(plan.members.data, plan.members.count - 1u64));
     u32 bytes = wide ? tile_cell(plan.cells, low).bytes : 4;
     u32 shift = bytes == 4 ? 2 : 3;
     u64 width = u64((high.byte - low.byte) >> shift) + 1u64;
-    TilePlacement row = TilePlacement(tile_begin(low, host), end, first, plan.members.count - first, width, bytes);
+    TilePlacement row = TilePlacement(tile_begin(low, plan.publication_phases), end, first, plan.members.count - first, width, bytes);
     tile_push<TilePlacement>(plan.rows, TileScratch::Rows, row, host);
 }
 
 void tile_collect_group(inout TilePlan plan, TileGroup group, u32 bytes, address uses, u64 count,
     bool wide, TileLayoutHost host) on cpu
-    requires nonzero(host.reserve) requires nonzero(host.birth) {
+    requires nonzero(host.reserve) {
     u64 first = plan.members.count;
     i64 end = -i64(1);
     u32 word = group.first;
@@ -274,7 +280,7 @@ TileExtents tile_place_rows(TilePlan plan, bool wide, bool publish, TileLayoutHo
 
 extern "C" TileExtents place_tile(TileLayoutInput input, TileLayoutHost host) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.reserve)
-    requires nonzero(host.birth) requires nonzero(host.publish) {
+    requires nonzero(host.publish) {
     bool wide = input.wide != 0;
     u64 count = input.use_count;
     Span cells = Span(address(), 0u64, 0u64);
@@ -283,7 +289,7 @@ extern "C" TileExtents place_tile(TileLayoutInput input, TileLayoutHost host) on
         count = tile_join_uses(input.uses, count, cells);
     }
     TileBuffer empty = TileBuffer(address(), 0u64, 0u64);
-    TilePlan plan = TilePlan(empty, empty, cells);
+    TilePlan plan = TilePlan(empty, empty, cells, input.publication_phases);
     u64 index = 0u64;
     while (index < input.groups.count) {
         TileGroup group = unsafe_position<TileGroup>(span_item_at(input.groups, index));

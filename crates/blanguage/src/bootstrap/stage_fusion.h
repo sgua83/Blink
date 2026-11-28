@@ -14,6 +14,7 @@ struct TileExtents { u64 narrow; u64 wide; };
 struct TileLayoutInput {
     Span tiles;
     Span groups;
+    Span publication_phases;
     address uses;
     u64 use_count;
     u32 wide;
@@ -23,12 +24,11 @@ struct TileLayoutHost {
     Host ir;
     address context;
     cfn<address,address,TileScratch,u64> reserve;
-    cfn<i64,address,u64> ensures memory(read) birth;
     cfn<void,address,TilePlacedWord> publish;
 };
 extern "C" TileExtents place_tile(TileLayoutInput input, TileLayoutHost host) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.reserve)
-    requires nonzero(host.birth) requires nonzero(host.publish);
+    requires nonzero(host.publish);
 
 
 struct WriteEnd { u32 end; u32 present; };

@@ -624,12 +624,13 @@ struct StorageHost {
 }
 
 #[repr(u32)]
-enum StorageEvent { Read, Birth, Group }
+enum StorageEvent { Read, Group }
 
 #[repr(C)]
 struct StorageOutput {
     context: *mut c_void,
     emit: unsafe extern "C" fn(*mut c_void, StorageEvent, usize, u32, i64),
+    publication_phases: Span,
 }
 
 unsafe extern "C" {
@@ -656,7 +657,9 @@ struct WordOutput<'a> { stage: &'a Stage, words: BTreeSet<SharedWord> }
 pub(crate) fn storage_usage(stage: &Stage) -> (BTreeSet<SharedWord>, u32) {
     let mut output = WordOutput { stage, words: BTreeSet::new() };
     let preserve = if stage.tiles.is_empty() { 0 } else {
-        storage_facts(stage, -1, StorageOutput { context: ptr::from_mut(&mut output).cast(), emit: emit_word })
+        storage_facts(stage, -1, StorageOutput {
+            context: ptr::from_mut(&mut output).cast(), emit: emit_word, publication_phases: Span::EMPTY,
+        })
     };
     (output.words, preserve)
 }
@@ -708,7 +711,7 @@ unsafe extern "C" {
 #[derive(Default)]
 pub(super) struct LayoutFacts {
     pub(super) reads: BTreeMap<SharedWord, (i64, u32)>,
-    pub(super) births: BTreeMap<usize, i64>,
+    pub(super) publication_phases: Vec<i64>,
     pub(super) groups: Vec<TileGroup>,
 }
 
@@ -719,7 +722,12 @@ struct LayoutOutput<'a> {
 
 pub(super) fn tile_layout_facts(stage: &Stage) -> LayoutFacts {
     let mut output = LayoutOutput { stage, facts: LayoutFacts::default() };
-    storage_facts(stage, 0, StorageOutput { context: ptr::from_mut(&mut output).cast(), emit: emit_layout });
+    let mut publication_phases = vec![-1i64; stage.tiles.len()];
+    storage_facts(stage, 0, StorageOutput {
+        context: ptr::from_mut(&mut output).cast(), emit: emit_layout,
+        publication_phases: Span::mutable(&mut publication_phases),
+    });
+    output.facts.publication_phases = publication_phases;
     let groups = &mut output.facts.groups;
     let count = unsafe { b_coalesce_tile_groups(groups.as_mut_ptr(), groups.len()) };
     groups.truncate(count);
@@ -737,9 +745,6 @@ unsafe extern "C" fn emit_layout(context: *mut c_void, event: StorageEvent, tile
             let (end, mask) = output.facts.reads.entry(word.aligned()).or_insert((-1, 0));
             *end = (*end).max(phase);
             *mask |= 1 << (byte % 4);
-        }
-        StorageEvent::Birth => {
-            output.facts.births.insert(tile, phase);
         }
         StorageEvent::Group => {
             let first = output.stage.shared_word(tile, 0);
