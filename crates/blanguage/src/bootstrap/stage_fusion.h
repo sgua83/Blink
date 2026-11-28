@@ -9,7 +9,6 @@ struct BindingSpan {
 // The returned index starts the sorted union in that same output buffer.
 extern "C" u64 merge_bindings(address output, u64 left_count, BindingSpan right) on cpu;
 
-struct TileUse { TileKey key; i64 end; };
 struct TileCell { u32 byte; u32 bytes; };
 enum TileScratch:u32 { Rows=0; Members=1; Narrow=2; Wide=3; };
 struct TileExtents { u64 narrow; u64 wide; };

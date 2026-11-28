@@ -4,7 +4,7 @@ use crate::native::{ParallelRangePart, TileCollectivePart};
 use super::allocation::Location;
 use std::ffi::c_void;
 use crate::builtin_types::ScalarEncoding;
-use crate::ir::{TileKey, dataflow::{HOST, Host, View}};
+use crate::ir::dataflow::{HOST, Host, View};
 
 #[repr(C)]
 struct TileCollectiveLayout {
@@ -59,7 +59,7 @@ struct TilePublishHost {
     scalar: unsafe extern "C" fn(*const c_void, Reg) -> ScalarEncoding,
     location: unsafe extern "C" fn(*const c_void, Reg) -> operands::MoveLocation,
     placed: Span,
-    used: unsafe extern "C" fn(*const c_void, TileKey) -> u32,
+    reads: Span,
     observe: unsafe extern "C" fn(TileSlot, usize, usize, usize, TilePublishCode, TilePublishField),
 }
 
@@ -99,6 +99,7 @@ impl Emitter<'_> {
     pub(super) fn publish_values(&mut self, publication: View) {
         let base_offset = self.tile_length_slot() + 4;
         let placed = self.frame.shared_words();
+        let reads = self.tile_reads;
         unsafe {
             emit_tile_publish(std::ptr::from_mut(self).cast(), publication, base_offset, TilePublishHost {
                 reserve: structure::reserve_scalar,
@@ -106,7 +107,7 @@ impl Emitter<'_> {
                 scalar: operands::body_value_scalar,
                 location: operands::body_value_location,
                 placed,
-                used: publication_word_used,
+                reads,
                 observe: observe_publish,
             });
         }
@@ -131,11 +132,6 @@ impl Emitter<'_> {
             });
         }
     }
-}
-
-unsafe extern "C" fn publication_word_used(slot: *const c_void, key: TileKey) -> u32 {
-    let emitter = unsafe { &*slot.cast::<Emitter<'_>>() };
-    u32::from(emitter.used_tile_words.contains(&key.word()))
 }
 
 unsafe extern "C" fn observe_publish(

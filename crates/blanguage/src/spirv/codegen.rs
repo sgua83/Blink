@@ -44,7 +44,7 @@ pub enum Pass {
     SortGather,
     DispatchArguments(PrefixCount),
 }
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
@@ -1419,9 +1419,7 @@ pub fn emit_pass(
 fn shader_stage_inputs(
     stage: &Stage,
 ) -> (PlacedTiles, crate::ir::dataflow::InputFragments) {
-    let mut used = BTreeSet::new();
-    let layout = stage.tile_layout(true, Some(&mut used));
-    let inputs = crate::ir::dataflow::input_fragments(stage, &used);
+    let (layout, inputs, _) = stage.tile_layout(true);
     (layout, inputs)
 }
 #[allow(dead_code)]

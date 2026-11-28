@@ -204,10 +204,8 @@ fn emit_collective_leaf(body_capacity: usize, emit: impl FnOnce(CollectiveLeafOu
     code
 }
 
-static EMPTY_TILE_WORDS: std::collections::BTreeSet<SharedWord> = std::collections::BTreeSet::new();
-
 struct Emitter<'a> {
-    used_tile_words: &'a std::collections::BTreeSet<SharedWord>,
+    tile_reads: Span,
     code: Vec<u8>,
     unwind: Vec<UnwindOperation>,
     prolog: u8,
@@ -512,7 +510,7 @@ unsafe extern "C" fn map_range_observe(slot: MapRangeSlot, event: MapRangeObserv
 
 fn emit_map(
     program: &Program, index: usize, inputs: &crate::ir::dataflow::InputFragments,
-    used: &std::collections::BTreeSet<SharedWord>, layout: crate::ir::dataflow::TileLayout,
+    reads: &[crate::ir::dataflow::TileUse], layout: crate::ir::dataflow::TileLayout,
 ) -> Result<NativeCode, &'static str> {
     let stage = &program.stages[index];
     let (code, registers) = reads::place(&stage.code, &stage.registers, &stage.writes);
@@ -540,7 +538,7 @@ fn emit_map(
     let frame = i32::try_from(bytes.div_ceil(16) * 16)
         .map_err(|_| "原生 tile 栈帧超过 x64 范围函数 ABI")? as u32;
     let mut e = Emitter {
-        used_tile_words: used,
+        tile_reads: Span::slice(reads),
         unwind: Vec::new(),
         prolog: 0,
         probe: None,

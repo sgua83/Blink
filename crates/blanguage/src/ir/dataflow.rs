@@ -678,6 +678,9 @@ pub(crate) struct TilePlacedWord {
 pub(crate) type TileLayout = Vec<TilePlacedWord>;
 
 #[repr(C)]
+pub(crate) struct TileUse { pub(super) key: TileKey, pub(super) end: i64, pub(super) read_mask: u32 }
+
+#[repr(C)]
 #[derive(Clone, Copy)]
 pub(super) struct TileGroup {
     storage: u64,
@@ -704,19 +707,18 @@ unsafe extern "C" {
 
 #[derive(Default)]
 pub(super) struct LayoutFacts {
-    pub(super) last: BTreeMap<SharedWord, i64>,
+    pub(super) reads: BTreeMap<SharedWord, (i64, u32)>,
     pub(super) births: BTreeMap<usize, i64>,
     pub(super) groups: Vec<TileGroup>,
 }
 
 struct LayoutOutput<'a> {
     stage: &'a Stage,
-    used: Option<&'a mut BTreeSet<SharedWord>>,
     facts: LayoutFacts,
 }
 
-pub(super) fn tile_layout_facts(stage: &Stage, used: Option<&mut BTreeSet<SharedWord>>) -> LayoutFacts {
-    let mut output = LayoutOutput { stage, used, facts: LayoutFacts::default() };
+pub(super) fn tile_layout_facts(stage: &Stage) -> LayoutFacts {
+    let mut output = LayoutOutput { stage, facts: LayoutFacts::default() };
     storage_facts(stage, 0, StorageOutput { context: ptr::from_mut(&mut output).cast(), emit: emit_layout });
     let groups = &mut output.facts.groups;
     let count = unsafe { b_coalesce_tile_groups(groups.as_mut_ptr(), groups.len()) };
@@ -729,12 +731,12 @@ unsafe extern "C" fn emit_layout(context: *mut c_void, event: StorageEvent, tile
     match event {
         StorageEvent::Read => {
             let word = output.stage.shared_word(tile, offset_or_count);
-            if let Some(used) = &mut output.used {
-                used.insert(word);
-            }
-            if phase >= 0 {
-                output.facts.last.insert(word.aligned(), phase);
-            }
+            let byte = match word {
+                SharedWord::Input { word, .. } | SharedWord::Published { word, .. } => word,
+            };
+            let (end, mask) = output.facts.reads.entry(word.aligned()).or_insert((-1, 0));
+            *end = (*end).max(phase);
+            *mask |= 1 << (byte % 4);
         }
         StorageEvent::Birth => {
             output.facts.births.insert(tile, phase);
@@ -764,31 +766,24 @@ pub(crate) fn input_snapshot_words(fragments: &[TileInputFragment]) -> BTreeSet<
 unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::tile_input_words"]
     fn b_tile_input_words(
-        tiles: Span, host: Host, used: *const c_void,
-        contains: unsafe extern "C" fn(*const c_void, usize, u32) -> u32,
-        output: *mut c_void, emit: TileInputWord,
+        tiles: Span, host: Host, uses: Span, output: *mut c_void, emit: TileInputWord,
     );
 }
 
-pub(crate) fn input_fragments(stage: &Stage, used: &BTreeSet<SharedWord>) -> InputFragments {
+pub(super) fn input_fragments(stage: &Stage, uses: &[TileUse]) -> InputFragments {
     let mut output = Vec::new();
-    if used.is_empty() {
+    if uses.is_empty() {
         return output;
     }
     unsafe {
         b_tile_input_words(
-            Span::slice(&stage.tiles), HOST, ptr::from_ref(used).cast(),
-            contains_input_word, ptr::from_mut(&mut output).cast(), emit_input_fragment,
+            Span::slice(&stage.tiles), HOST, Span::slice(uses),
+            ptr::from_mut(&mut output).cast(), emit_input_fragment,
         );
     }
     output.sort_unstable_by_key(TileInputFragment::order);
     output.dedup_by_key(|fragment| fragment.order());
     output
-}
-
-unsafe extern "C" fn contains_input_word(used: *const c_void, binding: usize, word: u32) -> u32 {
-    let used = unsafe { &*used.cast::<BTreeSet<SharedWord>>() };
-    u32::from(used.contains(&SharedWord::Input { binding, word }))
 }
 
 unsafe extern "C" fn emit_input_fragment(output: *mut c_void, fragment: TileInputFragment) {

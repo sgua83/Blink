@@ -206,7 +206,7 @@ impl<'a> RangeInput<'a> {
 struct RangeEmission<'a> {
     input: RangeInput<'a>,
     inputs: crate::ir::dataflow::InputFragments,
-    used: std::collections::BTreeSet<SharedWord>,
+    reads: Vec<crate::ir::dataflow::TileUse>,
     tile_layout: crate::ir::dataflow::TileLayout,
     code: [Option<NativeCode>; 6],
     initializers: Vec<NativeCode>,
@@ -216,11 +216,9 @@ struct RangeEmission<'a> {
 impl<'a> RangeEmission<'a> {
     fn new(program: &'a Program, index: usize) -> Self {
         let stage = &program.stages()[index];
-        let mut used = std::collections::BTreeSet::new();
-        let layout = stage.tile_layout(false, Some(&mut used));
-        let inputs = crate::ir::dataflow::input_fragments(stage, &used);
+        let (layout, inputs, reads) = stage.tile_layout(false);
         Self {
-            input: RangeInput::new(program, index), inputs, used, tile_layout: layout.words,
+            input: RangeInput::new(program, index), inputs, reads, tile_layout: layout.words,
             code: Default::default(), initializers: Vec::new(), error: None,
         }
     }
@@ -231,7 +229,7 @@ impl<'a> RangeEmission<'a> {
         let input = &self.input;
         let program = input.program;
         let code = match entry {
-            Entry::Map => return emit_map(program, input.index, &self.inputs, &self.used, std::mem::take(&mut self.tile_layout)),
+            Entry::Map => return emit_map(program, input.index, &self.inputs, &self.reads, std::mem::take(&mut self.tile_layout)),
             Entry::Reduce => reduce::emit(program, unsafe { input.value() }),
             Entry::CustomReduce => return input.custom(Pass::Reduce),
             Entry::CustomScan => return input.custom(Pass::Scan),

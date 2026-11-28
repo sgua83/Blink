@@ -528,7 +528,7 @@ struct TilePublishHost {
     cfn<ScalarEncoding,address,usize> ensures memory(read) scalar;
     cfn<MoveLocation,address,usize> ensures memory(read) location;
     Span placed;
-    cfn<u32,address,TileKey> ensures memory(read) used;
+    Span reads;
     cfn<void,address,usize,u64,u64,TilePublishCode,TilePublishField> observe;
 };
 
@@ -536,7 +536,7 @@ struct TilePublishHost {
 extern "C" void emit_tile_publish(address context, View publication, u32 base_offset, TilePublishHost host) on cpu
     requires nonzero(host.reserve) requires nonzero(host.commit)
     requires nonzero(host.scalar) requires nonzero(host.location)
-    requires nonzero(host.used) requires nonzero(host.observe);
+    requires nonzero(host.observe);
 
 struct TileSlots {
     Span tiles;

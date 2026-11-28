@@ -81,38 +81,29 @@ u64 tile_join_uses(address uses, u64 count, TileLayoutHost host) on cpu
     u64 index = 0u64;
     while (index < count) {
         TileUse item = unsafe_position<TileUse>(tile_piece<TileUse>(uses, index));
+        index += 1u64;
+        if (item.end < i64(0)) { continue; }
         item.key.byte = host.cell(host.context, item.key).byte;
         if (kept != 0u64) {
             address previous = tile_piece<TileUse>(uses, kept - 1u64);
             if (!tile_key_less(unsafe_position<TileUse>(previous).key, item.key)) {
                 unsafe_position<TileUse>(previous).end =
                     max(unsafe_position<TileUse>(previous).end, item.end);
-                index += 1u64;
                 continue;
             }
         }
         unsafe_position<TileUse>(tile_piece<TileUse>(uses, kept)) = item;
         kept += 1u64;
-        index += 1u64;
     }
     return kept;
 }
 
 i64 tile_take_use(address uses, u64 count, TileKey key) on cpu {
-    u64 low = 0u64;
-    u64 high = count;
-    while (low < high) {
-        u64 middle = low + (high - low) / 2u64;
-        TileUse item = unsafe_position<TileUse>(tile_piece<TileUse>(uses, middle));
-        if (tile_key_less(item.key, key)) { low = middle + 1u64; }
-        else { high = middle; }
-    }
-    if (low == count) { return -i64(1); }
-    address at = tile_piece<TileUse>(uses, low);
-    TileUse item = unsafe_position<TileUse>(at);
-    if (tile_key_less(key, item.key)) { return -i64(1); }
+    address at = tile_use_at(Span(uses, count, size_of<TileUse>()), key);
+    if (at == address()) { return -i64(1); }
+    i64 end = unsafe_position<TileUse>(at).end;
     unsafe_position<TileUse>(at).end = -i64(1);
-    return item.end;
+    return end;
 }
 
 i64 tile_begin(TileKey key, TileLayoutHost host) on cpu requires nonzero(host.birth) {

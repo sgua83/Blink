@@ -4243,9 +4243,8 @@ u32 tile_frame_offset(Span placed, TileKey key) on cpu {
     return u32(unsafe_position<TilePlacedWord>(row).position);
 }
 
-u32 tile_publication_offset(address context, usize tile, u32 word, TilePublishHost host) on cpu
-    requires nonzero(host.used) {
-    if (host.used(context, TileKey(1u64, tile, word)) == 0) { return 0xffffffff; }
+u32 tile_publication_offset(usize tile, u32 word, TilePublishHost host) on cpu {
+    if (!tile_word_read(host.reads, TileKey(1u64, tile, word))) { return 0xffffffff; }
     u32 slot = tile_frame_offset(host.placed, TileKey(1u64, tile, word & 0xfffffffc));
     return slot + word % 4;
 }
@@ -4253,7 +4252,7 @@ u32 tile_publication_offset(address context, usize tile, u32 word, TilePublishHo
 extern "C" void emit_tile_publish(address context, View publication, u32 base_offset, TilePublishHost host) on cpu
     requires nonzero(host.reserve) requires nonzero(host.commit)
     requires nonzero(host.scalar) requires nonzero(host.location)
-    requires nonzero(host.used) requires nonzero(host.observe) {
+    requires nonzero(host.observe) {
     bool first = true;
     Span words = publication.second;
     usize index = 0u64;
@@ -4262,8 +4261,8 @@ extern "C" void emit_tile_publish(address context, View publication, u32 base_of
         usize value = indexed_pair_word(publication.first, index);
         index += 1u64;
         ScalarEncoding scalar = host.scalar(context, value);
-        u32 low = tile_publication_offset(context, publication.a, word, host);
-        u32 high = scalar.width == 64 ? tile_publication_offset(context, publication.a, word + 4, host) : 0xffffffff;
+        u32 low = tile_publication_offset(publication.a, word, host);
+        u32 high = scalar.width == 64 ? tile_publication_offset(publication.a, word + 4, host) : 0xffffffff;
         if (low == 0xffffffff && high == 0xffffffff) { continue; }
 
         NativeCodeBuffer buffer = host.reserve(context, first ? 64u64 : 48u64);

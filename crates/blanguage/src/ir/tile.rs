@@ -50,10 +50,6 @@ impl TileKey {
 }
 
 #[cfg(feature = "compiler")]
-#[repr(C)]
-struct TileUse { key: TileKey, end: i64 }
-
-#[cfg(feature = "compiler")]
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
 struct TileCell { byte: u32, bytes: u32 }
@@ -82,7 +78,7 @@ enum TileScratch { Rows, Members, Narrow, Wide }
 struct TileLayoutInput {
     tiles: dataflow::Span,
     groups: dataflow::Span,
-    uses: *mut TileUse,
+    uses: *mut dataflow::TileUse,
     use_count: usize,
     wide: u32,
     publish: u32,
@@ -210,39 +206,43 @@ impl Stage {
     // (实际单元类型，所属类型平面的槽，单元内字节)；CPU继续使用原u32字流。
     #[cfg(feature = "compiler")]
     pub(crate) fn tile_layout(
-        &self, wide: bool, used: Option<&mut BTreeSet<SharedWord>>,
-    ) -> PlacedTiles {
+        &self, wide: bool,
+    ) -> (PlacedTiles, dataflow::InputFragments, Vec<dataflow::TileUse>) {
         let mut placed = PlacementOutput::new();
-        let extents = self.place_tile_layout(wide, used, Some(&mut placed));
+        let (extents, inputs, uses) = self.place_tile_layout(wide, Some(&mut placed));
         let words = placed.into_iter().map(|(key, (unit, slot, part))| {
             dataflow::TilePlacedWord { key: key.into(), position: slot, part, unit }
         }).collect();
-        PlacedTiles { words, extents }
+        (PlacedTiles { words, extents }, inputs, uses)
     }
 
     #[cfg(feature = "compiler")]
     fn place_tile_layout(
-        &self, wide: bool, used: Option<&mut BTreeSet<SharedWord>>,
-        layout: Option<&mut PlacementOutput>,
-    ) -> TileExtents {
+        &self, wide: bool, layout: Option<&mut PlacementOutput>,
+    ) -> (TileExtents, dataflow::InputFragments, Vec<dataflow::TileUse>) {
         if self.tiles.is_empty() {
-            return TileExtents::default();
+            return (TileExtents::default(), Vec::new(), Vec::new());
         }
-        let dataflow::LayoutFacts { last, births, groups } = dataflow::tile_layout_facts(self, used);
-        let mut uses: Vec<_> = last.into_iter().map(|(word, end)| TileUse { key: word.into(), end }).collect();
+        let dataflow::LayoutFacts { reads, births, groups } = dataflow::tile_layout_facts(self);
+        let mut uses: Vec<_> = reads.into_iter().map(|(word, (end, read_mask))| {
+            dataflow::TileUse { key: word.into(), end, read_mask }
+        }).collect();
+        // Vulkan normalizes the layout input to cells after the exact reads are consumed.
+        let inputs = if layout.is_some() { dataflow::input_fragments(self, &uses) } else { Vec::new() };
         let publish = u32::from(layout.is_some());
         let mut storage = TileStorage { births: &births, cells: BTreeMap::new(), scratch: Default::default(), layout };
         let input = TileLayoutInput {
             tiles: dataflow::Span::slice(&self.tiles), groups: dataflow::Span::slice(&groups),
             uses: uses.as_mut_ptr(), use_count: uses.len(), wide: u32::from(wide), publish,
         };
-        unsafe {
+        let extents = unsafe {
             place_tile(input, TileLayoutHost {
                 ir: dataflow::HOST, context: std::ptr::from_mut(&mut storage).cast(),
                 reserve: reserve_tile_storage, describe: describe_tile_cell,
                 cell: tile_cell, birth: tile_birth, publish: publish_tile_word,
             })
-        }
+        };
+        (extents, inputs, uses)
     }
 
 
@@ -252,7 +252,7 @@ impl Stage {
     }
     #[cfg(feature = "compiler")]
     pub(super) fn tile_data_bytes_for(&self, width: u32) -> u64 {
-        let words = self.place_tile_layout(false, None, None).narrow;
+        let words = self.place_tile_layout(false, None).0.narrow;
         words as u64 * u64::from(width) * 4
     }
     pub fn tile_scratch_bytes(&self) -> u64 {

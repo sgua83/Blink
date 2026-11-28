@@ -232,7 +232,7 @@ fn emit_value(
     let layout = Frame::new(&allocation, None);
     let flags = u32::from(fallible) | (needs_r15 << 1);
     let mut e = Emitter {
-        used_tile_words: &super::EMPTY_TILE_WORDS,
+        tile_reads: super::Span::EMPTY,
         unwind: Vec::new(),
         prolog: 0,
         probe: None,

@@ -2026,6 +2026,29 @@ bool tile_key_less(TileKey a, TileKey b) on cpu {
     return a.byte < b.byte;
 }
 
+address tile_use_at(Span uses, TileKey key) on cpu {
+    usize low = 0u64;
+    usize high = uses.count;
+    while (low < high) {
+        usize middle = low + (high - low) / 2u64;
+        address row = node_at(uses, middle, 0).data;
+        if (tile_key_less(unsafe_position<TileUse>(row).key, key)) {
+            low = middle + 1u64;
+        } else {
+            high = middle;
+        }
+    }
+    if (low == uses.count) { return address(); }
+    address row = node_at(uses, low, 0).data;
+    return tile_key_less(key, unsafe_position<TileUse>(row).key) ? address() : row;
+}
+
+bool tile_word_read(Span uses, TileKey key) on cpu {
+    u32 bit = u32(1) << (key.byte % 4);
+    address row = tile_use_at(uses, TileKey(key.storage, key.owner, key.byte & 0xfffffffc));
+    return row != address() && (unsafe_position<TileUse>(row).read_mask & bit) != 0;
+}
+
 address tile_placed_word(Span placed, TileKey key) on cpu {
     usize low = 0u64;
     usize high = placed.count;
@@ -2047,10 +2070,9 @@ TileInputFragment tile_input_fragment(Span fragments, usize index) on cpu {
  return unsafe_position<TileInputFragment>(node_at(fragments,index,0).data);
 }
 
-extern "C" void tile_input_words(Span tiles,Host host,address used,
- cfn<u32,address,usize,u32> ensures memory(read) contains,address output,
+extern "C" void tile_input_words(Span tiles,Host host,Span uses,address output,
  cfn<void,address,TileInputFragment> emit) on cpu
- requires nonzero(host.inspect) requires nonzero(contains) requires nonzero(emit) {
+ requires nonzero(host.inspect) requires nonzero(emit) {
  usize index=0u64;
  while(index<tiles.count) {
   View tile=host.inspect(node_at(tiles,index,N_TILE));
@@ -2062,7 +2084,7 @@ extern "C" void tile_input_words(Span tiles,Host host,address used,
     u32 part=0;
     while(part<(bytes+3)/4) {
      u32 byte=u32(tile.b)+u32(field.a)+part*4;
-     if(contains(used,tile.a,byte)!=0) {
+     if(tile_word_read(uses,TileKey(0u64,tile.a,byte))) {
       BuiltinScalar unit = bytes == 1 ? BuiltinScalar::U8 :
           (bytes == 2 ? BuiltinScalar::U16 : BuiltinScalar::U32);
       emit(output,TileInputFragment(tile.a,byte,unit));

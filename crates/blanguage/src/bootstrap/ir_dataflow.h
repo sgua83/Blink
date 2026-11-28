@@ -49,6 +49,9 @@ struct View {
 struct Host { cfn<View,Node> ensures memory(read) inspect; };
 
 struct TileKey { u64 storage; u64 owner; u32 byte; };
+struct TileUse { TileKey key; i64 end; u32 read_mask; };
+address tile_use_at(Span uses, TileKey key) on cpu;
+bool tile_word_read(Span uses, TileKey key) on cpu;
 struct TilePlacedWord { TileKey key; usize position; u32 part; BuiltinScalar unit; };
 bool tile_key_less(TileKey a, TileKey b) on cpu;
 address tile_placed_word(Span placed, TileKey key) on cpu;
@@ -525,10 +528,9 @@ extern "C" u32 storage_facts(Span code,Span tiles,StorageHost host,i64 phase,Sto
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar_bytes) requires nonzero(output.emit);
 
 // Borrow the Stage tiles and used words for this call and deliver only matching input fragments.
-extern "C" void tile_input_words(Span tiles,Host host,address used,
- cfn<u32,address,usize,u32> ensures memory(read) contains,address output,
+extern "C" void tile_input_words(Span tiles,Host host,Span uses,address output,
  cfn<void,address,TileInputFragment> emit) on cpu
- requires nonzero(host.inspect) requires nonzero(contains) requires nonzero(emit);
+ requires nonzero(host.inspect) requires nonzero(emit);
 
 // The bits select the stored low word and, for a wide value, the stored high word.
 struct ShaderSubgroups {
