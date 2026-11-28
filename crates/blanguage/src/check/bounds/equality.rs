@@ -17,6 +17,7 @@ impl Roots {
     pub(super) fn new() -> Self { Self(OutputBindings::new()) }
     pub(super) fn is_empty(&self) -> bool { self.0.is_empty() }
     pub(super) fn get(&self, id: &ValueIdentity) -> Option<&ValueIdentity> { self.0.get(id) }
+    pub(super) fn bindings(&self) -> &OutputBindings { &self.0 }
     pub(super) fn iter(&self) -> OutputBindingEntries<'_> { self.0.iter() }
 }
 

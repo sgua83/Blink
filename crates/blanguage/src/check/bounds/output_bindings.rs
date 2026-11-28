@@ -29,7 +29,7 @@ unsafe extern "C" {
     #[link_name = "bootstrap.output_bindings::collect_output_bindings"]
     fn collect(owner: &mut OutputBindings, origins: &OriginRows, registers: *const Reg, count: usize, entry: usize);
     #[link_name = "bootstrap.output_bindings::find_output_binding"]
-    fn find(owner: &OutputBindings, source: &ValueIdentity) -> *const ValueIdentity;
+    pub(super) fn find(owner: &OutputBindings, source: &ValueIdentity) -> *const ValueIdentity;
     #[link_name = "bootstrap.output_bindings::next_output_binding"]
     fn next(owner: &OutputBindings, cursor: &mut usize) -> Entry;
 }

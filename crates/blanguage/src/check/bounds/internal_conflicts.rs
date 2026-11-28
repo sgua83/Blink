@@ -1,9 +1,10 @@
 //! B owns the alias fact table and reads it during the original contradiction check.
 use super::{EqualityRoots as Roots, Fact, Facts, Scalar, ValueIdentity, fact_fields, facts};
+use super::output_bindings::{OutputBindings, find};
 use std::{ffi::c_void, ptr};
 
 type Borrowed = *const c_void;
-type Lookup = unsafe extern "C" fn(Borrowed, &ValueIdentity) -> *const ValueIdentity;
+type Lookup = unsafe extern "C" fn(&OutputBindings, &ValueIdentity) -> *const ValueIdentity;
 
 #[derive(Default)]
 #[repr(C)]
@@ -20,14 +21,12 @@ struct Scalars {
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.output_bindings::find_output_binding"]
-    fn lookup(roots: Borrowed, identity: &ValueIdentity) -> *const ValueIdentity;
     #[link_name = "bootstrap.proof_facts::alias_facts_build"]
-    fn build_aliases(result: &mut AliasFacts, source: &Facts, roots: Borrowed, lookup: Lookup);
+    fn build_aliases(result: &mut AliasFacts, source: &Facts, roots: &OutputBindings, lookup: Lookup);
     #[link_name = "bootstrap.proof_facts::alias_facts_insert"]
-    fn insert_alias(table: &mut AliasFacts, fact: &Fact, roots: Borrowed, lookup: Lookup) -> u32;
+    fn insert_alias(table: &mut AliasFacts, fact: &Fact, roots: &OutputBindings, lookup: Lookup) -> u32;
     #[link_name = "bootstrap.proof_facts::alias_facts_remove"]
-    fn remove_alias(table: &mut AliasFacts, fact: &Fact, roots: Borrowed, lookup: Lookup);
+    fn remove_alias(table: &mut AliasFacts, fact: &Fact, roots: &OutputBindings, lookup: Lookup);
     #[link_name = "bootstrap.condition_graph::internal_conflict"]
     fn evaluate(owner: Borrowed, aliases: u32, integers: Scalars,
         predicate: unsafe extern "C" fn(Borrowed) -> fact_fields::PredicateView) -> u32;
@@ -36,7 +35,7 @@ unsafe extern "C" {
 impl AliasFacts {
     fn new(facts: &Facts, roots: &Roots) -> Self {
         let mut result = Self::default();
-        unsafe { build_aliases(&mut result, facts, ptr::from_ref(roots).cast(), lookup) };
+        unsafe { build_aliases(&mut result, facts, roots.bindings(), find) };
         result
     }
 }
@@ -65,12 +64,12 @@ impl Prepared {
 
     pub(super) fn insert(&mut self, fact: Fact) -> bool {
         self.aliases.as_mut().is_none_or(|aliases|
-            unsafe { insert_alias(&mut aliases.facts, &fact, ptr::from_ref(&aliases.roots).cast(), lookup) != 0 })
+            unsafe { insert_alias(&mut aliases.facts, &fact, aliases.roots.bindings(), find) != 0 })
     }
 
     pub(super) fn remove(&mut self, fact: Fact) {
         if let Some(aliases) = &mut self.aliases {
-            unsafe { remove_alias(&mut aliases.facts, &fact, ptr::from_ref(&aliases.roots).cast(), lookup) };
+            unsafe { remove_alias(&mut aliases.facts, &fact, aliases.roots.bindings(), find) };
         }
     }
 
