@@ -57,6 +57,13 @@ extern "C" u32 required_fact_closure(address context,address input,address outpu
     requires nonzero(host.numeric)
     requires nonzero(host.conflict);
 
+extern "C" address required_cache_lookup(address cache,address source,address environment,usize entry_stride) on cpu;
+extern "C" address required_cache_reserve(address cache,address source,address environment,usize entry_stride,
+    cfn<void,address> drop_result) on cpu requires nonzero(drop_result)
+    requires nonzero(entry_stride);
+extern "C" void required_cache_clear(address cache,usize entry_stride,cfn<void,address> drop_result) on cpu
+    requires nonzero(drop_result);
+
 extern "C" address combine_clause_branch(address parent,address condition,u32 truth) on cpu;
 
 extern "C" void clause_walk_drop(address owner) on cpu;

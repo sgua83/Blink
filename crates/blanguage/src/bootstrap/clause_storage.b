@@ -394,6 +394,76 @@ extern "C" u32 required_fact_closure(address context,address input,address outpu
     }
 }
 
+struct RequiredCacheRoot { address source; OrderedTree environments; };
+// The native key and result tag precede a typed payload written by the caller.
+struct RequiredCacheKey { OrderedTree environment; u64 possible; };
+
+extern "C" i32 order_required_root(address key,address entry) on cpu {
+    let source = address_bits(unsafe_position<address>(key));
+    let stored = address_bits(unsafe_position<RequiredCacheRoot>(entry).source);
+    if (source == stored) { return i32(0); }
+    return source < stored ? i32(-1) : i32(1);
+}
+
+address required_cache_root(address cache,address source,bool insert) on cpu {
+    let stride = size_of<OrderedNode>() + size_of<RequiredCacheRoot>();
+    let found = ordered_tree_seek(cache, stride, address_of(source), c_function(order_required_root));
+    if (found.entry != address() || !insert) { return found.entry; }
+    let root = ordered_tree_insert_slot(cache, stride, found.parent, found.order);
+    // A weak reference reserves the identity without keeping the Clause payload alive.
+    clause_retain_identity(source);
+    unsafe_position<RequiredCacheRoot>(root) = RequiredCacheRoot(source, OrderedTree(address(), 0u64, 0u64, 0u64));
+    return root;
+}
+
+extern "C" address required_cache_lookup(address cache,address source,address environment,usize entry_stride) on cpu {
+    let root = required_cache_root(cache, source, false);
+    if (root == address()) { return address(); }
+    let environments = address_of(unsafe_position<RequiredCacheRoot>(root).environments);
+    let stride = entry_stride;
+    return ordered_tree_seek(environments, stride, environment, c_function(fact_tree_compare)).entry;
+}
+
+extern "C" address required_cache_reserve(address cache,address source,address environment,usize entry_stride,
+    cfn<void,address> drop_result) on cpu requires nonzero(drop_result)
+    requires nonzero(entry_stride) {
+    let root = required_cache_root(cache, source, true);
+    let environments = address_of(unsafe_position<RequiredCacheRoot>(root).environments);
+    let stride = entry_stride;
+    let found = ordered_tree_seek(environments, stride, environment, c_function(fact_tree_compare));
+    if (found.entry != address()) {
+        if (unsafe_position<RequiredCacheKey>(found.entry).possible != 0u64) { drop_result(found.entry); }
+        unsafe_position<RequiredCacheKey>(found.entry).possible = 0u64;
+        return found.entry;
+    }
+    let entry = ordered_tree_insert_slot(environments, stride, found.parent, found.order);
+    unsafe_position<RequiredCacheKey>(entry) = RequiredCacheKey(OrderedTree(address(), 0u64, 0u64, 0u64), 0u64);
+    fact_tree_copy(environment, entry);
+    return entry;
+}
+
+extern "C" void required_cache_clear(address cache,usize entry_stride,cfn<void,address> drop_result) on cpu
+    requires nonzero(drop_result) {
+    let root_stride = size_of<OrderedNode>() + size_of<RequiredCacheRoot>();
+    FactCursor roots = ordered_tree_cursor(cache, root_stride);
+    while (true) {
+        let root = ordered_tree_step(cache, root_stride, address_of(roots), 0);
+        if (root == address()) { break; }
+        let environments = address_of(unsafe_position<RequiredCacheRoot>(root).environments);
+        FactCursor entries = ordered_tree_cursor(environments, entry_stride);
+        while (true) {
+            let entry = ordered_tree_step(environments, entry_stride, address_of(entries), 0);
+            if (entry == address()) { break; }
+            fact_tree_clear(entry);
+            if (unsafe_position<RequiredCacheKey>(entry).possible != 0u64) { drop_result(entry); }
+        }
+        fact_tree_clear(environments);
+        clause_release_identity(unsafe_position<RequiredCacheRoot>(root).source);
+    }
+    fact_tree_clear(cache);
+}
+
+
 extern "C" address combine_clause_branch(address parent,address condition,u32 truth) on cpu {
     if(clause_header(parent).kind==StoredClauseKind::Impossible||
        clause_header(selected_case(condition,truth)).kind==StoredClauseKind::Impossible){
