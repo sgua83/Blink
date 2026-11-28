@@ -515,9 +515,24 @@ extern "C" u32 collect_memory_effect_sources(CallAccess request, EffectSourceHos
     }
 }
 
+MemoryIrRow recorded_ir_access(address known, usize at) on cpu {
+    return unsafe_position<MemoryIrRow>(unsafe_address(address_bits(known) + at * size_of<MemoryIrRow>()));
+}
+
+extern "C" u32 contains_ir_memory_record(address known, usize count, MemoryIrRow sought) on cpu {
+    usize at = 0u64;
+    while (at < count) {
+        let record = recorded_ir_access(known, at);
+        if (record.kind == sought.kind && record.access == sought.access &&
+            record.base == sought.base && record.length == sought.length) { return 1; }
+        at += 1u64;
+    }
+    return 0;
+}
+
 MemoryIrRow memory_ir_row(MemoryIrRows rows, usize at, MemoryIrRowsHost host) on cpu
-    requires nonzero(host.known) requires nonzero(host.local) {
-    if (at < rows.known) { return host.known(host.context, at); }
+    requires nonzero(host.local) {
+    if (at < rows.known_count) { return recorded_ir_access(rows.known, at); }
     let local = host.local(host.context);
     return MemoryIrRow(MemoryIrRowKind::Local, rows.external, local.end - local.length, local.length);
 }
@@ -533,8 +548,8 @@ extern "C" bool memory_alias_before(address left, address right, address context
 }
 
 extern "C" void materialize_ir_memory(MemoryIrRows rows, MemoryIrOutput format, address output, MemoryIrRowsHost host) on cpu
-    requires nonzero(host.known) requires nonzero(host.local) requires nonzero(host.emit) {
-    let count = rows.known + (rows.external_present != 0 ? rows.locals : 0u64);
+    requires nonzero(host.local) requires nonzero(host.emit) {
+    let count = rows.known_count + (rows.external_present != 0 ? rows.locals : 0u64);
     if (format == MemoryIrOutput::Call || count < 2u64) {
         usize at = 0u64;
         while (at < count) {

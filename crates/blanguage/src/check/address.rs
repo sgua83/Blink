@@ -748,58 +748,63 @@ pub(super) enum Capture { Read, Write }
 type KnownMemoryEffect = (Arc<Origin>, bounds::Clause, Access, Option<bounds::Proof>);
 
 #[repr(C)]
-#[derive(Default)]
-struct MemoryEffectRecords {
+struct NativeMemoryRecords<T> {
     records: *mut std::ffi::c_void,
     root: usize,
     count: usize,
     capacity: usize,
+    contents: std::marker::PhantomData<T>,
 }
 
-// B's process-heap allocation provides 16-byte alignment on the supported CPU ABI.
-const _: () = assert!(std::mem::align_of::<KnownMemoryEffect>() <= 16);
+impl<T> Default for NativeMemoryRecords<T> {
+    fn default() -> Self {
+        Self { records: std::ptr::null_mut(), root: 0, count: 0, capacity: 0, contents: std::marker::PhantomData }
+    }
+}
 
-unsafe impl Send for MemoryEffectRecords where KnownMemoryEffect: Send {}
-unsafe impl Sync for MemoryEffectRecords where KnownMemoryEffect: Sync {}
+unsafe impl<T: Send> Send for NativeMemoryRecords<T> {}
+unsafe impl<T: Sync> Sync for NativeMemoryRecords<T> {}
 
 unsafe extern "C" {
     #[link_name = "bootstrap.call_arguments::push_memory_effect_record"]
-    fn push_memory_effect_record(records: &mut MemoryEffectRecords, width: usize, record: *const std::ffi::c_void);
+    fn push_memory_effect_record(records: *mut std::ffi::c_void, width: usize, record: *const std::ffi::c_void);
     #[link_name = "bootstrap.call_arguments::append_memory_effect_records"]
-    fn append_memory_effect_records(records: &mut MemoryEffectRecords, source: &mut MemoryEffectRecords, width: usize);
+    fn append_memory_effect_records(records: *mut std::ffi::c_void, source: *mut std::ffi::c_void, width: usize);
     #[link_name = "bootstrap.call_arguments::drop_memory_effect_records"]
-    fn drop_memory_effect_records(records: &mut MemoryEffectRecords, release: unsafe extern "C" fn(*mut std::ffi::c_void, usize));
+    fn drop_memory_effect_records(records: *mut std::ffi::c_void, release: unsafe extern "C" fn(*mut std::ffi::c_void, usize));
 }
 
-impl MemoryEffectRecords {
-    fn push(&mut self, record: KnownMemoryEffect) {
+impl<T> NativeMemoryRecords<T> {
+    fn push(&mut self, record: T) {
+        // The B process heap holds nonempty records aligned to the Windows CPU ABI.
+        const { assert!(std::mem::size_of::<T>() != 0 && std::mem::align_of::<T>() <= 16); }
         let record = std::mem::ManuallyDrop::new(record);
-        unsafe { push_memory_effect_record(self, std::mem::size_of::<KnownMemoryEffect>(), std::ptr::from_ref(&*record).cast()) };
+        unsafe { push_memory_effect_record(std::ptr::from_mut(self).cast(), std::mem::size_of::<T>(), std::ptr::from_ref(&*record).cast()) };
     }
 
     fn append(&mut self, mut source: Self) {
-        unsafe { append_memory_effect_records(self, &mut source, std::mem::size_of::<KnownMemoryEffect>()) };
+        unsafe { append_memory_effect_records(std::ptr::from_mut(self).cast(), std::ptr::from_mut(&mut source).cast(), std::mem::size_of::<T>()) };
     }
 }
 
-impl std::ops::Deref for MemoryEffectRecords {
-    type Target = [KnownMemoryEffect];
+impl<T> std::ops::Deref for NativeMemoryRecords<T> {
+    type Target = [T];
 
-    fn deref(&self) -> &[KnownMemoryEffect] {
+    fn deref(&self) -> &[T] {
         if self.count == 0 { return &[]; }
         // B publishes the count only after transferring each complete initialized record.
-        unsafe { std::slice::from_raw_parts(self.records.cast::<KnownMemoryEffect>(), self.count) }
+        unsafe { std::slice::from_raw_parts(self.records.cast(), self.count) }
     }
 }
 
-impl Drop for MemoryEffectRecords {
+impl<T> Drop for NativeMemoryRecords<T> {
     fn drop(&mut self) {
-        unsafe extern "C" fn release(records: *mut std::ffi::c_void, count: usize) {
-            let records = std::ptr::slice_from_raw_parts_mut(records.cast::<KnownMemoryEffect>(), count);
+        unsafe extern "C" fn release<T>(records: *mut std::ffi::c_void, count: usize) {
+            let records = std::ptr::slice_from_raw_parts_mut(records.cast::<T>(), count);
             unsafe { std::ptr::drop_in_place(records) };
         }
         if self.capacity != 0 {
-            unsafe { drop_memory_effect_records(self, release) };
+            unsafe { drop_memory_effect_records(std::ptr::from_mut(self).cast(), release::<T>) };
         }
     }
 }
@@ -807,7 +812,7 @@ impl Drop for MemoryEffectRecords {
 #[derive(Default)]
 pub(super) struct MemoryEffect {
     external: Option<Access>,
-    known: MemoryEffectRecords,
+    known: NativeMemoryRecords<KnownMemoryEffect>,
 }
 
 #[repr(C)]
@@ -1059,7 +1064,7 @@ struct EffectSources<'a, 'b, I, P, W> {
     path: std::cell::LazyCell<bounds::Clause, P>,
     written: std::cell::LazyCell<Option<&'b bounds::Proof>, W>,
     current: Option<(&'a view::Source, bounds::Clause)>,
-    records: MemoryEffectRecords,
+    records: NativeMemoryRecords<KnownMemoryEffect>,
 }
 
 impl<'a, 'b, I, P, W> EffectSources<'a, 'b, I, P, W>
@@ -1255,7 +1260,7 @@ impl MemoryEffect {
             path: std::cell::LazyCell::new(path),
             written: std::cell::LazyCell::new(written),
             current: None,
-            records: MemoryEffectRecords::default(),
+            records: NativeMemoryRecords::default(),
         }.collect(access)
     }
 
@@ -1327,12 +1332,12 @@ impl MemoryEffect {
 /// The IR only consumes the possible aliases and their access modes.
 #[derive(Default)]
 pub(super) struct MemoryAccesses {
-    known: Vec<MemoryAccess>,
+    known: NativeMemoryRecords<MemoryIrRow>,
     external: Option<Access>,
 }
 impl MemoryAccesses {
     fn contains(&self, alias: MemoryAlias, access: Access) -> bool {
-        self.known.iter().any(|known| known.alias == alias && known.access == access)
+        unsafe { b_contains_ir_memory_record(self.known.as_ptr(), self.known.len(), MemoryIrRow::new(alias, access)) != 0 }
     }
     fn needs_external(&self, access: Access) -> bool {
         merged_external_access(self.external, Some(access)) != self.external
@@ -1340,7 +1345,7 @@ impl MemoryAccesses {
     pub(super) fn record(&mut self, effect: &MemoryEffect) {
         for (origin, _, access, _) in effect.known.iter() {
             let aliases = origin.aliases_when(&|alias| !self.contains(*alias, *access), || true);
-            self.known.extend(aliases.into_iter().map(|alias| MemoryAccess { alias, access: *access }));
+            for alias in aliases { self.known.push(MemoryIrRow::new(alias, *access)); }
         }
         self.external = merged_external_access(self.external, effect.external);
     }
@@ -1367,8 +1372,7 @@ impl MemoryAccesses {
             if let Some(origin) = origin {
                 let access = if origin.writable { access } else { Access::Read };
                 let aliases = origin.aliases_when(&|alias| !self.contains(*alias, access), || when.is_some());
-                self.known.extend(aliases.into_iter()
-                    .map(|alias| MemoryAccess { alias, access }));
+                for alias in aliases { self.known.push(MemoryIrRow::new(alias, access)); }
             }
         }
     }
@@ -1400,6 +1404,13 @@ enum MemoryIrOutput { Call, Pointer }
 struct MemoryIrRow { kind: MemoryIrRowKind, access: Access, base: usize, length: usize }
 
 impl MemoryIrRow {
+    fn new(alias: MemoryAlias, access: Access) -> Self {
+        match alias {
+            MemoryAlias::Local { base, len } => Self { kind: MemoryIrRowKind::Local, access, base, length: len },
+            MemoryAlias::Data(base) => Self { kind: MemoryIrRowKind::Data, access, base, length: 0 },
+        }
+    }
+
     fn alias(&self) -> MemoryAlias {
         match self.kind {
             MemoryIrRowKind::Local => MemoryAlias::Local { base: self.base, len: self.length },
@@ -1412,17 +1423,18 @@ impl MemoryIrRow {
 struct MemoryIrLocal { end: usize, length: usize }
 
 #[repr(C)]
-struct MemoryIrRows { known: usize, locals: usize, external: Access, external_present: u32 }
+struct MemoryIrRows { known: *const MemoryIrRow, known_count: usize, locals: usize, external: Access, external_present: u32 }
 
 #[repr(C)]
 struct MemoryIrRowsHost {
     context: *mut std::ffi::c_void,
-    known: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> MemoryIrRow,
     local: unsafe extern "C" fn(*mut std::ffi::c_void) -> MemoryIrLocal,
     emit: unsafe extern "C" fn(*mut std::ffi::c_void, MemoryIrRow),
 }
 
 unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::contains_ir_memory_record"]
+    fn b_contains_ir_memory_record(known: *const MemoryIrRow, count: usize, sought: MemoryIrRow) -> u32;
     #[link_name = "bootstrap.call_arguments::materialize_ir_memory"]
     fn b_materialize_ir_memory(rows: MemoryIrRows, format: MemoryIrOutput, output: *mut std::ffi::c_void, host: MemoryIrRowsHost);
 }
@@ -1433,15 +1445,6 @@ struct IrMemoryRows<'a> {
 }
 
 impl IrMemoryRows<'_> {
-    unsafe extern "C" fn known(context: *mut std::ffi::c_void, index: usize) -> MemoryIrRow {
-        let input = unsafe { &*context.cast::<Self>() };
-        let MemoryAccess { alias, access } = input.source.known[index];
-        match alias {
-            MemoryAlias::Local { base, len } => MemoryIrRow { kind: MemoryIrRowKind::Local, access, base, length: len },
-            MemoryAlias::Data(base) => MemoryIrRow { kind: MemoryIrRowKind::Data, access, base, length: 0 },
-        }
-    }
-
     unsafe extern "C" fn local(context: *mut std::ffi::c_void) -> MemoryIrLocal {
         let input = unsafe { &mut *context.cast::<Self>() };
         let (&end, ty) = input.locals.next().unwrap();
@@ -1458,12 +1461,13 @@ impl IrMemoryRows<'_> {
 
     fn materialize(mut self, format: MemoryIrOutput, output: *mut std::ffi::c_void, emit: unsafe extern "C" fn(*mut std::ffi::c_void, MemoryIrRow)) {
         let rows = MemoryIrRows {
-            known: self.source.known.len(),
+            known: self.source.known.as_ptr(),
+            known_count: self.source.known.len(),
             locals: self.locals.len(),
             external: self.source.external.unwrap_or(Access::Value),
             external_present: u32::from(self.source.external.is_some()),
         };
-        let host = MemoryIrRowsHost { context: std::ptr::from_mut(&mut self).cast(), known: Self::known, local: Self::local, emit };
+        let host = MemoryIrRowsHost { context: std::ptr::from_mut(&mut self).cast(), local: Self::local, emit };
         // The selected emitter writes the actual IR field's element type through this call only.
         unsafe { b_materialize_ir_memory(rows, format, output, host) }
     }

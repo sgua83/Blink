@@ -165,15 +165,15 @@ enum MemoryIrRowKind:u32 { Local=0; Data=1; };
 enum MemoryIrOutput:u32 { Call=0; Pointer=1; };
 struct MemoryIrRow { MemoryIrRowKind kind; CallAccess access; usize base; usize length; };
 struct MemoryIrLocal { usize end; usize length; };
-struct MemoryIrRows { usize known; usize locals; CallAccess external; u32 external_present; };
+struct MemoryIrRows { address known; usize known_count; usize locals; CallAccess external; u32 external_present; };
 struct MemoryIrRowsHost {
     address context;
-    cfn<MemoryIrRow,address,usize> ensures memory(read) known;
     cfn<MemoryIrLocal,address> local;
     cfn<void,address,MemoryIrRow> emit;
 };
+extern "C" u32 contains_ir_memory_record(address known, usize count, MemoryIrRow sought) on cpu;
 extern "C" void materialize_ir_memory(MemoryIrRows rows, MemoryIrOutput format, address output, MemoryIrRowsHost host) on cpu
-    requires nonzero(host.known) requires nonzero(host.local) requires nonzero(host.emit);
+    requires nonzero(host.local) requires nonzero(host.emit);
 
 enum MemoryIrOwner:u32 { Instruction=0; Argument=1; };
 struct MemoryIrHost {
