@@ -2,6 +2,7 @@ module bootstrap.operator_types;
 import bootstrap.ir_dataflow;
 import bootstrap.c_function;
 import bootstrap.scalar_fold;
+import codec.type_layout;
 
 Plan decision(u32 status) on cpu {return Plan(status,0,0,0,0,0,0,0u64,0u64,0u64,0u64);}
 bool floating(u32 scalar) on cpu {return scalar==0||scalar==6;}
@@ -298,6 +299,23 @@ extern "C" FixedProjection fixed_projection(u32 array, usize width, u32 known, u
         return FixedProjection(FixedProjectionKind::Components, index * width);
     }
     return FixedProjection(array != 0 ? FixedProjectionKind::Array : FixedProjectionKind::Vector, 0u64);
+}
+
+extern "C" usize fixed_array_address(FixedArrayAddress layout, FixedArrayEmitter emitter) on cpu
+    requires nonzero(layout.alignment) requires nonzero(emitter.scale_index) requires nonzero(emitter.add_offset)
+    requires nonzero(emitter.component_offset) requires nonzero(emitter.append_word) {
+    let stride = fixed_array(layout.element_size, layout.alignment, 1).stride;
+    usize offset = emitter.scale_index(emitter.context, u32(stride));
+    if (layout.nested != 0) {
+        offset = emitter.add_offset(emitter.context, layout.parent_offset, offset);
+    }
+    usize component = 0u64;
+    while (component < layout.component_count) {
+        let relative_word = emitter.component_offset(emitter.context, component);
+        emitter.append_word(emitter.context, layout.first_word + relative_word);
+        component += 1u64;
+    }
+    return offset;
 }
 
 extern "C" SelectedComponents select_indexed_components(

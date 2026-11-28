@@ -80,6 +80,25 @@ enum FixedProjectionKind:u32 { Components=0; Vector=1; Array=2; };
 struct FixedProjection { FixedProjectionKind kind; usize first; };
 extern "C" FixedProjection fixed_projection(u32 array, usize width, u32 known, usize index) on cpu;
 
+struct FixedArrayAddress {
+    u32 element_size;
+    u32 alignment;
+    u32 first_word;
+    u32 nested;
+    usize parent_offset;
+    usize component_count;
+};
+struct FixedArrayEmitter {
+    address context;
+    cfn<usize,address,u32> scale_index;
+    cfn<usize,address,usize,usize> add_offset;
+    cfn<u32,address,usize> component_offset;
+    cfn<void,address,u32> append_word;
+};
+extern "C" usize fixed_array_address(FixedArrayAddress layout, FixedArrayEmitter emitter) on cpu
+    requires nonzero(layout.alignment) requires nonzero(emitter.scale_index) requires nonzero(emitter.add_offset)
+    requires nonzero(emitter.component_offset) requires nonzero(emitter.append_word);
+
 // The caller keeps the actual component sources alive until this synchronous lowering returns.
 struct ComponentChoice { u32 key; array<usize,2> registers; };
 struct SelectedComponents { array<usize,2> registers; };

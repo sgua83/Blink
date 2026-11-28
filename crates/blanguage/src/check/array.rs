@@ -184,6 +184,63 @@ impl FixedProjection {
 }
 
 #[repr(C)]
+struct FixedArrayAddress {
+    element_size: u32,
+    alignment: u32,
+    first_word: u32,
+    nested: u32,
+    parent_offset: Reg,
+    component_count: usize,
+}
+
+#[repr(C)]
+struct FixedArrayEmitter {
+    context: *mut c_void,
+    scale_index: unsafe extern "C" fn(*mut c_void, u32) -> Reg,
+    add_offset: unsafe extern "C" fn(*mut c_void, Reg, Reg) -> Reg,
+    component_offset: unsafe extern "C" fn(*mut c_void, usize) -> u32,
+    append_word: unsafe extern "C" fn(*mut c_void, u32),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.operator_types::fixed_array_address"]
+    fn fixed_array_address(layout: FixedArrayAddress, emitter: FixedArrayEmitter) -> Reg;
+}
+
+struct FixedArrayEmission<'a, 'w> {
+    builder: &'a mut Builder<'w>,
+    index: &'a Value,
+    components: &'a [(Scalar, u32)],
+    words: Vec<u32>,
+}
+
+unsafe extern "C" fn array_scale_index(context: *mut c_void, stride: u32) -> Reg {
+    let state = unsafe { &mut *context.cast::<FixedArrayEmission<'_, '_>>() };
+    let factor = state.builder.constant(Scalar::U32, Bits::from(stride));
+    state.builder.lower_numeric_binary(
+        "*", Ty::scalar(Scalar::U32), state.index, &factor, Scalar::U32,
+        false, Some(BinaryOp::IMul), false, None, None,
+    ).regs[0]
+}
+
+unsafe extern "C" fn array_add_offset(context: *mut c_void, parent: Reg, relative: Reg) -> Reg {
+    let state = unsafe { &mut *context.cast::<FixedArrayEmission<'_, '_>>() };
+    let dst = state.builder.reg(Scalar::U32);
+    state.builder.emit(InstKind::Binary { dst, op: BinaryOp::IAdd, a: parent, b: relative });
+    dst
+}
+
+unsafe extern "C" fn array_component_offset(context: *mut c_void, component: usize) -> u32 {
+    let state = unsafe { &*context.cast::<FixedArrayEmission<'_, '_>>() };
+    state.components[component].1
+}
+
+unsafe extern "C" fn array_append_word(context: *mut c_void, word: u32) {
+    let state = unsafe { &mut *context.cast::<FixedArrayEmission<'_, '_>>() };
+    state.words.push(word);
+}
+
+#[repr(C)]
 struct ComponentChoice { key: u32, registers: [Reg; 2] }
 
 #[repr(C)]
@@ -376,7 +433,7 @@ impl Builder<'_> {
                 let uniform = value.uniform && index.uniform;
                 let OwnedBinding { place, proof, .. } = self.materialize_array(value, None);
                 self.observe_bounds(&index);
-                let place = self.lower_array_storage(place, index, ty, span)?;
+                let place = self.lower_array_storage(place, &index, ty);
                 let mut result = unsafe { self.world.call(self.read_place(&place, span, None)).await }?;
                 result.proof = self.array_value_proof(&proof, &array, &result.ty, count, selected, &result.regs);
                 result.uniform = uniform;
@@ -409,37 +466,21 @@ impl Builder<'_> {
                 Ok(place.project(element, &components))
             }
             FixedProjectionKind::Vector => Ok(self.vector_index(place, index, element)),
-            FixedProjectionKind::Array => self.lower_array_storage(place, index, element, span),
+            FixedProjectionKind::Array => Ok(self.lower_array_storage(place, &index, element)),
         }
     }
 
-    fn lower_array_storage(&mut self, place: Place, index: Value, element: Ty, span: Span) -> Result<Place> {
+    fn lower_array_storage(&mut self, place: Place, index: &Value, element: Ty) -> Place {
         if element.components.is_empty() {
-            return Ok(place.project(element, &[]));
+            return place.project(element, &[]);
         }
-        let initialization = self.indexed_positions(&place, &index, element.components.len());
-        let locations = Position::index(place.data_positions(), ownership::ApplicationIndex::of(&index), element.components.len());
-        let stride = ir::align_up(element.size, element.align);
-        let factor = self.constant(Scalar::U32, Bits::from(stride));
-        let relative = self.binary("*", index, factor, span,None)?.regs[0];
-        let (base, offset, first) = match place {
-            Place::Indexed {
-                base,
-                offset,
-                words,
-                ..
-            } => {
-                let dst = self.reg(Scalar::U32);
-                self.emit(InstKind::Binary {
-                    dst,
-                    op: BinaryOp::IAdd,
-                    a: offset,
-                    b: relative,
-                });
-                (base, dst, words[0])
-            }
-            p => {
-                let first = match &p {
+        let component_count = element.components.len();
+        let initialization = self.indexed_positions(&place, index, component_count);
+        let locations = Position::index(place.data_positions(), ownership::ApplicationIndex::of(index), component_count);
+        let (base, parent, first_word) = match place {
+            Place::Indexed { base, offset, words, .. } => (base, Some(offset), words[0]),
+            base => {
+                let first = match &base {
                     Place::Reference { words, .. }
                     | Place::Element { words, .. }
                     | Place::ApplicationElement { words, .. }
@@ -447,22 +488,38 @@ impl Builder<'_> {
                     | Place::TileElement { words, .. } => words[0],
                     _ => 0,
                 };
-                (Box::new(p), relative, first)
+                (Box::new(base), None, first)
             }
         };
-        let words = element
-            .components
-            .iter()
-            .map(|(_, o)| first + o)
-            .collect();
-        Ok(Place::Indexed {
+        let layout = FixedArrayAddress {
+            element_size: element.size,
+            alignment: element.align,
+            first_word,
+            nested: u32::from(parent.is_some()),
+            parent_offset: parent.unwrap_or(0),
+            component_count,
+        };
+        let mut state = FixedArrayEmission {
+            builder: self, index, components: &element.components,
+            words: Vec::with_capacity(component_count),
+        };
+        let emitter = FixedArrayEmitter {
+            context: std::ptr::from_mut(&mut state).cast(),
+            scale_index: array_scale_index,
+            add_offset: array_add_offset,
+            component_offset: array_component_offset,
+            append_word: array_append_word,
+        };
+        let offset = unsafe { fixed_array_address(layout, emitter) };
+        let words = state.words;
+        Place::Indexed {
             ty: element,
             initialization,
             locations,
             base,
             offset,
             words,
-        })
+        }
     }
     fn vector_index(&mut self, mut place: Place, index: Value, ty: Ty) -> Place {
         let initialization = self.indexed_positions(&place, &index, 1);
