@@ -757,9 +757,59 @@ i32 compare_condition_index(u64 left,u64 right) on cpu {
  return i32(0);
 }
 
+// The widest fact encodes its kind, four identities, and the View domain tag.
+const u32 FACT_WIRE_BYTES = 8 + 4 * (4 + 3 * 8);
+struct FactWire { array<u8,FACT_WIRE_BYTES> bytes; u64 length; };
+
+extern "C" void append_fact_wire(address output,address input,u64 length) on cpu {
+    address start = address_of(unsafe_position<FactWire>(output).bytes[0]);
+    u64 at = unsafe_position<FactWire>(output).length;
+    RtlMoveMemory(unsafe_address(address_bits(start)+at),input,length);
+    unsafe_position<FactWire>(output).length = at + length;
+}
+
+i32 compare_fact_wire(address left,address right) on cpu {
+    u64 left_length = unsafe_position<FactWire>(left).length;
+    u64 right_length = unsafe_position<FactWire>(right).length;
+    u64 count = min(left_length,right_length);
+    u64 left_bytes = address_bits(address_of(unsafe_position<FactWire>(left).bytes[0]));
+    u64 right_bytes = address_bits(address_of(unsafe_position<FactWire>(right).bytes[0]));
+    u64 index = 0u64;
+    while (index < count) {
+        u8 a = unsafe_position<u8>(unsafe_address(left_bytes+index));
+        u8 b = unsafe_position<u8>(unsafe_address(right_bytes+index));
+        if (a != b) { return a < b ? -i32(1) : i32(1); }
+        index += 1u64;
+    }
+    return compare_condition_index(left_length,right_length);
+}
+
+i32 compare_fact_sequence(address left,address right) on cpu {
+    u64 left_count = unsafe_position<OrderedTree>(left).count;
+    u64 right_count = unsafe_position<OrderedTree>(right).count;
+    i32 count_order = compare_condition_index(left_count,right_count);
+    if (count_order != 0) { return count_order; }
+    if (fact_tree_compare(left,right) == 0) { return i32(0); }
+    FactCursor left_cursor = fact_tree_cursor(left);
+    FactCursor right_cursor = fact_tree_cursor(right);
+    FactWire a = FactWire(array<u8,FACT_WIRE_BYTES>(u8(0)),0u64);
+    FactWire b = a;
+    u64 index = 0u64;
+    while (index < left_count) {
+        a.length = 0u64;
+        b.length = 0u64;
+        numeric_write_fact(fact_tree_next(left,address_of(left_cursor),0), address_of(a), c_function(append_fact_wire));
+        numeric_write_fact(fact_tree_next(right,address_of(right_cursor),0), address_of(b), c_function(append_fact_wire));
+        i32 order = compare_fact_wire(address_of(a),address_of(b));
+        if (order != 0) { return order; }
+        index += 1u64;
+    }
+    return i32(0);
+}
+
 extern "C" i32 compare_proof_condition(address left,address right,address left_graph,address right_graph,
- cfn<RootFields,address,u64> root,cfn<i32,address,address> compare_facts) on cpu
- requires nonzero(root) requires nonzero(compare_facts) {
+ cfn<RootFields,address,u64> root) on cpu
+ requires nonzero(root) {
  u64 left_count=unsafe_position<CanonicalGraph>(left_graph).nodes.count;
  u64 right_count=unsafe_position<CanonicalGraph>(right_graph).nodes.count;
  // One condition on each side. The presence, format, and root-count bytes match.
@@ -771,7 +821,7 @@ extern "C" i32 compare_proof_condition(address left,address right,address left_g
   u32 a_kind=u32(a.kind);u32 b_kind=u32(b.kind);
   if(a_kind!=b_kind){return a_kind<b_kind?-i32(1):i32(1);}
   if(a.kind==NodeKind::Facts){
-   order=compare_facts(a.facts,b.facts);
+   order=compare_fact_sequence(a.facts,b.facts);
    if(order!=i32(0)){return order;}
   }else if(a.kind==NodeKind::Both||a.kind==NodeKind::Either){
    order=compare_condition_index(a.first,b.first);
@@ -787,7 +837,7 @@ extern "C" i32 compare_proof_condition(address left,address right,address left_g
  return compare_condition_index(condition_node_index(left_graph,a.second),condition_node_index(right_graph,b.second));
 }
 
-extern "C" void write_fact_sequence(address facts,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
+void write_fact_sequence(address facts,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
     u64 count = unsafe_position<OrderedTree>(facts).count;
     wide(count,output,append);
     FactCursor cursor = fact_tree_cursor(facts);

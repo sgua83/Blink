@@ -139,20 +139,6 @@ unsafe extern "C" fn condition_at(context: *const c_void, index: usize) -> RootF
             second: condition.cases[1].key(),
         })
 }
-unsafe extern "C" fn compare_facts(left: *const c_void, right: *const c_void) -> i32 {
-    let a = unsafe { &*left.cast::<Facts>() };
-    let b = unsafe { &*right.cast::<Facts>() };
-    if a == b {
-        return 0;
-    }
-    let mut a = Writer(Vec::new());
-    let mut b = Writer(Vec::new());
-    unsafe {
-        write_fact_sequence(left, slot(&mut a), append);
-        write_fact_sequence(right, slot(&mut b), append);
-    }
-    a.0.cmp(&b.0) as i32
-}
 unsafe extern "C" {
     #[link_name = "bootstrap.contract_codec::write_proof_conditions"]
     fn write_conditions(
@@ -162,12 +148,6 @@ unsafe extern "C" {
         output: Slot,
         host: WriteHost,
     );
-    #[link_name = "bootstrap.contract_codec::write_fact_sequence"]
-    fn write_fact_sequence(
-        facts: *const c_void,
-        output: Slot,
-        append: Append,
-    );
     #[link_name = "bootstrap.contract_codec::compare_proof_condition"]
     fn compare(
         left: *const c_void,
@@ -175,7 +155,6 @@ unsafe extern "C" {
         left_graph: *const c_void,
         right_graph: *const c_void,
         root: unsafe extern "C" fn(*const c_void, usize) -> RootFields,
-        facts: unsafe extern "C" fn(*const c_void, *const c_void) -> i32,
     ) -> i32;
 }
 
@@ -186,7 +165,7 @@ pub(in crate::check::bounds) fn order(left: &Condition, right: &Condition) -> st
     let right_graph = right.graph();
     unsafe {
         compare(ptr::from_ref(&left).cast(), ptr::from_ref(&right).cast(),
-            ptr::from_ref(&left_graph).cast(), ptr::from_ref(&right_graph).cast(), condition_at, compare_facts)
+            ptr::from_ref(&left_graph).cast(), ptr::from_ref(&right_graph).cast(), condition_at)
     }.cmp(&0)
 }
 pub(in crate::check::bounds) fn write_borrowed(conditions:Conditions<'_>,writer:&mut Writer){

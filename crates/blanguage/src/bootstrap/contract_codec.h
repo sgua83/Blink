@@ -537,10 +537,8 @@ extern "C" void write_proof_conditions(address context,u64 length,address graph,
  requires nonzero(host.append) requires nonzero(host.condition);
 
 extern "C" i32 compare_proof_condition(address left,address right,address left_graph,address right_graph,
- cfn<RootFields,address,u64> root,cfn<i32,address,address> compare_facts) on cpu
- requires nonzero(root) requires nonzero(compare_facts);
-
-extern "C" void write_fact_sequence(address facts,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
+ cfn<RootFields,address,u64> root) on cpu
+ requires nonzero(root);
 
 extern "C" ReadStatus read_condition_nodes(Bytes input,inout u64 position,inout u32 present,address output,ConditionReader host) on cpu requires nonzero(host.impossible) requires nonzero(host.facts) requires nonzero(host.both) requires nonzero(host.either);
 
