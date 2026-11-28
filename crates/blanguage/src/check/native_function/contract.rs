@@ -56,24 +56,116 @@ fn initialization(values:&mut [address::Initialization],normal:&mut bounds::Norm
         value.when=normal.condition(&value.when);
     }
 }
-fn accesses(values:&mut BTreeSet<view_contracts::Access>,normal:&mut bounds::Normalizer) {
-    use view_contracts::Access;
-    let mut grouped:BTreeMap<Access,bounds::Condition>=BTreeMap::new();
-    for mut access in std::mem::take(values) {
-        let when=match &mut access {
-            Access::Resource{resources,borrows,when,..}=>{resources.normalize_contract(normal);borrows.normalize_contract(normal);when},
-            Access::Position{borrows,when,position}=>{borrows.normalize_contract(normal);if let Some(value)=&mut position.written{normal.proof(value);}when},
-            Access::Memory{borrows,when,..}|Access::Dataset{borrows,when,..}=>{borrows.normalize_contract(normal);when},
-            Access::Initialized{borrows,initialized,when}=>{borrows.normalize_contract(normal);initialization(initialized,normal);when},
-            Access::Stored{borrows,value,when,..}=>{borrows.normalize_contract(normal);value.normalize_contract(normal);when},
-        };
-        let when=std::mem::replace(when,bounds::Condition::constant(true));
-        grouped.entry(access).and_modify(|old|*old=normal.union(old,&when)).or_insert_with(||normal.condition(&when));
+type PublicAccess = view_contracts::Access;
+type Slot = *mut std::ffi::c_void;
+type Borrowed = *const std::ffi::c_void;
+
+#[repr(C)]
+struct AccessGroup {
+    key: PublicAccess,
+    condition: bounds::Condition,
+}
+
+#[repr(C)]
+struct AccessGroupRow {
+    links: [usize; 4],
+    group: AccessGroup,
+}
+
+#[repr(C)]
+struct AccessGroupHost {
+    context: Slot,
+    next: unsafe extern "C" fn(Slot) -> Borrowed,
+    compare: unsafe extern "C" fn(Borrowed, Borrowed) -> i32,
+    seed: unsafe extern "C" fn(Slot, Slot),
+    merge: unsafe extern "C" fn(Slot, Slot),
+    emit: unsafe extern "C" fn(Slot, Slot),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.contract_codec::group_public_access_conditions"]
+    fn group_public_access_conditions(stride: usize, host: AccessGroupHost);
+}
+
+struct AccessGrouping<'a> {
+    input: std::collections::btree_set::IntoIter<PublicAccess>,
+    output: &'a mut BTreeSet<PublicAccess>,
+    normal: &'a mut bounds::Normalizer,
+    current: Option<AccessGroup>,
+}
+
+impl AccessGrouping<'_> {
+    unsafe extern "C" fn next(context: Slot) -> Borrowed {
+        let state = unsafe { &mut *context.cast::<Self>() };
+        let Some(mut access) = state.input.next() else { return std::ptr::null(); };
+        let normal = &mut *state.normal;
+        match &mut access {
+            PublicAccess::Resource { resources, borrows, .. } => {
+                resources.normalize_contract(normal);
+                borrows.normalize_contract(normal);
+            }
+            PublicAccess::Position { borrows, position, .. } => {
+                borrows.normalize_contract(normal);
+                if let Some(value) = &mut position.written { normal.proof(value); }
+            }
+            PublicAccess::Memory { borrows, .. } | PublicAccess::Dataset { borrows, .. } => {
+                borrows.normalize_contract(normal);
+            }
+            PublicAccess::Initialized { borrows, initialized, .. } => {
+                borrows.normalize_contract(normal);
+                initialization(initialized, normal);
+            }
+            PublicAccess::Stored { borrows, value, .. } => {
+                borrows.normalize_contract(normal);
+                value.normalize_contract(normal);
+            }
+        }
+        let condition = std::mem::replace(access.when_mut(), bounds::Condition::constant(true));
+        let entry = state.current.insert(AccessGroup { key: access, condition });
+        std::ptr::from_ref(&entry.key).cast()
     }
-    for(mut access,condition)in grouped {
-        *access.when_mut()=condition;values.insert(access);
+
+    unsafe extern "C" fn compare(access: Borrowed, entry: Borrowed) -> i32 {
+        unsafe { (&*access.cast::<PublicAccess>()).cmp(&(*entry.cast::<AccessGroup>()).key) as i32 }
+    }
+
+    unsafe extern "C" fn seed(context: Slot, entry: Slot) {
+        let state = unsafe { &mut *context.cast::<Self>() };
+        let mut group = state.current.take().unwrap();
+        group.condition = state.normal.condition(&group.condition);
+        unsafe { entry.cast::<AccessGroup>().write(group) };
+    }
+
+    unsafe extern "C" fn merge(context: Slot, entry: Slot) {
+        let state = unsafe { &mut *context.cast::<Self>() };
+        let AccessGroup { condition, .. } = state.current.take().unwrap();
+        let group = unsafe { &mut *entry.cast::<AccessGroup>() };
+        group.condition = state.normal.union(&group.condition, &condition);
+    }
+
+    unsafe extern "C" fn emit(context: Slot, entry: Slot) {
+        let state = unsafe { &mut *context.cast::<Self>() };
+        let AccessGroup { mut key, condition } = unsafe { entry.cast::<AccessGroup>().read() };
+        *key.when_mut() = condition;
+        state.output.insert(key);
     }
 }
+
+fn accesses(values: &mut BTreeSet<PublicAccess>, normal: &mut bounds::Normalizer) {
+    const STRIDE: usize = {
+        assert!(align_of::<AccessGroup>() <= 16);
+        assert!(std::mem::offset_of!(AccessGroupRow, group) == 32);
+        size_of::<AccessGroupRow>()
+    };
+    let mut grouping = AccessGrouping { input: std::mem::take(values).into_iter(), output: values, normal, current: None };
+    let host = AccessGroupHost {
+        context: std::ptr::from_mut(&mut grouping).cast(), next: AccessGrouping::next,
+        compare: AccessGrouping::compare, seed: AccessGrouping::seed, merge: AccessGrouping::merge,
+        emit: AccessGrouping::emit,
+    };
+    unsafe { group_public_access_conditions(STRIDE, host) };
+}
+
 pub(super) fn encode(original:&Contract,writer:&mut crate::module::codec::Writer) {
     let mut normal=bounds::Normalizer::new();let mut first=0;
     for parameter in &original.parameters {

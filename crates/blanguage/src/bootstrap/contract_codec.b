@@ -1237,3 +1237,27 @@ extern "C" ReadStatus contract_read_ownership(Bytes input,inout u64 position,add
 extern "C" ReadStatus contract_read_address_identity(Bytes input,inout u64 position,address context,address output,ContractAddressIdentityVariants host) on cpu requires nonzero(host.constant) requires nonzero(host.value) requires nonzero(host.storage){ReadValue tag=fixed_value(input,position,1);if(tag.status!=ReadStatus::Success){return tag.status;}if(tag.value==0u64){return host.constant(context,output);}if(tag.value==1u64){return host.value(context,output);}if(tag.value==2u64){return host.storage(context,output);}return ReadStatus::ContractAddressIdentity;}
 
 extern "C" ReadStatus contract_read_borrow_source(Bytes input,inout u64 position,address context,address output,ContractBorrowSourceVariants host) on cpu requires nonzero(host.data) requires nonzero(host.parameter) requires nonzero(host.unresolved) requires nonzero(host.inactive) requires nonzero(host.external) requires nonzero(host.position) requires nonzero(host.element) requires nonzero(host.projection) requires nonzero(host.contents) requires nonzero(host.relation) requires nonzero(host.task) requires nonzero(host.task_output){ReadValue tag=fixed_value(input,position,4);if(tag.status!=ReadStatus::Success){return tag.status;}if(tag.value==0u64){return host.data(context,output);}if(tag.value==1u64){return host.parameter(context,output);}if(tag.value==2u64){return host.unresolved(context,output);}if(tag.value==3u64){return host.inactive(context,output);}if(tag.value==4u64){return host.external(context,output);}if(tag.value==5u64){return host.position(context,output);}if(tag.value==6u64){return host.element(context,output);}if(tag.value==7u64){return host.projection(context,output);}if(tag.value==8u64){return host.contents(context,output);}if(tag.value==9u64){return host.relation(context,output);}if(tag.value==10u64){return host.task(context,output);}if(tag.value==11u64){return host.task_output(context,output);}return ReadStatus::ContractBorrowSource;}
+
+extern "C" void group_public_access_conditions(usize stride,PublicAccessGroupHost host) on cpu
+    requires nonzero(stride) requires nonzero(host.next) requires nonzero(host.compare)
+    requires nonzero(host.seed) requires nonzero(host.merge) requires nonzero(host.emit) {
+    OrderedTree groups=OrderedTree(address(),0u64,0u64,0u64);
+    while(true){
+        let access=host.next(host.context);
+        if(access==address()){break;}
+        let place=ordered_tree_seek(address_of(groups),stride,access,host.compare);
+        if(place.entry!=address()){
+            host.merge(host.context,place.entry);
+        }else{
+            let slot=ordered_tree_insert_slot(address_of(groups),stride,place.parent,place.order);
+            host.seed(host.context,slot);
+        }
+    }
+    FactCursor cursor=ordered_tree_cursor(address_of(groups),stride);
+    while(true){
+        let slot=ordered_tree_step(address_of(groups),stride,address_of(cursor),0);
+        if(slot==address()){break;}
+        host.emit(host.context,slot);
+    }
+    fact_tree_clear(address_of(groups));
+}

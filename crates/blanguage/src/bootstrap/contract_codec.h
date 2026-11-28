@@ -921,3 +921,16 @@ extern "C" ReadStatus contract_read_ownership(Bytes input,inout u64 position,add
 extern "C" ReadStatus contract_read_address_identity(Bytes input,inout u64 position,address context,address output,ContractAddressIdentityVariants host) on cpu requires nonzero(host.constant) requires nonzero(host.value) requires nonzero(host.storage);
 
 extern "C" ReadStatus contract_read_borrow_source(Bytes input,inout u64 position,address context,address output,ContractBorrowSourceVariants host) on cpu requires nonzero(host.data) requires nonzero(host.parameter) requires nonzero(host.unresolved) requires nonzero(host.inactive) requires nonzero(host.external) requires nonzero(host.position) requires nonzero(host.element) requires nonzero(host.projection) requires nonzero(host.contents) requires nonzero(host.relation) requires nonzero(host.task) requires nonzero(host.task_output);
+
+struct PublicAccessGroupHost {
+    address context;
+    cfn<address,address> next;
+    cfn<i32,address,address> compare;
+    cfn<void,address,address> seed;
+    cfn<void,address,address> merge;
+    cfn<void,address,address> emit;
+};
+
+extern "C" void group_public_access_conditions(usize stride,PublicAccessGroupHost host) on cpu
+    requires nonzero(stride) requires nonzero(host.next) requires nonzero(host.compare)
+    requires nonzero(host.seed) requires nonzero(host.merge) requires nonzero(host.emit);
