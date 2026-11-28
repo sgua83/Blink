@@ -293,37 +293,45 @@ impl ApplicationLoads<'_, '_> {
         unsafe { source_allocated(self.register_source(), REGISTER_HOST, root) != 0 }
     }
 
-    // Resolve only metadata already produced by the original IR. No model register becomes storage.
-    async fn resource_storage(&self,input:&Data,resource:&view::Borrow)->Result<Option<Vec<(effects::StorageWrite,Ty,DataLayout)>>> {
-        let resource=resource.restricted(&self.0.path);
-        if view::resource_borrow(input).restricted(&self.0.path)==resource {
-            return Ok(Some(vec![(effects::StorageWrite::Frame{root:input.root.regs[0],range:None},input.ty.clone(),input.layout.clone())]));
-        }
-        if !resource.inputs.is_empty()||!resource.calls.is_empty(){return Ok(None);}
-        let mut storage=Vec::new();
-        for(source,when)in resource.sources.entries().filter(|(_,when)|when.possible()) {
-            let view::Source::Element{parent,fields,index}=source else{return Ok(None);};
-            let Some(parents)=unsafe { self.0.world.call(self.resource_storage(input,parent)).await }?else{return Ok(None);};
-            for(location,ty,layout)in parents {
-                let(mut word,mut field)=(0,&ty);
-                for at in fields{let(offset,next)=field.aggregate_part(*at);word+=offset;field=next;}
-                let Some(reference)=field.dataset.as_deref()else{return Ok(None);};
-                let element=unsafe { self.0.world.call(self.0.world.ty(reference,&self.0.scope.source(),self.0.scope.span(),&self.0.scope.module(),&self.0.scope.imports())).await }?;
-                let root=match location {
-                    effects::StorageWrite::Descendants{root}=>{storage.push((effects::StorageWrite::Descendants{root},element,DataLayout::Declared));continue;},
-                    effects::StorageWrite::Frame{root,..}=>root,
-                };
-                let Some(index)=index else{storage.push((effects::StorageWrite::Descendants{root},element,DataLayout::Declared));continue;};
-                let context = NestedFrameIndex { loads: self, selector: *index };
-                let index = FrameIndex { context: ptr::from_ref(&context).cast(), matches: nested_frame_index_matches };
-                let layout = DatasetFrameLayout::new(root, &ty, &layout, self.0.registers[root] == Scalar::U64);
-                let query = NestedFrameLoad { layout, word, scalar: Scalar::U32 as u32 };
-                let loaded = unsafe { source_nested_frame(self.register_source(), REGISTER_HOST, query, index) }.option();
-                let root=match loaded{Some(root)=>effects::StorageWrite::Frame{root,range:None},None=>effects::StorageWrite::Descendants{root}};
-                storage.push((root,element,DataLayout::Declared));
+    // The original World resolves requested element types. B orders source and
+    // parent traversal and emits the corresponding locations into this frame.
+    async fn resource_storage(
+        &self, input: &Data, resource: &view::Borrow,
+    ) -> Result<Option<Vec<ResourceLocation>>> {
+        let resource = resource.restricted(&self.0.path);
+        let root_matched = u32::from(view::resource_borrow(input).restricted(&self.0.path) == resource);
+        let unresolved = u32::from(!resource.inputs.is_empty() || !resource.calls.is_empty());
+        let mut context = ResourceStorageContext {
+            loads: self, edges: resource.sources.into_entries(), edge: None, parents: None,
+            parent: None, element: None, output: Vec::new(),
+        };
+        let mut cursor = ResourceStorageCursor::default();
+        loop {
+            let host = context.host();
+            let need = unsafe {
+                source_resource_storage_step(&mut cursor, self.register_source(), REGISTER_HOST, host, root_matched, unresolved)
+            };
+            match need {
+                ResourceStorageNeed::Root => {
+                    let location = effects::StorageWrite::Frame { root: input.root.regs[0], range: None };
+                    return Ok(Some(vec![(location, input.ty.clone(), input.layout.clone())]));
+                }
+                ResourceStorageNeed::ResolveParent => {
+                    let parent = &context.edge.as_ref().unwrap().parent;
+                    let locations = unsafe { self.0.world.call(self.resource_storage(input, parent)).await }?;
+                    context.parents = locations.map(Vec::into_iter);
+                }
+                ResourceStorageNeed::ResolveElement => {
+                    // The active parent owns the requested TypeName until B emits the row.
+                    let reference = unsafe { &*cursor.request };
+                    let value = unsafe { self.0.world.call(self.0.world.ty(reference, &self.0.scope.source(),
+                        self.0.scope.span(), &self.0.scope.module(), &self.0.scope.imports())).await }?;
+                    context.element = Some(value);
+                }
+                ResourceStorageNeed::Complete => return Ok(Some(context.output)),
+                ResourceStorageNeed::Unavailable => return Ok(None),
             }
         }
-        Ok((!storage.is_empty()).then_some(storage))
     }
     fn store_overlaps(
         &self, read: &IndexedSource, read_word: u32, read_scalar: Scalar,
@@ -575,20 +583,152 @@ struct FrameIndex {
     matches: unsafe extern "C" fn(*const c_void, Reg) -> u32,
 }
 
-struct NestedFrameIndex<'a, 'b, 'w> {
-    loads: &'a ApplicationLoads<'b, 'w>,
-    selector: bounds::Selector,
+type ResourceLocation = (effects::StorageWrite, Ty, DataLayout);
+
+struct ActiveResourceEdge {
+    parent: Box<view::Borrow>,
+    fields: Vec<usize>,
+    index: Option<bounds::Selector>,
 }
 
-unsafe extern "C" fn nested_frame_index_matches(context: *const c_void, at: Reg) -> u32 {
-    let query = unsafe { &*context.cast::<NestedFrameIndex<'_, '_, '_>>() };
-    let loads = query.loads;
+struct ResourceStorageContext<'a, 'b, 'w, I> {
+    loads: &'a ApplicationLoads<'b, 'w>,
+    edges: I,
+    edge: Option<ActiveResourceEdge>,
+    parents: Option<std::vec::IntoIter<ResourceLocation>>,
+    parent: Option<ResourceLocation>,
+    element: Option<Ty>,
+    output: Vec<ResourceLocation>,
+}
+
+type ResourceEdges = (view::Source, bounds::Clause);
+
+impl<I: Iterator<Item = ResourceEdges>> ResourceStorageContext<'_, '_, '_, I> {
+    fn host(&mut self) -> ResourceStorageHost {
+        ResourceStorageHost {
+            context: ptr::from_mut(self).cast(),
+            edge: resource_storage_edge::<I>,
+            parent: resource_storage_parent::<I>,
+            field: resource_storage_field,
+            element_type: resource_storage_element_type,
+            load: resource_storage_load::<I>,
+            index_matches: resource_storage_index_matches::<I>,
+            emit: resource_storage_emit::<I>,
+        }
+    }
+}
+
+#[repr(u32)]
+enum ResourceStorageNeed { Root, ResolveParent, ResolveElement, Complete, Unavailable }
+
+#[repr(C)]
+#[derive(Default)]
+struct ResourceStorageCursor {
+    request: *const crate::ast::TypeName,
+    root: Reg,
+    word: u32,
+    indexed: u32,
+    produced: u32,
+    phase: u32,
+}
+
+#[repr(u32)]
+enum ResourceEdgeKind { End, Inactive, Element, Other }
+
+#[repr(u32)]
+enum ResourceParentKind { Unavailable, End, Frame, Descendants }
+
+#[repr(C)]
+struct ResourceParent {
+    ty: *const Ty,
+    fields: dataflow::Span,
+    root: Reg,
+    kind: ResourceParentKind,
+    indexed: u32,
+}
+
+#[repr(C)]
+struct ResourceField { ty: *const Ty, word: u32 }
+
+#[repr(C)]
+struct ResourceStorageHost {
+    context: *mut c_void,
+    edge: unsafe extern "C" fn(*mut c_void) -> ResourceEdgeKind,
+    parent: unsafe extern "C" fn(*mut c_void) -> ResourceParent,
+    field: unsafe extern "C" fn(*const Ty, usize) -> ResourceField,
+    element_type: unsafe extern "C" fn(*const Ty) -> *const crate::ast::TypeName,
+    load: unsafe extern "C" fn(*const c_void, u32) -> NestedFrameLoad,
+    index_matches: unsafe extern "C" fn(*const c_void, Reg) -> u32,
+    emit: unsafe extern "C" fn(*mut c_void, Reg, u32),
+}
+
+unsafe extern "C" fn resource_storage_edge<I: Iterator<Item = ResourceEdges>>(context: *mut c_void) -> ResourceEdgeKind {
+    let context = unsafe { &mut *context.cast::<ResourceStorageContext<'_, '_, '_, I>>() };
+    match context.edges.next() {
+        None => ResourceEdgeKind::End,
+        Some((_, when)) if !when.possible() => ResourceEdgeKind::Inactive,
+        Some((view::Source::Element { parent, fields, index }, _)) => {
+            context.edge = Some(ActiveResourceEdge { parent, fields, index });
+            ResourceEdgeKind::Element
+        }
+        Some(_) => ResourceEdgeKind::Other,
+    }
+}
+
+unsafe extern "C" fn resource_storage_parent<I>(context: *mut c_void) -> ResourceParent {
+    let context = unsafe { &mut *context.cast::<ResourceStorageContext<'_, '_, '_, I>>() };
+    let next = context.parents.as_mut().and_then(Iterator::next);
+    context.parent = next;
+    let Some((location, ty, _)) = &context.parent else {
+        let kind = if context.parents.is_some() { ResourceParentKind::End } else { ResourceParentKind::Unavailable };
+        return ResourceParent { ty: ptr::null(), fields: dataflow::Span::EMPTY, root: 0, kind, indexed: 0 };
+    };
+    let (root, kind) = match location {
+        effects::StorageWrite::Frame { root, .. } => (*root, ResourceParentKind::Frame),
+        effects::StorageWrite::Descendants { root } => (*root, ResourceParentKind::Descendants),
+    };
+    let edge = context.edge.as_ref().unwrap();
+    ResourceParent {
+        ty: ptr::from_ref(ty), fields: dataflow::Span::slice(&edge.fields),
+        root, kind, indexed: u32::from(edge.index.is_some()),
+    }
+}
+
+unsafe extern "C" fn resource_storage_field(ty: *const Ty, index: usize) -> ResourceField {
+    let (word, field) = unsafe { &*ty }.aggregate_part(index);
+    ResourceField { ty: ptr::from_ref(field), word }
+}
+
+unsafe extern "C" fn resource_storage_element_type(ty: *const Ty) -> *const crate::ast::TypeName {
+    unsafe { &*ty }.dataset.as_deref().map_or(ptr::null(), ptr::from_ref)
+}
+
+unsafe extern "C" fn resource_storage_load<I>(context: *const c_void, word: u32) -> NestedFrameLoad {
+    let context = unsafe { &*context.cast::<ResourceStorageContext<'_, '_, '_, I>>() };
+    let (location, ty, layout) = context.parent.as_ref().unwrap();
+    let effects::StorageWrite::Frame { root, .. } = *location else { unreachable!() };
+    let layout = DatasetFrameLayout::new(root, ty, layout, context.loads.0.registers[root] == Scalar::U64);
+    NestedFrameLoad { layout, word, scalar: Scalar::U32 as u32 }
+}
+
+unsafe extern "C" fn resource_storage_index_matches<I>(context: *const c_void, at: Reg) -> u32 {
+    let context = unsafe { &*context.cast::<ResourceStorageContext<'_, '_, '_, I>>() };
+    let loads = context.loads;
     let actual = match loads.constant(at) {
         Some(value) => bounds::Operand::Constant(Scalar::U32, value),
         None => bounds::Operand::Value(ValueIdentity::Register(at)),
     };
     let actual = loads.0.element_index_operand(actual, (&loads.0.path, &loads.0.env));
-    u32::from(bounds::Selector::Direct(actual).equality(query.selector, &loads.0.path) == Some(true))
+    let index = context.edge.as_ref().unwrap().index.unwrap();
+    u32::from(bounds::Selector::Direct(actual).equality(index, &loads.0.path) == Some(true))
+}
+
+unsafe extern "C" fn resource_storage_emit<I>(context: *mut c_void, root: Reg, descendants: u32) {
+    let context = unsafe { &mut *context.cast::<ResourceStorageContext<'_, '_, '_, I>>() };
+    let location = if descendants != 0 { effects::StorageWrite::Descendants { root } }
+        else { effects::StorageWrite::Frame { root, range: None } };
+    context.output.push((location, context.element.take().unwrap(), DataLayout::Declared));
+    context.parent = None;
 }
 
 #[repr(u32)]
@@ -631,8 +771,9 @@ unsafe extern "C" {
     fn source_frame_root(source: SnapshotSource, host: RegisterHost, address: OriginalAddress) -> AddressWord;
     #[link_name = "bootstrap.application_snapshot::application_allocated"]
     fn source_allocated(source: SnapshotSource, host: RegisterHost, root: Reg) -> u32;
-    #[link_name = "bootstrap.application_snapshot::application_nested_frame"]
-    fn source_nested_frame(source: SnapshotSource, host: RegisterHost, query: NestedFrameLoad, index: FrameIndex) -> AddressWord;
+    #[link_name = "bootstrap.application_snapshot::application_resource_storage_step"]
+    fn source_resource_storage_step(cursor: *mut ResourceStorageCursor, source: SnapshotSource,
+        host: RegisterHost, storage: ResourceStorageHost, root_matched: u32, unresolved: u32) -> ResourceStorageNeed;
     #[link_name = "bootstrap.application_snapshot::application_dataset_position"]
     fn source_dataset_position(source: SnapshotSource, host: RegisterHost, node: dataflow::Node, frame: StoredDatasetFrame, index: FrameIndex) -> u32;
     #[link_name = "bootstrap.application_snapshot::application_same_position"]

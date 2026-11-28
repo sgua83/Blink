@@ -74,11 +74,40 @@ struct FrameIndex { address context; cfn<u32,address,usize> matches; };
 enum DatasetFramePlace:u32 { Value=0; Local=1; Other=2; };
 struct StoredDatasetFrame { DatasetFrameLayout layout; LoopEffects writes; Span slots; DatasetFramePlace place; };
 
-extern "C" Word application_nested_frame(SnapshotSource source, RegisterHost host, NestedFrameLoad query, FrameIndex index) on cpu
+enum ResourceStorageNeed:u32 { Root=0; ResolveParent=1; ResolveElement=2; Complete=3; Unavailable=4; };
+enum ResourceStoragePhase:u32 { Begin=0; Edges=1; Parents=2; Emit=3; };
+enum ResourceEdgeKind:u32 { End=0; Inactive=1; Element=2; Other=3; };
+enum ResourceParentKind:u32 { Unavailable=0; End=1; Frame=2; Descendants=3; };
+struct ResourceStorageCursor {
+    address request;
+    usize root;
+    u32 word;
+    u32 indexed;
+    u32 produced;
+    ResourceStoragePhase phase;
+};
+struct ResourceParent { address ty; Span fields; usize root; ResourceParentKind kind; u32 indexed; };
+struct ResourceField { address ty; u32 word; };
+struct ResourceStorageHost {
+    address context;
+    cfn<ResourceEdgeKind,address> edge;
+    cfn<ResourceParent,address> parent;
+    cfn<ResourceField,address,usize> ensures memory(read) field;
+    cfn<address,address> ensures memory(read) element_type;
+    cfn<NestedFrameLoad,address,u32> ensures memory(read) load;
+    cfn<u32,address,usize> index_matches;
+    cfn<void,address,usize,u32> emit;
+};
+
+extern "C" ResourceStorageNeed application_resource_storage_step(inout ResourceStorageCursor cursor,
+    SnapshotSource source, RegisterHost host, ResourceStorageHost storage, u32 root_matched, u32 unresolved) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
     requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
-    requires nonzero(host.writes_load) requires nonzero(index.matches);
+    requires nonzero(host.writes_load)
+    requires nonzero(storage.edge) requires nonzero(storage.parent)
+    requires nonzero(storage.field) requires nonzero(storage.element_type)
+    requires nonzero(storage.load) requires nonzero(storage.index_matches) requires nonzero(storage.emit);
 extern "C" u32 application_dataset_position(SnapshotSource source, RegisterHost host, Node source_node, StoredDatasetFrame frame, FrameIndex index) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)

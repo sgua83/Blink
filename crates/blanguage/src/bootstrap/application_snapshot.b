@@ -877,7 +877,7 @@ bool nested_load_matches(SnapshotSource source, RegisterHost host,
         && index.matches(index.context, at) != 0;
 }
 
-extern "C" Word application_nested_frame(SnapshotSource source, RegisterHost host, NestedFrameLoad query, FrameIndex index) on cpu
+Word application_nested_frame(SnapshotSource source, RegisterHost host, NestedFrameLoad query, FrameIndex index) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
     requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
@@ -903,6 +903,68 @@ extern "C" Word application_nested_frame(SnapshotSource source, RegisterHost hos
         end = start;
     }
     return Word(0, 0u64);
+}
+
+extern "C" ResourceStorageNeed application_resource_storage_step(inout ResourceStorageCursor cursor,
+    SnapshotSource source, RegisterHost host, ResourceStorageHost storage, u32 root_matched, u32 unresolved) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
+    requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
+    requires nonzero(host.writes_load)
+    requires nonzero(storage.edge) requires nonzero(storage.parent)
+    requires nonzero(storage.field) requires nonzero(storage.element_type)
+    requires nonzero(storage.load) requires nonzero(storage.index_matches) requires nonzero(storage.emit) {
+    if (cursor.phase == ResourceStoragePhase::Begin) {
+        if (root_matched != 0) { return ResourceStorageNeed::Root; }
+        if (unresolved != 0) { return ResourceStorageNeed::Unavailable; }
+        cursor.phase = ResourceStoragePhase::Edges;
+    }
+    while (true) {
+        if (cursor.phase == ResourceStoragePhase::Edges) {
+            ResourceEdgeKind edge = storage.edge(storage.context);
+            if (edge == ResourceEdgeKind::End) {
+                return cursor.produced != 0 ? ResourceStorageNeed::Complete : ResourceStorageNeed::Unavailable;
+            }
+            if (edge == ResourceEdgeKind::Other) { return ResourceStorageNeed::Unavailable; }
+            if (edge == ResourceEdgeKind::Inactive) { continue; }
+            cursor.phase = ResourceStoragePhase::Parents;
+            return ResourceStorageNeed::ResolveParent;
+        }
+        if (cursor.phase == ResourceStoragePhase::Parents) {
+            ResourceParent parent = storage.parent(storage.context);
+            if (parent.kind == ResourceParentKind::Unavailable) { return ResourceStorageNeed::Unavailable; }
+            if (parent.kind == ResourceParentKind::End) {
+                cursor.phase = ResourceStoragePhase::Edges;
+                continue;
+            }
+            address ty = parent.ty;
+            usize field_index = 0u64;
+            u32 word = 0;
+            while (field_index < parent.fields.count) {
+                ResourceField field = storage.field(ty, register_at(parent.fields, field_index));
+                word += field.word;
+                ty = field.ty;
+                field_index += 1u64;
+            }
+            cursor.request = storage.element_type(ty);
+            if (cursor.request == address()) { return ResourceStorageNeed::Unavailable; }
+            cursor.root = parent.root;
+            cursor.word = word;
+            cursor.indexed = u32(parent.kind == ResourceParentKind::Frame && parent.indexed != 0);
+            cursor.phase = ResourceStoragePhase::Emit;
+            return ResourceStorageNeed::ResolveElement;
+        }
+        Word loaded = Word(0, 0u64);
+        if (cursor.indexed != 0) {
+            NestedFrameLoad request = storage.load(storage.context, cursor.word);
+            loaded = application_nested_frame(source, host, request, FrameIndex(storage.context, storage.index_matches));
+        }
+        usize root = loaded.present != 0 ? loaded.value : cursor.root;
+        storage.emit(storage.context, root, u32(loaded.present == 0));
+        cursor.produced = 1;
+        cursor.request = address();
+        cursor.phase = ResourceStoragePhase::Parents;
+    }
 }
 
 bool same_dataset_frame(SnapshotSource source, RegisterHost host, StoredDatasetFrame frame, usize root) on cpu
