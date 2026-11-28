@@ -9,6 +9,8 @@ struct Field {Bytes name;u32 offset;address ty;};
 struct Part {u32 offset;address ty;};
 struct KnownIndex {u32 present;u32 value;};
 struct Projection {address ty;Text root;u32 offset;};
+enum LoopPlace:u32 { Missing=0; Root=1; Child=2; };
+struct LoopSelection { address ty; LoopPlace place; };
 struct Host {
     cfn<address,address,Bytes> root;
     cfn<KnownIndex,address,Bytes> index;
@@ -21,9 +23,13 @@ struct Host {
 };
 extern "C" Projection owned(Source source,address env,address path,Host host) on cpu
     requires nonzero(host.root) requires nonzero(host.index) requires nonzero(host.ty)
-    requires nonzero(host.field) requires nonzero(host.element) requires nonzero(host.push);
+    requires nonzero(host.field) requires nonzero(host.element) requires nonzero(host.selected_field) requires nonzero(host.push);
 extern "C" address owned_type(Source source,address env,Host host) on cpu
-    requires nonzero(host.root) requires nonzero(host.ty) requires nonzero(host.selected_field);
+    requires nonzero(host.root) requires nonzero(host.index) requires nonzero(host.ty)
+    requires nonzero(host.field) requires nonzero(host.element) requires nonzero(host.selected_field) requires nonzero(host.push);
+extern "C" LoopSelection loop_projection(Source source,address context,Host host) on cpu
+    requires nonzero(host.root) requires nonzero(host.index) requires nonzero(host.ty)
+    requires nonzero(host.field) requires nonzero(host.element) requires nonzero(host.selected_field) requires nonzero(host.push);
 extern "C" PlaceRoot place_root(Source source) on cpu;
 extern "C" Part field_layout(address root,address fields,u64 count,Host host) on cpu
     requires nonzero(host.element);

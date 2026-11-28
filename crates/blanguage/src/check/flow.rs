@@ -1,6 +1,6 @@
 //! 顺序块合成真实退出边；循环结束只合流条件失败与 break 的状态。
 use super::*;
-use super::owned_values::{InitialWrite, LoopTarget};
+use super::owned_values::InitialWrite;
 use super::view::{Borrow,InputSlot,LoopInput,data_at,data_at_mut};
 
 #[repr(C)]
@@ -379,50 +379,6 @@ impl Builder<'_> {
         })));
     }
 
-    fn initial_target(&self, expr: &Expr, shape: bool) -> InitialWrite {
-        use returns::Returned;
-
-        if let ExprKind::Name(name) = expr.kind()
-            && let Some(Binding::ApplicationData(data)) = self.env.get(name)
-        {
-            return owned_values::initial_write(self, LoopTarget::Dataset(data), shape);
-        }
-        let projection = match self.owned_element_type(expr) {
-            Some(ty) if !ty.owns_resources() => return InitialWrite::Ready,
-            Some(_) => self.owned_projection(expr),
-            None => None,
-        };
-        let Some(projection) = projection else {
-            return if shape && self.incomplete_loop_root(expr) {
-                InitialWrite::IncompleteShape
-            } else {
-                InitialWrite::Ready
-            };
-        };
-        let Binding::OwnedValue(root) = &self.env[&projection.root] else { unreachable!() };
-        let target = match projection.path.as_slice() {
-            [] => LoopTarget::Aggregate(root),
-            [first, tail @ ..] => {
-                let mut selected = root.payloads[*first].as_deref().unwrap();
-                for &index in tail {
-                    let Returned::OwnedValue(value) = selected else { unreachable!() };
-                    selected = value.payloads[index].as_deref().unwrap();
-                }
-                LoopTarget::Projected(selected)
-            }
-        };
-        owned_values::initial_write(self, target, shape)
-    }
-
-    fn incomplete_loop_root(&self, expr: &Expr) -> bool {
-        let target = match owned_records::root_name(expr).and_then(|name| self.env.get(name)) {
-            Some(Binding::OwnedValue(value)) => LoopTarget::Aggregate(value),
-            Some(Binding::ApplicationData(data)) => LoopTarget::Dataset(data),
-            _ => return false,
-        };
-        owned_values::initial_root_incomplete(target)
-    }
-
     fn loop_has_resource_exit(&self, body: &Block) -> bool {
         if self.application.is_none()
             || !self.env.values().any(|binding| !binding.application_resources().is_empty())
@@ -437,14 +393,14 @@ impl Builder<'_> {
             return Ok(true);
         }
         let writes = unsafe { self.world.call(effects::value_writes(self, body)).await }?;
-        Ok(writes.iter().any(|expr| !matches!(self.initial_target(expr, true), InitialWrite::Ready)))
+        Ok(writes.iter().any(|expr| !matches!(owned_records::initial_loop_write(self, expr, true), InitialWrite::Ready)))
     }
 
     pub(super) async fn next_initial_loop(&self, body: &Block) -> Result<bool> {
         let mut initial = self.loop_has_resource_exit(body);
         let writes = unsafe { self.world.call(effects::value_writes(self, body)).await }?;
         for expr in &writes {
-            match self.initial_target(expr, !initial) {
+            match owned_records::initial_loop_write(self, expr, !initial) {
                 InitialWrite::Unavailable => return Ok(true),
                 InitialWrite::IncompleteShape => initial = true,
                 InitialWrite::Ready => {}

@@ -75,77 +75,76 @@ KnownIndex index(Source source,ExprRef reference,address env,Host host) on cpu r
         ExprKind::Select(unused){return KnownIndex(0,0);}
     }
 }
-Projection project(Source source,ExprRef reference,address env,address path,Host host) on cpu
-    requires nonzero(host.root) requires nonzero(host.index) requires nonzero(host.ty)
-    requires nonzero(host.field) requires nonzero(host.element) requires nonzero(host.push) {
+enum ProjectionQuery:u32 { TypeOnly=0; Static=1; Loop=2; };
+struct ProjectionWalk { Projection value; address logical; LoopPlace place; };
+ProjectionWalk unlocated(address logical) on cpu {
+    return ProjectionWalk(absent(),logical,LoopPlace::Missing);
+}
+
+ProjectionWalk project(Source source,ExprRef reference,address env,address path,Host host,ProjectionQuery query) on cpu
+    requires nonzero(host.root) requires nonzero(host.index) requires nonzero(host.ty) requires nonzero(host.field)
+    requires nonzero(host.element) requires nonzero(host.selected_field) requires nonzero(host.push) {
     ExprNode node=expression(source,reference);
     match(node.kind){
-        ExprKind::Name(name){return Projection(host.root(env,text(source,name)),name,0);}
+        ExprKind::Name(name){
+            address ty=host.root(env,text(source,name));
+            address logical=query==ProjectionQuery::Static ? address() : ty;
+            if(query==ProjectionQuery::TypeOnly){return unlocated(logical);}
+            return ProjectionWalk(Projection(ty,name,0),logical,LoopPlace::Root);
+        }
         ExprKind::Index(value){
-            Projection selected=project(source,value.base,env,path,host);
-            if(address_bits(selected.ty)==0u64){return absent();}
+            ProjectionWalk selected=project(source,value.base,env,path,host,query);
+            address logical=selected.logical;
+            if(address_bits(logical)!=0u64){logical=host.ty(logical).array;}
+            address parent=selected.value.ty;
+            if(address_bits(parent)==0u64){return unlocated(logical);}
             KnownIndex chosen=index(source,value.index,env,host);
-            if(chosen.present==0){return absent();}
-            TypeInfo ty=host.ty(selected.ty);
-            if(address_bits(ty.array)==0u64||u64(chosen.value)>=ty.length){return absent();}
-            Part part=host.element(selected.ty,u64(chosen.value));
-            selected.ty=part.ty;selected.offset+=part.offset;host.push(path,u64(chosen.value));
+            if(chosen.present==0){return unlocated(logical);}
+            TypeInfo ty=host.ty(parent);
+            if(address_bits(ty.array)==0u64 || u64(chosen.value)>=ty.length){return unlocated(logical);}
+            Part part=host.element(parent,u64(chosen.value));
+            selected.value.ty=part.ty;
+            selected.value.offset+=part.offset;
+            selected.logical=logical;
+            selected.place=LoopPlace::Child;
+            host.push(path,u64(chosen.value));
             return selected;
         }
         ExprKind::Member(value){
-            Projection selected=project(source,value.base,env,path,host);
-            if(address_bits(selected.ty)==0u64){return absent();}
-            TypeInfo ty=host.ty(selected.ty);Bytes name=text(source,value.field);u64 i=0u64;
+            ProjectionWalk selected=project(source,value.base,env,path,host,query);
+            Bytes name=text(source,value.field);
+            if(address_bits(selected.logical)!=0u64){
+                selected.logical=host.selected_field(selected.logical,name);
+            }
+            if(address_bits(selected.value.ty)==0u64){return unlocated(selected.logical);}
+            TypeInfo ty=host.ty(selected.value.ty);
+            u64 i=0u64;
             while(i<ty.fields){
-                Field field=host.field(selected.ty,i);
-                if(same(name,field.name)){selected.ty=field.ty;selected.offset+=field.offset;host.push(path,i);return selected;}
+                Field field=host.field(selected.value.ty,i);
+                if(same(name,field.name)){
+                    selected.value.ty=field.ty;
+                    selected.value.offset+=field.offset;
+                    selected.place=LoopPlace::Child;
+                    host.push(path,i);
+                    return selected;
+                }
                 i+=1u64;
             }
-            return absent();
+            return unlocated(selected.logical);
         }
-        ExprKind::Number(unused){return absent();}
-        ExprKind::StaticU32(unused){return absent();}
-        ExprKind::Bool(unused){return absent();}
-        ExprKind::FunctionRef(unused){return absent();}
-        ExprKind::Call(unused){return absent();}
-        ExprKind::Invoke(unused){return absent();}
-        ExprKind::Specialize(unused){return absent();}
-        ExprKind::Cooperate(unused){return absent();}
-        ExprKind::Construct(unused){return absent();}
-        ExprKind::Target(unused){return absent();}
-        ExprKind::Unary(unused){return absent();}
-        ExprKind::Binary(unused){return absent();}
-        ExprKind::Select(unused){return absent();}
-    }
-}
-address type_of(Source source,ExprRef reference,address env,Host host) on cpu
-    requires nonzero(host.root) requires nonzero(host.ty) requires nonzero(host.selected_field) {
-    ExprNode node=expression(source,reference);
-    match(node.kind){
-        ExprKind::Name(name){return host.root(env,text(source,name));}
-        ExprKind::Member(value){
-            address parent=type_of(source,value.base,env,host);
-            if(address_bits(parent)==0u64){return parent;}
-            return host.selected_field(parent,text(source,value.field));
-        }
-        ExprKind::Index(value){
-            address parent=type_of(source,value.base,env,host);
-            if(address_bits(parent)==0u64){return parent;}
-            return host.ty(parent).array;
-        }
-        ExprKind::Number(unused){return unsafe_address(0u64);}
-        ExprKind::StaticU32(unused){return unsafe_address(0u64);}
-        ExprKind::Bool(unused){return unsafe_address(0u64);}
-        ExprKind::FunctionRef(unused){return unsafe_address(0u64);}
-        ExprKind::Call(unused){return unsafe_address(0u64);}
-        ExprKind::Invoke(unused){return unsafe_address(0u64);}
-        ExprKind::Specialize(unused){return unsafe_address(0u64);}
-        ExprKind::Cooperate(unused){return unsafe_address(0u64);}
-        ExprKind::Construct(unused){return unsafe_address(0u64);}
-        ExprKind::Target(unused){return unsafe_address(0u64);}
-        ExprKind::Unary(unused){return unsafe_address(0u64);}
-        ExprKind::Binary(unused){return unsafe_address(0u64);}
-        ExprKind::Select(unused){return unsafe_address(0u64);}
+        ExprKind::Number(unused){return unlocated(address());}
+        ExprKind::StaticU32(unused){return unlocated(address());}
+        ExprKind::Bool(unused){return unlocated(address());}
+        ExprKind::FunctionRef(unused){return unlocated(address());}
+        ExprKind::Call(unused){return unlocated(address());}
+        ExprKind::Invoke(unused){return unlocated(address());}
+        ExprKind::Specialize(unused){return unlocated(address());}
+        ExprKind::Cooperate(unused){return unlocated(address());}
+        ExprKind::Construct(unused){return unlocated(address());}
+        ExprKind::Target(unused){return unlocated(address());}
+        ExprKind::Unary(unused){return unlocated(address());}
+        ExprKind::Binary(unused){return unlocated(address());}
+        ExprKind::Select(unused){return unlocated(address());}
     }
 }
 bool unsafe_position_name(Bytes value) on cpu {
@@ -157,13 +156,20 @@ bool unsafe_position_name(Bytes value) on cpu {
         &&byte(value,12u64)==u8(105)&&byte(value,13u64)==u8(111)&&byte(value,14u64)==u8(110);
 }
 extern "C" Projection owned(Source source,address env,address path,Host host) on cpu
-    requires nonzero(host.root) requires nonzero(host.index) requires nonzero(host.ty)
-    requires nonzero(host.field) requires nonzero(host.element) requires nonzero(host.push) {
-    return project(source,source.expression,env,path,host);
+    requires nonzero(host.root) requires nonzero(host.index) requires nonzero(host.ty) requires nonzero(host.field)
+    requires nonzero(host.element) requires nonzero(host.selected_field) requires nonzero(host.push) {
+    return project(source,source.expression,env,path,host,ProjectionQuery::Static).value;
 }
 extern "C" address owned_type(Source source,address env,Host host) on cpu
-    requires nonzero(host.root) requires nonzero(host.ty) requires nonzero(host.selected_field) {
-    return type_of(source,source.expression,env,host);
+    requires nonzero(host.root) requires nonzero(host.index) requires nonzero(host.ty) requires nonzero(host.field)
+    requires nonzero(host.element) requires nonzero(host.selected_field) requires nonzero(host.push) {
+    return project(source,source.expression,env,address(),host,ProjectionQuery::TypeOnly).logical;
+}
+extern "C" LoopSelection loop_projection(Source source,address context,Host host) on cpu
+    requires nonzero(host.root) requires nonzero(host.index) requires nonzero(host.ty) requires nonzero(host.field)
+    requires nonzero(host.element) requires nonzero(host.selected_field) requires nonzero(host.push) {
+    ProjectionWalk selected=project(source,source.expression,context,context,host,ProjectionQuery::Loop);
+    return LoopSelection(selected.logical,selected.place);
 }
 extern "C" Part field_layout(address root,address fields,u64 count,Host host) on cpu
     requires nonzero(host.element) {

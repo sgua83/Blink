@@ -1,5 +1,6 @@
 //! Synchronous source queries borrow the original sealed syntax, env and Ty.
 use super::*;
+use crate::check::owned_values::{self, InitialWrite, LoopTarget};
 use std::{ffi::c_void,ptr};
 type Address=*const c_void;
 #[derive(Clone,Copy)]
@@ -57,6 +58,8 @@ unsafe extern "C"{
  fn b_owned(source:SyntaxSource,env:Address,path:*mut c_void,host:Host)->Projection;
  #[link_name="bootstrap.ownership_projection::owned_type"]
  fn b_type(source:SyntaxSource,env:Address,host:Host)->Address;
+ #[link_name="bootstrap.ownership_projection::loop_projection"]
+ fn b_loop_projection(source: SyntaxSource, context: *mut c_void, host: Host) -> LoopSelection;
  #[link_name="bootstrap.ownership_projection::place_root"]
  fn b_place_root(source: SyntaxSource) -> RawPlaceRoot;
  #[link_name="bootstrap.ownership_projection::field_layout"]
@@ -113,6 +116,77 @@ pub(super) fn owned<'a>(builder:&'a Builder<'_>,expr:&Expr)->Option<(OwnedProjec
 pub(super) fn ty<'a>(builder:&'a Builder<'_>,expr:&Expr)->Option<&'a Ty>{
  unsafe{b_type(source(expr),address(&builder.env),HOST).cast::<Ty>().as_ref()}
 }
+
+#[repr(u32)]
+#[allow(dead_code)] // Produced by bootstrap.ownership_projection.
+enum LoopPlace { Missing, Root, Child }
+
+#[repr(C)]
+struct LoopSelection { ty: Address, place: LoopPlace }
+
+struct LoopProjection<'a> {
+    bindings: &'a BTreeMap<String, Binding>,
+    root: Option<&'a Binding>,
+    selected: Option<LoopTarget<'a>>,
+}
+
+unsafe extern "C" fn loop_root(context: Address, name: Bytes) -> Address {
+    let probe = unsafe { &mut *context.cast_mut().cast::<LoopProjection<'_>>() };
+    probe.root = probe.bindings.get(unsafe { name.text() });
+    match probe.root {
+        Some(Binding::OwnedValue(owner)) => {
+            probe.selected = Some(LoopTarget::Aggregate(owner));
+            address(&owner.value.ty)
+        }
+        _ => ptr::null(),
+    }
+}
+
+unsafe extern "C" fn loop_index(context: Address, name: Bytes) -> KnownIndex {
+    let probe = unsafe { &*context.cast::<LoopProjection<'_>>() };
+    unsafe { known_index(address(probe.bindings), name) }
+}
+
+unsafe extern "C" fn loop_payload(context: *mut c_void, index: u64) {
+    let probe = unsafe { &mut *context.cast::<LoopProjection<'_>>() };
+    let owner = match probe.selected.take() {
+        Some(LoopTarget::Aggregate(owner)) => Some(owner),
+        Some(LoopTarget::Projected(Returned::OwnedValue(owner))) => Some(owner.as_ref()),
+        _ => None,
+    };
+    // A known prefix may still select an ordinary field or precede a dynamic index.
+    probe.selected = owner.and_then(|owner| owner.payloads.get(index as usize))
+        .and_then(Option::as_deref).map(LoopTarget::Projected);
+}
+
+const LOOP_HOST: Host = Host { root: loop_root, index: loop_index, push: loop_payload, ..HOST };
+
+pub(in crate::check) fn initial_loop_write(builder: &Builder<'_>, expr: &Expr, shape: bool) -> InitialWrite {
+    let mut probe = LoopProjection { bindings: &builder.env, root: None, selected: None };
+    let selection = unsafe { b_loop_projection(source(expr), ptr::from_mut(&mut probe).cast(), LOOP_HOST) };
+    if let Some(ty) = unsafe { selection.ty.cast::<Ty>().as_ref() } {
+        if !ty.owns_resources() {
+            return InitialWrite::Ready;
+        }
+        if matches!(selection.place, LoopPlace::Child) {
+            return owned_values::initial_write(builder, probe.selected.unwrap(), shape);
+        }
+    }
+    let root = match probe.root {
+        Some(Binding::OwnedValue(owner)) => LoopTarget::Aggregate(owner),
+        Some(Binding::ApplicationData(data)) => LoopTarget::Dataset(data),
+        _ => return InitialWrite::Ready,
+    };
+    if matches!(selection.place, LoopPlace::Root) {
+        return owned_values::initial_write(builder, root, shape);
+    }
+    if shape && owned_values::initial_root_incomplete(root) {
+        InitialWrite::IncompleteShape
+    } else {
+        InitialWrite::Ready
+    }
+}
+
 pub(in crate::check) fn place_root(expr: &Expr) -> PlaceRoot<'_> {
     let root = unsafe { b_place_root(source(expr)) };
     match root.kind {
