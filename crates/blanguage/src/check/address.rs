@@ -427,6 +427,175 @@ impl MemoryRegion {
         unsafe { region_written_bytes(self.write_facts(position), scalar.size()) }
     }
 }
+#[repr(u32)]
+enum OriginSourceKind { End, Position, Inactive, External, Other }
+
+#[repr(C)]
+struct OriginSource { kind: OriginSourceKind, layout_matches: u32 }
+
+#[repr(u32)]
+enum OriginSourceAction { Direct, Project, Inactive, External, Retain, Pending }
+
+#[repr(C)]
+struct OriginNormalizationHost {
+    context: *mut std::ffi::c_void,
+    next: unsafe extern "C" fn(*mut std::ffi::c_void) -> OriginSource,
+    emit: unsafe extern "C" fn(*mut std::ffi::c_void, OriginSourceAction),
+}
+
+#[repr(C)]
+struct OriginWord { word: u32, initialized: u32 }
+
+#[repr(u32)]
+enum OriginProjectionResult { Missing, ReadOnly, Writable }
+
+#[repr(C)]
+struct OriginProjectionHost {
+    context: *mut std::ffi::c_void,
+    selected: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> OriginWord,
+    parent_offset: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> u32,
+    parent: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> OriginWord,
+    emit: unsafe extern "C" fn(*mut std::ffi::c_void, usize, u32, u32),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::normalize_address_origin"]
+    fn b_normalize_address_origin(derived: u32, pending: u32, host: OriginNormalizationHost);
+    #[link_name = "bootstrap.call_arguments::project_address_origin"]
+    fn b_project_address_origin(selected: usize, parent: usize, selected_writable: u32,
+        parent_writable: u32, host: OriginProjectionHost) -> OriginProjectionResult;
+}
+
+struct OriginProjection<'a> {
+    parent: &'a Origin,
+    selected: &'a Origin,
+    words: Vec<u32>,
+    positions: Vec<Position>,
+    initialized: Vec<bool>,
+}
+
+impl OriginProjection<'_> {
+    unsafe extern "C" fn selected(context: *const std::ffi::c_void, slot: usize) -> OriginWord {
+        let selected = unsafe { &*context.cast::<Self>() }.selected;
+        OriginWord { word: selected.words[slot], initialized: selected.initialized[slot].into() }
+    }
+
+    unsafe extern "C" fn parent_offset(context: *const std::ffi::c_void, slot: usize) -> u32 {
+        unsafe { &*context.cast::<Self>() }.parent.layout.parts[slot].1
+    }
+
+    unsafe extern "C" fn parent(context: *const std::ffi::c_void, slot: usize) -> OriginWord {
+        let parent = unsafe { &*context.cast::<Self>() }.parent;
+        OriginWord { word: parent.words[slot], initialized: parent.initialized[slot].into() }
+    }
+
+    unsafe extern "C" fn emit(context: *mut std::ffi::c_void, source: usize, word: u32, initialized: u32) {
+        let projection = unsafe { &mut *context.cast::<Self>() };
+        projection.words.push(word);
+        if !projection.parent.positions.is_empty() {
+            projection.positions.push(projection.parent.positions[source].clone());
+        }
+        projection.initialized.push(initialized != 0);
+    }
+
+    fn materialize(mut self) -> Origin {
+        let (selected, parent) = (self.selected, self.parent);
+        let host = OriginProjectionHost {
+            context: std::ptr::from_mut(&mut self).cast(), selected: Self::selected,
+            parent_offset: Self::parent_offset, parent: Self::parent, emit: Self::emit,
+        };
+        let result = unsafe { b_project_address_origin(selected.words.len(), parent.layout.parts.len(),
+            selected.writable.into(), parent.writable.into(), host) };
+        let writable = match result {
+            OriginProjectionResult::Missing => panic!("origin projection must be within the parent layout"),
+            OriginProjectionResult::ReadOnly => false,
+            OriginProjectionResult::Writable => true,
+        };
+        Origin { root: self.parent.root.clone(), layout: self.selected.layout.clone(), base: self.parent.base.clone(),
+            words: self.words.into(), positions: self.positions.into(), writable, initialized: self.initialized.into() }
+    }
+}
+
+struct OriginNormalization<'a, I> {
+    origin: &'a Origin,
+    borrow: Option<&'a view::Borrow>,
+    entries: I,
+    current: Option<(&'a view::Source, bounds::Clause)>,
+    result: view::Borrow,
+}
+
+impl<'a, I: Iterator<Item = (&'a view::Source, bounds::Clause)>> OriginNormalization<'a, I> {
+    unsafe extern "C" fn next(context: *mut std::ffi::c_void) -> OriginSource {
+        let normalization = unsafe { &mut *context.cast::<Self>() };
+        normalization.current = normalization.entries.next();
+        let (kind, matches) = match normalization.current.as_ref().map(|(source, _)| *source) {
+            None => (OriginSourceKind::End, false),
+            Some(view::Source::Position(parent)) => (OriginSourceKind::Position, parent.layout == normalization.origin.base),
+            Some(view::Source::Inactive) => (OriginSourceKind::Inactive, false),
+            Some(view::Source::External) => (OriginSourceKind::External, false),
+            Some(_) => (OriginSourceKind::Other, false),
+        };
+        OriginSource { kind, layout_matches: matches.into() }
+    }
+
+    unsafe extern "C" fn emit(context: *mut std::ffi::c_void, action: OriginSourceAction) {
+        let normalization = unsafe { &mut *context.cast::<Self>() };
+        let origin = normalization.origin;
+        match action {
+            OriginSourceAction::Direct => {
+                normalization.result.sources.insert(view::Source::Position(Arc::new(origin.clone())));
+                return;
+            }
+            OriginSourceAction::Pending => {
+                let borrow = normalization.borrow.unwrap();
+                let mut value = origin.clone();
+                value.root = Root::Derived(view::Borrow {
+                    inputs: borrow.inputs.clone(), calls: borrow.calls.clone(), reads: borrow.reads.clone(),
+                    ..view::Borrow::default()
+                });
+                normalization.result.sources.insert(view::Source::Position(Arc::new(value)));
+                return;
+            }
+            _ => {}
+        }
+        let (source, when) = normalization.current.take().unwrap();
+        let source = match action {
+            OriginSourceAction::Project => {
+                let view::Source::Position(parent) = source else { unreachable!() };
+                view::Source::Position(Arc::new(parent.project(origin)))
+            }
+            OriginSourceAction::Inactive => view::Source::Inactive,
+            OriginSourceAction::External => {
+                let mut value = origin.clone();
+                value.root = Root::External(Identity::Value(Vec::new()));
+                value.base = value.layout.clone();
+                value.words = value.layout.parts.iter().map(|(_, at)| *at).collect();
+                value.initialized = vec![true; value.layout.parts.len()].into();
+                view::Source::Position(Arc::new(value))
+            }
+            OriginSourceAction::Retain => {
+                let mut value = origin.clone();
+                value.root = Root::Derived(view::Borrow::source(source.clone()));
+                view::Source::Position(Arc::new(value))
+            }
+            _ => unreachable!(),
+        };
+        let when = bounds::Clause::both(&bounds::Clause::default(), &when);
+        normalization.result.sources.union_when(source, &when);
+    }
+
+    fn normalize(mut self) -> view::Borrow {
+        let derived = self.borrow.is_some();
+        let pending = self.borrow.is_some_and(|borrow| {
+            !borrow.inputs.is_empty() || !borrow.calls.is_empty() || !borrow.reads.is_empty()
+        });
+        let host = OriginNormalizationHost { context: std::ptr::from_mut(&mut self).cast(),
+            next: Self::next, emit: Self::emit };
+        unsafe { b_normalize_address_origin(derived.into(), pending.into(), host) };
+        self.result
+    }
+}
+
 impl Origin {
     pub(super) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self {
         let mut origin=self.clone();
@@ -499,41 +668,17 @@ impl Origin {
         }
         None
     }
-    pub fn project(&self, selected:&Self) -> Self {
-        let indices=selected.words.iter().map(|word|self.layout.parts.iter().position(|(_,at)|at==word).unwrap()).collect::<Vec<_>>();
-        Self { root:self.root.clone(),layout:selected.layout.clone(),base:self.base.clone(),
-            words:indices.iter().map(|&i|self.words[i]).collect(),
-            positions:if self.positions.is_empty(){Arc::from([])}else{indices.iter().map(|&i|self.positions[i].clone()).collect()},
-            writable:self.writable&&selected.writable,initialized:indices.iter().enumerate().map(|(component,&i)|self.initialized[i]||selected.initialized[component]).collect() }
+    fn project(&self, selected: &Self) -> Self {
+        let count = selected.words.len();
+        let positions = if self.positions.is_empty() { Vec::new() } else { Vec::with_capacity(count) };
+        OriginProjection { parent: self, selected, words: Vec::with_capacity(count), positions,
+            initialized: Vec::with_capacity(count) }.materialize()
     }
+
     pub fn normalize(&self) -> view::Borrow {
-        let Root::Derived(borrow)=&self.root else {
-            return view::Borrow::source(view::Source::Position(Arc::new(self.clone())));
-        };
-        let mut result=view::Borrow::default();
-        for(source,when)in borrow.sources.entries() {
-            let value=match source {
-                view::Source::Position(parent) if parent.layout==self.base =>
-                    view::Borrow::source(view::Source::Position(Arc::new(parent.project(self)))),
-                view::Source::Inactive => view::Borrow::source(view::Source::Inactive),
-                view::Source::External => {
-                    let mut value=self.clone();value.root=Root::External(Identity::Value(Vec::new()));value.base=value.layout.clone();
-                    value.words=value.layout.parts.iter().map(|(_,at)|*at).collect();value.initialized=vec![true;value.layout.parts.len()].into();
-                    view::Borrow::source(view::Source::Position(Arc::new(value)))
-                }
-                source => {
-                    let mut value=self.clone();value.root=Root::Derived(view::Borrow::source(source.clone()));
-                    view::Borrow::source(view::Source::Position(Arc::new(value)))
-                }
-            };
-            result.union(&value.restricted(&when));
-        }
-        if !borrow.inputs.is_empty()||!borrow.calls.is_empty()||!borrow.reads.is_empty() {
-            let mut value=self.clone();
-            value.root=Root::Derived(view::Borrow {inputs:borrow.inputs.clone(),calls:borrow.calls.clone(),reads:borrow.reads.clone(),..view::Borrow::default()});
-            result.sources.insert(view::Source::Position(Arc::new(value)));
-        }
-        result
+        let borrow = match &self.root { Root::Derived(borrow) => Some(borrow), _ => None };
+        OriginNormalization { origin: self, borrow, entries: borrow.into_iter().flat_map(|borrow| borrow.sources.entries()),
+            current: None, result: view::Borrow::default() }.normalize()
     }
     pub fn resources(&self) -> view::Borrow {
         match &self.root {

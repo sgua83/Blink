@@ -105,6 +105,31 @@ struct AddressSourceHost {
 extern "C" u32 walk_address_sources(u32 unavailable, AddressSourceWalk walk, AddressSourceHost host) on cpu
     requires nonzero(host.next) requires nonzero(host.projection);
 
+enum OriginSourceKind:u32 { End=0; Position=1; Inactive=2; External=3; Other=4; };
+struct OriginSource { OriginSourceKind kind; u32 layout_matches; };
+enum OriginSourceAction:u32 { Direct=0; Project=1; Inactive=2; External=3; Retain=4; Pending=5; };
+struct OriginNormalizationHost {
+    address context;
+    cfn<OriginSource,address> next;
+    cfn<void,address,OriginSourceAction> emit;
+};
+extern "C" void normalize_address_origin(u32 derived, u32 pending, OriginNormalizationHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.emit);
+
+struct OriginWord { u32 word; u32 initialized; };
+enum OriginProjectionResult:u32 { Missing=0; ReadOnly=1; Writable=2; };
+struct OriginProjectionHost {
+    address context;
+    cfn<OriginWord,address,usize> ensures memory(read) selected;
+    cfn<u32,address,usize> ensures memory(read) parent_offset;
+    cfn<OriginWord,address,usize> ensures memory(read) parent;
+    cfn<void,address,usize,u32,u32> emit;
+};
+extern "C" OriginProjectionResult project_address_origin(usize selected, usize parent,
+    u32 selected_writable, u32 parent_writable, OriginProjectionHost host) on cpu
+    requires nonzero(host.selected) requires nonzero(host.parent_offset)
+    requires nonzero(host.parent) requires nonzero(host.emit);
+
 struct RegionBytes { u32 word; u32 offset; u32 size; };
 enum RegionSeedKind:u32 { Positions=0; Resource=1; External=2; };
 struct RegionSeed { usize parts; usize positions; usize words; RegionSeedKind kind; u32 materialize; };

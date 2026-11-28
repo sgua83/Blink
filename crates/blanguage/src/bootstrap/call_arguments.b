@@ -409,6 +409,51 @@ extern "C" u32 walk_address_sources(u32 unavailable, AddressSourceWalk walk, Add
     }
 }
 
+extern "C" void normalize_address_origin(u32 derived, u32 pending, OriginNormalizationHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.emit) {
+    if (derived == 0) {
+        host.emit(host.context, OriginSourceAction::Direct);
+        return;
+    }
+    while (true) {
+        let source = host.next(host.context);
+        if (source.kind == OriginSourceKind::End) { break; }
+        OriginSourceAction action = OriginSourceAction::Retain;
+        if (source.kind == OriginSourceKind::Position && source.layout_matches != 0) {
+            action = OriginSourceAction::Project;
+        } else if (source.kind == OriginSourceKind::Inactive) {
+            action = OriginSourceAction::Inactive;
+        } else if (source.kind == OriginSourceKind::External) {
+            action = OriginSourceAction::External;
+        }
+        host.emit(host.context, action);
+    }
+    if (pending != 0) { host.emit(host.context, OriginSourceAction::Pending); }
+}
+
+extern "C" OriginProjectionResult project_address_origin(usize selected, usize parent,
+    u32 selected_writable, u32 parent_writable, OriginProjectionHost host) on cpu
+    requires nonzero(host.selected) requires nonzero(host.parent_offset)
+    requires nonzero(host.parent) requires nonzero(host.emit) {
+    usize slot = 0u64;
+    while (slot < selected) {
+        let field = host.selected(host.context, slot);
+        usize index = 0u64;
+        while (index < parent) {
+            if (host.parent_offset(host.context, index) == field.word) {
+                let candidate = host.parent(host.context, index);
+                host.emit(host.context, index, candidate.word, candidate.initialized | field.initialized);
+                break;
+            }
+            index += 1u64;
+        }
+        if (index == parent) { return OriginProjectionResult::Missing; }
+        slot += 1u64;
+    }
+    return selected_writable != 0 && parent_writable != 0
+        ? OriginProjectionResult::Writable : OriginProjectionResult::ReadOnly;
+}
+
 extern "C" u32 seed_memory_regions(RegionSeed seed, RegionSeedHost host) on cpu
     requires nonzero(host.part) requires nonzero(host.reserve) requires nonzero(host.emit) {
     if (seed.kind == RegionSeedKind::External) { return 0; }
