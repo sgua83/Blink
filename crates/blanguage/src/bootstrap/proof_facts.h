@@ -25,6 +25,17 @@ extern "C" FactCursor fact_tree_cursor(address owner) on cpu;
 extern "C" FactCursor fact_tree_range(address owner, FactBound start, FactBound end) on cpu;
 extern "C" address fact_tree_next(address owner, address cursor, u32 reverse) on cpu;
 
+extern "C" void alias_facts_build(address owner,address facts,address roots,cfn<address,address,address> lookup) on cpu
+    requires nonzero(lookup);
+extern "C" u32 alias_facts_insert(address owner,address fact,address roots,cfn<address,address,address> lookup) on cpu
+    requires nonzero(lookup);
+extern "C" void alias_facts_remove(address owner,address fact,address roots,cfn<address,address,address> lookup) on cpu
+    requires nonzero(lookup);
+FactCursor conflict_fact_cursor(address owner,u32 aliases) on cpu;
+address conflict_fact_next(address owner,address cursor,u32 aliases) on cpu;
+address conflict_fact_select(address owner,address key,u32 preceding,u32 aliases) on cpu;
+bool conflict_fact_contains(address owner,address key,u32 aliases) on cpu;
+
 extern "C" address fact_tree_merge(address left, address right, address cursors, u32 operation) on cpu;
 extern "C" void fact_tree_collect_merge(address left,address right,address cursors,u32 operation,address output) on cpu;
 extern "C" i32 fact_tree_compare(address left, address right) on cpu;
