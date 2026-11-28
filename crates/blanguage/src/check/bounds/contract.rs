@@ -9,28 +9,24 @@ enum Variable { Range(ValueIdentity, Scalar), Atom(Fact) }
 impl Variable {
     fn end(self) -> u128 { match self { Self::Range(_, scalar) => u128::from(scalar.bit_mask())+1, Self::Atom(_) => 2 } }
 }
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
-struct Decision { variable: Variable, cells: Vec<(u128, usize)> }
-
 pub(in crate::check) struct Normalizer {
     types: BTreeMap<ValueIdentity, Option<Scalar>>,
     lengths: BTreeMap<ValueIdentity, ValueIdentity>,
-    // Ordered keys and numbered consumers share one immutable decision.
-    nodes: Vec<Option<Arc<Decision>>>,
-    unique: BTreeMap<Arc<Decision>, usize>,
+    decisions: native::DecisionTree,
     operations: HashMap<(bool, usize, usize), usize>,
     memo: native::ClauseMemo,
 }
 impl Normalizer {
     pub(in crate::check) fn new() -> Self {
-        Self { types: BTreeMap::new(), lengths: BTreeMap::new(), nodes: vec![None,None], unique:BTreeMap::new(),
+        Self { types: BTreeMap::new(), lengths: BTreeMap::new(), decisions: native::DecisionTree::default(),
             operations:HashMap::new(), memo: native::ClauseMemo::new() }
     }
     pub(in crate::check) fn storage(&self) -> crate::compiler::ConditionStorage {
         use crate::compiler::{AnalysisStorage, ConditionStorage};
         ConditionStorage {
-            decisions: AnalysisStorage::vector(&self.nodes),
-            unique: AnalysisStorage::entries::<Arc<Decision>, usize>(self.unique.len(), None),
+            decisions: self.decisions.storage(),
+            // Numbered records also form the index, so there is no separate allocation.
+            unique: AnalysisStorage::entries::<(), ()>(0, None),
             operations: AnalysisStorage::entries::<(bool, usize, usize), usize>(
                 self.operations.len(), Some(self.operations.capacity())),
             negatives: self.memo.negatives.storage(),

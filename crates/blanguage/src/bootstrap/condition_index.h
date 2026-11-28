@@ -28,3 +28,12 @@ extern "C" address contract_memo_emitted(address memo,u64 node,u32 retain) on cp
 extern "C" void remember_contract_emission(address memo,u64 node,address owned) on cpu;
 extern "C" u64 contract_memo_negative(address memo,u64 node) on cpu;
 extern "C" void remember_contract_negative(address memo,u64 node,u64 negative) on cpu;
+
+struct ContractDecisionCell { u64 low; u64 high; usize child; };
+struct ContractDecision { address variable; address cells; usize count; };
+
+extern "C" usize intern_contract_decision(
+    address tree,ContractDecision value,usize variable_bytes,cfn<i32,address,address> compare_variable
+) on cpu requires nonzero(compare_variable);
+extern "C" ContractDecision contract_decision_at(address tree,usize node) on cpu;
+extern "C" void drop_contract_decisions(address tree) on cpu;
