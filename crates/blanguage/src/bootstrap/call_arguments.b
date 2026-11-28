@@ -817,6 +817,34 @@ extern "C" void bind_output_borrow_source(CallSourceShape source,address binding
     }
 }
 
+void visit_borrow_output_group(BorrowOutputGroup group,BorrowCallPart part,usize offset,address context,
+    cfn<void,address,BorrowCallPart,address> visit) on cpu requires nonzero(visit) {
+    FactCursor cursor = ordered_tree_cursor(group.tree,group.stride);
+    while (true) {
+        address edge = ordered_tree_step(group.tree,group.stride,address_of(cursor),0);
+        if (edge == address()) { return; }
+        visit(context,part,unsafe_address(address_bits(edge)+offset));
+    }
+}
+
+extern "C" void bind_borrow_output(BorrowOutputShape shape,u32 rename_sources,BorrowOutputHost host) on cpu
+    requires nonzero(host.collect) requires nonzero(host.project)
+    requires nonzero(host.restore) requires nonzero(host.rename_source) {
+    visit_borrow_output_group(shape.inputs,BorrowCallPart::Inputs,shape.inputs.condition,host.context,host.collect);
+    visit_borrow_output_group(shape.calls,BorrowCallPart::Calls,shape.calls.condition,host.context,host.collect);
+    visit_borrow_output_group(shape.reads,BorrowCallPart::Reads,shape.reads.condition,host.context,host.collect);
+    visit_borrow_output_group(shape.sources,BorrowCallPart::Sources,shape.sources.condition,host.context,host.collect);
+    host.project(host.context);
+    visit_borrow_output_group(shape.inputs,BorrowCallPart::Inputs,0u64,host.context,host.restore);
+    visit_borrow_output_group(shape.calls,BorrowCallPart::Calls,0u64,host.context,host.restore);
+    visit_borrow_output_group(shape.reads,BorrowCallPart::Reads,0u64,host.context,host.restore);
+    if (rename_sources == 0) {
+        visit_borrow_output_group(shape.sources,BorrowCallPart::Sources,0u64,host.context,host.restore);
+    } else {
+        visit_borrow_output_group(shape.sources,BorrowCallPart::Sources,0u64,host.context,host.rename_source);
+    }
+}
+
 extern "C" void map_call_borrows(BorrowCallCounts counts, BorrowCallHost host) on cpu
     requires nonzero(host.collect) requires nonzero(host.project)
     requires nonzero(host.restore) requires nonzero(host.map_source) {

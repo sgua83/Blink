@@ -355,10 +355,6 @@ impl<K:Ord+Clone> Edges<K>{
     fn with_paths(&self, paths: &mut impl Iterator<Item = bounds::Clause>) -> Self {
         Self(self.0.keys().cloned().zip(paths).collect())
     }
-
-    fn output_bound(&self, bindings: &bounds::OutputBindings) -> Self {
-        Self(self.0.iter().map(|(key, when)| (key.clone(), when.output_bound(bindings))).collect())
-    }
 }
 impl<K:Ord+Clone,const N:usize> From<[K;N]> for Edges<K>{fn from(values:[K;N])->Self{values.into_iter().collect()}}
 impl<K:Ord+Clone> FromIterator<K> for Edges<K>{fn from_iter<T:IntoIterator<Item=K>>(values:T)->Self{let mut result=Self::default();for value in values{result.insert(value);}result}}
@@ -461,6 +457,97 @@ enum BorrowCallPart { Inputs, Calls, Reads, Sources }
 
 #[repr(C)]
 struct BorrowCallCounts { inputs: usize, calls: usize, reads: usize, sources: usize }
+
+#[repr(C)]
+struct BorrowOutputGroup {
+    tree: *const OrderedEdgeTree,
+    stride: usize,
+    condition: usize,
+}
+
+impl<K: Ord> From<&Edges<K>> for BorrowOutputGroup {
+    fn from(edges: &Edges<K>) -> Self {
+        Self { tree: &edges.0.tree, stride: EdgeTree::<K>::STRIDE,
+            condition: std::mem::offset_of!(EdgePayload<K>, when) }
+    }
+}
+
+#[repr(C)]
+struct BorrowOutputShape {
+    inputs: BorrowOutputGroup,
+    calls: BorrowOutputGroup,
+    reads: BorrowOutputGroup,
+    sources: BorrowOutputGroup,
+}
+
+#[repr(C)]
+struct BorrowOutputHost {
+    context: *mut std::ffi::c_void,
+    collect: unsafe extern "C" fn(*mut std::ffi::c_void, BorrowCallPart, *const std::ffi::c_void),
+    project: unsafe extern "C" fn(*mut std::ffi::c_void),
+    restore: unsafe extern "C" fn(*mut std::ffi::c_void, BorrowCallPart, *const std::ffi::c_void),
+    rename_source: unsafe extern "C" fn(*mut std::ffi::c_void, BorrowCallPart, *const std::ffi::c_void),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::bind_borrow_output"]
+    fn b_bind_borrow_output(shape: BorrowOutputShape, rename_sources: u32, host: BorrowOutputHost);
+}
+
+struct BorrowOutputConditions<'a> {
+    bindings: &'a bounds::OutputBindings,
+    roots: Vec<&'a bounds::Clause>,
+    projected: std::vec::IntoIter<bounds::Clause>,
+    result: Borrow,
+}
+
+impl<'a> BorrowOutputConditions<'a> {
+    unsafe extern "C" fn collect(context: *mut std::ffi::c_void, _: BorrowCallPart, condition: *const std::ffi::c_void) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        input.roots.push(unsafe { &*condition.cast::<bounds::Clause>() });
+    }
+
+    unsafe extern "C" fn project(context: *mut std::ffi::c_void) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        input.projected = bounds::Clause::output_edge_conditions(&input.roots, input.bindings).into_iter();
+    }
+
+    unsafe extern "C" fn restore(context: *mut std::ffi::c_void, part: BorrowCallPart, entry: *const std::ffi::c_void) {
+        unsafe fn keep_key<K: Ord + Clone>(group: &mut Edges<K>, entry: *const std::ffi::c_void, when: bounds::Clause) {
+            let key = unsafe { &(*entry.cast::<EdgePayload<K>>()).key };
+            group.0.insert_with(key.clone(), |_| when);
+        }
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let when = input.projected.next().unwrap();
+        unsafe {
+            match part {
+                BorrowCallPart::Inputs => keep_key(&mut input.result.inputs, entry, when),
+                BorrowCallPart::Calls => keep_key(&mut input.result.calls, entry, when),
+                BorrowCallPart::Reads => keep_key(&mut input.result.reads, entry, when),
+                BorrowCallPart::Sources => keep_key(&mut input.result.sources, entry, when),
+            }
+        }
+    }
+
+    unsafe extern "C" fn rename_source(context: *mut std::ffi::c_void, _: BorrowCallPart, entry: *const std::ffi::c_void) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let source = unsafe { &(*entry.cast::<EdgePayload<Source>>()).key };
+        let source = source.clone().bind_outputs(input.bindings);
+        input.result.sources.insert_when(source, input.projected.next().unwrap());
+    }
+
+    fn bind(borrow: &'a Borrow, bindings: &'a bounds::OutputBindings, rename_sources: bool) -> Borrow {
+        let shape = BorrowOutputShape { inputs: (&borrow.inputs).into(), calls: (&borrow.calls).into(),
+            reads: (&borrow.reads).into(), sources: (&borrow.sources).into() };
+        let count = borrow.inputs.0.len() + borrow.calls.0.len() + borrow.reads.0.len() + borrow.sources.0.len();
+        let mut input = Self { bindings, roots: Vec::with_capacity(count), projected: std::vec::IntoIter::default(),
+            result: Borrow::default() };
+        let host = BorrowOutputHost { context: std::ptr::from_mut(&mut input).cast(), collect: Self::collect,
+            project: Self::project, restore: Self::restore, rename_source: Self::rename_source };
+        unsafe { b_bind_borrow_output(shape, u32::from(rename_sources), host) };
+        input.result
+    }
+}
 
 #[repr(C)]
 struct BorrowCallHost {
@@ -1111,9 +1198,8 @@ impl Borrow{
         };
         input.project_sources(counts)
     }
-    pub(super) fn bind_guards(&self,bindings:&bounds::OutputBindings)->Self {
-        Self{sources:self.sources.output_bound(bindings),inputs:self.inputs.output_bound(bindings),
-            calls:self.calls.output_bound(bindings),reads:self.reads.output_bound(bindings)}
+    pub(super) fn bind_guards(&self, bindings: &bounds::OutputBindings) -> Self {
+        BorrowOutputConditions::bind(self, bindings, false)
     }
     pub(in crate::check) fn retain_sources(&mut self, keep: impl Fn(&Source) -> bool) {
         self.sources.0.retain(|source, _| keep(source));
@@ -1269,9 +1355,8 @@ impl Borrow{
     pub fn at_call(&self, bindings: &BTreeMap<ValueIdentity, bounds::Proof>) -> Self {
         self.map_sources_at_call(bindings, |source, _| source.at_call(bindings))
     }
-    pub fn output_bound(&self,bindings:&bounds::OutputBindings)->Self{
-        let mut result=Self{inputs:self.inputs.output_bound(bindings),calls:self.calls.output_bound(bindings),reads:self.reads.output_bound(bindings),..Self::default()};
-        for(source,when)in self.sources.entries(){result.sources.insert_when(source.clone().bind_outputs(bindings),when.output_bound(bindings));}result
+    pub fn output_bound(&self, bindings: &bounds::OutputBindings) -> Self {
+        BorrowOutputConditions::bind(self, bindings, true)
     }
 }
 

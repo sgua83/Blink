@@ -416,9 +416,25 @@ unsafe extern "C" {
 }
 
 pub(super) fn rename_outputs(roots: &[Clause], bindings: &OutputBindings) -> Vec<Clause> {
+    collect_output_roots(roots.iter(), bindings)
+}
+
+fn collect_output_roots<'a>(
+    roots: impl ExactSizeIterator<Item = &'a Clause>,
+    bindings: &'a OutputBindings,
+) -> Vec<Clause> {
     let mut outputs = Vec::with_capacity(roots.len());
-    rename_output_roots(roots.iter().enumerate(), bindings, |_, result| outputs.push(result));
+    rename_output_roots(roots.enumerate(), bindings, |_, result| outputs.push(result));
     outputs
+}
+
+impl Clause {
+    pub(in crate::check) fn output_edge_conditions(roots: &[&Self], bindings: &OutputBindings) -> Vec<Self> {
+        if bindings.is_empty() {
+            return roots.iter().copied().cloned().collect();
+        }
+        collect_output_roots(roots.iter().copied(), bindings)
+    }
 }
 
 fn rename_output_roots<'a>(

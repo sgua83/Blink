@@ -327,6 +327,19 @@ struct OutputSourceHost {
 extern "C" void bind_output_borrow_source(CallSourceShape source,address bindings,OutputSourceHost host) on cpu
     requires nonzero(host.identity) requires nonzero(host.rename) requires nonzero(host.child) requires nonzero(host.task);
 
+struct BorrowOutputGroup { address tree; usize stride; usize condition; };
+struct BorrowOutputShape { BorrowOutputGroup inputs; BorrowOutputGroup calls; BorrowOutputGroup reads; BorrowOutputGroup sources; };
+struct BorrowOutputHost {
+    address context;
+    cfn<void,address,BorrowCallPart,address> collect;
+    cfn<void,address> project;
+    cfn<void,address,BorrowCallPart,address> restore;
+    cfn<void,address,BorrowCallPart,address> rename_source;
+};
+extern "C" void bind_borrow_output(BorrowOutputShape shape,u32 rename_sources,BorrowOutputHost host) on cpu
+    requires nonzero(host.collect) requires nonzero(host.project)
+    requires nonzero(host.restore) requires nonzero(host.rename_source);
+
 struct AddressRequirements { u32 writable; u32 initialized; u32 atomic; };
 enum AddressViolation:u32 { None=0; Inactive=1; Layout=2; Atomic=3; ReadOnly=4; Uninitialized=5; };
 struct AddressRequirementHost {
