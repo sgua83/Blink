@@ -47,6 +47,7 @@ struct PlanOutput {
     ordered: *mut usize,
     ordered_count: usize,
     schedule_flags: *mut u8,
+    inputs: *mut usize,
 }
 
 struct EvaluationPlan {
@@ -54,6 +55,7 @@ struct EvaluationPlan {
     stable: usize,
     schedule_flags: Vec<u8>,
     completed: usize,
+    inputs: Vec<usize>,
 }
 
 unsafe extern "C" {
@@ -1985,12 +1987,12 @@ impl Graph {
         RelationWalk::new(self, accepts).walk(root, false)
     }
 
-    fn evaluation_plan<I: IntoIterator<Item = usize>>(
-        &self, reachable: I, materialize: bool,
+    fn evaluation_plan<I: ExactSizeIterator<Item = usize>>(
+        &self, mut reachable: I, materialize: bool,
     ) -> EvaluationPlan {
         let mut rows = vec![PlanNode::default(); self.nodes.len()];
+        let reachable_nodes = reachable.len();
         let (ordinary_nodes, dependencies) = {
-            let mut reachable = reachable.into_iter();
             let graph = RelationView { base: self, tail: &[], residual: None };
             let mut work = PlanDependencies {
                 row: usize::MAX, nodes: vec![usize::MAX; self.nodes.len()],
@@ -2000,7 +2002,7 @@ impl Graph {
                 prepare_plan_inputs(
                     ptr::from_ref(&graph).cast(), ptr::from_mut(&mut work).cast(),
                     ptr::from_mut(&mut reachable).cast(), rows.as_mut_ptr(), u32::from(materialize),
-                    PlanDependencies::host::<I::IntoIter>(),
+                    PlanDependencies::host::<I>(),
                 )
             };
             (ordinary_nodes, work.dependencies)
@@ -2011,15 +2013,21 @@ impl Graph {
         let mut ready = Vec::<usize>::with_capacity(ordinary_nodes);
         let mut ordered = Vec::new();
         let mut schedule_flags = Vec::new();
+        let mut inputs = Vec::new();
+        let input_count = reachable_nodes - ordinary_nodes;
         let output = if materialize {
             ordered.reserve(ordinary_nodes);
             schedule_flags.resize(rows.len(), 0);
-            PlanOutput { ordered: ordered.as_mut_ptr(), ordered_count: ordinary_nodes, schedule_flags: schedule_flags.as_mut_ptr() }
+            inputs.reserve(input_count);
+            PlanOutput {
+                ordered: ordered.as_mut_ptr(), ordered_count: ordinary_nodes,
+                schedule_flags: schedule_flags.as_mut_ptr(), inputs: inputs.as_mut_ptr(),
+            }
         } else {
-            PlanOutput { ordered: std::ptr::null_mut(), ordered_count: 0, schedule_flags: std::ptr::null_mut() }
+            PlanOutput { ordered: ptr::null_mut(), ordered_count: 0, schedule_flags: ptr::null_mut(), inputs: ptr::null_mut() }
         };
         // Each dependency can have one reverse entry, and each ordinary node is
-        // queued and emitted at most once. Only the emitted order is read here.
+        // queued at most once. The plan emits all reachable inputs and only ordered ordinary nodes.
         let OrderCount { completed, stable } = unsafe {
             plan_relation(
                 PlanInput { rows: rows.as_ptr(), dependencies: dependencies.as_ptr(), count: rows.len() },
@@ -2028,9 +2036,12 @@ impl Graph {
             )
         };
         if materialize {
-            unsafe { ordered.set_len(completed) };
+            unsafe {
+                ordered.set_len(completed);
+                inputs.set_len(input_count);
+            }
         }
-        EvaluationPlan { ordered, stable, schedule_flags, completed }
+        EvaluationPlan { ordered, stable, schedule_flags, completed, inputs }
     }
     pub(in crate::check) fn selected(&self, root: usize) -> Self {
         RelationView { base: self, tail: &[], residual: None }.selected(root)
@@ -2207,9 +2218,8 @@ impl Graph {
         let loop_scopes = self.inputs.iter().filter_map(|(input, &node)| {
             evaluation.function.history.get(&input.level).map(|history| (node, (input.level, history)))
         }).collect::<BTreeMap<_, _>>();
-        let plan = self.evaluation_plan(reachable.iter().copied(), true);
-        let mut variables = self.variables.intersection(&reachable)
-            .map(|&id| (id, Borrow::default())).collect::<BTreeMap<_, _>>();
+        let plan = self.evaluation_plan(reachable.into_iter(), true);
+        let mut variables = plan.inputs.iter().map(|&id| (id, Borrow::default())).collect::<BTreeMap<_, _>>();
         let mut values = BTreeMap::new();
         let mut initial = true;
         loop {
@@ -2236,7 +2246,7 @@ impl Graph {
             let (converged, next) = {
                 let mut round = RelationRound {
                     root, query: &mut query, scope: &mut scope, loop_scopes: &loop_scopes,
-                    variables: variables.keys(), next: Vec::new(),
+                    next: Vec::new(),
                 };
                 let converged = round.run(&plan, initial);
                 (converged, round.next)
@@ -2258,12 +2268,12 @@ struct RoundSchedule {
     count: usize,
     stable: usize,
     schedule_flags: *const u8,
+    inputs: WalkSlice,
 }
 
 #[repr(C)]
 struct RoundHost {
     evaluate: unsafe extern "C" fn(Slot, usize, u32),
-    next_variable: unsafe extern "C" fn(Slot) -> usize,
     observe: unsafe extern "C" fn(Slot),
     equivalent: unsafe extern "C" fn(Slot, usize, u32) -> u32,
     forget: unsafe extern "C" fn(Slot, usize),
@@ -2279,7 +2289,6 @@ struct RelationRound<'round, 'graph, 'scope> {
     query: &'round mut Query<'graph>,
     scope: &'round mut BorrowEvaluation<'scope>,
     loop_scopes: &'round BTreeMap<usize, (usize, &'scope LoopHistory)>,
-    variables: std::collections::btree_map::Keys<'graph, usize, Borrow>,
     next: Vec<(usize, Borrow)>,
 }
 
@@ -2287,10 +2296,10 @@ impl RelationRound<'_, '_, '_> {
     fn run(&mut self, plan: &EvaluationPlan, initial: bool) -> bool {
         let schedule = RoundSchedule {
             ordered: plan.ordered.as_ptr(), count: plan.ordered.len(),
-            stable: plan.stable, schedule_flags: plan.schedule_flags.as_ptr(),
+            stable: plan.stable, schedule_flags: plan.schedule_flags.as_ptr(), inputs: WalkSlice::of(&plan.inputs),
         };
         let host = RoundHost {
-            evaluate: Self::evaluate, next_variable: Self::next_variable, observe: Self::observe,
+            evaluate: Self::evaluate, observe: Self::observe,
             equivalent: Self::equivalent, forget: Self::forget,
         };
         unsafe { solve_relation_round(ptr::from_mut(self).cast(), schedule, u32::from(initial), host) != 0 }
@@ -2320,11 +2329,6 @@ impl RelationRound<'_, '_, '_> {
             value = value.guards_at_call(&bindings);
         }
         round.next.push((id, value));
-    }
-
-    unsafe extern "C" fn next_variable(context: Slot) -> usize {
-        let round = unsafe { &mut *context.cast::<Self>() };
-        round.variables.next().copied().unwrap_or(usize::MAX)
     }
 
     unsafe extern "C" fn observe(context: Slot) {

@@ -209,7 +209,8 @@ usize connect(Input input, Workspace work) on cpu {
 const u8 FIXED_INPUT = u8(1);
 const u8 DIRECT_READ = u8(2);
 
-void prepare_schedule_flags(Input input, Workspace work, address output) on cpu {
+void prepare_schedule(Input input, Workspace work, Output output) on cpu {
+    usize input_index = 0u64;
     usize index = 0u64;
     while (index < input.count) {
         usize id = index;
@@ -217,9 +218,12 @@ void prepare_schedule_flags(Input input, Workspace work, address output) on cpu 
         Dependencies source = input_row(input, id);
         u64 kind = source.flags & (REACHABLE | VARIABLE | READS);
         if (kind == (REACHABLE | READS)) {
-            unsafe_position<u8>(cell(output, id, 1u64)) = DIRECT_READ;
+            unsafe_position<u8>(cell(output.schedule_flags, id, 1u64)) = DIRECT_READ;
         }
-        if (kind != (REACHABLE | VARIABLE)) { continue; }
+        if ((kind & (REACHABLE | VARIABLE)) != (REACHABLE | VARIABLE)) { continue; }
+        unsafe_position<usize>(cell(output.inputs, input_index, 8u64)) = id;
+        input_index += 1u64;
+        if ((kind & READS) != 0u64) { continue; }
         usize edge = source.first;
         while (edge < source.end) {
             usize producer = dependency(input, edge);
@@ -230,7 +234,7 @@ void prepare_schedule_flags(Input input, Workspace work, address output) on cpu 
             edge += 1u64;
         }
         if (edge == source.end) {
-            unsafe_position<u8>(cell(output, id, 1u64)) = FIXED_INPUT;
+            unsafe_position<u8>(cell(output.schedule_flags, id, 1u64)) = FIXED_INPUT;
         }
     }
 }
@@ -294,7 +298,7 @@ extern "C" OrderCount plan(Input input, Workspace work, Output output) on cpu {
     }
     if (materialize) {
         finish_order(output, stable, feedback);
-        prepare_schedule_flags(input, work, output.schedule_flags);
+        prepare_schedule(input, work, output);
     }
     return OrderCount(completed, stable);
 }
@@ -436,7 +440,7 @@ bool round_unchanged(address context, usize count, u32 paths, RoundHost host) on
 }
 
 extern "C" u32 solve_round(address context, RoundSchedule schedule, u32 initial, RoundHost host) on cpu
-    requires nonzero(host.evaluate) requires nonzero(host.next_variable) requires nonzero(host.observe)
+    requires nonzero(host.evaluate) requires nonzero(host.observe)
     requires nonzero(host.equivalent) requires nonzero(host.forget)
 {
     usize index = initial != 0 ? 0u64 : schedule.stable;
@@ -447,13 +451,14 @@ extern "C" u32 solve_round(address context, RoundSchedule schedule, u32 initial,
     }
 
     usize active = 0u64;
-    usize variable = host.next_variable(context);
-    while (variable != WALK_END) {
+    index = 0u64;
+    while (index < schedule.inputs.count) {
+        usize variable = unsafe_position<usize>(cell(schedule.inputs.data,index,8u64));
+        index += 1u64;
         if (initial != 0 || (unsafe_position<u8>(cell(schedule.schedule_flags,variable,1u64)) & FIXED_INPUT) == u8(0)) {
             host.evaluate(context,variable,1);
             active += 1u64;
         }
-        variable = host.next_variable(context);
     }
 
     host.observe(context);

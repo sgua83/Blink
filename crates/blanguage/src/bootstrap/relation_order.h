@@ -16,6 +16,7 @@ struct Output {
     address ordered;
     usize ordered_count;
     address schedule_flags;
+    address inputs;
 };
 
 
@@ -95,18 +96,18 @@ struct RoundSchedule {
     usize count;
     usize stable;
     address schedule_flags;
+    WalkSlice inputs;
 };
 
 struct RoundHost {
     cfn<void,address,usize,u32> evaluate;
-    cfn<usize,address> next_variable;
     cfn<void,address> observe;
     cfn<u32,address,usize,u32> equivalent;
     cfn<void,address,usize> forget;
 };
 
 extern "C" u32 solve_round(address context, RoundSchedule schedule, u32 initial, RoundHost host) on cpu
-    requires nonzero(host.evaluate) requires nonzero(host.next_variable) requires nonzero(host.observe)
+    requires nonzero(host.evaluate) requires nonzero(host.observe)
     requires nonzero(host.equivalent) requires nonzero(host.forget);
 
 struct RelationSelection {
