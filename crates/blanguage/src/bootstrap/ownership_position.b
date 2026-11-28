@@ -290,7 +290,9 @@ extern "C" address HeapAlloc(handle heap, u32 flags, usize bytes) on cpu from "K
 extern "C" address HeapReAlloc(handle heap, u32 flags, address data, usize bytes) on cpu from "KERNEL32.dll";
 extern "C" i32 HeapFree(handle heap, u32 flags, address data) on cpu from "KERNEL32.dll";
 
-const u32 DATASET_HEAP_EXCEPTIONS = 4;
+extern "C" never abort() on cpu from "ucrtbase.dll";
+
+const u32 POSITION_HEAP_EXCEPTIONS = 4;
 
 struct DatasetFrame {
     address source;
@@ -298,23 +300,108 @@ struct DatasetFrame {
     usize child;
     address partial;
 };
-struct DatasetFrames { address data; usize capacity; };
+struct PositionFrames { address data; usize capacity; };
 
-address dataset_frame(address data, usize index) on cpu {
-    return unsafe_address(address_bits(data) + index * size_of<DatasetFrame>());
+address position_frame(address data, usize index, usize width) on cpu {
+    return unsafe_address(address_bits(data) + index * width);
 }
 
-void push_dataset_frame(inout DatasetFrames frames, usize depth, DatasetFrame frame) on cpu {
+address reserve_position_frame(inout PositionFrames frames, usize depth, usize width) on cpu {
     if (depth == frames.capacity) {
         usize capacity = max(8u64, frames.capacity * 2u64);
         handle heap = GetProcessHeap();
         frames.data = frames.capacity == 0u64
-            ? HeapAlloc(heap, DATASET_HEAP_EXCEPTIONS, capacity * size_of<DatasetFrame>())
-            : HeapReAlloc(heap, DATASET_HEAP_EXCEPTIONS, frames.data, capacity * size_of<DatasetFrame>());
+            ? HeapAlloc(heap, POSITION_HEAP_EXCEPTIONS, capacity * width)
+            : HeapReAlloc(heap, POSITION_HEAP_EXCEPTIONS, frames.data, capacity * width);
         frames.capacity = capacity;
     }
-    unsafe_position<DatasetFrame>(dataset_frame(frames.data, depth)) = frame;
+    return position_frame(frames.data, depth, width);
 }
+
+void push_dataset_frame(inout PositionFrames frames, usize depth, DatasetFrame frame) on cpu {
+    let slot = reserve_position_frame(frames, depth, size_of<DatasetFrame>());
+    unsafe_position<DatasetFrame>(slot) = frame;
+}
+
+// The Windows process heap and this payload offset both preserve 16-byte alignment.
+const usize SHARED_POSITION_HEADER = 16u64;
+
+address shared_position_header(address positions) on cpu {
+    return unsafe_address(address_bits(positions) - SHARED_POSITION_HEADER);
+}
+
+extern "C" address allocate_shared_positions(usize bytes) on cpu {
+    let header = HeapAlloc(GetProcessHeap(), POSITION_HEAP_EXCEPTIONS, SHARED_POSITION_HEADER + bytes);
+    unsafe_position<u64>(header) = 1u64;
+    return unsafe_address(address_bits(header) + SHARED_POSITION_HEADER);
+}
+
+extern "C" void retain_shared_positions(address positions) on cpu {
+    let header = shared_position_header(positions);
+    let previous = atomic_add(unsafe_position<atomic<u64>>(header), 1u64, relaxed);
+    if (previous > 9223372036854775807u64) { abort(); }
+}
+
+bool release_position_reference(address positions) on cpu {
+    let header = shared_position_header(positions);
+    return atomic_sub(unsafe_position<atomic<u64>>(header), 1u64, acq_rel) == 1u64;
+}
+
+struct SharedPositionRelease {
+    SharedPositionSpan span;
+    usize next;
+    bool owns_payload;
+};
+
+void push_shared_position_release(inout PositionFrames frames, usize depth, SharedPositionRelease release) on cpu {
+    let slot = reserve_position_frame(frames, depth, size_of<SharedPositionRelease>());
+    unsafe_position<SharedPositionRelease>(slot) = release;
+}
+
+extern "C" void release_shared_positions(SharedPositionSpan positions, usize width,
+    cfn<SharedPositionChildren,address> take) on cpu requires nonzero(take) {
+    if (positions.count == 0u64 || !release_position_reference(positions.positions)) { return; }
+    PositionFrames pending = PositionFrames(address(), 0u64);
+    usize depth = 0u64;
+    SharedPositionRelease current = SharedPositionRelease(positions, 0u64, true);
+    while (true) {
+        if (!current.owns_payload) {
+            current.owns_payload = release_position_reference(current.span.positions);
+        }
+        bool descend = false;
+        while (current.owns_payload && current.next < current.span.count) {
+            let value = position_frame(current.span.positions, current.next, width);
+            let children = take(value);
+            current.next += 1u64;
+            if (children.first.count == 0u64 && children.second.count == 0u64) { continue; }
+
+            push_shared_position_release(pending, depth, current);
+            depth += 1u64;
+            if (children.first.count == 0u64) {
+                current = SharedPositionRelease(children.second, 0u64, false);
+            } else {
+                if (children.second.count != 0u64) {
+                    push_shared_position_release(pending, depth, SharedPositionRelease(children.second, 0u64, false));
+                    depth += 1u64;
+                }
+                current = SharedPositionRelease(children.first, 0u64, false);
+            }
+            descend = true;
+            break;
+        }
+        if (descend) { continue; }
+
+        if (current.owns_payload) {
+            HeapFree(GetProcessHeap(), 0, shared_position_header(current.span.positions));
+        }
+        if (depth == 0u64) { break; }
+        depth -= 1u64;
+        let slot = position_frame(pending.data, depth, size_of<SharedPositionRelease>());
+        current = unsafe_position<SharedPositionRelease>(slot);
+    }
+    if (pending.capacity != 0u64) { HeapFree(GetProcessHeap(), 0, pending.data); }
+}
+
 
 struct DatasetPositionMapping {
     address context;
@@ -348,7 +435,7 @@ address map_dataset_positions(address value, DatasetPositionMapping mapping, Hos
     requires nonzero(cleanup.position) requires nonzero(cleanup.vector)
     requires nonzero(mapping.terminal) {
     let absent = address();
-    DatasetFrames frames = DatasetFrames(absent, 0u64);
+    PositionFrames frames = PositionFrames(absent, 0u64);
     usize depth = 0u64;
     address current = value;
     address result = absent;
@@ -382,7 +469,7 @@ address map_dataset_positions(address value, DatasetPositionMapping mapping, Hos
 
         // A frame holds only children which have returned and still belong to this node.
         while (depth != 0u64) {
-            address top = dataset_frame(frames.data, depth - 1u64);
+            address top = position_frame(frames.data, depth - 1u64, size_of<DatasetFrame>());
             DatasetFrame frame = unsafe_position<DatasetFrame>(top);
             if (result == absent) {
                 if (frame.shape.kind == 10) { cleanup.vector(frame.partial); }

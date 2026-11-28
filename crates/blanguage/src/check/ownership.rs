@@ -4,6 +4,7 @@ use super::*;
 mod position;
 #[path="ownership/place.rs"]
 mod place;
+use position::{PositionChild, SharedPositions};
 
 #[derive(Clone, Copy)]
 pub(super) enum ApplicationIndex {
@@ -35,9 +36,9 @@ pub(super) enum Position {
     Parameter(usize, usize),
     ApplicationElement(usize, ApplicationIndex, u32),
     ApplicationInput(view::LoopInput, Option<ApplicationIndex>, u32),
-    Indexed(std::sync::Arc<[Position]>, ApplicationIndex),
-    Conditional(std::sync::Arc<owned_presence::Presence>,std::sync::Arc<Position>,std::sync::Arc<Position>),
-    Both(std::sync::Arc<Position>,std::sync::Arc<Position>),
+    Indexed(SharedPositions, ApplicationIndex),
+    Conditional(Arc<owned_presence::Presence>, PositionChild, PositionChild),
+    Both(PositionChild, PositionChild),
 }
 impl Position {
     pub(super) fn index(positions:Vec<Self>,index:ApplicationIndex,width:usize)->Vec<Self>{position::indexed(positions,index,width)}

@@ -55,6 +55,13 @@ extern "C" address word(address value,PositionIndex selected,u32 field,Host host
     requires nonzero(host.push_vector)
     requires nonzero(host.make_position)
     requires nonzero(host.clone_position);
+struct SharedPositionSpan { address positions; usize count; };
+struct SharedPositionChildren { SharedPositionSpan first; SharedPositionSpan second; };
+extern "C" address allocate_shared_positions(usize bytes) on cpu;
+extern "C" void retain_shared_positions(address positions) on cpu;
+extern "C" void release_shared_positions(SharedPositionSpan positions, usize width,
+    cfn<SharedPositionChildren,address> take) on cpu requires nonzero(take);
+
 struct DatasetPositionCleanup {
     cfn<void,address> position;
     cfn<void,address> vector;
