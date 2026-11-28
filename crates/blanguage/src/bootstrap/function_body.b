@@ -1,4 +1,6 @@
 module bootstrap.function_body;
+import bootstrap.ownership_payload;
+import bootstrap.return_scope;
 
 extern "C" void loop_terminal_paths(address context,usize edges,LoopTerminalHost host) on cpu
     requires nonzero(host.bounded) requires nonzero(host.project) {
@@ -2700,6 +2702,27 @@ LoopProgress initial_loop_resources(LoopResource entry, LoopResource current, ad
         if (child == LoopProgress::Added) { progress = child; }
     }
     return progress;
+}
+
+extern "C" InitialLoopStart initial_loop_start(address nodes, Slice body, u32 resources, u32 repeated) on cpu {
+    bool affected = resources != 0 && loop_exit(nodes, body, false);
+    return InitialLoopStart(u32(affected), u32(repeated != 0 || !affected));
+}
+
+extern "C" InitialLoopChoice initial_loop_writes(InitialLoopStart start, u32 repeated, usize count,
+    address context, cfn<u32,address,usize,u32> classify) on cpu requires nonzero(classify) {
+    bool affected = start.affected != 0;
+    usize index = 0u64;
+    while (index < count) {
+        u32 write = classify(context, index, u32(!affected));
+        if (write == u32(InitialWrite::Unavailable)) { return InitialLoopChoice::Expand; }
+        if (write == u32(InitialWrite::IncompleteShape)) {
+            if (repeated == 0) { return InitialLoopChoice::Expand; }
+            affected = true;
+        }
+        index += 1u64;
+    }
+    return affected ? InitialLoopChoice::Progress : InitialLoopChoice::Ordinary;
 }
 
 extern "C" u32 initial_loop_progress(address context, LoopProgressHost host) on cpu

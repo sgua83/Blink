@@ -632,6 +632,11 @@ struct LoopProgressHost {
     cfn<LoopFactPair,address,usize> boolean_at;
     cfn<LoopPayload,address,address,usize> payload;
 };
+struct InitialLoopStart { u32 affected; u32 scan; };
+enum InitialLoopChoice:u32 { Ordinary=0; Expand=1; Progress=2; };
+extern "C" InitialLoopStart initial_loop_start(address nodes, Slice body, u32 resources, u32 repeated) on cpu;
+extern "C" InitialLoopChoice initial_loop_writes(InitialLoopStart start, u32 repeated, usize count,
+    address context, cfn<u32,address,usize,u32> classify) on cpu requires nonzero(classify);
 extern "C" u32 initial_loop_progress(address context, LoopProgressHost host) on cpu
     requires nonzero(host.next) requires nonzero(host.boolean_at) requires nonzero(host.payload);
 

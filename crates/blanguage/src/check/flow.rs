@@ -1,6 +1,5 @@
 //! 顺序块合成真实退出边；循环结束只合流条件失败与 break 的状态。
 use super::*;
-use super::owned_values::InitialWrite;
 use super::view::{Borrow,InputSlot,LoopInput,data_at,data_at_mut};
 
 #[repr(C)]
@@ -46,7 +45,32 @@ struct LoopProgressHost {
     payload: unsafe extern "C" fn(*const std::ffi::c_void, *const std::ffi::c_void, usize) -> LoopPayload,
 }
 
+#[repr(C)]
+struct InitialLoopStart { affected: u32, scan: u32 }
+
+#[repr(u32)]
+enum InitialLoopChoice { Ordinary, Expand, Progress }
+
+struct LoopWritesQuery<'a, 'w> {
+    builder: &'a Builder<'w>,
+    writes: &'a [Expr],
+}
+
+unsafe extern "C" fn classify_loop_write(context: *const std::ffi::c_void, index: usize, shape: u32) -> u32 {
+    let query = unsafe { &*context.cast::<LoopWritesQuery<'_, '_>>() };
+    owned_records::initial_loop_write(query.builder, &query.writes[index], shape != 0) as u32
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.function_body::initial_loop_start"]
+    fn initial_loop_start(
+        nodes: *const std::ffi::c_void, body: crate::syntax::wire::Slice, resources: u32, repeated: u32,
+    ) -> InitialLoopStart;
+    #[link_name = "bootstrap.function_body::initial_loop_writes"]
+    fn initial_loop_writes(
+        start: InitialLoopStart, repeated: u32, count: usize, context: *const std::ffi::c_void,
+        classify: unsafe extern "C" fn(*const std::ffi::c_void, usize, u32) -> u32,
+    ) -> InitialLoopChoice;
     #[link_name = "bootstrap.function_body::initial_loop_progress"]
     fn initial_loop_progress(context: *mut std::ffi::c_void, host: LoopProgressHost) -> u32;
 }
@@ -379,35 +403,30 @@ impl Builder<'_> {
         })));
     }
 
-    fn loop_has_resource_exit(&self, body: &Block) -> bool {
-        if self.application.is_none()
-            || !self.env.values().any(|binding| binding.any_application_resource(|_| true))
-        {
-            return false;
-        }
-        source_exit(body, false)
-    }
-
-    pub(super) async fn application_initial_loop(&self, body: &Block) -> Result<bool> {
-        if self.loop_has_resource_exit(body) {
+    pub(super) async fn initial_loop_requirement(&self, body: &Block, repeated: bool) -> Result<bool> {
+        let resources = self.application.is_some()
+            && self.env.values().any(|binding| binding.any_application_resource(|_| true));
+        let storage = body.source_view().storage();
+        let repeated = u32::from(repeated);
+        let start = unsafe {
+            initial_loop_start(storage.nodes.cast_const(), body.source_slice(), u32::from(resources), repeated)
+        };
+        if start.scan == 0 {
             return Ok(true);
         }
-        let writes = unsafe { self.world.call(effects::value_writes(self, body)).await }?;
-        Ok(writes.iter().any(|expr| !matches!(owned_records::initial_loop_write(self, expr, true), InitialWrite::Ready)))
-    }
-
-    pub(super) async fn next_initial_loop(&self, body: &Block) -> Result<bool> {
-        let mut initial = self.loop_has_resource_exit(body);
-        let writes = unsafe { self.world.call(effects::value_writes(self, body)).await }?;
-        for expr in &writes {
-            match owned_records::initial_loop_write(self, expr, !initial) {
-                InitialWrite::Unavailable => return Ok(true),
-                InitialWrite::IncompleteShape => initial = true,
-                InitialWrite::Ready => {}
+        let choice = {
+            let writes = unsafe { self.world.call(effects::value_writes(self, body)).await }?;
+            let query = LoopWritesQuery { builder: self, writes: &writes };
+            unsafe {
+                initial_loop_writes(
+                    start, repeated, writes.len(), std::ptr::from_ref(&query).cast(), classify_loop_write,
+                )
             }
-        }
-        if !initial {
-            return Ok(false);
+        };
+        match choice {
+            InitialLoopChoice::Ordinary => return Ok(false),
+            InitialLoopChoice::Expand => return Ok(true),
+            InitialLoopChoice::Progress => {}
         }
         let mut query = LoopProgressQuery {
             builder: self,
@@ -1478,13 +1497,9 @@ unsafe extern "C" {
     fn source_loop_exit(nodes: *const std::ffi::c_void, body: crate::syntax::wire::Slice, seek_only: bool) -> bool;
 }
 
-fn source_exit(body: &Block, seek_only: bool) -> bool {
-    let storage = body.source_view().storage();
-    unsafe { source_loop_exit(storage.nodes.cast_const(), body.source_slice(), seek_only) }
-}
-
 pub(super) fn loop_seeks(body: &Block) -> bool {
-    source_exit(body, true)
+    let storage = body.source_view().storage();
+    unsafe { source_loop_exit(storage.nodes.cast_const(), body.source_slice(), true) }
 }
 
 fn loop_exit_paths(code: &[Inst], controls: &BTreeMap<Reg, Value>, test: &Presence) -> Vec<Presence> {
@@ -1667,7 +1682,7 @@ impl Builder<'_> {
     WhileNeed::Split=>{self.iterators.pop();self.loop_depth-=1;code=Some(self.code.split_off(condition_prefix));condition_code=Some(std::mem::take(&mut self.code));},
     WhileNeed::Expand=>{
      let(expanded,flow)=unsafe {self.world.call(self.expand_initial_loop(code.take().unwrap(),body_flow.continues(),async |builder,_|{
-      let initial=unsafe {builder.world.call(builder.next_initial_loop(body)).await}?;
+      let initial=unsafe {builder.world.call(builder.initial_loop_requirement(body,true)).await}?;
       unsafe {builder.world.call(builder.while_loop(condition,body,initial,span)).await}
      })).await}?;code=Some(expanded);body_flow=body_flow.union(flow);facts.flow=u32::from(body_flow.0);
     },
@@ -1796,7 +1811,7 @@ impl Builder<'_> {
      let specification=cursor_specification.clone();let iteration=iteration.unwrap();
      let(expanded,flow)=unsafe {self.world.call(self.expand_initial_loop(code.take().unwrap(),body_reachable,async |builder,next|{
       let mut cursor=specification.clone();cursor.initialization=builder.application_iteration_prefix(&initialization,iteration);cursor.begin=next.unwrap();
-      let initial=unsafe {builder.world.call(builder.next_initial_loop(body)).await}?;let nonempty=cursor.begin.maximum()<cursor.limit.minimum();
+      let initial=unsafe {builder.world.call(builder.initial_loop_requirement(body,true)).await}?;let nonempty=cursor.begin.maximum()<cursor.limit.minimum();
       unsafe {builder.world.call(builder.for_loop(cursor,body,span,initial,nonempty,original_begin)).await}.map(|_|())
      })).await}?;code=Some(expanded);body_flow=body_flow.union(flow);facts.flow=u32::from(body_flow.0);
     },
@@ -1878,7 +1893,7 @@ impl Builder<'_> {
     ForInputNeed::View=>{let v=value.take().unwrap();limit=Some(Self::view_length(&v));data=Some(CursorSource::View(v));},
     ForInputNeed::Bounds=>{let a=begin.as_ref().unwrap();let b=limit.as_ref().unwrap();facts.begin_min=a.minimum();facts.begin_max=a.maximum();facts.limit_min=b.minimum();facts.limit_max=b.maximum();},
     ForInputNeed::Borrowed=>borrowed=Some(application.as_ref().unwrap().root.identity()),
-    ForInputNeed::Initial=>initial=unsafe {self.world.call(self.application_initial_loop(body)).await}?,
+    ForInputNeed::Initial=>initial=unsafe {self.world.call(self.initial_loop_requirement(body,false)).await}?,
     ForInputNeed::Slot=>{slot=self.local_slots(&Ty::scalar(Scalar::U32)).0[0];self.emit(InstKind::StoreLocal(slot,begin.as_ref().unwrap().regs[0]));},
     ForInputNeed::Initialization=>initialization=Some(self.application_iteration_outputs(begin.as_ref().unwrap(),limit.as_ref().unwrap(),application.as_ref().map(|v|&v.data))),
     ForInputNeed::BindApplication=>data=Some(CursorSource::ApplicationData(application.take().unwrap())),
