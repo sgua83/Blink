@@ -132,13 +132,12 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
                 object(name),
             ));
         }
-        for &name in MODULES {
-            let mut job = compile(
-                name,
-                &format!("src/bootstrap/{name}.b"),
-                "src",
-                object(name),
-            );
+        let first_module = jobs.len();
+        jobs.extend(MODULES.iter().map(|&name| {
+            compile(name, &format!("src/bootstrap/{name}.b"), "src", object(name))
+        }));
+        for index in first_module..jobs.len() {
+            let name = jobs[index].name;
             let inputs: &[&str] = match name {
                 "condition_index" => &["proof_facts"],
                 "clause_storage" => &["proof_facts", "fact_key"],
@@ -150,7 +149,7 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
                 "contract_codec" => &["value_format", "condition_index", "fact_key", "proof_facts", "scalar_fold"],
                 "condition_slots" => &["clause_storage", "proof_facts"],
                 "host_sdk" => {
-                    job.arguments.extend(["-I".into(), "../../library".into()]);
+                    jobs[index].arguments.extend(["-I".into(), "../../library".into()]);
                     &["path_core", "ast_storage", "coff", "bindings", "names", "metadata", "native_select"]
                 }
                 "metadata_read" | "object_read" => &["coff_read"],
@@ -159,21 +158,21 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
                 _ => &[],
             };
             for &input in inputs {
-                let index = jobs
+                let producer = jobs
                     .iter()
                     .position(|producer| producer.name == input)
                     .ok_or_else(|| {
                         io::Error::other(format!("B引导模块{name}缺少对象生产者{input}"))
                     })?;
-                job.inputs.push(index);
+                jobs[index].inputs.push(producer);
             }
             if name == "fact_key" {
-                job.arguments.extend(
+                jobs[index].arguments.extend(
                     ["--instance", "order_fact<0>", "--instance", "order_fact<1>"].map(OsString::from),
                 );
             }
             if name == "names" {
-                job.arguments.extend(
+                jobs[index].arguments.extend(
                     [
                         "--instance",
                         "sort_rows<u64>",
@@ -189,7 +188,6 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
                     .map(OsString::from),
                 );
             }
-            jobs.push(job);
         }
     }
     if !compiler && let Some(directory) = env::var_os("BLINK_DEVELOPMENT_SHARED_OBJECTS") {
