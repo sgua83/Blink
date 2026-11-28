@@ -490,75 +490,220 @@ OriginalAddress original_address(Span registers) on cpu {
     return OriginalAddress(register_at(registers, 0u64), register_at(registers, 1u64));
 }
 
-bool same_original_address(OriginalAddress left, OriginalAddress right, address context, AddressOverlapHost host) on cpu
-    requires nonzero(host.same) {
-    return host.same(context, left.low, right.low) != 0 &&
-        host.same(context, left.high, right.high) != 0;
+// These operators are the original BinaryOperation projection identities.
+enum AddressOperation:u32 { Add=4; Multiply=6; Combine=14; ShiftLeft=16; ShiftRight=17; };
+
+bool equal_address(SnapshotSource source, RegisterHost host, OriginalAddress a, OriginalAddress b) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.pointer_root)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_writes) requires nonzero(host.cast)
+    requires nonzero(host.writes_load) {
+    return application_register_equal(source, host, a.low, b.low) != 0
+        && application_register_equal(source, host, a.high, b.high) != 0;
 }
 
-Word original_stride(View stride, address context, AddressOverlapHost host) on cpu
-    requires nonzero(host.constant) {
-    if (stride.tag == 0) { return Word(1, stride.a); }
-    OriginalAddress parts = original_address(stride.first);
-    Word low = host.constant(context, parts.low);
-    if (low.present == 0) { return Word(0, 0u64); }
-    Word high = host.constant(context, parts.high);
-    return Word(high.present, low.value | (high.value << 32u64));
+extern "C" Word application_frame_root(SnapshotSource source, RegisterHost host, OriginalAddress address_parts) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.pointer_root) {
+    RegisterDefinition low = application_register_definition(source, host, address_parts.low);
+    RegisterDefinition high = application_register_definition(source, host, address_parts.high);
+    if (low.instruction == address() || high.instruction == address() || low.top != high.top) {
+        return Word(0, 0u64);
+    }
+    View inst = instruction(low.instruction, host.ir);
+    if (inst.tag == OP_INVOKE) { return host.pointer_root(source.context, inst.left.data); }
+    return Word(0, 0u64);
 }
 
-Word original_offset(Span optional, address context, AddressOverlapHost host) on cpu
-    requires nonzero(host.constant) {
+extern "C" u32 application_allocated(SnapshotSource source, RegisterHost host, usize root) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.allocation) {
+    RegisterDefinition definition = application_register_definition(source, host, root);
+    if (definition.instruction == address()) { return 0; }
+    View inst = instruction(definition.instruction, host.ir);
+    if (inst.tag == OP_INVOKE) { return host.allocation(inst.left.data); }
+    return 0;
+}
+
+extern "C" u32 application_frame_descendant(SnapshotSource source, RegisterHost host, usize child, usize parent) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.pointer_root)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_writes) requires nonzero(host.cast)
+    requires nonzero(host.writes_load) {
+    usize current = child;
+    while (true) {
+        RegisterDefinition definition = application_register_definition(source, host, current);
+        if (definition.instruction == address()) { return 0; }
+        View inst = instruction(definition.instruction, host.ir);
+        if (inst.tag != OP_VIEW_LOAD) { return 0; }
+        Word container = application_frame_root(source, host, original_address(inst.first));
+        if (container.present == 0) { return 0; }
+        if (application_register_equal(source, host, container.value, parent) != 0) { return 1; }
+        current = container.value;
+    }
+}
+
+Word cast_input(SnapshotSource source, RegisterHost host, usize reg) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block) {
+    RegisterDefinition definition = application_register_definition(source, host, reg);
+    if (definition.instruction == address()) { return Word(0, 0u64); }
+    View inst = instruction(definition.instruction, host.ir);
+    return Word(u32(inst.tag == OP_CAST), inst.b);
+}
+
+struct AddressOperands { u32 present; usize left; usize right; };
+
+AddressOperands address_operands(SnapshotSource source, RegisterHost host, usize reg, AddressOperation op) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block) {
+    RegisterDefinition definition = application_register_definition(source, host, reg);
+    if (definition.instruction == address()) { return AddressOperands(0, 0u64, 0u64); }
+    View inst = instruction(definition.instruction, host.ir);
+    bool matched = inst.tag == OP_BINARY && host.ir.inspect(inst.right).tag == u32(op);
+    return AddressOperands(u32(matched), inst.b, inst.c);
+}
+
+bool register_is(SnapshotSource source, RegisterHost host, usize reg, usize value) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_writes) requires nonzero(host.cast) {
+    Word constant = application_register_constant(source, host, reg);
+    return constant.present != 0 && constant.value == value;
+}
+
+extern "C" Word application_split_address(SnapshotSource source, RegisterHost host, OriginalAddress address_parts) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.pointer_root)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_writes) requires nonzero(host.cast)
+    requires nonzero(host.writes_load) {
+    Word low = cast_input(source, host, address_parts.low);
+    Word high = cast_input(source, host, address_parts.high);
+    if (low.present == 0 || high.present == 0) { return Word(0, 0u64); }
+    AddressOperands shift = address_operands(source, host, high.value, AddressOperation::ShiftRight);
+    bool matched = shift.present != 0 && register_is(source, host, shift.right, 32u64)
+        && application_register_equal(source, host, low.value, shift.left) != 0;
+    return Word(u32(matched), low.value);
+}
+
+extern "C" OffsetPosition application_offset_position(SnapshotSource source, RegisterHost host, OriginalAddress address_parts) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.pointer_root)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_writes) requires nonzero(host.cast)
+    requires nonzero(host.writes_load) {
+    OffsetPosition missing = OffsetPosition(0, OriginalAddress(0u64, 0u64), 0u64, 0u64, 0u64);
+    Word pointer = application_split_address(source, host, address_parts);
+    if (pointer.present == 0) { return missing; }
+    AddressOperands pointer_parts = address_operands(source, host, pointer.value, AddressOperation::Add);
+    if (pointer_parts.present == 0) { return missing; }
+    AddressOperands displacement = address_operands(source, host, pointer_parts.right, AddressOperation::Add);
+    if (displacement.present == 0) { return missing; }
+    AddressOperands element = address_operands(source, host, displacement.left, AddressOperation::Multiply);
+    if (element.present == 0) { return missing; }
+    AddressOperands base = address_operands(source, host, pointer_parts.left, AddressOperation::Combine);
+    if (base.present == 0) { return missing; }
+    AddressOperands upper = address_operands(source, host, base.right, AddressOperation::ShiftLeft);
+    if (upper.present == 0 || !register_is(source, host, upper.right, 32u64)) { return missing; }
+    Word low = cast_input(source, host, base.left);
+    Word high = cast_input(source, host, upper.left);
+    Word index = cast_input(source, host, element.left);
+    Word stride = cast_input(source, host, element.right);
+    Word offset = cast_input(source, host, displacement.right);
+    if (low.present == 0 || high.present == 0 || index.present == 0 || stride.present == 0 || offset.present == 0) {
+        return missing;
+    }
+    return OffsetPosition(1, OriginalAddress(low.value, high.value), index.value, stride.value, offset.value);
+}
+
+bool zero_stride(SnapshotSource source, RegisterHost host, Node stride) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_writes) requires nonzero(host.cast) {
+    Word value = register_stride(source, host, host.ir.inspect(stride));
+    return value.present != 0 && value.value == 0u64;
+}
+
+extern "C" u32 application_same_position(SnapshotSource source, RegisterHost host, Node left, Node right, u32 exact_index) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.pointer_root)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_writes) requires nonzero(host.cast)
+    requires nonzero(host.writes_load) {
+    View a = host.ir.inspect(left);
+    View b = host.ir.inspect(right);
+    if (a.tag != INDEXED_VIEW || b.tag != INDEXED_VIEW) { return 0; }
+    OriginalAddress a_base = original_address(a.first);
+    OriginalAddress b_base = original_address(b.first);
+    if (equal_address(source, host, a_base, b_base) && equal_register_strides(source, host, a.left, b.left)
+        && (exact_index == 0 || application_register_equal(source, host, a.a, b.a) != 0)) { return 1; }
+    if (!register_is(source, host, a.a, 0u64) || !register_is(source, host, b.a, 0u64)
+        || !zero_stride(source, host, a.left) || !zero_stride(source, host, b.left)) { return 0; }
+    OffsetPosition ap = application_offset_position(source, host, a_base);
+    OffsetPosition bp = application_offset_position(source, host, b_base);
+    return u32(ap.present != 0 && bp.present != 0 && equal_address(source, host, ap.base, bp.base)
+        && application_register_equal(source, host, ap.stride, bp.stride) != 0
+        && application_register_equal(source, host, ap.offset, bp.offset) != 0
+        && (exact_index == 0 || application_register_equal(source, host, ap.index, bp.index) != 0));
+}
+
+Word original_offset(SnapshotSource source, RegisterHost host, Span optional) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_writes) requires nonzero(host.cast) {
     if (optional.count == 0u64) { return Word(1, 0u64); }
-    return host.constant(context, register_at(optional, 0u64));
+    return application_register_constant(source, host, register_at(optional, 0u64));
 }
 
-bool disjoint_address_roots(OriginalAddress left, OriginalAddress right, address context, AddressOverlapHost host) on cpu
-    requires nonzero(host.frame) requires nonzero(host.allocated) requires nonzero(host.defined)
-    requires nonzero(host.descendant) {
-    Word a = host.frame(context, left);
-    Word b = host.frame(context, right);
+Word address_root(SnapshotSource source, RegisterHost host, OriginalAddress address_parts) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.pointer_root)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_writes) requires nonzero(host.cast)
+    requires nonzero(host.writes_load) {
+    Word frame = application_frame_root(source, host, address_parts);
+    if (frame.present != 0) { return frame; }
+    OffsetPosition position = application_offset_position(source, host, address_parts);
+    if (position.present == 0) { return Word(0, 0u64); }
+    return application_frame_root(source, host, position.base);
+}
+
+bool disjoint_address_roots(SnapshotSource source, RegisterHost host, OriginalAddress left, OriginalAddress right) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.pointer_root)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_writes) requires nonzero(host.cast)
+    requires nonzero(host.writes_load) requires nonzero(host.allocation) {
+    Word a = address_root(source, host, left);
+    Word b = address_root(source, host, right);
     if (a.present == 0 || b.present == 0) { return false; }
-    return (a.value != b.value && host.allocated(context, a.value) != 0 && host.allocated(context, b.value) != 0)
-        || (host.allocated(context, a.value) != 0 && host.defined(context, b.value) == 0)
-        || (host.allocated(context, b.value) != 0 && host.defined(context, a.value) == 0)
-        || host.descendant(context, a.value, b.value) != 0
-        || host.descendant(context, b.value, a.value) != 0;
+    bool a_allocated = application_allocated(source, host, a.value) != 0;
+    bool b_allocated = application_allocated(source, host, b.value) != 0;
+    return (a.value != b.value && a_allocated && b_allocated)
+        || (a_allocated && application_register_definition(source, host, b.value).instruction == address())
+        || (b_allocated && application_register_definition(source, host, a.value).instruction == address())
+        || application_frame_descendant(source, host, a.value, b.value) != 0
+        || application_frame_descendant(source, host, b.value, a.value) != 0;
 }
 
 extern "C" u32 application_store_overlap(IndexedByteAccess read, IndexedByteAccess written,
-    Span offset, address context, AddressOverlapHost host) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.constant) requires nonzero(host.same)
-    requires nonzero(host.definition) requires nonzero(host.frame) requires nonzero(host.allocated)
-    requires nonzero(host.defined) requires nonzero(host.descendant) {
+    Span offset, SnapshotSource source, RegisterHost host) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.pointer_root)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_writes) requires nonzero(host.cast)
+    requires nonzero(host.writes_load) requires nonzero(host.allocation) {
     View from = host.ir.inspect(read.source);
     View to = host.ir.inspect(written.source);
     ApplicationByteOffset written_word = byte_offset(u64(written.word));
     ApplicationByteOffset read_word = byte_offset(u64(read.word));
     if (from.tag == INDEXED_DATA && to.tag == INDEXED_DATA) {
         if (from.a != to.a) { return 0; }
-        Word extra = original_offset(offset, context, host);
+        Word extra = original_offset(source, host, offset);
         if (extra.present == 0) { return 1; }
-        Word a = host.constant(context, from.b);
-        Word b = host.constant(context, to.b);
+        Word a = application_register_constant(source, host, from.b);
+        Word b = application_register_constant(source, host, to.b);
         if (a.present != 0 && b.present != 0 && a.value != b.value) { return 0; }
         return application_ranges_overlap(bytes_at(read_word, read.width),
             bytes_at(add_bytes(written_word, byte_offset(extra.value)), written.width));
     }
     if (from.tag != INDEXED_VIEW) { return 1; }
     while (to.tag == INDEXED_POINTER) {
-        address definition = host.definition(context, original_address(to.first));
-        if (definition == address()) { break; }
-        View origin = instruction(definition, host.ir);
+        Word pointer = application_split_address(source, host, original_address(to.first));
+        if (pointer.present == 0) { break; }
+        RegisterDefinition definition = application_register_definition(source, host, pointer.value);
+        if (definition.instruction == address()) { break; }
+        View origin = instruction(definition.instruction, host.ir);
         if (origin.tag != OP_POSITION_ADDRESS) { break; }
         View reference = host.ir.inspect(origin.left);
         View storage = host.ir.inspect(reference.left);
         if (storage.tag != STORAGE_INDEXED) { break; }
         if (to.b != 0u64) {
-            Word index = host.constant(context, to.a);
+            Word index = application_register_constant(source, host, to.a);
             if (index.present == 0) { return 1; }
             written_word = add_bytes(written_word, scale_bytes(index.value, to.b));
         }
-        Word extra = original_offset(reference.first, context, host);
+        Word extra = original_offset(source, host, reference.first);
         if (extra.present == 0) { return 1; }
         written_word = add_bytes(add_bytes(written_word, byte_offset(extra.value)), byte_offset(reference.a));
         to = host.ir.inspect(storage.left);
@@ -566,33 +711,33 @@ extern "C" u32 application_store_overlap(IndexedByteAccess read, IndexedByteAcce
     if (to.tag != INDEXED_VIEW && to.tag != INDEXED_POINTER) { return 1; }
     OriginalAddress a_root = original_address(from.first);
     OriginalAddress b_root = original_address(to.first);
-    if (!same_original_address(a_root, b_root, context, host)) {
-        return u32(!disjoint_address_roots(a_root, b_root, context, host));
+    if (!equal_address(source, host, a_root, b_root)) {
+        return u32(!disjoint_address_roots(source, host, a_root, b_root));
     }
-    Word extra = original_offset(offset, context, host);
+    Word extra = original_offset(source, host, offset);
     if (extra.present == 0) { return 1; }
     written_word = add_bytes(written_word, byte_offset(extra.value));
     View a_stride = host.ir.inspect(from.left);
     View b_stride = a_stride;
-    Word a_step = original_stride(a_stride, context, host);
+    Word a_step = register_stride(source, host, a_stride);
     Word b_step = Word(1, to.b);
     if (to.tag == INDEXED_VIEW) {
         b_stride = host.ir.inspect(to.left);
-        b_step = original_stride(b_stride, context, host);
+        b_step = register_stride(source, host, b_stride);
     }
-    Word a_index = host.constant(context, from.a);
-    Word b_index = host.constant(context, to.a);
+    Word a_index = application_register_constant(source, host, from.a);
+    Word b_index = application_register_constant(source, host, to.a);
     if (a_index.present != 0 && b_index.present != 0 && a_step.present != 0 && b_step.present != 0) {
         read_word = add_bytes(scale_bytes(a_index.value, a_step.value), read_word);
         written_word = add_bytes(scale_bytes(b_index.value, b_step.value), written_word);
     } else {
         bool same_step;
         if (to.tag == INDEXED_VIEW && a_stride.tag != 0 && b_stride.tag != 0) {
-            same_step = same_original_address(original_address(a_stride.first), original_address(b_stride.first), context, host);
+            same_step = equal_register_lists(source, host, a_stride.first, b_stride.first);
         } else {
             same_step = a_step.present != 0 && b_step.present != 0 && a_step.value == b_step.value;
         }
-        if (!same_step || host.same(context, from.a, to.a) == 0) { return 1; }
+        if (!same_step || application_register_equal(source, host, from.a, to.a) == 0) { return 1; }
     }
     return application_ranges_overlap(bytes_at(read_word, read.width), bytes_at(written_word, written.width));
 }

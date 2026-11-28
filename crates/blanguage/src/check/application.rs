@@ -329,27 +329,25 @@ impl ApplicationLoads<'_, '_> {
         unsafe { source_register_equal(self.register_source(), REGISTER_HOST, left, right) != 0 }
     }
     fn stride(&self,value:ElementStride)->Option<u64>{match value{ElementStride::Constant(bytes)=>Some(bytes),ElementStride::Value(parts)=>Some(self.constant(parts[0])?|(self.constant(parts[1])?<<32))}}
-    fn same_stride(&self,a:ElementStride,b:ElementStride)->bool{
-        match (a,b){(ElementStride::Value(a),ElementStride::Value(b))=>self.same_address(a,b),_=>matches!((self.stride(a),self.stride(b)),(Some(a),Some(b))if a==b)}
+    fn frame_root(&self, address: [Reg; 2]) -> Option<Reg> {
+        unsafe { source_frame_root(self.register_source(), REGISTER_HOST, address.into()) }.option()
     }
-    fn same_address(&self,a:[Reg;2],b:[Reg;2])->bool {a.into_iter().zip(b).all(|(a,b)|self.same(a,b))}
-    fn frame_root(&self,address:[Reg;2])->Option<Reg> {
-        let(a,first)=self.definition(address[0])?;let(b,_)=self.definition(address[1])?;
-        if a!=b{return None;}
-        let InstKind::Call(call)=&first.kind else{return None;};Self::pointer_call(call)
+
+    fn allocation(call: &Call) -> bool {
+        matches!(&call.target, CallTarget::External(name)
+            if name.library == crate::application::RUNTIME_LIBRARY && name.symbol.starts_with("blink_allocate_"))
     }
-    fn allocation(call:&Call)->bool {
-        matches!(&call.target,CallTarget::External(name)if name.library==crate::application::RUNTIME_LIBRARY&&name.symbol.starts_with("blink_allocate_"))
+
+    fn allocated(&self, root: Reg) -> bool {
+        unsafe { source_allocated(self.register_source(), REGISTER_HOST, root) != 0 }
     }
-    fn allocated(&self,root:Reg)->bool {
-        matches!(self.definition(root),Some((_,Inst{kind:InstKind::Call(call),..}))if Self::allocation(call))
+
+    fn disjoint_roots(&self, a: Reg, b: Reg) -> bool { a != b && self.allocated(a) && self.allocated(b) }
+
+    fn frame_descendant(&self, child: Reg, parent: Reg) -> bool {
+        unsafe { source_frame_descendant(self.register_source(), REGISTER_HOST, child, parent) != 0 }
     }
-    fn disjoint_roots(&self,a:Reg,b:Reg)->bool {a!=b&&self.allocated(a)&&self.allocated(b)}
-    fn frame_descendant(&self,child:Reg,parent:Reg)->bool {
-        let Some((_,Inst{kind:InstKind::ViewLoad{address,..},..}))=self.definition(child)else{return false;};
-        let Some(container)=self.frame_root(*address)else{return false;};
-        self.same(container,parent)||self.frame_descendant(container,parent)
-    }
+
     // Resolve only metadata already produced by the original IR. No model register becomes storage.
     async fn resource_storage(&self,input:&Data,resource:&view::Borrow)->Result<Option<Vec<(effects::StorageWrite,Ty,DataLayout)>>> {
         let resource=resource.restricted(&self.0.path);
@@ -411,7 +409,7 @@ impl ApplicationLoads<'_, '_> {
         let target = IndexedByteAccess { source: dataflow::Node::indexed(source), word, width: scalar.size() };
         unsafe {
             source_store_overlap(read, target, dataflow::Span::slice(offset.as_slice()),
-                ptr::from_ref(self).cast(), ADDRESS_OVERLAP_HOST) != 0
+                self.register_source(), REGISTER_HOST) != 0
         }
     }
 
@@ -464,25 +462,15 @@ impl ApplicationLoads<'_, '_> {
         let value = Value { ty, regs: vec![reg], proof, literal: false, uniform: false, constant: self.constant(reg).map(|value| vec![value]) };
         bounds::Condition::comparison(Comparison::Equal, &value, index).truth_in(path) == Some(true)
     }
-    fn cast_source(&self, reg: Reg) -> Option<Reg> {
-        match &self.definition(reg)?.1.kind { InstKind::Cast { src, .. } => Some(*src), _ => None }
-    }
     fn split_address(&self, address: [Reg; 2]) -> Option<Reg> {
-        let low = self.cast_source(address[0])?;
-        let high = self.cast_source(address[1])?;
-        let InstKind::Binary { op: BinaryOp::ShiftRightLogical, a, b, .. } = &self.definition(high)?.1.kind else { return None; };
-        (self.constant(*b) == Some(32) && self.same(low, *a)).then_some(low)
+        unsafe { source_split_address(self.register_source(), REGISTER_HOST, address.into()) }.option()
     }
+
     fn offset_position(&self, address: [Reg; 2]) -> Option<([Reg; 2], Reg, Reg, Reg)> {
-        let pointer = self.split_address(address)?;
-        let InstKind::Binary { op: BinaryOp::IAdd, a: base, b: at, .. } = &self.definition(pointer)?.1.kind else { return None; };
-        let InstKind::Binary { op: BinaryOp::IAdd, a: scaled, b: offset, .. } = &self.definition(*at)?.1.kind else { return None; };
-        let InstKind::Binary { op: BinaryOp::IMul, a: index, b: stride, .. } = &self.definition(*scaled)?.1.kind else { return None; };
-        let InstKind::Binary { op: BinaryOp::Or, a: low, b: high, .. } = &self.definition(*base)?.1.kind else { return None; };
-        let InstKind::Binary { op: BinaryOp::ShiftLeft, a: upper, b: bits, .. } = &self.definition(*high)?.1.kind else { return None; };
-        if self.constant(*bits) != Some(32) { return None; }
-        Some(([self.cast_source(*low)?, self.cast_source(*upper)?], self.cast_source(*index)?, self.cast_source(*stride)?, self.cast_source(*offset)?))
+        let result = unsafe { source_offset_position(self.register_source(), REGISTER_HOST, address.into()) };
+        (result.present != 0).then_some((result.base.parts(), result.index, result.stride, result.offset))
     }
+
     fn dataset_position(&self, source: &IndexedSource, data: &Data, index: &Value, state: &flow::LoopState, writes: &effects::LoopWrites) -> bool {
         let IndexedSource::View { address, index: at, stride } = source else { return false; };
         if self.constant(*at) == Some(0) && self.stride(*stride) == Some(0)
@@ -501,14 +489,12 @@ impl ApplicationLoads<'_, '_> {
             && self.index_equal(*at, index, &state.path, &state.env)
     }
     fn same_position(&self, a: &IndexedSource, b: &IndexedSource, exact_index: bool) -> bool {
-        let (IndexedSource::View { address: a, index: ai, stride: astride }, IndexedSource::View { address: b, index: bi, stride: bstride }) = (a, b) else { return false; };
-        if self.same_address(*a, *b) && self.same_stride(*astride, *bstride) && (!exact_index || self.same(*ai, *bi)) { return true; }
-        if self.constant(*ai) == Some(0) && self.constant(*bi) == Some(0) && self.stride(*astride) == Some(0) && self.stride(*bstride) == Some(0)
-            && let (Some((a, ai, astep, afield)), Some((b, bi, bstep, bfield))) = (self.offset_position(*a), self.offset_position(*b)) {
-            return self.same_address(a,b) && self.same(astep,bstep) && self.same(afield,bfield) && (!exact_index || self.same(ai,bi));
+        unsafe {
+            source_same_position(self.register_source(), REGISTER_HOST,
+                dataflow::Node::indexed(a), dataflow::Node::indexed(b), u32::from(exact_index)) != 0
         }
-        false
     }
+
     fn stored_position<'a>(&self, code: &'a [Inst], data: &Data, index: &Value, word: u32, scalar: Scalar, state: &flow::LoopState, writes: &effects::LoopWrites) -> Option<&'a IndexedSource> {
         let query = StoredPositionQuery { builder: self.0, data, index, state, writes };
         let scalar = crate::builtin_types::ScalarCode::from(scalar) as u32;
@@ -665,6 +651,19 @@ impl OriginalAddress {
     fn parts(self) -> [Reg; 2] { [self.low, self.high] }
 }
 
+impl From<[Reg; 2]> for OriginalAddress {
+    fn from([low, high]: [Reg; 2]) -> Self { Self { low, high } }
+}
+
+#[repr(C)]
+struct OffsetPosition {
+    present: u32,
+    base: OriginalAddress,
+    index: Reg,
+    stride: Reg,
+    offset: Reg,
+}
+
 #[repr(C)]
 struct IndexedByteAccess { source: dataflow::Node, word: u32, width: u32 }
 
@@ -675,25 +674,9 @@ impl AddressWord {
     fn from_option(value: Option<usize>) -> Self {
         Self { present: u32::from(value.is_some()), value: value.unwrap_or_default() }
     }
-}
 
-#[repr(C)]
-struct AddressOverlapHost {
-    ir: dataflow::Host,
-    constant: unsafe extern "C" fn(*const c_void, Reg) -> AddressWord,
-    same: unsafe extern "C" fn(*const c_void, Reg, Reg) -> u32,
-    definition: unsafe extern "C" fn(*const c_void, OriginalAddress) -> *const c_void,
-    frame: unsafe extern "C" fn(*const c_void, OriginalAddress) -> AddressWord,
-    allocated: unsafe extern "C" fn(*const c_void, Reg) -> u32,
-    defined: unsafe extern "C" fn(*const c_void, Reg) -> u32,
-    descendant: unsafe extern "C" fn(*const c_void, Reg, Reg) -> u32,
+    fn option(self) -> Option<usize> { (self.present != 0).then_some(self.value) }
 }
-
-const ADDRESS_OVERLAP_HOST: AddressOverlapHost = AddressOverlapHost {
-    ir: dataflow::HOST, constant: overlap_constant, same: overlap_same,
-    definition: overlap_definition, frame: overlap_frame, allocated: overlap_allocated,
-    defined: overlap_defined, descendant: overlap_descendant,
-};
 
 unsafe extern "C" {
     #[link_name = "bootstrap.application_snapshot::application_byte_range"]
@@ -702,45 +685,20 @@ unsafe extern "C" {
     fn source_ranges_overlap(left: ApplicationByteRange, right: ApplicationByteRange) -> u32;
     #[link_name = "bootstrap.application_snapshot::application_store_overlap"]
     fn source_store_overlap(read: IndexedByteAccess, target: IndexedByteAccess, offset: dataflow::Span,
-        context: *const c_void, host: AddressOverlapHost) -> u32;
-}
-
-unsafe extern "C" fn overlap_constant(context: *const c_void, reg: Reg) -> AddressWord {
-    let loads = unsafe { &*context.cast::<ApplicationLoads<'_, '_>>() };
-    AddressWord::from_option(loads.constant(reg).map(|bits| bits as usize))
-}
-
-unsafe extern "C" fn overlap_same(context: *const c_void, left: Reg, right: Reg) -> u32 {
-    let loads = unsafe { &*context.cast::<ApplicationLoads<'_, '_>>() };
-    u32::from(loads.same(left, right))
-}
-
-unsafe extern "C" fn overlap_definition(context: *const c_void, address: OriginalAddress) -> *const c_void {
-    let loads = unsafe { &*context.cast::<ApplicationLoads<'_, '_>>() };
-    loads.split_address(address.parts()).and_then(|reg| loads.definition(reg))
-        .map_or(ptr::null(), |(_, inst)| ptr::from_ref(inst).cast())
-}
-
-unsafe extern "C" fn overlap_frame(context: *const c_void, address: OriginalAddress) -> AddressWord {
-    let loads = unsafe { &*context.cast::<ApplicationLoads<'_, '_>>() };
-    let parts = address.parts();
-    AddressWord::from_option(loads.frame_root(parts)
-        .or_else(|| loads.offset_position(parts).and_then(|(base, ..)| loads.frame_root(base))))
-}
-
-unsafe extern "C" fn overlap_allocated(context: *const c_void, root: Reg) -> u32 {
-    let loads = unsafe { &*context.cast::<ApplicationLoads<'_, '_>>() };
-    u32::from(loads.allocated(root))
-}
-
-unsafe extern "C" fn overlap_defined(context: *const c_void, root: Reg) -> u32 {
-    let loads = unsafe { &*context.cast::<ApplicationLoads<'_, '_>>() };
-    u32::from(loads.definition(root).is_some())
-}
-
-unsafe extern "C" fn overlap_descendant(context: *const c_void, child: Reg, parent: Reg) -> u32 {
-    let loads = unsafe { &*context.cast::<ApplicationLoads<'_, '_>>() };
-    u32::from(loads.frame_descendant(child, parent))
+        source: SnapshotSource, host: RegisterHost) -> u32;
+    #[link_name = "bootstrap.application_snapshot::application_frame_root"]
+    fn source_frame_root(source: SnapshotSource, host: RegisterHost, address: OriginalAddress) -> AddressWord;
+    #[link_name = "bootstrap.application_snapshot::application_allocated"]
+    fn source_allocated(source: SnapshotSource, host: RegisterHost, root: Reg) -> u32;
+    #[link_name = "bootstrap.application_snapshot::application_frame_descendant"]
+    fn source_frame_descendant(source: SnapshotSource, host: RegisterHost, child: Reg, parent: Reg) -> u32;
+    #[link_name = "bootstrap.application_snapshot::application_split_address"]
+    fn source_split_address(source: SnapshotSource, host: RegisterHost, address: OriginalAddress) -> AddressWord;
+    #[link_name = "bootstrap.application_snapshot::application_offset_position"]
+    fn source_offset_position(source: SnapshotSource, host: RegisterHost, address: OriginalAddress) -> OffsetPosition;
+    #[link_name = "bootstrap.application_snapshot::application_same_position"]
+    fn source_same_position(source: SnapshotSource, host: RegisterHost, a: dataflow::Node, b: dataflow::Node,
+        exact_index: u32) -> u32;
 }
 
 #[repr(u32)]
@@ -903,12 +861,13 @@ struct RegisterHost {
     loop_writes: unsafe extern "C" fn(*const c_void, usize, usize, *const c_void) -> u32,
     cast: unsafe extern "C" fn(*const c_void, Reg, Reg, usize) -> AddressWord,
     pointer_root: unsafe extern "C" fn(*const c_void, *const c_void) -> AddressWord,
+    allocation: unsafe extern "C" fn(*const c_void) -> u32,
 }
 
 const REGISTER_HOST: RegisterHost = RegisterHost {
     ir: dataflow::HOST, block: snapshot_block, writes_local: snapshot_writes_local,
     writes_load: snapshot_writes_load, loop_writes: snapshot_loop_writes,
-    cast: snapshot_cast, pointer_root: snapshot_pointer_root,
+    cast: snapshot_cast, pointer_root: snapshot_pointer_root, allocation: snapshot_allocation,
 };
 
 #[repr(u32)]
@@ -961,6 +920,10 @@ unsafe extern "C" fn snapshot_cast(context: *const c_void, source: Reg, target: 
 
 unsafe extern "C" fn snapshot_pointer_root(_: *const c_void, call: *const c_void) -> AddressWord {
     AddressWord::from_option(ApplicationLoads::pointer_call(unsafe { &*call.cast::<Call>() }))
+}
+
+unsafe extern "C" fn snapshot_allocation(call: *const c_void) -> u32 {
+    u32::from(ApplicationLoads::allocation(unsafe { &*call.cast::<Call>() }))
 }
 
 unsafe extern "C" fn snapshot_truth(context: *mut c_void, reg: Reg) -> SnapshotTruth {

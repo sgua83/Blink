@@ -11,6 +11,7 @@ struct RegisterHost {
     cfn<u32,address,usize,usize,address> loop_writes;
     cfn<Word,address,usize,usize,usize> cast;
     cfn<Word,address,address> pointer_root;
+    cfn<u32,address> allocation;
 };
 struct SnapshotHost {
     RegisterHost registers;
@@ -50,21 +51,33 @@ struct ApplicationByteOffset { u64 low; u64 high; };
 struct ApplicationByteRange { ApplicationByteOffset start; ApplicationByteOffset end; };
 struct OriginalAddress { usize low; usize high; };
 struct IndexedByteAccess { Node source; u32 word; u32 width; };
-struct AddressOverlapHost {
-    Host ir;
-    cfn<Word,address,usize> constant;
-    cfn<u32,address,usize,usize> same;
-    cfn<address,address,OriginalAddress> definition;
-    cfn<Word,address,OriginalAddress> frame;
-    cfn<u32,address,usize> allocated;
-    cfn<u32,address,usize> defined;
-    cfn<u32,address,usize,usize> descendant;
-};
+struct OffsetPosition { u32 present; OriginalAddress base; usize index; usize stride; usize offset; };
+
+extern "C" Word application_frame_root(SnapshotSource source, RegisterHost host, OriginalAddress address_parts) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.pointer_root);
+extern "C" u32 application_allocated(SnapshotSource source, RegisterHost host, usize root) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.allocation);
+extern "C" u32 application_frame_descendant(SnapshotSource source, RegisterHost host, usize child, usize parent) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.pointer_root)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_writes) requires nonzero(host.cast)
+    requires nonzero(host.writes_load);
+extern "C" Word application_split_address(SnapshotSource source, RegisterHost host, OriginalAddress address_parts) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.pointer_root)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_writes) requires nonzero(host.cast)
+    requires nonzero(host.writes_load);
+extern "C" OffsetPosition application_offset_position(SnapshotSource source, RegisterHost host, OriginalAddress address_parts) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.pointer_root)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_writes) requires nonzero(host.cast)
+    requires nonzero(host.writes_load);
+extern "C" u32 application_same_position(SnapshotSource source, RegisterHost host, Node left, Node right, u32 exact_index) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.pointer_root)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_writes) requires nonzero(host.cast)
+    requires nonzero(host.writes_load);
 
 extern "C" ApplicationByteRange application_byte_range(usize index, usize stride, u32 word, u32 width) on cpu;
 extern "C" u32 application_ranges_overlap(ApplicationByteRange left, ApplicationByteRange right) on cpu;
 extern "C" u32 application_store_overlap(IndexedByteAccess read, IndexedByteAccess written,
-    Span offset, address context, AddressOverlapHost host) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.constant) requires nonzero(host.same)
-    requires nonzero(host.definition) requires nonzero(host.frame) requires nonzero(host.allocated)
-    requires nonzero(host.defined) requires nonzero(host.descendant);
+    Span offset, SnapshotSource source, RegisterHost host) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.pointer_root)
+    requires nonzero(host.writes_local) requires nonzero(host.loop_writes) requires nonzero(host.cast)
+    requires nonzero(host.writes_load) requires nonzero(host.allocation);
