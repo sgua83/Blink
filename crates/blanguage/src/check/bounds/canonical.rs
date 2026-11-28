@@ -2,10 +2,10 @@
 //! typed sets and iterators until their synchronous last consumer.
 use super::facts;
 use super::{
-    Clause, Facts, Scalar, ValueIdentity, contradictory, fact_fields, numeric_bounds,
+    Clause, Facts, Scalar, ValueIdentity, contradictory, fact_fields,
 };
 use std::{
-    collections::{BTreeMap, BTreeSet, btree_map, btree_set},
+    collections::{BTreeMap, BTreeSet, btree_set},
     ffi::c_void,
     ops::Bound::{Excluded, Unbounded},
     ptr,
@@ -13,7 +13,6 @@ use std::{
 type Slot = *mut c_void;
 type Borrowed = *const c_void;
 type Terms = BTreeSet<Facts>;
-type Bounds = BTreeMap<(ValueIdentity, Scalar), u64>;
 fn borrowed<T>(value: &T) -> Borrowed {
     ptr::from_ref(value).cast()
 }
@@ -159,86 +158,14 @@ fn insert(output: &mut Terms, facts: Facts) -> bool {
         }
     }
 }
-struct Normal<'a> {
-    source: &'a Facts,
-    input: facts::Iter<'a>,
-    lower: &'a Bounds,
-    upper: &'a Bounds,
-    bounds: [btree_map::Iter<'a, (ValueIdentity, Scalar), u64>; 2],
-    output: &'a mut Facts,
-}
-unsafe fn normal<'a, 'b>(slot: Slot) -> &'a mut Normal<'b> {
-    unsafe { &mut *slot.cast() }
-}
-unsafe extern "C" fn normal_next(slot: Slot) -> fact_fields::Fields {
-    unsafe { normal(slot) }
-        .input
-        .next()
-        .map(fact_fields::Fields::from)
-        .unwrap_or_default()
-}
-unsafe extern "C" fn bounds_reset(slot: Slot, side: u32) {
-    let c = unsafe { normal(slot) };
-    c.bounds[side as usize] = [c.lower, c.upper][side as usize].iter();
-}
-unsafe extern "C" fn bound_next(slot: Slot, side: u32) -> fact_fields::Fields {
-    unsafe { normal(slot) }.bounds[side as usize]
-        .next()
-        .map(|((id, scalar), value)| fact_fields::bound(id, scalar, *value, side == 0))
-        .unwrap_or_default()
-}
-unsafe extern "C" fn contains(slot: Slot, fields: fact_fields::Fields) -> u32 {
-    let key = unsafe { fact_fields::key(fields) };
-    u32::from(unsafe { normal(slot) }.source.contains(&key))
-}
-unsafe extern "C" fn emit(slot: Slot, fields: fact_fields::Fields) {
-    let key = unsafe { fact_fields::key(fields) };
-    unsafe { normal(slot) }.output.insert(key);
-}
-#[repr(C)]
-struct NormalHost {
-    next: unsafe extern "C" fn(Slot) -> fact_fields::Fields,
-    reset: unsafe extern "C" fn(Slot, u32),
-    bound: unsafe extern "C" fn(Slot, u32) -> fact_fields::Fields,
-    contains: unsafe extern "C" fn(Slot, fact_fields::Fields) -> u32,
-    emit: unsafe extern "C" fn(Slot, fact_fields::Fields),
-    compare: unsafe extern "C" fn(Borrowed, Borrowed) -> i32,
-    scalar: unsafe extern "C" fn(Borrowed) -> fact_fields::ScalarView,
-    upper: unsafe extern "C" fn(Borrowed) -> fact_fields::UpperView,
-}
 unsafe extern "C" {
     #[link_name = "bootstrap.condition_graph::canonical_normalize"]
-    fn b_normal(context: Slot, host: NormalHost);
+    fn b_normal(source: &Facts, output: &mut Facts);
 }
 unsafe extern "C" fn normalize(source: Borrowed, target: Slot) {
     let source = unsafe { &*source.cast::<Facts>() };
-    let (lower,upper)=numeric_bounds::collect(source,None);
     let mut output = Facts::new();
-    {
-        let mut c = Normal {
-            source,
-            input: source.iter(),
-            lower: &lower,
-            upper: &upper,
-            bounds: [lower.iter(), upper.iter()],
-            output: &mut output,
-        };
-        unsafe {
-            b_normal(
-                (&mut c as *mut Normal<'_>).cast(),
-                NormalHost {
-                    next: normal_next,
-                    reset: bounds_reset,
-                    bound: bound_next,
-                    contains,
-                    emit,
-                    compare: fact_fields::compare,
-                    scalar: fact_fields::scalar,
-                    upper: fact_fields::upper,
-                },
-            )
-        };
-    }
+    unsafe { b_normal(source, &mut output) };
     insert(unsafe { &mut *target.cast::<Terms>() }, output);
 }
 #[repr(C)]

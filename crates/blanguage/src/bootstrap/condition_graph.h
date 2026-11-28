@@ -258,20 +258,7 @@ struct CanonicalKeepHost {
 };
 extern "C" u32 canonical_keep(address old,address candidate,CanonicalKeepHost host) on cpu
  requires nonzero(host.subset) requires nonzero(host.overlap);
-struct CanonicalNormalHost {
- cfn<FactView,address> next;
- cfn<void,address,u32> reset;
- cfn<FactView,address,u32> bound;
- cfn<u32,address,FactView> ensures memory(read) contains;
- cfn<void,address,FactView> emit;
- cfn<i32,address,address> ensures memory(read) compare;
- cfn<InternalScalar,address> ensures memory(read) scalar;
- cfn<InternalUpper,address> ensures memory(read) upper;
-};
-extern "C" void canonical_normalize(address context,CanonicalNormalHost host) on cpu
- requires nonzero(host.next) requires nonzero(host.reset) requires nonzero(host.bound)
- requires nonzero(host.contains) requires nonzero(host.emit) requires nonzero(host.compare)
- requires nonzero(host.scalar) requires nonzero(host.upper);
+extern "C" void canonical_normalize(address source,address output) on cpu;
 struct CanonicalAcceptHost {
  cfn<u32,address> conflict;
  cfn<void,address,address> normalize;
@@ -694,17 +681,6 @@ extern "C" void index_condition_equal(address state,IndexRelationOperand left,In
  requires nonzero(host.cases.emit) requires nonzero(host.cases.finish) requires nonzero(host.predicate) requires nonzero(host.guard);
 extern "C" void index_condition_below(address state,address input,IndexRelationInput values,u32 original_strict,IndexRelationBelowHost host) on cpu
  requires nonzero(host.cases.emit) requires nonzero(host.cases.finish) requires nonzero(host.bounds) requires nonzero(host.constrain) requires nonzero(host.compare);
-
-enum NumericBoundSide:u32 {Lower=0;Upper=1;};
-struct NumericBoundPrevious {u32 present;u64 value;};
-struct NumericBoundsHost {
- cfn<FactView,address> next;
- cfn<address,address,address> ensures memory(read) root;
- cfn<NumericBoundPrevious,address,NumericBoundSide,address,address> ensures memory(read) lookup;
- cfn<void,address,NumericBoundSide,address,address,u64> emit;
-};
-extern "C" void numeric_bounds(address context,NumericBoundsHost host) on cpu
- requires nonzero(host.next) requires nonzero(host.root) requires nonzero(host.lookup) requires nonzero(host.emit);
 
 struct ExecutionCase {address source;u32 truth;u32 original;};
 struct ExecutionJoin {ExecutionCase left;ExecutionCase right;u32 any;};

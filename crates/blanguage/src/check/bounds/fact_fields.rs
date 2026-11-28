@@ -118,27 +118,6 @@ pub(super) unsafe extern "C" fn same_scalar(a: Borrowed, b: Borrowed) -> u32 {
     u32::from(unsafe { *a.cast::<Scalar>() == *b.cast::<Scalar>() })
 }
 
-#[repr(C)]
-pub(super) struct UpperView {
-    identity: Borrowed,
-    distance: u32,
-    present: u32,
-}
-pub(super) unsafe extern "C" fn upper(value: Borrowed) -> UpperView {
-    match unsafe { &*value.cast::<IndexDomain>() } {
-        IndexDomain::Upper(id, distance) => UpperView {
-            identity: ptr::from_ref(id).cast(),
-            distance: *distance,
-            present: 1,
-        },
-        _ => UpperView {
-            identity: ptr::null(),
-            distance: 0,
-            present: 0,
-        },
-    }
-}
-
 pub(super) fn bound(id: &ValueIdentity, scalar: &Scalar, value: u64, minimum: bool) -> Fields {
     unsafe { fact_bound(ptr::from_ref(id).cast(), ptr::from_ref(scalar).cast(), value, u32::from(minimum)) }
 }

@@ -2813,15 +2813,14 @@ struct IntegerAffine {
 struct IntegerQuery<'a> {
     facts: &'a Facts,
     roots: &'a EqualityRoots,
-    lower: BTreeMap<(ValueIdentity, Scalar), Bits>,
-    upper: BTreeMap<(ValueIdentity, Scalar), Bits>,
+    bounds: numeric_bounds::Bounds,
     coefficients: BTreeMap<(ValueIdentity, Scalar), IntegerAffine>,
     expanding: BTreeSet<(ValueIdentity, Scalar)>,
 }
 impl<'a> IntegerQuery<'a> {
     fn new(facts: &'a Facts, roots: &'a EqualityRoots) -> Self {
-        let (lower,upper)=numeric_bounds::collect(facts,Some(roots));
-        Self { facts, roots, lower, upper, coefficients: BTreeMap::new(), expanding: BTreeSet::new() }
+        let bounds = numeric_bounds::Bounds::collect(facts, roots);
+        Self { facts, roots, bounds, coefficients: BTreeMap::new(), expanding: BTreeSet::new() }
     }
     fn root(&self, id: ValueIdentity) -> ValueIdentity { self.roots.get(&id).copied().unwrap_or(id) }
     fn number(scalar: Scalar, bits: Bits) -> i128 {
@@ -2838,11 +2837,7 @@ impl<'a> IntegerQuery<'a> {
     }
     fn source_plan(&mut self,left:ValueIdentity,right:ValueIdentity,scalar:Scalar)->Option<(ValueIdentity,Vec<ValueIdentity>)> {integer_relations::source_plan(self,left,right,scalar)}
     fn ordered_bounds(&self, root: ValueIdentity, scalar: Scalar) -> BitRange {
-        let key = (root, scalar);
-        BitRange {
-            lower: self.lower.get(&key).copied().unwrap_or(0),
-            upper: self.upper.get(&key).copied().unwrap_or(scalar.bit_mask()),
-        }
+        self.bounds.limits(root, scalar)
     }
     fn bounds(&self, id: ValueIdentity, scalar: Scalar) -> (i128, i128) {
         let range = self.ordered_bounds(self.root(id), scalar);

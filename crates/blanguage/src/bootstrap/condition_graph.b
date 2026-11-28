@@ -2,6 +2,7 @@ module bootstrap.condition_graph;
 import codec.scalar_ranges;
 import codec.builtin_type;
 import bootstrap.proof_facts;
+import bootstrap.numeric_bounds;
 
 extern "C" handle GetProcessHeap() on cpu from "KERNEL32.dll";
 extern "C" address HeapAlloc(handle heap,u32 flags,u64 bytes) on cpu from "KERNEL32.dll";
@@ -1051,51 +1052,59 @@ extern "C" u32 canonical_keep(address old,address candidate,CanonicalKeepHost ho
  if(host.subset(candidate,old)!=0){return 0;}
  return host.overlap(old,candidate);
 }
-extern "C" void canonical_normalize(address context,CanonicalNormalHost host) on cpu
- requires nonzero(host.next) requires nonzero(host.reset) requires nonzero(host.bound)
- requires nonzero(host.contains) requires nonzero(host.emit) requires nonzero(host.compare)
- requires nonzero(host.scalar) requires nonzero(host.upper) {
- FactView lower=internal_key(FactKind::Minimum,address(),address(),0u64);
+extern "C" void canonical_normalize(address source,address output) on cpu {
+ OrderedTree folded=OrderedTree(address(),0u64,0u64,0u64);
+ address bounds=address_of(folded);
+ numeric_bounds(source,address(),bounds);
+ FactCursor cursor=fact_tree_cursor(source);
+ FactCursor minima=fact_tree_cursor(bounds);
+ FactView lower=read_internal_fact(address());
  bool lower_started=false;
  while(true){
-  FactView fact=host.next(context);if(fact.present==0){break;}
+  address row=fact_tree_next(source,address_of(cursor),0);
+  if(row==address()){break;}
+  FactView fact=read_fact_fields(row);
   if(fact.kind==FactKind::Minimum||fact.kind==FactKind::Maximum){continue;}
-  if(fact.kind==FactKind::Below&&fact.flag==0&&host.compare(fact.first,fact.second)==0){
-   if(host.scalar(fact.scalar).kind<2){continue;}
+  if(fact.kind==FactKind::Below&&fact.flag==0&&order_identity(fact.first,fact.second)==0){
+   if(inspect_fact_scalar(fact.scalar).kind<2){continue;}
   }
   if(fact.kind==FactKind::Index){
-   InternalUpper upper=host.upper(fact.payload);
-   if(upper.present!=0&&upper.distance==0&&host.compare(fact.first,upper.identity)==0){continue;}
+   InternalUpper upper=inspect_fact_upper(fact.payload);
+   if(upper.present!=0&&upper.distance==0&&order_identity(fact.first,upper.identity)==0){continue;}
   }
   if(fact.kind==FactKind::NonZero){
-   if(!lower_started){lower=host.bound(context,0);lower_started=true;}
+   if(!lower_started){lower=read_internal_fact(fact_tree_next(bounds,address_of(minima),0));lower_started=true;}
    bool redundant=false;
-   while(lower.present!=0){
-    i32 order=host.compare(lower.first,fact.first);
-    if(order>i32(0)){break;}
-    if(order==i32(0)&&lower.value>1u64&&host.scalar(lower.scalar).kind==0){redundant=true;break;}
-    lower=host.bound(context,0);
+   while(lower.present!=0&&lower.kind==FactKind::Minimum){
+    i32 order=order_identity(lower.first,fact.first);
+    if(order>0){break;}
+    if(order==0&&lower.value>1u64&&inspect_fact_scalar(lower.scalar).kind==0){redundant=true;break;}
+    lower=read_internal_fact(fact_tree_next(bounds,address_of(minima),0));
    }
    if(redundant){continue;}
   }
-  host.emit(context,fact);
+  fact_tree_insert(output,row);
  }
- u32 side=0;
- while(side<2){
-  host.reset(context,side);
-  while(true){
-   FactView bound=host.bound(context,side);if(bound.present==0){break;}
-   if(side==0&&bound.value==0u64){continue;}
-   if(side==1&&bound.value==bound.mask){continue;}
-   InternalScalar scalar=host.scalar(bound.scalar);
-   FactView zero=bound;zero.kind=FactKind::Zero;
-   if(scalar.kind<2&&host.contains(context,zero)!=0){continue;}
-   bound=fact_numeric_alias(bound,scalar.kind);
-   host.emit(context,bound);
+ FactCursor selected=fact_tree_cursor(bounds);
+ FactKey key;
+ address raw=unsafe_address(address_bits(address_of(key)));
+ while(true){
+  FactView bound=read_internal_fact(fact_tree_next(bounds,address_of(selected),0));
+  if(bound.present==0){break;}
+  if(bound.kind==FactKind::Minimum&&bound.value==0u64){continue;}
+  if(bound.kind==FactKind::Maximum&&bound.value==bound.mask){continue;}
+  FactScalarView scalar=inspect_fact_scalar(bound.scalar);
+  FactView zero=bound;zero.kind=FactKind::Zero;
+  if(scalar.kind<2){
+   materialize_fact(zero,raw);
+   if(fact_tree_contains(source,raw)!=0){continue;}
   }
-  side+=1;
+  materialize_fact(fact_numeric_alias(bound,scalar.kind),raw);
+  fact_tree_insert(output,raw);
  }
+ fact_tree_clear(bounds);
 }
+
 extern "C" void canonical_accept(address source,address target,CanonicalAcceptHost host) on cpu
  requires nonzero(host.conflict) requires nonzero(host.normalize) {
  if(host.conflict(source)==0){host.normalize(source,target);}
@@ -1968,19 +1977,6 @@ extern "C" void index_condition_below(address state,address input,IndexRelationI
  }
  host.cases.finish(state,invert,possible_false!=0 ? IndexConditionFinish::Facts : IndexConditionFinish::Impossible);
  host.cases.finish(state,1-invert,possible_true!=0 ? IndexConditionFinish::Facts : IndexConditionFinish::Impossible);
-}
-
-extern "C" void numeric_bounds(address context,NumericBoundsHost host) on cpu
- requires nonzero(host.next) requires nonzero(host.root) requires nonzero(host.lookup) requires nonzero(host.emit) {
- while(true){FactView fact=host.next(context);if(fact.present==0){return;}
-  if(fact.kind==FactKind::Minimum||fact.kind==FactKind::Maximum){
-   NumericBoundSide side=fact.kind==FactKind::Minimum ? NumericBoundSide::Lower : NumericBoundSide::Upper;
-   address id=host.root(context,fact.first);NumericBoundPrevious previous=host.lookup(context,side,id,fact.scalar);
-   u64 value=fact.value;
-   if(previous.present!=0){value=side==NumericBoundSide::Lower ? max(previous.value,value) : min(previous.value,value);}
-   host.emit(context,side,id,fact.scalar,value);
-  }
- }
 }
 
 extern "C" void execution_condition(address root,address context,ExecutionHost host) on cpu
