@@ -41,6 +41,7 @@ enum CompileError:u32 {
     IrStageRepeated=29; IrOption=30; IrFunctionMode=31; IrStageMode=32; IrInstanceMode=33;
     LayoutUsage=35; LayoutOption=36; X64Usage=37; X64Option=38;
     X64Repeated=39; ImageUsage=40; SpirvUsage=41;
+    X64RangeStart=42; X64RangeOverflow=43; X64RangeOutside=44;
 };
 
 struct CompileDiagnosticHost {
@@ -230,9 +231,16 @@ struct X64CommandLine {
     u64 has_length;
 };
 
+struct X64Range {
+    u64 end;
+    u64 start_ip;
+    CompileError error;
+};
+
 // The original source operand is canonicalized before these options are consumed.
 extern "C" LayoutCommandLine parse_layout_arguments(address arguments, u64 count) on cpu;
 extern "C" X64CommandLine parse_x64_arguments(address arguments, u64 count) on cpu;
+extern "C" X64Range resolve_x64_range(X64CommandLine line, u64 file_size) on cpu;
 
 struct MsvcText { u64 start; u64 units; };
 struct MsvcWide { address data; u64 units; };

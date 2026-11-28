@@ -2,6 +2,7 @@
 use super::{Argument, CompileError};
 use std::{ffi::OsString, fmt::Write, path::Path};
 
+#[derive(Clone, Copy)]
 #[repr(C)]
 struct X64CommandLine {
     error: CompileError,
@@ -12,9 +13,18 @@ struct X64CommandLine {
     has_length: u64,
 }
 
+#[repr(C)]
+struct X64Range {
+    end: usize,
+    start_ip: u64,
+    error: CompileError,
+}
+
 unsafe extern "C" {
     #[link_name = "bootstrap.cli::parse_x64_arguments"]
     fn parse_x64_arguments(arguments: *const Argument, count: usize) -> X64CommandLine;
+    #[link_name = "bootstrap.cli::resolve_x64_range"]
+    fn resolve_x64_range(line: X64CommandLine, file_size: usize) -> X64Range;
 }
 
 pub(super) fn print(args: &[OsString], arguments: &[Argument]) -> Result<(), Box<dyn std::error::Error>> {
@@ -22,13 +32,14 @@ pub(super) fn print(args: &[OsString], arguments: &[Argument]) -> Result<(), Box
     let line = unsafe { parse_x64_arguments(arguments.as_ptr(), arguments.len()) };
     line.error.result(args, line.error_index)?;
     let raw = std::fs::read(&path)?;
-    let offset = usize::try_from(line.offset)?;
-    let length = if line.has_length != 0 { usize::try_from(line.length)? }
-        else { raw.len().checked_sub(offset).ok_or("指令范围起点超出文件")? };
-    let end = offset.checked_add(length).ok_or("指令范围溢出")?;
-    let bytes = raw.get(offset..end).ok_or("指令范围超出文件")?;
+    let range = unsafe { resolve_x64_range(line, raw.len()) };
+    range.error.result(args, line.error_index)?;
+    let offset = line.offset as usize;
+    // On success B returns an end in offset..=raw.len() for this same buffer.
+    let bytes = unsafe { raw.get_unchecked(offset..range.end) };
+    let length = bytes.len();
     let ip = line.ip;
-    let decode = blanguage::native::instructions_json(bytes, ip.wrapping_add(offset as u64))?;
+    let decode = blanguage::native::instructions_json(bytes, range.start_ip)?;
     let mut out = String::from("{\"kind\":\"x64_query\",");
     crate::json::path(&mut out, "source_path", &path);
     write!(&mut out, ",\"file_base_ip\":\"0x{ip:016x}\",\"offset_bytes\":{offset},\"length_bytes\":{length},\"decode\":{decode}}}").unwrap();

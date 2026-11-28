@@ -555,6 +555,12 @@ extern "C" void render_compile_error(CompileError error, u64 index, CompileDiagn
         command_message(host.context, host.text, "用法：bc image <entry.blbi> -o <deployment.blri>");
     } else if (error == CompileError::SpirvUsage) {
         command_message(host.context, host.text, "usage: bc spirv <module.spv>");
+    } else if (error == CompileError::X64RangeStart) {
+        command_message(host.context, host.text, "指令范围起点超出文件");
+    } else if (error == CompileError::X64RangeOverflow) {
+        command_message(host.context, host.text, "指令范围溢出");
+    } else if (error == CompileError::X64RangeOutside) {
+        command_message(host.context, host.text, "指令范围超出文件");
     }
 }
 
@@ -985,6 +991,24 @@ extern "C" X64CommandLine parse_x64_arguments(address arguments, u64 count) on c
     }
     line.error = CompileError::None;
     return line;
+}
+
+extern "C" X64Range resolve_x64_range(X64CommandLine line, u64 file_size) on cpu {
+    u64 end = file_size;
+    if (line.has_length == 0u64) {
+        if (line.offset > file_size) {
+            return X64Range(0u64, 0u64, CompileError::X64RangeStart);
+        }
+    } else {
+        end = line.offset + line.length;
+        if (end < line.offset) {
+            return X64Range(0u64, 0u64, CompileError::X64RangeOverflow);
+        }
+        if (end > file_size) {
+            return X64Range(0u64, 0u64, CompileError::X64RangeOutside);
+        }
+    }
+    return X64Range(end, line.ip + line.offset, CompileError::None);
 }
 
 struct MsvcWriter { address data; u64 units; };
