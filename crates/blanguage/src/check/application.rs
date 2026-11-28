@@ -695,60 +695,6 @@ impl ApplicationLoads<'_, '_> {
         }
     }
 
-    fn block_contains_snapshot_candidate(&self, code: &[Inst], load: &Inst) -> bool {
-        code.iter().any(|candidate| match (&candidate.kind, &load.kind) {
-            (InstKind::If { yes, no, .. }, _) =>
-                self.block_contains_snapshot_candidate(yes, load)
-                    || self.block_contains_snapshot_candidate(no, load),
-            (InstKind::Scope(body), _) => self.block_contains_snapshot_candidate(body, load),
-            (InstKind::Load { dst: a, binding: left, word: w1, .. },
-             InstKind::Load { dst: b, binding: right, word: w2, .. }) =>
-                left == right && w1 == w2 && self.0.registers[*a] == self.0.registers[*b],
-            (InstKind::ViewLoad { dst: a, word: left, .. },
-             InstKind::ViewLoad { dst: b, word: right, .. }) =>
-                left == right && self.0.registers[*a] == self.0.registers[*b],
-            _ => false,
-        })
-    }
-    fn prior_snapshot<'a>(&'a self, code: impl Iterator<Item=&'a Inst>, mut load: &'a Inst, branches: &mut BTreeMap<Reg, Option<bool>>) -> Option<Reg> {
-        let mut result=None;
-        for inst in code {
-            let nested=match &inst.kind {
-                InstKind::If { yes, no, .. }
-                    if !self.block_contains_snapshot_candidate(yes, load)
-                        && !self.block_contains_snapshot_candidate(no, load) => {
-                    None
-                }
-                InstKind::If{condition,yes,no}=>{
-                    let mut source=*condition;
-                    while let Some((at,Inst{kind:InstKind::LoadLocal(_,slot),..}))=self.definition(source) {
-                        let Some(Inst{kind:InstKind::StoreLocal(_,value),..})=self.code().rev().skip(self.len()-at).find(|inst|self.writes_local(inst,*slot))else{break;};
-                        source=*value;
-                    }
-                    let truth = *branches.entry(source).or_insert_with(|| {
-                        let value=Value{ty:Ty::scalar(Scalar::Bool),regs:vec![source],proof:bounds::Proof::default(),literal:false,uniform:false,constant:None};
-                        self.0.condition_truth(&bounds::Condition::of(&value), None)
-                    });
-                    truth.map(|truth| if truth { yes.as_slice() } else { no.as_slice() })
-                },
-                InstKind::Scope(body)=>Some(body.as_slice()),
-                _=>None,
-            };
-            if let Some(reg)=nested.and_then(|code|self.prior_snapshot(code.iter().rev(), load, branches)) {
-                result=Some(reg);load=self.definition(reg).unwrap().1;
-            }
-            if self.writes(inst,load){break;}
-            if self.same_load(inst,load) {
-                if let InstKind::Load{dst,..}|InstKind::ViewLoad{dst,..}=inst.kind{result=Some(dst);load=inst;}
-            }
-        }
-        result
-    }
-    fn snapshot(&self, reg: Reg, branches: &mut BTreeMap<Reg, Option<bool>>) -> Reg {
-        let Some((at,load))=self.definition(reg)else{return reg;};
-        if !matches!(load.kind,InstKind::Load{..}|InstKind::ViewLoad{..}){return reg;}
-        self.prior_snapshot(self.code().rev().skip(self.len()-at), load, branches).unwrap_or(reg)
-    }
 }
 impl Builder<'_> {
     pub(super) fn application_condition_writes(&self,code:&[Inst],place:&Place,component:usize)->bool {
@@ -806,9 +752,100 @@ impl Builder<'_> {
     }
     pub(super) fn application_read_snapshots(&self) -> impl FnMut(Reg) -> Reg + '_ {
         let loads = ApplicationLoads(self);
-        let mut branches = BTreeMap::new();
-        move |reg| loads.snapshot(reg, &mut branches)
+        let blocks = self.loop_contexts.len() + 1;
+        let instructions = loads.len();
+        let registers = dataflow::Span::slice(&self.registers);
+        let mut context = SnapshotContext { loads, branches: BTreeMap::new() };
+        move |reg| {
+            let source = SnapshotSource {
+                context: std::ptr::from_mut(&mut context).cast(), blocks, instructions, registers,
+            };
+            unsafe { source_read_snapshot(source, SNAPSHOT_HOST, reg) }
+        }
     }
+}
+
+struct SnapshotContext<'a, 'w> {
+    loads: ApplicationLoads<'a, 'w>,
+    branches: BTreeMap<Reg, Option<bool>>,
+}
+
+#[repr(C)]
+struct SnapshotSource {
+    context: *mut c_void,
+    blocks: usize,
+    instructions: usize,
+    registers: dataflow::Span,
+}
+
+#[repr(u32)]
+enum SnapshotTruth { Unknown, Yes, No }
+
+#[repr(C)]
+struct SnapshotHost {
+    ir: dataflow::Host,
+    block: unsafe extern "C" fn(*const c_void, usize) -> dataflow::Span,
+    definition: unsafe extern "C" fn(*const c_void, Reg) -> RegisterDefinition,
+    writes_local: unsafe extern "C" fn(*const c_void, *const c_void, usize) -> u32,
+    truth: unsafe extern "C" fn(*mut c_void, Reg) -> SnapshotTruth,
+    writes_load: unsafe extern "C" fn(*const c_void, *const c_void, *const c_void) -> u32,
+    same_load: unsafe extern "C" fn(*const c_void, *const c_void, *const c_void) -> u32,
+}
+
+const SNAPSHOT_HOST: SnapshotHost = SnapshotHost {
+    ir: dataflow::HOST, block: snapshot_block, definition: snapshot_definition,
+    writes_local: snapshot_writes_local, truth: snapshot_truth,
+    writes_load: snapshot_writes_load, same_load: snapshot_same_load,
+};
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.application_snapshot::read_snapshot"]
+    fn source_read_snapshot(source: SnapshotSource, host: SnapshotHost, register: Reg) -> Reg;
+}
+
+unsafe extern "C" fn snapshot_block(context: *const c_void, at: usize) -> dataflow::Span {
+    let builder = unsafe { &*context.cast::<SnapshotContext<'_, '_>>() }.loads.0;
+    let code = builder.loop_contexts.get(at).map_or(builder.code.as_slice(), |scope| scope.outer.as_slice());
+    dataflow::Span::slice(code)
+}
+
+unsafe extern "C" fn snapshot_definition(context: *const c_void, reg: Reg) -> RegisterDefinition {
+    let context = unsafe { &*context.cast::<SnapshotContext<'_, '_>>() };
+    context.loads.definition(reg).map_or(
+        RegisterDefinition { instruction: std::ptr::null(), top: 0 },
+        |(top, instruction)| RegisterDefinition { instruction: std::ptr::from_ref(instruction).cast(), top },
+    )
+}
+
+unsafe extern "C" fn snapshot_writes_local(context: *const c_void, inst: *const c_void, slot: usize) -> u32 {
+    let context = unsafe { &*context.cast::<SnapshotContext<'_, '_>>() };
+    u32::from(context.loads.writes_local(unsafe { &*inst.cast::<Inst>() }, slot))
+}
+
+unsafe extern "C" fn snapshot_truth(context: *mut c_void, reg: Reg) -> SnapshotTruth {
+    let context = unsafe { &mut *context.cast::<SnapshotContext<'_, '_>>() };
+    let builder = context.loads.0;
+    match *context.branches.entry(reg).or_insert_with(|| {
+        let value = Value {
+            ty: Ty::scalar(Scalar::Bool), regs: vec![reg], proof: bounds::Proof::default(),
+            literal: false, uniform: false, constant: None,
+        };
+        builder.condition_truth(&bounds::Condition::of(&value), None)
+    }) {
+        Some(true) => SnapshotTruth::Yes,
+        Some(false) => SnapshotTruth::No,
+        None => SnapshotTruth::Unknown,
+    }
+}
+
+unsafe extern "C" fn snapshot_writes_load(context: *const c_void, inst: *const c_void, load: *const c_void) -> u32 {
+    let context = unsafe { &*context.cast::<SnapshotContext<'_, '_>>() };
+    u32::from(context.loads.writes(unsafe { &*inst.cast::<Inst>() }, unsafe { &*load.cast::<Inst>() }))
+}
+
+unsafe extern "C" fn snapshot_same_load(context: *const c_void, inst: *const c_void, load: *const c_void) -> u32 {
+    let context = unsafe { &*context.cast::<SnapshotContext<'_, '_>>() };
+    u32::from(context.loads.same_load(unsafe { &*inst.cast::<Inst>() }, unsafe { &*load.cast::<Inst>() }))
 }
 
 struct StoredPositionQuery<'a, 'w> {
