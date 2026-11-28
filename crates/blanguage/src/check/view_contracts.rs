@@ -793,17 +793,32 @@ fn same_content_storage(a:&address::Root,b:&address::Root)->bool {
         _=>a==b,
     }
 }
-fn content_indices(a:&address::Root,b:&address::Root)->Option<(Option<bounds::Operand>,Option<bounds::Operand>)> {
-    match(a,b) {
-        (address::Root::Resource{borrow:a,index:at}|address::Root::Dataset{borrow:a,index:at},
-         address::Root::Resource{borrow:b,index:bt}|address::Root::Dataset{borrow:b,index:bt})
-            if a==b=>Some((*at,*bt)),
-        _=>None,
+enum ContentStorage {
+    Separate,
+    Direct,
+    Indexed(Option<bounds::Condition>),
+}
+
+impl ContentStorage {
+    fn between(read: &address::Root, target: &address::Root) -> Self {
+        match (read, target) {
+            (address::Root::Resource { borrow: a, index: at } | address::Root::Dataset { borrow: a, index: at },
+             address::Root::Resource { borrow: b, index: bt } | address::Root::Dataset { borrow: b, index: bt }) => {
+                if a == b {
+                    Self::Indexed(at.zip(*bt).map(|(a, b)| bounds::Condition::index_equal(a, b)))
+                } else {
+                    Self::Separate
+                }
+            }
+            _ if same_content_storage(read, target) => Self::Direct,
+            _ => Self::Separate,
+        }
     }
 }
-fn content_word(origin:&address::Origin,word:u32)->Option<(usize,u32)>{
-    let component=origin.layout.parts.iter().position(|(scalar,at)|*at==word&&*scalar==Scalar::U64)?;
-    Some((component,origin.words[component]))
+
+fn content_word(origin: &address::Origin, word: u32) -> Option<u32> {
+    let component = origin.layout.parts.iter().position(|(scalar, at)| *at == word && *scalar == Scalar::U64)?;
+    Some(origin.words[component])
 }
 fn content_position(origin:&address::Origin,word:u32)->Option<Position>{
     origin.position_at(word).filter(|position|!matches!(position,Position::Initialized))
@@ -839,28 +854,89 @@ impl ContentAtRead {
     }
 }
 
-fn content_write_overlap<'a>(
-    query: Option<(&address::Origin, u32)>, position: Option<&Position>,
-    target: &address::Origin, word: u32, active: impl FnOnce() -> Option<&'a bounds::Clause>,
-) -> Option<bool> {
-    let active=active()?;
-    let complete = query.is_some_and(|(origin, at)| {
-        let storage=match content_indices(&origin.root,&target.root) {
-            Some((Some(a),Some(b)))=>bounds::Condition::index_equal(a,b).truth_in(active)==Some(true),
-            Some(_)=>false,
-            None=>same_content_storage(&origin.root,&target.root),
-        };
-        origin.base == target.base && storage
-            && content_word(origin, at).zip(content_word(target, word))
-                .is_some_and(|((_, read), (_, written))| read == written)
-    }) || query.is_none_or(|(origin,_)|content_indices(&origin.root,&target.root).is_none())
-        && position.zip(content_position(target, word).as_ref()).is_some_and(|(read, written)| read == written);
+struct ContentWrite<'a> {
+    query: Option<(&'a address::Origin, u32)>,
+    position: Option<&'a Position>,
+    target: &'a address::Origin,
+    storage: ContentStorage,
+}
 
-    if complete {
-        return Some(true);
+impl<'a> ContentWrite<'a> {
+    fn new(query: Option<(&'a address::Origin, u32)>, position: Option<&'a Position>, target: &'a address::Origin) -> Self {
+        let storage = query.map_or(ContentStorage::Separate, |(read, _)| ContentStorage::between(&read.root, &target.root));
+        Self { query, position, target, storage }
     }
-    let position = position?;
-    address::MemoryEffect::position_may_write(target, active, position).then_some(false)
+
+    fn overlap(&self, word: u32, active: &bounds::Clause) -> Option<bool> {
+        use std::ffi::c_void;
+
+        #[repr(u32)]
+        enum StorageKind { Separate, Direct, Indexed }
+
+        #[repr(u32)]
+        enum Coverage { Disjoint, Partial, Complete }
+
+        #[repr(C)]
+        struct Host {
+            context: *const c_void,
+            same_index: extern "C" fn(*const c_void) -> u32,
+            same_word: extern "C" fn(*const c_void) -> u32,
+            same_position: extern "C" fn(*const c_void) -> u32,
+            may_write: extern "C" fn(*const c_void) -> u32,
+        }
+
+        unsafe extern "C" {
+            #[link_name = "bootstrap.call_arguments::classify_content_write"]
+            fn classify_content_write(storage: StorageKind, has_position: u32, host: Host) -> Coverage;
+        }
+
+        struct Query<'a> {
+            write: &'a ContentWrite<'a>,
+            word: u32,
+            active: &'a bounds::Clause,
+        }
+
+        extern "C" fn same_index(context: *const c_void) -> u32 {
+            let query = unsafe { &*context.cast::<Query<'_>>() };
+            u32::from(matches!(&query.write.storage,
+                ContentStorage::Indexed(Some(same)) if same.truth_in(query.active) == Some(true)))
+        }
+
+        extern "C" fn same_word(context: *const c_void) -> u32 {
+            let query = unsafe { &*context.cast::<Query<'_>>() };
+            let target = query.write.target;
+            u32::from(query.write.query.is_some_and(|(read, at)| {
+                read.base == target.base && content_word(read, at).is_some_and(|word| {
+                    content_word(target, query.word) == Some(word)
+                })
+            }))
+        }
+
+        extern "C" fn same_position(context: *const c_void) -> u32 {
+            let query = unsafe { &*context.cast::<Query<'_>>() };
+            u32::from(query.write.position.is_some_and(|read| content_position(query.write.target, query.word).as_ref() == Some(read)))
+        }
+
+        extern "C" fn may_write(context: *const c_void) -> u32 {
+            let query = unsafe { &*context.cast::<Query<'_>>() };
+            u32::from(query.write.position.is_some_and(|position| {
+                address::MemoryEffect::position_may_write(query.write.target, query.active, position)
+            }))
+        }
+
+        let storage = match self.storage {
+            ContentStorage::Separate => StorageKind::Separate,
+            ContentStorage::Direct => StorageKind::Direct,
+            ContentStorage::Indexed(_) => StorageKind::Indexed,
+        };
+        let query = Query { write: self, word, active };
+        let host = Host { context: std::ptr::from_ref(&query).cast(), same_index, same_word, same_position, may_write };
+        match unsafe { classify_content_write(storage, u32::from(self.position.is_some()), host) } {
+            Coverage::Disjoint => None,
+            Coverage::Partial => Some(false),
+            Coverage::Complete => Some(true),
+        }
+    }
 }
 
 fn content_write_paths(
@@ -871,18 +947,19 @@ fn content_write_paths(
     let mut miss = execution.assume(&bounds::Clause::default(), false);
     for (source, selected) in targets.sources.entries() {
         let mut active = execution.assume(&selected, true);
-        if let (Some((read,_)),Origin::Position(target))=(query,source)
-            && let Some((Some(a),Some(b)))=content_indices(&read.root,&target.root)
-        {
-            let same=bounds::Condition::index_equal(a,b);
-            miss=bounds::Clause::either(&miss,&same.assume(&active,false));
-            active=same.assume(&active,true);
+        let write = match source {
+            Origin::Position(target) => Some(ContentWrite::new(query, position, target)),
+            _ => None,
+        };
+        if let Some(ContentWrite { storage: ContentStorage::Indexed(Some(same)), .. }) = &write {
+            miss = bounds::Clause::either(&miss, &same.assume(&active, false));
+            active = same.assume(&active, true);
         }
         if !active.possible() { continue; }
-        let overlap = match source {
-            Origin::Position(origin) => content_write_overlap(query, position, origin, word, || Some(&active)),
-            Origin::External => Some(false),
-            _ => None,
+        let overlap = match write {
+            Some(write) => write.overlap(word, &active),
+            None if matches!(source, Origin::External) => Some(false),
+            None => None,
         };
         if overlap.is_some() {
             hit = bounds::Clause::either(&hit, &active);

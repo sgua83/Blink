@@ -148,6 +148,19 @@ extern "C" u32 address_position_at(u32 word, usize parts, u32 stored, AddressPos
     requires nonzero(host.emit) requires nonzero(host.next) requires nonzero(host.resolve)
     requires nonzero(host.same) requires nonzero(host.accept) requires nonzero(host.pending);
 
+enum ContentStorageKind:u32 { Separate=0; Direct=1; Indexed=2; };
+enum ContentWriteCoverage:u32 { Disjoint=0; Partial=1; Complete=2; };
+struct ContentWriteHost {
+    address context;
+    cfn<u32,address> same_index;
+    cfn<u32,address> same_word;
+    cfn<u32,address> same_position;
+    cfn<u32,address> may_write;
+};
+extern "C" ContentWriteCoverage classify_content_write(ContentStorageKind storage, u32 has_position,
+    ContentWriteHost host) on cpu requires nonzero(host.same_index) requires nonzero(host.same_word)
+    requires nonzero(host.same_position) requires nonzero(host.may_write);
+
 enum BorrowedPositionMatch:u32 { Unavailable=0; Equal=1; Different=2; };
 struct BorrowedPositionHost {
     address context;

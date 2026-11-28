@@ -493,6 +493,17 @@ extern "C" u32 address_position_at(u32 word, usize parts, u32 stored, AddressPos
     return agreed;
 }
 
+extern "C" ContentWriteCoverage classify_content_write(ContentStorageKind storage, u32 has_position,
+    ContentWriteHost host) on cpu requires nonzero(host.same_index) requires nonzero(host.same_word)
+    requires nonzero(host.same_position) requires nonzero(host.may_write) {
+    let indexed = storage == ContentStorageKind::Indexed;
+    let same = indexed ? host.same_index(host.context) != 0 : storage == ContentStorageKind::Direct;
+    if (same && host.same_word(host.context) != 0) { return ContentWriteCoverage::Complete; }
+    if (has_position == 0) { return ContentWriteCoverage::Disjoint; }
+    if (!indexed && host.same_position(host.context) != 0) { return ContentWriteCoverage::Complete; }
+    return host.may_write(host.context) != 0 ? ContentWriteCoverage::Partial : ContentWriteCoverage::Disjoint;
+}
+
 extern "C" void borrowed_address_positions(usize fields, BorrowedPositionHost host) on cpu
     requires nonzero(host.next) requires nonzero(host.remember) requires nonzero(host.compare)
     requires nonzero(host.forget) requires nonzero(host.publish) {

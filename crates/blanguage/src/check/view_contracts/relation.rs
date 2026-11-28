@@ -1301,7 +1301,7 @@ impl BorrowEvaluation<'_> {
         }
         let (position, index) = match &origin.root {
             address::Root::Resource { borrow, index } | address::Root::Dataset { borrow, index } => {
-                let (_, offset) = content_word(origin, word)?;
+                let offset = content_word(origin, word)?;
                 (Cow::Owned(Position::Borrowed(Arc::new(borrow.clone()), origin.base.clone(), offset)), *index)
             }
             _ => (Cow::Borrowed(position?), None),
@@ -2644,10 +2644,9 @@ impl<'g> Query<'g> {
                         if publishes { miss = bounds::Clause::either(&miss, &yes); }
                         continue;
                     }
+                    let coverage = ContentWrite::new(Some((origin, 0)), position.as_ref(), target);
                     for (word, value) in fields {
-                        if let Some(full) = content_write_overlap(
-                            Some((origin, 0)), position.as_ref(), target, *word, || Some(&yes),
-                        ) {
+                        if let Some(full) = coverage.overlap(*word, &yes) {
                             let Some(result) = output.as_deref_mut() else { return WriteReplay::Stop; };
                             let visible = earlier.clone().logical(bounds::Condition::guard(yes.clone()), false);
                             // The selected write already includes the read path.
@@ -2715,7 +2714,7 @@ impl<'g> Query<'g> {
     ) -> Borrow {
         let read_location = std::cell::LazyCell::new(|| {
             let (binding, origin) = self.location(from_id)?;
-            let (_, word) = content_word(origin, word)?;
+            let word = content_word(origin, word)?;
             Some((binding, origin, word))
         });
         let sources = from.sources.replay_reads(|source, path| {
@@ -2741,7 +2740,7 @@ impl<'g> Query<'g> {
                     }
                     let read_word = *read_word;
                     Some(fields.iter().filter_map(move |&(field, value)| {
-                        let (_, word) = content_word(target, field)?;
+                        let word = content_word(target, field)?;
                         (word == read_word).then_some(value)
                     }).peekable())
                 });
@@ -2769,10 +2768,9 @@ impl<'g> Query<'g> {
                     let mut complete = false;
                     if let Origin::Position(target)=target{
                         if let Some(fields)=&write.fields{
+                            let coverage = ContentWrite::new(Some((origin, word)), position.as_ref(), target);
                             for (field,value)in fields{
-                                if let Some(full) = content_write_overlap(
-                                    Some((origin, word)), position.as_ref(), target, *field, || Some(&selected),
-                                ) {
+                                if let Some(full) = coverage.overlap(*field, &selected) {
                                     let v = self.node(*value);
                                     if v.empty() && !not_written.possible() {
                                         decision = WriteReplay::FinishFrame;
