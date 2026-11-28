@@ -922,7 +922,7 @@ extern "C" NumericTransfer numeric_nested_order(NumericTransfer effect, NumericR
     return numeric_kind(NumericKind::Unknown, 0);
 }
 
-extern "C" NumericIterations numeric_iterations(NumericTransfer effect, NumericRange input, NumericRange guard) on cpu {
+NumericIterations numeric_iterations(NumericTransfer effect, NumericRange input, NumericRange guard) on cpu {
     if (effect.kind != NumericKind::Shift) { return NumericIterations(0, 0u64); }
     if (input.upper < guard.lower || input.lower > guard.upper) { return NumericIterations(1, 0u64); }
     if (!numeric_no_wrap(effect, wide(u64(guard.lower)), wide(u64(guard.upper)))) {
@@ -943,6 +943,17 @@ extern "C" NumericIterations numeric_iterations(NumericTransfer effect, NumericR
     return NumericIterations(1, integer_wide_unsigned_divide(wide(u64(distance)), divisor).quotient.low + 1u64);
 }
 
+extern "C" NumericIterations numeric_loop_limit(NumericIterations limit, NumericTransfer effect,
+    NumericRange input, NumericRange guard, NumericLimitUse consumer) on cpu {
+    NumericIterations candidate = effect.kind == NumericKind::Missing && consumer == NumericLimitUse::Write
+        ? NumericIterations(1, 1u64)
+        : numeric_iterations(effect, input, guard);
+    if (candidate.present != 0 && (limit.present == 0 || candidate.count < limit.count)) {
+        return candidate;
+    }
+    return limit;
+}
+
 IntegerWideChecked numeric_endpoint(u32 input, u64 iterations, IntegerWide shift, bool lower) on cpu {
     IntegerWideChecked delta = integer_wide_checked_multiply(wide(iterations), shift);
     if (delta.present == 0) { return delta; }
@@ -950,7 +961,7 @@ IntegerWideChecked numeric_endpoint(u32 input, u64 iterations, IntegerWide shift
     return integer_wide_checked_add(wide(u64(input)), extreme);
 }
 
-extern "C" NumericRanges numeric_ranges(NumericTransfer effect, NumericRange input, NumericIterations iterations) on cpu {
+NumericRanges numeric_ranges(NumericTransfer effect, NumericRange input, NumericIterations iterations) on cpu {
     NumericRange empty = NumericRange(0, 0);
     NumericRanges missing = NumericRanges(0, empty, empty);
     if (iterations.present == 0 || effect.kind != NumericKind::Shift) { return missing; }
@@ -968,7 +979,7 @@ extern "C" NumericRanges numeric_ranges(NumericTransfer effect, NumericRange inp
         NumericRange(u32(header_low.value.low), u32(header_high.value.low)));
 }
 
-extern "C" NumericRetention numeric_retention(NumericTransfer effect, NumericRange input, NumericRange guard, u32 bounded) on cpu {
+NumericRetention numeric_retention(NumericTransfer effect, NumericRange input, NumericRange guard, u32 bounded) on cpu {
     if (effect.kind == NumericKind::Missing) { return NumericRetention(3, NumericProofAction::None); }
     if (effect.kind == NumericKind::Ordered) { return NumericRetention(effect.flags, NumericProofAction::None); }
     if (effect.kind == NumericKind::Assign) { return NumericRetention(3, NumericProofAction::Join); }
@@ -982,6 +993,21 @@ extern "C" NumericRetention numeric_retention(NumericTransfer effect, NumericRan
         }
     }
     return NumericRetention(0, NumericProofAction::None);
+}
+
+extern "C" NumericBounds numeric_loop_bounds(NumericTransfer effect, NumericRange input,
+    NumericRange guard, NumericIterations limit) on cpu {
+    NumericRanges ranges = numeric_ranges(effect, input, limit);
+    return NumericBounds(ranges, numeric_retention(effect, input, guard, ranges.present));
+}
+
+extern "C" NumericWriteRange numeric_write_range(NumericTransfer effect, NumericRange input,
+    NumericIterations limit) on cpu {
+    if (limit.present != 0 && effect.kind == NumericKind::Missing) {
+        return NumericWriteRange(1, input);
+    }
+    NumericRanges ranges = numeric_ranges(effect, input, limit);
+    return NumericWriteRange(ranges.present, ranges.body);
 }
 
 bool numeric_arguments_contain(StorageView storage, Slice arguments, ExprRef selected) on cpu {

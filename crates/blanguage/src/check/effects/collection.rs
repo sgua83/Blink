@@ -551,6 +551,7 @@ impl Scope<'_, '_> {
         let builder = self.builder.unwrap();
         let scope=Scope{bindings:self.bindings.clone(),writes:self.writes,..Scope::current(builder)};
         let mut retained=Vec::new();
+        let mut iterations = NumericIterations::default();
         for(binding_at,(name,local))in scope.bindings.iter().enumerate(){
             let Local::Initialized(_,initial,after)=local else{continue;};
             if unsafe { self.world.call(scope.named(name,expr.span())).await }?!=Some(Ty::scalar(Scalar::U32)){continue;}
@@ -569,7 +570,9 @@ impl Scope<'_, '_> {
             let mut numeric_scope=Scope{bindings:scope.bindings.clone(),writes:scope.writes,..Scope::current(builder)};
             let mut continues=None;
             let next=unsafe { builder.world.call(builder.numeric_loop_paths(&body,Some(before),&mut continues,name,&target,&future,false,&mut numeric_scope,&bounds::Clause::default(),None,&mut None)).await }?;
-            retained.push((name.clone(),input,guard,join_numeric_paths(next,continues)));
+            let transfer = join_numeric_paths(next, continues);
+            iterations.include(transfer.as_ref(), &input, &guard, NumericLimitUse::Write);
+            retained.push((name.clone(), input, transfer));
         }
         if scope.writes.is_some() && builder.loop_contexts.last().is_some_and(|context|context.control_source.cursor.is_none()) {
             for(name,binding)in &builder.env {
@@ -590,10 +593,11 @@ impl Scope<'_, '_> {
                 let mut numeric_scope=Scope{bindings:scope.bindings.clone(),writes:scope.writes,..Scope::current(builder)};
                 let mut continues=None;
                 let next=unsafe { builder.world.call(builder.numeric_loop_paths(&body,Some(before),&mut continues,name,&target,&future,false,&mut numeric_scope,&bounds::Clause::default(),None,&mut None)).await }?;
-                retained.push((name.as_str().to_string(),input,guard,join_numeric_paths(next,continues)));
+                let transfer = join_numeric_paths(next, continues);
+                iterations.include(transfer.as_ref(), &input, &guard, NumericLimitUse::Write);
+                retained.push((name.as_str().to_string(), input, transfer));
             }
         }
-        let iterations=retained.iter().filter_map(|(_,input,guard,effect)|match effect{None=>Some(1),Some(effect)=>effect.iteration_bound(input,guard)}).min();
         for at in 0..future.len(){
             let selection=if let Write::Position{place,call:None,..}=&future[at]{
                 unsafe { builder.world.call(builder.loop_write_projection(place,&async |index,dataset|{
@@ -601,11 +605,11 @@ impl Scope<'_, '_> {
                     let ExprKind::Name(name)=index.kind() else{return Ok((operand,None));};
                     if !dataset||unsafe { self.world.call(scope.named(name,index.span())).await }?!=Some(Ty::scalar(Scalar::U32)){return Ok((operand,None));}
                     let mut condition=unsafe { self.world.call(scope.input_snapshot(&expr,scope.bindings.len(),Access::Value,None,Some(name))).await }?.and_then(|(_,proof,_)|proof.component_condition(0).cloned());
-                    if iterations==Some(0){return Ok((operand,Some(bounds::Condition::constant(false))));}
-                    let range=iterations.and_then(|iterations|retained.iter().find(|(bound,_,_,_)|*bound==name).and_then(|(_,input,_,effect)|match effect {
-                        None=>Some((input.unsigned_minimum(0),input.unsigned_maximum(0))),
-                        Some(effect)=>effect.bounded_ranges(input,iterations).map(|range|range.0),
-                    }));
+                    if iterations.is_zero(){return Ok((operand,Some(bounds::Condition::constant(false))));}
+                    let range = (iterations.present != 0).then(|| {
+                        retained.iter().find(|(bound, _, _)| *bound == name)
+                            .and_then(|(_, input, effect)| iterations.write_range(effect.as_ref(), input))
+                    }).flatten();
                     if let Some((low,high))=range{
                         let ordinal=bounds::Operand::Value(ValueIdentity::ElementIndex(0));
                         let proof=bounds::Proof::default().with_identity(ValueIdentity::ElementIndex(0));

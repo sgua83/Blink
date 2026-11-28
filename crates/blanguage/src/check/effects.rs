@@ -955,6 +955,7 @@ impl From<&bounds::Proof> for NumericRange {
     }
 }
 
+#[derive(Clone, Copy, Default)]
 #[repr(C)]
 struct NumericIterations { present: u32, count: u64 }
 
@@ -963,6 +964,15 @@ struct NumericRanges { present: u32, body: NumericRange, header: NumericRange }
 
 #[repr(C)]
 struct NumericRetention { flags: u32, proof: NumericProofAction }
+
+#[repr(C)]
+struct NumericBounds { ranges: NumericRanges, retention: NumericRetention }
+
+#[repr(u32)]
+enum NumericLimitUse { Repeat, Write }
+
+#[repr(C)]
+struct NumericWriteRange { present: u32, body: NumericRange }
 
 #[derive(Clone, Copy)]
 #[allow(dead_code)]
@@ -1013,12 +1023,12 @@ unsafe extern "C" {
     fn numeric_join(left: NumericTransfer, right: NumericTransfer) -> NumericCombination;
     #[link_name = "bootstrap.source_writes::numeric_nested_order"]
     fn numeric_nested_order(effect: NumericTransfer, guard: NumericRange, assigned: NumericRange) -> NumericTransfer;
-    #[link_name = "bootstrap.source_writes::numeric_iterations"]
-    fn numeric_iterations(effect: NumericTransfer, input: NumericRange, guard: NumericRange) -> NumericIterations;
-    #[link_name = "bootstrap.source_writes::numeric_ranges"]
-    fn numeric_ranges(effect: NumericTransfer, input: NumericRange, iterations: NumericIterations) -> NumericRanges;
-    #[link_name = "bootstrap.source_writes::numeric_retention"]
-    fn numeric_retention(effect: NumericTransfer, input: NumericRange, guard: NumericRange, bounded: u32) -> NumericRetention;
+    #[link_name = "bootstrap.source_writes::numeric_loop_limit"]
+    fn numeric_loop_limit(limit: NumericIterations, effect: NumericTransfer, input: NumericRange, guard: NumericRange, consumer: NumericLimitUse) -> NumericIterations;
+    #[link_name = "bootstrap.source_writes::numeric_loop_bounds"]
+    fn numeric_loop_bounds(effect: NumericTransfer, input: NumericRange, guard: NumericRange, limit: NumericIterations) -> NumericBounds;
+    #[link_name = "bootstrap.source_writes::numeric_write_range"]
+    fn numeric_write_range(effect: NumericTransfer, input: NumericRange, limit: NumericIterations) -> NumericWriteRange;
     #[link_name = "bootstrap.source_writes::numeric_contains_expression"]
     fn numeric_contains_expression(root: SignatureNode, selected: SignatureNode) -> bool;
     #[link_name = "bootstrap.source_writes::numeric_contains_statement"]
@@ -1117,30 +1127,43 @@ impl NumericEffect {
         let assigned = match effect { Some(Self::Assign(proof)) => proof.into(), _ => NumericRange::default() };
         Self::from_transfer(unsafe { numeric_nested_order(transfer, guard.into(), assigned) }, None).unwrap()
     }
+}
 
-    fn iteration_bound(&self, input: &bounds::Proof, guard: &bounds::Proof) -> Option<u64> {
-        let result = unsafe { numeric_iterations(self.transfer(), input.into(), guard.into()) };
-        (result.present != 0).then_some(result.count)
+impl NumericIterations {
+    fn include(&mut self, effect: Option<&NumericEffect>, input: &bounds::Proof, guard: &bounds::Proof, consumer: NumericLimitUse) {
+        *self = unsafe { numeric_loop_limit(*self, transfer_path(effect), input.into(), guard.into(), consumer) };
     }
 
-    fn bounded_ranges(&self, input: &bounds::Proof, iterations: u64) -> Option<((u32, u32), (u32, u32))> {
-        let result = unsafe { numeric_ranges(self.transfer(), input.into(), NumericIterations { present: 1, count: iterations }) };
-        (result.present != 0).then_some(((result.body.lower, result.body.upper), (result.header.lower, result.header.upper)))
+    fn is_zero(self) -> bool {
+        self.present != 0 && self.count == 0
     }
 
-    fn retained(&self, proof: &mut bounds::Proof, guard: &bounds::Proof, bounded: bool) -> (bool, bool) {
-        let transfer = self.transfer();
-        let result = unsafe { numeric_retention(transfer, (&*proof).into(), guard.into(), u32::from(bounded)) };
-        match result.proof {
-            NumericProofAction::Join => proof.join(match self {
-                Self::Assign(assigned) => assigned,
-                _ => unreachable!(),
-            }, 1, None),
-            NumericProofAction::Reflect => proof.join(&proof.unsigned_reflected(transfer.flags), 1, None),
-            _ => {}
-        }
-        (result.flags & 1 != 0, result.flags & 2 != 0)
+    fn write_range(self, effect: Option<&NumericEffect>, input: &bounds::Proof) -> Option<(u32, u32)> {
+        let result = unsafe { numeric_write_range(transfer_path(effect), input.into(), self) };
+        (result.present != 0).then_some((result.body.lower, result.body.upper))
     }
+}
+
+fn retain_numeric_bounds(
+    effect: Option<&NumericEffect>,
+    proof: &mut bounds::Proof,
+    guard: &bounds::Proof,
+    iterations: NumericIterations,
+) -> (Option<((u32, u32), (u32, u32))>, bool, bool) {
+    let transfer = transfer_path(effect);
+    let result = unsafe { numeric_loop_bounds(transfer, (&*proof).into(), guard.into(), iterations) };
+    match result.retention.proof {
+        NumericProofAction::Join => proof.join(match effect {
+            Some(NumericEffect::Assign(assigned)) => assigned,
+            _ => unreachable!(),
+        }, 1, None),
+        NumericProofAction::Reflect => proof.join(&proof.unsigned_reflected(transfer.flags), 1, None),
+        _ => {}
+    }
+    let NumericRanges { present, body, header } = result.ranges;
+    let ranges = (present != 0).then_some(((body.lower, body.upper), (header.lower, header.upper)));
+    let flags = result.retention.flags;
+    (ranges, flags & 1 != 0, flags & 2 != 0)
 }
 
 fn transfer_path(effect: Option<&NumericEffect>) -> NumericTransfer {
@@ -1651,6 +1674,7 @@ impl Builder<'_> {
             _=>None,
         }).collect::<Vec<_>>();
         let mut retained=Vec::new();
+        let mut iterations = NumericIterations::default();
         for(name,owner,input)in candidates {
             let target=LoopPlace::Stored(owner,0);let mut changed=false;
             for write in writes{if unsafe { self.world.call(self.numeric_write(write,&name,&target,writes)).await }?{changed=true;break;}}
@@ -1662,14 +1686,14 @@ impl Builder<'_> {
                 .map(|condition|bounds::scoped_proof(&Ty::scalar(Scalar::U32),bounds::Proof::default().with_identity(ValueIdentity::ElementIndex(0)),&condition.assume(&bounds::Clause::default(),true),&BTreeMap::new())).unwrap_or_default()}else{bounds::Proof::default()};
             let mut continues=None;
             let next=if pure{unsafe { self.world.call(self.numeric_loop_paths(body,Some(NumericEffect::preserve()),&mut continues,&name,&target,writes,!has_numeric_loop_control(body,true),&mut scope,&bounds::Clause::default(),None,&mut None)).await }?}else{Some(NumericEffect::Unknown)};
-            retained.push((name,input,guard,join_numeric_paths(next,continues)));
+            let transfer = join_numeric_paths(next, continues);
+            iterations.include(transfer.as_ref(), &input, &guard, NumericLimitUse::Repeat);
+            retained.push((name, input, guard, transfer));
         }
-        let iterations=retained.iter().filter_map(|(_,input,guard,effect)|effect.as_ref().and_then(|effect|effect.iteration_bound(input,guard))).min();
         let mut body_bounds=Vec::new();
         for(name,mut input,guard,transfer)in retained {
-            let bounded=iterations.and_then(|iterations|transfer.as_ref()?.bounded_ranges(&input,iterations));
             let identity=transfer.as_ref().is_none_or(NumericEffect::is_identity);
-            let(lower,upper)=transfer.as_ref().map_or((true,true),|transfer|transfer.retained(&mut input,&guard,bounded.is_some()));
+            let (bounded, lower, upper) = retain_numeric_bounds(transfer.as_ref(), &mut input, &guard, iterations);
             if let Some(Binding::Owned(owner))=self.env.get_mut(&name) {
             owner.uniform=false;
             if !identity {
@@ -1731,6 +1755,7 @@ impl Builder<'_> {
             }
         }
         let mut retained=Vec::new();
+        let mut iterations = NumericIterations::default();
         for(name,target,mut input,guard)in candidates {
             let mut written=false;for write in &writes{if unsafe { self.world.call(self.numeric_write(write,&name,&target,&writes)).await }?{written=true;break;}}
             if !written{continue;}
@@ -1742,12 +1767,12 @@ impl Builder<'_> {
             if let Some(identity)=input.known_identity(0){let mut domains=input.domains(0).into_owned();domains.insert(IndexDomain::Upper(identity,0));input=input.with_domains(domains);}
             let mut scope=Scope::current(self);scope.writes=Some(&self.loop_contexts.last().unwrap().writes);
             let mut continues=None;let next=unsafe { self.world.call(self.numeric_loop_paths(body,Some(NumericEffect::preserve()),&mut continues,&name,&target,&writes,!has_numeric_loop_control(body,true),&mut scope,&bounds::Clause::default(),None,&mut None)).await }?;
-            retained.push((name,target,input,guard,join_numeric_paths(next,continues)));
+            let transfer = join_numeric_paths(next, continues);
+            iterations.include(transfer.as_ref(), &input, &guard, NumericLimitUse::Repeat);
+            retained.push((name, target, input, guard, transfer));
         }
-        let iterations=retained.iter().filter_map(|(_,_,input,guard,effect)|effect.as_ref().and_then(|effect|effect.iteration_bound(input,guard))).min();
         for(name,target,mut proof,guard,effect)in retained {
-            let bounded=iterations.and_then(|iterations|effect.as_ref()?.bounded_ranges(&proof,iterations));
-            let(lower,upper)=effect.as_ref().map_or((true,true),|effect|effect.retained(&mut proof,&guard,bounded.is_some()));
+            let (bounded, lower, upper) = retain_numeric_bounds(effect.as_ref(), &mut proof, &guard, iterations);
             if !lower&&!upper&&bounded.is_none(){continue;}
             if let LoopPlace::Element(target,component)=target {
                 if target.index.is_none(){continue;}
@@ -1768,7 +1793,7 @@ impl Builder<'_> {
             }}
         }
         unsafe { self.world.call(self.retain_loop_ownership(&writes,condition,body,header)).await }?;
-        Ok(iterations!=Some(0))
+        Ok(!iterations.is_zero())
     }
     async fn retain_loop_ownership(&mut self,writes:&[Write],condition:Option<&Expr>,body:&Block,header:&mut BTreeMap<String,Binding>)->Result<()> {
         use owned_presence::Presence;use ownership::ApplicationIndex;use returns::Returned;

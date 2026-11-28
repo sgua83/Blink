@@ -98,15 +98,21 @@ struct NumericRange { u32 lower; u32 upper; };
 struct NumericIterations { u32 present; u64 count; };
 struct NumericRanges { u32 present; NumericRange body; NumericRange header; };
 struct NumericRetention { u32 flags; NumericProofAction proof; };
+struct NumericBounds { NumericRanges ranges; NumericRetention retention; };
+enum NumericLimitUse:u32 { Repeat=0; Write=1; };
+struct NumericWriteRange { u32 present; NumericRange body; };
 extern "C" NumericTransfer numeric_shift(u32 amount, u32 subtract) on cpu;
 extern "C" bool numeric_identity(NumericTransfer effect) on cpu;
 extern "C" bool numeric_zero_delta(NumericTransfer effect) on cpu;
 extern "C" NumericCombination numeric_then(NumericTransfer left, NumericTransfer right) on cpu;
 extern "C" NumericCombination numeric_join(NumericTransfer left, NumericTransfer right) on cpu;
 extern "C" NumericTransfer numeric_nested_order(NumericTransfer effect, NumericRange guard, NumericRange assigned) on cpu;
-extern "C" NumericIterations numeric_iterations(NumericTransfer effect, NumericRange input, NumericRange guard) on cpu;
-extern "C" NumericRanges numeric_ranges(NumericTransfer effect, NumericRange input, NumericIterations iterations) on cpu;
-extern "C" NumericRetention numeric_retention(NumericTransfer effect, NumericRange input, NumericRange guard, u32 bounded) on cpu;
+extern "C" NumericIterations numeric_loop_limit(NumericIterations limit, NumericTransfer effect,
+    NumericRange input, NumericRange guard, NumericLimitUse consumer) on cpu;
+extern "C" NumericBounds numeric_loop_bounds(NumericTransfer effect, NumericRange input,
+    NumericRange guard, NumericIterations limit) on cpu;
+extern "C" NumericWriteRange numeric_write_range(NumericTransfer effect, NumericRange input,
+    NumericIterations limit) on cpu;
 
 // Local slot records reuse the compiler's ordered tree storage.
 extern "C" u32 has_loop_slot(address slots, usize slot) on cpu;
