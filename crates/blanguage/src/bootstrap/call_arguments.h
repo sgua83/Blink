@@ -237,6 +237,18 @@ struct AddressJoinHost {
 extern "C" void join_address_identities(usize width, usize left, usize right, u32 conditional, AddressJoinHost host) on cpu
     requires nonzero(host.reserve) requires nonzero(host.inspect) requires nonzero(host.emit);
 
+struct BorrowJoinHost {
+    address context;
+    cfn<u32,address,usize> equal;
+    cfn<void,address> branch_paths;
+    cfn<void,address,usize> restrict_left;
+    cfn<void,address,usize> merge_right;
+    cfn<void,address,usize> union_right;
+};
+extern "C" void join_borrow_components(usize width, u32 conditional, BorrowJoinHost host) on cpu
+    requires nonzero(host.equal) requires nonzero(host.branch_paths) requires nonzero(host.restrict_left)
+    requires nonzero(host.merge_right) requires nonzero(host.union_right);
+
 struct AddressRequirements { u32 writable; u32 initialized; u32 atomic; };
 enum AddressViolation:u32 { None=0; Inactive=1; Layout=2; Atomic=3; ReadOnly=4; Uninitialized=5; };
 struct AddressRequirementHost {

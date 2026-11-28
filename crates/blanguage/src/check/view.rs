@@ -123,6 +123,75 @@ pub(super) struct Borrow{
     pub calls:Edges<view_contracts::CallResult>,
     pub reads:Edges<view_contracts::ContentRead>,
 }
+
+#[repr(C)]
+struct BorrowJoinHost {
+    context: *mut std::ffi::c_void,
+    equal: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> u32,
+    branch_paths: unsafe extern "C" fn(*mut std::ffi::c_void),
+    restrict_left: unsafe extern "C" fn(*mut std::ffi::c_void, usize),
+    merge_right: unsafe extern "C" fn(*mut std::ffi::c_void, usize),
+    union_right: unsafe extern "C" fn(*mut std::ffi::c_void, usize),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::join_borrow_components"]
+    fn b_join_borrow_components(width: usize, conditional: u32, host: BorrowJoinHost);
+}
+
+struct BorrowJoin<'a> {
+    left: &'a mut [Borrow],
+    right: &'a [Borrow],
+    empty: Borrow,
+    condition: Option<&'a bounds::Condition>,
+    paths: Option<(bounds::Clause, bounds::Clause)>,
+}
+
+impl BorrowJoin<'_> {
+    unsafe extern "C" fn equal(context: *const std::ffi::c_void, slot: usize) -> u32 {
+        let input = unsafe { &*context.cast::<Self>() };
+        (&input.left[slot] == input.right.get(slot).unwrap_or(&input.empty)).into()
+    }
+
+    unsafe extern "C" fn branch_paths(context: *mut std::ffi::c_void) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let choice = input.condition.unwrap();
+        let root = bounds::Clause::default();
+        input.paths = Some((choice.assume(&root, true), choice.assume(&root, false)));
+    }
+
+    unsafe extern "C" fn restrict_left(context: *mut std::ffi::c_void, slot: usize) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        input.left[slot].restrict_to(&input.paths.as_ref().unwrap().0);
+    }
+
+    unsafe extern "C" fn merge_right(context: *mut std::ffi::c_void, slot: usize) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let value = input.right.get(slot).unwrap_or(&input.empty);
+        input.left[slot].union_restricted(value, &input.paths.as_ref().unwrap().1);
+    }
+
+    unsafe extern "C" fn union_right(context: *mut std::ffi::c_void, slot: usize) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let value = input.right.get(slot).unwrap_or(&input.empty);
+        input.left[slot].union(value);
+    }
+
+    fn join(mut self) {
+        let (width, conditional) = (self.left.len(), self.condition.is_some());
+        let host = BorrowJoinHost { context: std::ptr::from_mut(&mut self).cast(), equal: Self::equal,
+            branch_paths: Self::branch_paths, restrict_left: Self::restrict_left, merge_right: Self::merge_right,
+            union_right: Self::union_right };
+        unsafe { b_join_borrow_components(width, conditional.into(), host) };
+    }
+}
+
+pub(super) fn join_borrow_components(left: &mut Vec<Borrow>, right: &[Borrow], width: usize,
+    condition: Option<&bounds::Condition>) {
+    left.resize_with(width, Borrow::default);
+    BorrowJoin { left, right, empty: Borrow::default(), condition, paths: None }.join();
+}
+
 #[repr(C)]
 struct LoopBorrowEdge {
     level: usize,
@@ -470,11 +539,15 @@ impl Borrow{
             })
     }
     pub fn active(&self)->bool{self.sources.entries().any(|(_,when)|when.possible())||self.inputs.entries().any(|(_,when)|when.possible())||self.calls.entries().any(|(_,when)|when.possible())||self.reads.entries().any(|(_,when)|when.possible())}
-    pub(in crate::check) fn restricted_by(mut self, condition: &bounds::Clause) -> Self {
+    fn restrict_to(&mut self, condition: &bounds::Clause) {
         self.sources.restrict(condition);
         self.inputs.restrict(condition);
         self.calls.restrict(condition);
         self.reads.restrict(condition);
+    }
+
+    pub(in crate::check) fn restricted_by(mut self, condition: &bounds::Clause) -> Self {
+        self.restrict_to(condition);
         self
     }
 
@@ -484,12 +557,10 @@ impl Borrow{
         }
         self.clone().restricted_by(path)
     }
-    pub fn selected(self,choice:&bounds::Condition,b:&Self)->Self{
-        // Equal complete borrows need no conditional path construction.
-        if &self==b{return self;}
-        let mut selected = self.restricted_by(&choice.assume(&bounds::Clause::default(), true));
-        selected.union_restricted(b, &choice.assume(&bounds::Clause::default(), false));
-        selected
+    pub fn selected(mut self, choice:&bounds::Condition, other:&Self) -> Self {
+        BorrowJoin { left: std::slice::from_mut(&mut self), right: std::slice::from_ref(other),
+            empty: Self::default(), condition: Some(choice), paths: None }.join();
+        self
     }
     fn initialization_guards(&self, lookup:impl Fn(ValueIdentity)->Option<bounds::Proof>)->Self {
         let mut result=self.clone();

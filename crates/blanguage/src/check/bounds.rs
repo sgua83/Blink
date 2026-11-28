@@ -1115,11 +1115,7 @@ impl Proof {
 
     pub(super) fn join_fields(&mut self, other: &Self, width: usize, branch: Option<&Condition>) {
         self.addresses = address::join_address_identities(&self.addresses, &other.addresses, width, branch);
-        self.views.resize_with(width,view::Borrow::default);
-        for(i,value)in self.views.iter_mut().enumerate(){
-            let empty=view::Borrow::default();let other=other.views.get(i).unwrap_or(&empty);
-            if let Some(choice)=branch{*value=std::mem::take(value).selected(choice,other);}else{value.union(other);}
-        }
+        view::join_borrow_components(&mut self.views, &other.views, width, branch);
         combination::join_numeric(self, other, width);
     }
     pub(super) fn project(&self, components: &[usize], width: usize) -> Self {

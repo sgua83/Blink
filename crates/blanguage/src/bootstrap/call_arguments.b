@@ -639,6 +639,31 @@ extern "C" void join_address_identities(usize width, usize left, usize right, u3
     }
 }
 
+extern "C" void join_borrow_components(usize width, u32 conditional, BorrowJoinHost host) on cpu
+    requires nonzero(host.equal) requires nonzero(host.branch_paths) requires nonzero(host.restrict_left)
+    requires nonzero(host.merge_right) requires nonzero(host.union_right) {
+    usize component = 0u64;
+    if (conditional == 0) {
+        while (component < width) {
+            host.union_right(host.context, component);
+            component += 1u64;
+        }
+        return;
+    }
+    bool prepared = false;
+    while (component < width) {
+        if (host.equal(host.context, component) == 0) {
+            if (!prepared) {
+                host.branch_paths(host.context);
+                prepared = true;
+            }
+            host.restrict_left(host.context, component);
+            host.merge_right(host.context, component);
+        }
+        component += 1u64;
+    }
+}
+
 extern "C" AddressViolation validate_address_requirements(AddressRequirements required, AddressRequirementHost host) on cpu
     requires nonzero(host.next) requires nonzero(host.valid_layout) requires nonzero(host.blink_storage)
     requires nonzero(host.writable) requires nonzero(host.initialized) requires nonzero(host.possible)
