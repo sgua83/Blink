@@ -642,9 +642,9 @@ extern "C" u32 initial_loop_progress(address context, LoopProgressHost host) on 
 
 struct LoopTerminalHost {
     cfn<u32,address,usize> bounded;
-    cfn<void,address,usize,u32> project;
+    cfn<u32,address,usize,u32> project;
 };
-extern "C" void loop_terminal_paths(address context,usize edges,LoopTerminalHost host) on cpu
+extern "C" u32 loop_terminal_paths(address context,usize edges,LoopTerminalHost host) on cpu
     requires nonzero(host.bounded) requires nonzero(host.project);
 
 enum LoopElementEdge:u32 { Repeated=0; Broken=1; };
@@ -680,16 +680,22 @@ extern "C" void loop_natural_scalar(address context,usize components,usize edges
     requires nonzero(host.repeated) requires nonzero(host.publish);
 
 enum LoopExitGuard:u32 { Body=0; Terminal=1; };
+enum LoopTerminal:u32 { None=0; Unreachable=1; Reachable=2; };
+struct LoopExitInput { usize broken; u32 natural; u32 initial; u32 range; u32 view_scope; };
 struct LoopExitHost {
-    cfn<u32,address> terminal_reachable;
+    cfn<LoopTerminal,address> terminal;
+    cfn<void,address> history;
+    cfn<void,address,LoopExitGuard> reconcile;
+    cfn<void,address> close;
     cfn<usize,address,LoopExitGuard,u32> guards;
     cfn<void,address> initialize;
     cfn<void,address,u32> adopt;
     cfn<void,address,usize> merge;
     cfn<void,address,u32> publish;
 };
-extern "C" u32 loop_exit_join(address context,usize exits,u32 natural,u32 terminal,LoopExitHost host) on cpu
-    requires nonzero(host.terminal_reachable) requires nonzero(host.guards) requires nonzero(host.initialize)
+extern "C" u32 loop_exit_join(address context,LoopExitInput input,LoopExitHost host) on cpu
+    requires nonzero(host.terminal) requires nonzero(host.history) requires nonzero(host.reconcile)
+    requires nonzero(host.close) requires nonzero(host.guards) requires nonzero(host.initialize)
     requires nonzero(host.adopt) requires nonzero(host.merge) requires nonzero(host.publish);
 
 struct LoopEntryDatasetHost {

@@ -263,8 +263,8 @@ impl Builder<'_> {
             }
         }
     }
-    pub(super) fn close_view_context(&mut self,context:&mut LoopContext)->Result<()> {
-        let Some(scope)=context.view_scope else{return Ok(());};
+    fn close_view_context(&mut self, context: &mut LoopContext) {
+        let Some(scope) = context.view_scope else { return; };
         let entry = std::mem::take(&mut context.entry);
         let continues = std::mem::take(&mut context.continues);
         let edges = continues.len();
@@ -282,10 +282,10 @@ impl Builder<'_> {
             seed: seed_loop_source, add_edge: add_loop_source, classify: classify_loop_source, seal: seal_loop_control,
             publish: publish_loop_source, write_value: write_loop_value, write_resources: write_loop_resources,
         }); }
-        Ok(())
     }
-    pub(super) fn finish_view_condition(&mut self)->Result<()> {
-        let mut context=self.loop_contexts.pop().unwrap();self.close_view_context(&mut context)
+    fn finish_view_condition(&mut self) {
+        let mut context = self.loop_contexts.pop().unwrap();
+        self.close_view_context(&mut context);
     }
 
     pub(super) async fn application_iteration_elements(&mut self, exit: &mut LoopState, source: Option<&application::DataReference>, index: &Value, limit: &Value)->Result<()> {
@@ -679,46 +679,41 @@ impl Builder<'_> {
         self.flow = Flow::BREAK;
     }
 
-    pub(super) fn leave_loop(
+    fn leave_loop(
         &mut self,
-        mut natural:Option<LoopState>,
-        test:&Value,
-        condition:&[Inst],
-        body:&[Inst],
-        span:Span,
-        nonempty:bool,
+        natural: Option<LoopState>,
+        test: &Value,
+        condition: &[Inst],
+        body: &[Inst],
+        span: Span,
+        nonempty: bool,
         range: Option<(&Value, &Value)>,
-    )->Result<(bool,effects::LoopWrites)>{
-        let mut context=self.loop_contexts.pop().unwrap();
-        let terminal = range.filter(|_| !context.initial && natural.is_some()
-            && context.entry.env.values().any(|b| matches!(b, Binding::ApplicationData(_))))
-            .map(|(begin, limit)| terminal_paths(begin, limit, &context.continues));
-        if let Some(scope) = context.view_scope {
-            let backedge = context.continues.iter().map(|edge| edge.path.clone())
-                .reduce(|left, right| bounds::Clause::either(&left, &right));
-            self.view_model.history.insert(scope, view_contracts::LoopHistory {
-                registers: context.first_register..self.registers.len(),
-                uses: context.first_use..self.view_model.uses.len(),
-                backedge,
-            });
-        }
-        if !context.initial && let Some(exit) = natural.as_mut() {
-            reconcile_natural(self, &context, exit, terminal.as_ref(), condition, nonempty, bounds::proof_scope);
-        }
-        let has_natural = natural.is_some();
-        context.exits.extend(natural);
-        self.close_view_context(&mut context)?;
-        let mut merge = LoopExitMerge {
-            builder: self, exits: context.exits, names: &context.names, controls: &context.controls,
-            terminal, test, body, span, guards: Vec::new(), initialized: BTreeSet::new(),
+    ) -> (bool, effects::LoopWrites) {
+        let context = self.loop_contexts.pop().unwrap();
+        let input = LoopExitInput {
+            broken: context.exits.len(),
+            natural: u32::from(natural.is_some()),
+            initial: u32::from(context.initial),
+            range: u32::from(range.is_some()),
+            view_scope: u32::from(context.view_scope.is_some()),
         };
-        let count = merge.exits.len();
-        let terminal = u32::from(merge.terminal.is_some());
-        let reachable = unsafe { source_loop_exit_join(ptr::from_mut(&mut merge).cast(), count, u32::from(has_natural), terminal, LoopExitHost {
-            terminal_reachable, guards: collect_exit_guards, initialize: merge_exit_initialization,
-            adopt: adopt_loop_exit, merge: merge_loop_exit, publish: publish_loop_exit,
-        }) };
-        Ok((reachable != 0, context.writes))
+        let mut merge = LoopExitMerge {
+            builder: self, context, natural, test, condition, body, span, nonempty, range,
+            terminal: None, terminal_entry: None, guards: Vec::new(), initialized: BTreeSet::new(),
+        };
+        let host = LoopExitHost {
+            terminal: prepare_terminal_paths,
+            history: record_loop_history,
+            reconcile: reconcile_loop_exit,
+            close: close_loop_exit,
+            guards: collect_exit_guards,
+            initialize: merge_exit_initialization,
+            adopt: adopt_loop_exit,
+            merge: merge_loop_exit,
+            publish: publish_loop_exit,
+        };
+        let reachable = unsafe { source_loop_exit_join(ptr::from_mut(&mut merge).cast(), input, host) };
+        (reachable != 0, merge.context.writes)
     }
 }
 use crate::ir::dataflow;
@@ -983,7 +978,10 @@ unsafe extern "C" fn write_loop_resources(context: *mut c_void, environment: usi
     }
 }
 
-type Terminal = (bounds::Condition, Vec<Option<bounds::Clause>>);
+struct Terminal {
+    entered: bounds::Condition,
+    paths: Vec<Option<bounds::Clause>>,
+}
 
 struct TerminalPaths<'a> {
     limit: &'a Value,
@@ -994,7 +992,7 @@ struct TerminalPaths<'a> {
 #[repr(C)]
 struct TerminalHost {
     bounded: unsafe extern "C" fn(*const c_void, usize) -> u32,
-    project: unsafe extern "C" fn(*mut c_void, usize, u32),
+    project: unsafe extern "C" fn(*mut c_void, usize, u32) -> u32,
 }
 
 unsafe extern "C" fn bounded_terminal(context: *const c_void, index: usize) -> u32 {
@@ -1003,34 +1001,42 @@ unsafe extern "C" fn bounded_terminal(context: *const c_void, index: usize) -> u
     u32::from(next.proof.domains(0).contains(&IndexDomain::Upper(state.limit.identity(), 0)))
 }
 
-unsafe extern "C" fn project_terminal(context: *mut c_void, index: usize, equal: u32) {
+unsafe extern "C" fn project_terminal(context: *mut c_void, index: usize, equal: u32) -> u32 {
     let state = unsafe { &mut *context.cast::<TerminalPaths<'_>>() };
     let edge = &state.edges[index];
     let path = bounds::residency_scope(&edge.path, &edge.env);
     let next = edge.cursor.as_ref().unwrap();
     let (comparison, truth) = if equal != 0 { (Comparison::Equal, true) } else { (Comparison::Less, false) };
     let path = bounds::Condition::comparison(comparison, next, state.limit).assume(&path, truth);
-    state.paths.push(path.possible().then_some(path));
+    let possible = path.possible();
+    state.paths.push(possible.then_some(path));
+    u32::from(possible)
 }
 
-fn terminal_paths(begin: &Value, limit: &Value, edges: &[LoopState]) -> Terminal {
-    let entered = bounds::Condition::comparison(Comparison::Less, begin, limit);
-    let mut state = TerminalPaths { limit, edges, paths: Vec::with_capacity(edges.len()) };
-    unsafe { natural_terminal_paths(ptr::from_mut(&mut state).cast(), edges.len(), TerminalHost {
-        bounded: bounded_terminal, project: project_terminal,
-    }); }
-    (entered, state.paths)
+#[repr(u32)]
+enum LoopTerminal { None, Unreachable, Reachable }
+
+#[repr(C)]
+struct LoopExitInput {
+    broken: usize,
+    natural: u32,
+    initial: u32,
+    range: u32,
+    view_scope: u32,
 }
 
 struct LoopExitMerge<'a, 'world> {
     builder: &'a mut Builder<'world>,
-    exits: Vec<LoopState>,
-    names: &'a BTreeSet<String>,
-    controls: &'a BTreeMap<Reg, Value>,
+    context: LoopContext,
+    natural: Option<LoopState>,
     terminal: Option<Terminal>,
+    terminal_entry: Option<bounds::Condition>,
     test: &'a Value,
+    condition: &'a [Inst],
     body: &'a [Inst],
     span: Span,
+    nonempty: bool,
+    range: Option<(&'a Value, &'a Value)>,
     guards: Vec<Presence>,
     initialized: BTreeSet<Position>,
 }
@@ -1041,7 +1047,10 @@ enum LoopExitGuard { Body, Terminal }
 
 #[repr(C)]
 struct LoopExitHost {
-    terminal_reachable: unsafe extern "C" fn(*const c_void) -> u32,
+    terminal: unsafe extern "C" fn(*mut c_void) -> LoopTerminal,
+    history: unsafe extern "C" fn(*mut c_void),
+    reconcile: unsafe extern "C" fn(*mut c_void, LoopExitGuard),
+    close: unsafe extern "C" fn(*mut c_void),
     guards: unsafe extern "C" fn(*mut c_void, LoopExitGuard, u32) -> usize,
     initialize: unsafe extern "C" fn(*mut c_void),
     adopt: unsafe extern "C" fn(*mut c_void, u32),
@@ -1051,27 +1060,66 @@ struct LoopExitHost {
 
 unsafe extern "C" {
     #[link_name = "bootstrap.function_body::loop_exit_join"]
-    fn source_loop_exit_join(context: *mut c_void, exits: usize, natural: u32, terminal: u32, host: LoopExitHost) -> u32;
+    fn source_loop_exit_join(context: *mut c_void, input: LoopExitInput, host: LoopExitHost) -> u32;
 }
 
-unsafe extern "C" fn terminal_reachable(context: *const c_void) -> u32 {
-    let state = unsafe { &*context.cast::<LoopExitMerge<'_, '_>>() };
-    u32::from(state.terminal.as_ref().unwrap().1.iter().any(Option::is_some))
+unsafe extern "C" fn prepare_terminal_paths(context: *mut c_void) -> LoopTerminal {
+    let state = unsafe { &mut *context.cast::<LoopExitMerge<'_, '_>>() };
+    if !state.context.entry.env.values().any(|binding| matches!(binding, Binding::ApplicationData(_))) {
+        return LoopTerminal::None;
+    }
+    let (begin, limit) = state.range.unwrap();
+    let entered = bounds::Condition::comparison(Comparison::Less, begin, limit);
+    let edges = &state.context.continues;
+    let mut paths = TerminalPaths { limit, edges, paths: Vec::with_capacity(edges.len()) };
+    let host = TerminalHost { bounded: bounded_terminal, project: project_terminal };
+    let reachable = unsafe { natural_terminal_paths(ptr::from_mut(&mut paths).cast(), edges.len(), host) };
+    state.terminal = Some(Terminal { entered, paths: paths.paths });
+    if reachable != 0 { LoopTerminal::Reachable } else { LoopTerminal::Unreachable }
+}
+
+unsafe extern "C" fn record_loop_history(context: *mut c_void) {
+    let state = unsafe { &mut *context.cast::<LoopExitMerge<'_, '_>>() };
+    let backedge = state.context.continues.iter().map(|edge| edge.path.clone())
+        .reduce(|left, right| bounds::Clause::either(&left, &right));
+    let scope = state.context.view_scope.unwrap();
+    state.builder.view_model.history.insert(scope, view_contracts::LoopHistory {
+        registers: state.context.first_register..state.builder.registers.len(),
+        uses: state.context.first_use..state.builder.view_model.uses.len(),
+        backedge,
+    });
+}
+
+unsafe extern "C" fn reconcile_loop_exit(context: *mut c_void, source: LoopExitGuard) {
+    let state = unsafe { &mut *context.cast::<LoopExitMerge<'_, '_>>() };
+    let terminal = state.terminal.take();
+    reconcile_natural(
+        state.builder, &state.context, state.natural.as_mut().unwrap(),
+        terminal.as_ref(), state.condition, state.nonempty, bounds::proof_scope,
+    );
+    if matches!(source, LoopExitGuard::Terminal) {
+        state.terminal_entry = Some(terminal.unwrap().entered);
+    }
+}
+
+unsafe extern "C" fn close_loop_exit(context: *mut c_void) {
+    let state = unsafe { &mut *context.cast::<LoopExitMerge<'_, '_>>() };
+    state.context.exits.extend(state.natural.take());
+    state.builder.close_view_context(&mut state.context);
 }
 
 unsafe extern "C" fn collect_exit_guards(context: *mut c_void, source: LoopExitGuard, natural: u32) -> usize {
     let state = unsafe { &mut *context.cast::<LoopExitMerge<'_, '_>>() };
     state.guards = match source {
         LoopExitGuard::Terminal => {
-            let (entered, _) = state.terminal.take().unwrap();
             let mut test = state.test.clone();
-            test.proof = bounds::Proof::condition(entered);
+            test.proof = bounds::Proof::condition(state.terminal_entry.take().unwrap());
             let test = Presence::input(&test);
             vec![test.clone(), test.not()]
         }
         LoopExitGuard::Body => {
             let test = Presence::input(state.test);
-            let mut guards = loop_exit_paths(state.body, state.controls, &test);
+            let mut guards = loop_exit_paths(state.body, &state.context.controls, &test);
             if natural != 0 { guards.push(test.not()); }
             guards
         }
@@ -1081,12 +1129,12 @@ unsafe extern "C" fn collect_exit_guards(context: *mut c_void, source: LoopExitG
 
 unsafe extern "C" fn merge_exit_initialization(context: *mut c_void) {
     let state = unsafe { &mut *context.cast::<LoopExitMerge<'_, '_>>() };
-    state.initialized = ownership::merge_initialization(&mut state.exits, &state.guards, |exit| &mut exit.initialized);
+    state.initialized = ownership::merge_initialization(&mut state.context.exits, &state.guards, |exit| &mut exit.initialized);
 }
 
 unsafe extern "C" fn adopt_loop_exit(context: *mut c_void, sole: u32) {
     let state = unsafe { &mut *context.cast::<LoopExitMerge<'_, '_>>() };
-    let exit = state.exits.pop().unwrap();
+    let exit = state.context.exits.pop().unwrap();
     state.builder.env = exit.env;
     state.builder.path = exit.path;
     if sole != 0 { state.initialized = exit.initialized; }
@@ -1094,7 +1142,7 @@ unsafe extern "C" fn adopt_loop_exit(context: *mut c_void, sole: u32) {
 
 unsafe extern "C" fn merge_loop_exit(context: *mut c_void, guard: usize) {
     let state = unsafe { &mut *context.cast::<LoopExitMerge<'_, '_>>() };
-    let exit = state.exits.pop().unwrap();
+    let exit = state.context.exits.pop().unwrap();
     let when = &state.guards[guard];
     let previous = std::mem::replace(&mut state.builder.env, exit.env);
     state.builder.path = bounds::Clause::either(&state.builder.path, &exit.path);
@@ -1103,7 +1151,7 @@ unsafe extern "C" fn merge_loop_exit(context: *mut c_void, guard: usize) {
 
 unsafe extern "C" fn publish_loop_exit(context: *mut c_void, reachable: u32) {
     let state = unsafe { &mut *context.cast::<LoopExitMerge<'_, '_>>() };
-    state.builder.env.retain(|name, _| state.names.contains(name));
+    state.builder.env.retain(|name, _| state.context.names.contains(name));
     if reachable != 0 {
         state.builder.initialized = std::mem::take(&mut state.initialized);
         state.builder.view_uses.after(state.span);
@@ -1230,7 +1278,7 @@ struct NaturalScalarHost {
 
 unsafe extern "C" {
     #[link_name = "bootstrap.function_body::loop_terminal_paths"]
-    fn natural_terminal_paths(context: *mut c_void, edges: usize, host: TerminalHost);
+    fn natural_terminal_paths(context: *mut c_void, edges: usize, host: TerminalHost) -> u32;
     #[link_name = "bootstrap.function_body::loop_natural_dataset"]
     fn natural_loop_dataset(context: *mut c_void, edges: usize, written: u32, terminal: u32, host: NaturalDatasetHost);
     #[link_name = "bootstrap.function_body::loop_natural_scalar"]
@@ -1280,7 +1328,7 @@ fn loop_storage(binding: &Binding) -> Option<(&bounds::Proof, bool)> {
 
 unsafe extern "C" fn merge_terminal_dataset(context: *mut c_void, index: usize) {
     let state = unsafe { &mut *context.cast::<NaturalDataset<'_>>() };
-    if let Some(path) = &state.terminal.unwrap().1[index]
+    if let Some(path) = &state.terminal.unwrap().paths[index]
         && let Binding::ApplicationData(next) = &state.context.continues[index].env[state.name]
     {
         state.location.join(&next.residency.under(path));
@@ -1298,7 +1346,7 @@ unsafe extern "C" fn publish_terminal_dataset(context: *mut c_void) {
     let state = unsafe { &mut *context.cast::<NaturalDataset<'_>>() };
     if !matches!(state.location, residency::Residency::Absent) {
         state.data.residency = residency::Residency::conditional(
-            state.terminal.unwrap().0.clone(), std::mem::take(&mut state.location),
+            state.terminal.unwrap().entered.clone(), std::mem::take(&mut state.location),
             std::mem::take(&mut state.data.residency),
         );
     }
@@ -1653,7 +1701,7 @@ impl Builder<'_> {
      facts.present=u32::from(c.is_some());
     },
     WhileNeed::Empty=>{
-     let outer=std::mem::take(&mut self.loop_contexts.last_mut().unwrap().outer);self.finish_view_condition()?;
+     let outer=std::mem::take(&mut self.loop_contexts.last_mut().unwrap().outer);self.finish_view_condition();
      let code=std::mem::replace(&mut self.code,outer);self.code.extend(code);return Ok(());
     },
     WhileNeed::Inspect=>{
@@ -1671,7 +1719,7 @@ impl Builder<'_> {
     WhileNeed::Retain=>{bounds=None;facts.possible=u32::from(unsafe {self.world.call(self.retain_loop_bounds(Some(condition),body,environment.as_ref().unwrap(),condition_env.as_mut().unwrap())).await}?);},
     WhileNeed::Impossible=>{
      self.env=condition_env.take().unwrap();self.path=condition_path.take().unwrap();let outer=std::mem::take(&mut self.loop_contexts.last_mut().unwrap().outer);
-     self.finish_view_condition()?;self.refine_bounds(partition.as_ref().unwrap(),false);let code=std::mem::replace(&mut self.code,outer);self.code.extend(code);return Ok(());
+     self.finish_view_condition();self.refine_bounds(partition.as_ref().unwrap(),false);let code=std::mem::replace(&mut self.code,outer);self.code.extend(code);return Ok(());
     },
     WhileNeed::SaveBody=>{body_env=Some(std::mem::replace(&mut self.env,condition_env.take().unwrap()));body_path=Some(std::mem::replace(&mut self.path,condition_path.take().unwrap()));environment=None;},
     WhileNeed::Natural=>{self.refine_bounds(partition.as_ref().unwrap(),false);natural=Some(self.loop_state(None));},
@@ -1688,7 +1736,7 @@ impl Builder<'_> {
     },
     WhileNeed::Leave=>{
      outer=Some(std::mem::take(&mut self.loop_contexts.last_mut().unwrap().outer));
-     let(next,_)=self.leave_loop(natural.take(),c.as_ref().unwrap(),condition_code.as_ref().unwrap(),code.as_ref().unwrap(),span,false,None)?;facts.next=u32::from(next);
+     let(next,_)=self.leave_loop(natural.take(),c.as_ref().unwrap(),condition_code.as_ref().unwrap(),code.as_ref().unwrap(),span,false,None);facts.next=u32::from(next);
     },
     WhileNeed::Emit=>{
      self.flow=Flow(step.flow as u8);self.control_uniform=control;self.code=outer.take().unwrap();
@@ -1817,7 +1865,7 @@ impl Builder<'_> {
     },
     ForNeed::Leave=>{
      outer=Some(std::mem::take(&mut self.loop_contexts.last_mut().unwrap().outer));
-     let(next,result)=self.leave_loop(natural.take(),test.as_ref().unwrap(),condition.as_ref().unwrap(),code.as_ref().unwrap(),span,nonempty,Some((&begin,limit.as_ref().unwrap())))?;facts.next=u32::from(next);writes=Some(result);
+     let(next,result)=self.leave_loop(natural.take(),test.as_ref().unwrap(),condition.as_ref().unwrap(),code.as_ref().unwrap(),span,nonempty,Some((&begin,limit.as_ref().unwrap())));facts.next=u32::from(next);writes=Some(result);
     },
     ForNeed::Emit=>{
      self.flow=Flow(step.flow as u8);self.control_uniform=control;self.code=outer.take().unwrap();self.emit(InstKind::Loop {condition:condition.take().unwrap(),test:test.as_ref().unwrap().regs[0],body:code.take().unwrap()});return Ok(writes.take().unwrap());

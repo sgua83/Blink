@@ -2,13 +2,15 @@ module bootstrap.function_body;
 import bootstrap.ownership_payload;
 import bootstrap.return_scope;
 
-extern "C" void loop_terminal_paths(address context,usize edges,LoopTerminalHost host) on cpu
+extern "C" u32 loop_terminal_paths(address context,usize edges,LoopTerminalHost host) on cpu
     requires nonzero(host.bounded) requires nonzero(host.project) {
+    u32 reachable=0;
     usize edge=0u64;
     while(edge<edges) {
-        host.project(context,edge,host.bounded(context,edge));
+        reachable|=host.project(context,edge,host.bounded(context,edge));
         edge+=1u64;
     }
+    return reachable;
 }
 
 extern "C" LoopElementExit loop_elements(address context,usize repeated,usize broken,u32 complete,u32 direct,LoopElementHost host) on cpu
@@ -67,15 +69,24 @@ extern "C" void loop_natural_scalar(address context,usize components,usize edges
     }
 }
 
-extern "C" u32 loop_exit_join(address context,usize exits,u32 natural,u32 terminal,LoopExitHost host) on cpu
-    requires nonzero(host.terminal_reachable) requires nonzero(host.guards) requires nonzero(host.initialize)
+extern "C" u32 loop_exit_join(address context,LoopExitInput input,LoopExitHost host) on cpu
+    requires nonzero(host.terminal) requires nonzero(host.history) requires nonzero(host.reconcile)
+    requires nonzero(host.close) requires nonzero(host.guards) requires nonzero(host.initialize)
     requires nonzero(host.adopt) requires nonzero(host.merge) requires nonzero(host.publish) {
-    if(exits>1u64) {
-        LoopExitGuard source=LoopExitGuard::Body;
-        if(exits==2u64&&natural!=0&&terminal!=0&&host.terminal_reachable(context)==0) {
+    LoopExitGuard source=LoopExitGuard::Body;
+    if(input.initial==0&&input.natural!=0&&input.range!=0) {
+        LoopTerminal terminal=host.terminal(context);
+        if(input.broken==1u64&&terminal==LoopTerminal::Unreachable) {
             source=LoopExitGuard::Terminal;
         }
-        usize guard=host.guards(context,source,natural);
+    }
+    if(input.view_scope!=0){host.history(context);}
+    if(input.initial==0&&input.natural!=0){host.reconcile(context,source);}
+    host.close(context);
+
+    usize exits=input.broken+usize(input.natural);
+    if(exits>1u64) {
+        usize guard=host.guards(context,source,input.natural);
         host.initialize(context);
         host.adopt(context,0);
         usize remaining=exits-1u64;
