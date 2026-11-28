@@ -63,6 +63,8 @@ struct OperandSink {
     cfn<void,address,u16,u8> processor;
 };
 
+enum CompilerResources:u32 { Available=0; Workers=1; Processors=2; Inherited=3; };
+
 struct CompileCommandLine {
     CompileCommand command;
     CompileError prefix_error;
@@ -78,6 +80,7 @@ struct CompileCommandLine {
     u64 budget;
     u64 has_budget;
     EntryMode mode;
+    CompilerResources resources;
     u64 jobs;
     u64 has_parameter_limit;
 };
@@ -145,7 +148,7 @@ extern "C" bool export_cpu_image(ExportHost host, ExportSpan stem, address image
     requires nonzero(host.cpu_stage) requires nonzero(host.cpu_initializer) requires nonzero(host.write);
 
 // The caller owns the operands received synchronously during parsing.
-extern "C" CompileCommandLine parse_compile_arguments(address arguments, u64 count, OperandSink operands) on cpu
+extern "C" CompileCommandLine parse_compile_arguments(address arguments, u64 count, OperandSink operands, u32 inherited) on cpu
     requires nonzero(operands.import_path) requires nonzero(operands.instance_name) requires nonzero(operands.processor);
 
 enum ProgramRequest:u32 { Check=0; All=1; Entry=2; };

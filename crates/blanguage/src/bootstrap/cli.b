@@ -672,11 +672,11 @@ CompileCommandLine parse_object_options(address arguments, u64 count, OperandSin
     return result;
 }
 
-extern "C" CompileCommandLine parse_compile_arguments(address arguments, u64 count, OperandSink operands) on cpu
+extern "C" CompileCommandLine parse_compile_arguments(address arguments, u64 count, OperandSink operands, u32 inherited) on cpu
     requires nonzero(operands.import_path) requires nonzero(operands.instance_name) requires nonzero(operands.processor) {
     CompileCommandLine result = CompileCommandLine(
         CompileCommand::Unknown, CompileError::None, CompileError::None, 0,
-        0u64, count, count, count, count, count, count, 0u64, 0u64, EntryMode::Application, 0u64, 0u64);
+        0u64, count, count, count, count, count, count, 0u64, 0u64, EntryMode::Application, CompilerResources::Available, 0u64, 0u64);
     if (count == 0u64) { result.command = CompileCommand::Help; return result; }
     CliArgument first = argument_at(arguments, 0u64);
     if (count == 1u64 && is_token(first, "--version")) { result.command = CompileCommand::Version; return result; }
@@ -729,6 +729,9 @@ extern "C" CompileCommandLine parse_compile_arguments(address arguments, u64 cou
         index += 2u64;
     }
     if (result.jobs != 0u64 && has_cpus) { result.prefix_error = CompileError::ResourceConflict; return result; }
+    if (inherited != 0) { result.resources = CompilerResources::Inherited; }
+    else if (has_cpus) { result.resources = CompilerResources::Processors; }
+    else if (result.jobs != 0u64) { result.resources = CompilerResources::Workers; }
     result.command_index = index;
     if (index == count) { result.command = CompileCommand::Help; return result; }
     CliArgument command = argument_at(arguments, index);

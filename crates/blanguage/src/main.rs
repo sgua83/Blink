@@ -87,6 +87,15 @@ enum EntryMode {
     Program,
 }
 
+#[repr(u32)]
+#[expect(dead_code, reason = "B produces the selected compiler resource discriminant")]
+enum CompilerResources {
+    Available,
+    Workers,
+    Processors,
+    Inherited,
+}
+
 #[repr(C)]
 struct CompileCommandLine {
     command: CompileCommand,
@@ -103,6 +112,7 @@ struct CompileCommandLine {
     budget: u64,
     has_budget: u64,
     mode: EntryMode,
+    resources: CompilerResources,
     jobs: usize,
     has_parameter_limit: u64,
 }
@@ -113,6 +123,7 @@ unsafe extern "C" {
         arguments: *const Argument,
         count: usize,
         operands: OperandSink,
+        inherited: u32,
     ) -> CompileCommandLine;
 }
 
@@ -178,14 +189,14 @@ impl CompileError {
 
 impl CompileCommandLine {
     fn compiler(&self, processors: Vec<blanguage::Processor>) -> std::io::Result<blanguage::Compiler> {
-        let compiler = if std::env::var_os(worker_protocol::BOOTSTRAP_JOBSERVER).as_deref() == Some(std::ffi::OsStr::new("1")) {
-            blanguage::Compiler::bootstrap_worker()?
-        } else if !processors.is_empty() {
-            blanguage::Compiler::on_processors(processors)?
-        } else if let Some(jobs) = NonZeroUsize::new(self.jobs) {
-            blanguage::Compiler::with_workers(jobs)
-        } else {
-            blanguage::Compiler::available()?
+        let compiler = match self.resources {
+            CompilerResources::Available => blanguage::Compiler::available()?,
+            CompilerResources::Workers => {
+                // B selects Workers only after parsing a nonzero count.
+                blanguage::Compiler::with_workers(unsafe { NonZeroUsize::new_unchecked(self.jobs) })
+            }
+            CompilerResources::Processors => blanguage::Compiler::on_processors(processors)?,
+            CompilerResources::Inherited => blanguage::Compiler::bootstrap_worker()?,
         };
         Ok(if self.has_parameter_limit != 0 {
             compiler.with_max_parameter_bytes(self.max_parameter_bytes)
@@ -211,10 +222,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let bytes = arg.as_encoded_bytes();
         Argument { bytes: bytes.as_ptr(), length: bytes.len() as u64, text: u64::from(arg.to_str().is_some()) }
     }).collect();
+    let inherited = std::env::var_os(worker_protocol::BOOTSTRAP_JOBSERVER).as_deref() == Some(OsStr::new("1"));
     let mut operands = Operands::default();
     // The original argument bytes and operand receiver stay live through parsing.
     let line = unsafe {
-        parse_compile_arguments(arguments.as_ptr(), args.len(), operands.sink())
+        parse_compile_arguments(arguments.as_ptr(), args.len(), operands.sink(), u32::from(inherited))
     };
     line.prefix_error.result(&args, line.error_index)?;
     match line.command {
