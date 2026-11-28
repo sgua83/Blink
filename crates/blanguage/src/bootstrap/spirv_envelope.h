@@ -348,14 +348,12 @@ extern "C" ControlWords open_selection(u32 merge, u32 condition, u32 yes, u32 no
 extern "C" ControlWords next_control_block(u32 target, u32 label, u32 reaches, address body) on cpu;
 // Borrowed original blocks. The host owns instruction storage and word buffers.
 enum BlockFlow:u32 { Error=0; Stop=1; Next=2; };
-struct EdgeStorage { address words; usize capacity; };
 struct StructuredHost {
     address context;
     cfn<u32,address,u32> labels;
     cfn<address,address,usize> reserve_words;
     cfn<void,address,ControlWords> finish_words;
     // Preserve only the initialized prefix when the B edge buffer grows.
-    cfn<EdgeStorage,address,usize,usize> reserve_edges;
 };
 enum BlockRejection:u32 { Print=0; CpuCall=1; CpuTexture=2; CpuAddress=3; CpuFunction=4; FloatMath=5; AtomicAddress=6; };
 struct BlockValues {
@@ -447,8 +445,7 @@ extern "C" BlockFlow emit_instruction_block(Span code, StructuredHost host, Bloc
     requires nonzero(emit.values.scalar) requires nonzero(emit.values.binary) requires nonzero(emit.values.finish)
     requires nonzero(emit.values.scalars.constant)
     requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve)
-    requires nonzero(host.labels) requires nonzero(host.reserve_words) requires nonzero(host.finish_words)
-    requires nonzero(host.reserve_edges);
+    requires nonzero(host.labels) requires nonzero(host.reserve_words) requires nonzero(host.finish_words);
 
 struct TilePhaseView { Span code; Node step; Span saved; };
 struct TilePhaseValue { u32 value; u32 value_type; u32 module_constant; };
@@ -467,7 +464,6 @@ extern "C" void emit_tile_phases(u32 active, StructuredHost control, TilePhaseHo
     requires nonzero(emit.values.scalars.constant)
     requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve)
     requires nonzero(control.labels) requires nonzero(control.reserve_words) requires nonzero(control.finish_words)
-    requires nonzero(control.reserve_edges)
     requires nonzero(host.phase) requires nonzero(host.value);
 
 struct AppendEmission {

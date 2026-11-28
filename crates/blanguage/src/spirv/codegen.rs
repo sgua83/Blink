@@ -464,23 +464,15 @@ struct ControlWords {
 enum BlockFlow { Error, #[allow(dead_code)] Stop, Next }
 
 #[repr(C)]
-struct EdgeStorage {
-    words: *mut u32,
-    capacity: usize,
-}
-
-#[repr(C)]
 struct StructuredHost {
     context: StructuredContext,
     labels: unsafe extern "C" fn(StructuredContext, u32) -> u32,
     reserve_words: unsafe extern "C" fn(StructuredContext, usize) -> *mut u32,
     finish_words: unsafe extern "C" fn(StructuredContext, ControlWords),
-    reserve_edges: unsafe extern "C" fn(StructuredContext, usize, usize) -> EdgeStorage,
 }
 
 struct StructuredEmission<'a, 'program> {
     emitter: &'a mut Emitter<'program>,
-    edges: Vec<u32>,
     error: Option<&'static str>,
 }
 
@@ -491,7 +483,6 @@ impl StructuredEmission<'_, '_> {
             labels: structured_labels,
             reserve_words: structured_reserve,
             finish_words: structured_finish,
-            reserve_edges: structured_reserve_edges,
         }
     }
 }
@@ -508,13 +499,6 @@ unsafe extern "C" fn structured_reserve(context: StructuredContext, capacity: us
 }
 unsafe extern "C" fn structured_finish(context: StructuredContext, emitted: ControlWords) {
     unsafe { (&mut *context.cast::<StructuredEmission<'_, '_>>()).emitter.finish_control(emitted); }
-}
-unsafe extern "C" fn structured_reserve_edges(context: StructuredContext, initialized: usize, needed: usize) -> EdgeStorage {
-    let edges = &mut unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() }.edges;
-    // The B emitter has written the current live prefix before requesting growth.
-    unsafe { edges.set_len(initialized); }
-    edges.reserve(needed - initialized);
-    EdgeStorage { words: edges.as_mut_ptr(), capacity: edges.capacity() }
 }
 
 // The B block emitter selects each operation. These callbacks borrow the corresponding
@@ -1338,7 +1322,7 @@ impl<'ir> Emitter<'ir> {
     }
 
     fn block(&mut self, code: &[Inst]) -> Result<bool, &'static str> {
-        let mut emission = StructuredEmission { emitter: self, edges: Vec::new(), error: None };
+        let mut emission = StructuredEmission { emitter: self, error: None };
         let host = emission.host();
         let block = block_host(emission.emitter);
         let flow = unsafe { emit_instruction_block(Span::slice(code), host, block) };

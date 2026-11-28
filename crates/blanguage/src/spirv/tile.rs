@@ -134,7 +134,7 @@ impl Emitter<'_> {
     }
 
     pub(super) fn tile_phases(&mut self, active: u32, phases: Vec<TilePhase<'_>>) -> Result<(), &'static str> {
-        let mut emission = StructuredEmission { emitter: self, edges: Vec::new(), error: None };
+        let mut emission = StructuredEmission { emitter: self, error: None };
         let control = emission.host();
         let emit = block_host(emission.emitter);
         let host = TilePhaseHost {

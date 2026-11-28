@@ -1481,19 +1481,42 @@ ControlWords close_selection(u32 merge, u32 yes_reaches, u32 no_reaches, address
     return ControlWords(at, merge, reaches);
 }
 
-struct ReturnEdges { EdgeStorage storage; usize used; };
+extern "C" handle GetProcessHeap() on cpu from "KERNEL32.dll";
+extern "C" address HeapAlloc(handle heap, u32 flags, usize bytes) on cpu from "KERNEL32.dll";
+extern "C" address HeapReAlloc(handle heap, u32 flags, address data, usize bytes) on cpu from "KERNEL32.dll";
+extern "C" i32 HeapFree(handle heap, u32 flags, address data) on cpu from "KERNEL32.dll";
+
+const u32 EMIT_HEAP_EXCEPTIONS = 4;
+
+struct EmitStorage { address data; usize capacity; };
+
+void reserve_emit_storage(inout EmitStorage storage, usize needed, usize stride) on cpu {
+    if (needed > storage.capacity) {
+        usize capacity = max(needed, max(8u64, storage.capacity * 2u64));
+        handle heap = GetProcessHeap();
+        storage.data = storage.capacity == 0u64
+            ? HeapAlloc(heap, EMIT_HEAP_EXCEPTIONS, capacity * stride)
+            : HeapReAlloc(heap, EMIT_HEAP_EXCEPTIONS, storage.data, capacity * stride);
+        storage.capacity = capacity;
+    }
+}
+
+void release_emit_storage(EmitStorage storage) on cpu {
+    if (storage.capacity != 0u64) { HeapFree(GetProcessHeap(), 0, storage.data); }
+}
+
+struct ReturnEdges { EmitStorage storage; usize used; };
 struct ControlTargets {
     u32 end; u32 next;
     u32 function_merge; u32 return_loop;
 };
 
-void record_return_edge(inout ReturnEdges edges, u32 label, u32 returned, StructuredHost host) on cpu
-    requires nonzero(host.reserve_edges) {
+void record_return_edge(inout ReturnEdges edges, u32 label, u32 returned) on cpu {
     usize at = edges.used;
     usize needed = at + 2u64;
-    if (needed > edges.storage.capacity) { edges.storage = host.reserve_edges(host.context, at, needed); }
-    put(edges.storage.words, at, label);
-    put(edges.storage.words, at + 1u64, returned);
+    reserve_emit_storage(edges.storage, needed, size_of<u32>());
+    put(edges.storage.data, at, label);
+    put(edges.storage.data, at + 1u64, returned);
     edges.used = needed;
 }
 
@@ -1818,9 +1841,9 @@ void block_private_storage(View instruction, BlockValues values, BlockLocals loc
 void finish_return_loop(ControlTargets targets, usize first, u32 predecessor, inout ReturnEdges scratch,
     StructuredHost host, ScalarHost scalars) on cpu
     requires nonzero(host.labels) requires nonzero(host.reserve_words) requires nonzero(host.finish_words)
-    requires nonzero(host.reserve_edges) requires nonzero(scalars.constant) {
+    requires nonzero(scalars.constant) {
     address context = host.context;
-    address edges = word_at(scratch.storage.words, first);
+    address edges = word_at(scratch.storage.data, first);
     u32 count = u32((scratch.used - first) / 2u64);
     u32 result = host.labels(context, 1);
     u32 not_returned = 0;
@@ -1841,7 +1864,7 @@ void finish_return_loop(ControlTargets targets, usize first, u32 predecessor, in
     // The child Phi consumed these pairs. Reuse that space for its parent predecessor.
     scratch.used = first;
     if (targets.return_loop != 0) {
-        record_return_edge(scratch, predecessor, 1, host);
+        record_return_edge(scratch, predecessor, 1);
     }
 }
 
@@ -1972,7 +1995,40 @@ BlockFlow emit_leaf(View value, StructuredHost host, BlockHost emit) on cpu
     return BlockFlow::Next;
 }
 
-BlockFlow emit_block(Span code, ControlTargets targets, inout ReturnEdges edges, StructuredHost host, BlockHost emit) on cpu
+enum BlockResume : u32 { Scope=0; Then=1; Else=2; LoopTest=3; LoopBody=4; };
+struct BlockFrame {
+    Span parent;
+    usize next;
+    ControlTargets outer;
+    Span second;
+    usize test;
+    usize first_edge;
+    u32 label;
+    bool returning;
+    u32 yes_reaches;
+    BlockResume resume;
+};
+struct BlockScratch { EmitStorage frames; ReturnEdges returns; };
+
+address block_frame(address frames, usize index) on cpu {
+    return unsafe_address(address_bits(frames) + index * size_of<BlockFrame>());
+}
+
+BlockScratch block_scratch() on cpu {
+    EmitStorage empty = EmitStorage(address(), 0u64);
+    return BlockScratch(empty, ReturnEdges(empty, 0u64));
+}
+
+void release_block_scratch(BlockScratch scratch) on cpu {
+    release_emit_storage(scratch.frames);
+    release_emit_storage(scratch.returns.storage);
+}
+
+LoopLabels block_loop_labels(u32 head) on cpu {
+    return LoopLabels(head, head + 1, head + 2, head + 3, head + 4);
+}
+
+BlockFlow emit_block(Span input, inout BlockScratch scratch, StructuredHost host, BlockHost emit) on cpu
     requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
     requires nonzero(emit.textures.declaration) requires nonzero(emit.rays.declare_type)
     requires nonzero(emit.tile.components)
@@ -1981,85 +2037,124 @@ BlockFlow emit_block(Span code, ControlTargets targets, inout ReturnEdges edges,
     requires nonzero(emit.values.scalar) requires nonzero(emit.values.binary) requires nonzero(emit.values.finish)
     requires nonzero(emit.values.scalars.constant)
     requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve)
-    requires nonzero(host.labels) requires nonzero(host.reserve_words) requires nonzero(host.finish_words)
-    requires nonzero(host.reserve_edges) {
+    requires nonzero(host.labels) requires nonzero(host.reserve_words) requires nonzero(host.finish_words) {
     address context = host.context;
     ScalarHost scalars = emit.values.scalars;
-    usize i = 0u64;
-    while (i < code.count) {
-        address instruction = unsafe_address(address_bits(code.data) + i * code.stride);
-        View value = emit.ir.inspect(Node(instruction, N_INSTRUCTION));
-        u32 kind = value.tag;
-        if (kind == OP_SCOPE) {
-            u32 merge = host.labels(context, 2);
-            u32 selector = scalars.constant(scalars.context, BuiltinScalar::U32, 0u64);
-            host.finish_words(context, open_function_scope(merge, selector, merge + 1, host.reserve_words(context, 8u64)));
-            BlockFlow flow = emit_block(value.first, ControlTargets(0, 0, merge, 0), edges, host, emit);
-            if (flow == BlockFlow::Error) { return flow; }
-            host.finish_words(context, next_control_block(merge, merge, u32(flow == BlockFlow::Next),
-                host.reserve_words(context, 4u64)));
-        } else if (kind == OP_EXIT_VALUE) {
-            u32 destination = targets.function_merge;
-            if (targets.return_loop != 0) {
-                u32 label = emit.paging.current_label(scalars.context);
-                record_return_edge(edges, label, 1, host);
-                destination = targets.return_loop;
+    Span code = input;
+    ControlTargets targets = ControlTargets(0, 0, 0, 0);
+    BlockFlow flow = BlockFlow::Next;
+    usize index = 0u64;
+    usize depth = 0u64;
+    while (flow != BlockFlow::Error) {
+        if (flow == BlockFlow::Next && index < code.count) {
+            address instruction = unsafe_address(address_bits(code.data) + index * code.stride);
+            View value = emit.ir.inspect(Node(instruction, N_INSTRUCTION));
+            index += 1u64;
+            u32 kind = value.tag;
+            if (kind == OP_SCOPE || kind == OP_BRANCH || kind == OP_LOOP_VALUE) {
+                BlockFrame frame = BlockFrame(code, index, targets, value.second, value.a, 0u64, 0, false, 0, BlockResume::Scope);
+                if (kind == OP_SCOPE) {
+                    u32 merge = host.labels(context, 2);
+                    u32 selector = scalars.constant(scalars.context, BuiltinScalar::U32, 0u64);
+                    host.finish_words(context, open_function_scope(merge, selector, merge + 1,
+                        host.reserve_words(context, 8u64)));
+                    frame.label = merge;
+                    targets = ControlTargets(0, 0, merge, 0);
+                } else if (kind == OP_BRANCH) {
+                    u32 yes = host.labels(context, 3);
+                    u32 condition = block_register(emit.values.registers, value.a);
+                    host.finish_words(context, open_selection(yes + 2, condition, yes, yes + 1,
+                        host.reserve_words(context, 9u64)));
+                    frame.label = yes;
+                    frame.resume = BlockResume::Then;
+                } else {
+                    u32 head = host.labels(context, 5);
+                    LoopLabels labels = block_loop_labels(head);
+                    bool returning = targets.function_merge != 0 && has_function_exit(value.second, emit.ir) != 0;
+                    frame.label = head;
+                    frame.resume = BlockResume::LoopTest;
+                    frame.returning = returning;
+                    frame.first_edge = scratch.returns.used;
+                    targets = ControlTargets(labels.end, labels.next, targets.function_merge,
+                        returning ? labels.end : targets.return_loop);
+                    host.finish_words(context, open_loop(labels, host.reserve_words(context, 12u64)));
+                }
+                reserve_emit_storage(scratch.frames, depth + 1u64, size_of<BlockFrame>());
+                unsafe_position<BlockFrame>(block_frame(scratch.frames.data, depth)) = frame;
+                depth += 1u64;
+                code = value.first;
+                index = 0u64;
+            } else if (kind == OP_EXIT_VALUE) {
+                u32 destination = targets.function_merge;
+                if (targets.return_loop != 0) {
+                    record_return_edge(scratch.returns, emit.paging.current_label(scalars.context), 1);
+                    destination = targets.return_loop;
+                }
+                host.finish_words(context, leave_control(destination, host.reserve_words(context, 2u64)));
+                flow = BlockFlow::Stop;
+            } else if (kind == OP_BREAK_VALUE) {
+                if (targets.return_loop == targets.end && targets.end != 0) {
+                    record_return_edge(scratch.returns, emit.paging.current_label(scalars.context), 0);
+                }
+                host.finish_words(context, leave_control(targets.end, host.reserve_words(context, 2u64)));
+                flow = BlockFlow::Stop;
+            } else if (kind == OP_CONTINUE_VALUE) {
+                host.finish_words(context, leave_control(targets.next, host.reserve_words(context, 2u64)));
+                flow = BlockFlow::Stop;
+            } else {
+                flow = emit_leaf(value, host, emit);
             }
-            host.finish_words(context, leave_control(destination, host.reserve_words(context, 2u64)));
-            return BlockFlow::Stop;
-        } else if (kind == OP_BRANCH) {
-            u32 yes = host.labels(context, 3);
-            u32 no = yes + 1;
-            u32 merge = yes + 2;
-            u32 condition = block_register(emit.values.registers, value.a);
-            host.finish_words(context, open_selection(merge, condition, yes, no, host.reserve_words(context, 9u64)));
-            BlockFlow first = emit_block(value.first, targets, edges, host, emit);
-            if (first == BlockFlow::Error) { return first; }
-            u32 yes_reaches = u32(first == BlockFlow::Next);
-            host.finish_words(context, next_control_block(merge, no, yes_reaches, host.reserve_words(context, 4u64)));
-            BlockFlow second = emit_block(value.second, targets, edges, host, emit);
-            if (second == BlockFlow::Error) { return second; }
-            ControlWords close = close_selection(merge, yes_reaches, u32(second == BlockFlow::Next),
+            continue;
+        }
+
+        if (depth == 0u64) { break; }
+        address top = block_frame(scratch.frames.data, depth - 1u64);
+        BlockFrame frame = unsafe_position<BlockFrame>(top);
+        u32 reaches = u32(flow == BlockFlow::Next);
+        flow = BlockFlow::Next;
+        if (frame.resume == BlockResume::Then) {
+            host.finish_words(context, next_control_block(frame.label + 2, frame.label + 1, reaches,
+                host.reserve_words(context, 4u64)));
+            unsafe_position<BlockFrame>(top).yes_reaches = reaches;
+            unsafe_position<BlockFrame>(top).resume = BlockResume::Else;
+            code = frame.second;
+            index = 0u64;
+            continue;
+        }
+        if (frame.resume == BlockResume::LoopTest) {
+            if (frame.returning) {
+                record_return_edge(scratch.returns, emit.paging.current_label(scalars.context), 0);
+            }
+            u32 test = block_register(emit.values.registers, frame.test);
+            host.finish_words(context, test_loop(block_loop_labels(frame.label), test,
+                host.reserve_words(context, 6u64)));
+            unsafe_position<BlockFrame>(top).resume = BlockResume::LoopBody;
+            code = frame.second;
+            index = 0u64;
+            continue;
+        }
+
+        depth -= 1u64;
+        code = frame.parent;
+        index = frame.next;
+        targets = frame.outer;
+        if (frame.resume == BlockResume::Scope) {
+            host.finish_words(context, next_control_block(frame.label, frame.label, reaches,
+                host.reserve_words(context, 4u64)));
+        } else if (frame.resume == BlockResume::Else) {
+            ControlWords close = close_selection(frame.label + 2, frame.yes_reaches, reaches,
                 host.reserve_words(context, 4u64));
             host.finish_words(context, close);
-            if (close.reaches_next == 0) { return BlockFlow::Stop; }
-        } else if (kind == OP_LOOP_VALUE) {
-            u32 head = host.labels(context, 5);
-            LoopLabels labels = LoopLabels(head, head + 1, head + 2, head + 3, head + 4);
-            bool returning = targets.function_merge != 0 && has_function_exit(value.second, emit.ir) != 0;
-            usize first = returning ? edges.used : 0u64;
-            ControlTargets inner = ControlTargets(labels.end, labels.next, targets.function_merge,
-                returning ? labels.end : targets.return_loop);
-            host.finish_words(context, open_loop(labels, host.reserve_words(context, 12u64)));
-            BlockFlow condition = emit_block(value.first, inner, edges, host, emit);
-            if (condition == BlockFlow::Error) { return condition; }
-            if (returning) {
-                u32 label = emit.paging.current_label(scalars.context);
-                record_return_edge(edges, label, 0, host);
-            }
-            u32 test = block_register(emit.values.registers, value.a);
-            host.finish_words(context, test_loop(labels, test, host.reserve_words(context, 6u64)));
-            BlockFlow flow = emit_block(value.second, inner, edges, host, emit);
-            if (flow == BlockFlow::Error) { return flow; }
-            host.finish_words(context, close_loop(labels, u32(flow == BlockFlow::Next), host.reserve_words(context, 8u64)));
-            if (returning) { finish_return_loop(targets, first, labels.end, edges, host, scalars); }
-        } else if (kind == OP_BREAK_VALUE) {
-            if (targets.return_loop == targets.end && targets.end != 0) {
-                u32 label = emit.paging.current_label(scalars.context);
-                record_return_edge(edges, label, 0, host);
-            }
-            host.finish_words(context, leave_control(targets.end, host.reserve_words(context, 2u64)));
-            return BlockFlow::Stop;
-        } else if (kind == OP_CONTINUE_VALUE) {
-            host.finish_words(context, leave_control(targets.next, host.reserve_words(context, 2u64)));
-            return BlockFlow::Stop;
+            flow = close.reaches_next == 0 ? BlockFlow::Stop : BlockFlow::Next;
         } else {
-            BlockFlow flow = emit_leaf(value, host, emit);
-            if (flow != BlockFlow::Next) { return flow; }
+            LoopLabels labels = block_loop_labels(frame.label);
+            host.finish_words(context, close_loop(labels, reaches, host.reserve_words(context, 8u64)));
+            if (frame.returning) {
+                finish_return_loop(targets, frame.first_edge, labels.end, scratch.returns, host, scalars);
+            }
         }
-        i += 1u64;
     }
-    return BlockFlow::Next;
+    return flow;
 }
 
 extern "C" BlockFlow emit_instruction_block(Span code, StructuredHost host, BlockHost emit) on cpu
@@ -2071,10 +2166,11 @@ extern "C" BlockFlow emit_instruction_block(Span code, StructuredHost host, Bloc
     requires nonzero(emit.values.scalar) requires nonzero(emit.values.binary) requires nonzero(emit.values.finish)
     requires nonzero(emit.values.scalars.constant)
     requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve)
-    requires nonzero(host.labels) requires nonzero(host.reserve_words) requires nonzero(host.finish_words)
-    requires nonzero(host.reserve_edges) {
-    ReturnEdges edges = ReturnEdges(EdgeStorage(address(), 0u64), 0u64);
-    return emit_block(code, ControlTargets(0, 0, 0, 0), edges, host, emit);
+    requires nonzero(host.labels) requires nonzero(host.reserve_words) requires nonzero(host.finish_words) {
+    BlockScratch scratch = block_scratch();
+    BlockFlow flow = emit_block(code, scratch, host, emit);
+    release_block_scratch(scratch);
+    return flow;
 }
 
 extern "C" void emit_tile_phases(u32 active, StructuredHost control, TilePhaseHost host, BlockHost emit) on cpu
@@ -2087,13 +2183,11 @@ extern "C" void emit_tile_phases(u32 active, StructuredHost control, TilePhaseHo
     requires nonzero(emit.values.scalars.constant)
     requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve)
     requires nonzero(control.labels) requires nonzero(control.reserve_words) requires nonzero(control.finish_words)
-    requires nonzero(control.reserve_edges)
     requires nonzero(host.phase) requires nonzero(host.value) {
     address context = control.context;
     ScalarHost stream = emit.values.scalars;
     MemoryHost memory = MemoryHost(stream, emit.paging.finish_body);
-    ReturnEdges edges = ReturnEdges(EdgeStorage(address(), 0u64), 0u64);
-    ControlTargets targets = ControlTargets(0, 0, 0, 0);
+    BlockScratch scratch = block_scratch();
     usize index = 0u64;
     while (index < host.phases.count) {
         TilePhaseView phase = host.phase(host.phases.data, index);
@@ -2102,7 +2196,7 @@ extern "C" void emit_tile_phases(u32 active, StructuredHost control, TilePhaseHo
         u32 execute = control.labels(context, 2);
         u32 end = execute + 1;
         control.finish_words(context, open_selection(end, active, execute, end, control.reserve_words(context, 9u64)));
-        if (emit_block(phase.code, targets, edges, control, emit) == BlockFlow::Error) { return; }
+        if (emit_block(phase.code, scratch, control, emit) == BlockFlow::Error) { break; }
         Span empty = Span(address(), 0u64, 0u64);
         View step = address_bits(phase.step.data) == 0u64
             ? View(0, 0u64, 0u64, 0u64, 0u64, empty, empty, phase.step, phase.step)
@@ -2132,6 +2226,7 @@ extern "C" void emit_tile_phases(u32 active, StructuredHost control, TilePhaseHo
             block_tile_collective(step, emit, memory, control);
         }
     }
+    release_block_scratch(scratch);
 }
 
 struct SubgroupArithmetic { u32 opcode; u32 group; };
