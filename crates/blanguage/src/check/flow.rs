@@ -594,35 +594,64 @@ impl Builder<'_> {
         F: std::ops::AsyncFnMut(&mut Self, Option<Value>) -> Result<()>,
     {
         let context = self.loop_contexts.last_mut().unwrap();
-        let breaks = std::mem::take(&mut context.exits);
-        let mut continues = std::mem::take(&mut context.continues);
-        let natural = if next {
-            Some(continues.pop().unwrap())
-        } else {
-            None
+        let mut state = InitialLoopState {
+            pending: Vec::new(),
+            breaks: std::mem::take(&mut context.exits).into_iter(),
+            exits: Vec::new(),
         };
-        let mut exits = Vec::new();
-        let mut flow = Flow::NEXT;
-        unsafe { self.world.call(expand_initial_code(
-            self,
-            &mut code,
-            &mut breaks.into_iter(),
-            &mut continues.into_iter(),
-            &mut exits,
-            &mut flow,
-            &mut continuation,
-        )).await }?;
-        if let Some(state) = natural {
-            code.extend(unsafe { self.world.call(compile_initial_continuation(
-                self,
-                state,
-                &mut exits,
-                &mut flow,
-                &mut continuation,
-            )).await }?);
+        let mut continues = std::mem::take(&mut context.continues).into_iter();
+        let mut natural = None;
+        let mut cursor = InitialLoopCursor {
+            edit: InitialLoopEdit { block: std::ptr::from_mut(&mut code).cast(), index: 0 },
+            phase: 0,
+            flow: 0,
+            natural: u32::from(next),
+        };
+        let mut inserted = 0;
+        let mut produced = 0;
+        loop {
+            // The World pins this future. Splicing the selected Vec leaves every
+            // suspended cursor in its original, untouched ancestor container.
+            let step = unsafe {
+                initial_loop_step(cursor, produced, inserted, InitialLoopEditor {
+                    ir: dataflow::HOST, context: std::ptr::from_mut(&mut state).cast(),
+                    block: initial_loop_block, bodies: initial_loop_bodies,
+                    push: push_initial_loop, pop: pop_initial_loop, record_break: record_initial_break,
+                })
+            };
+            cursor = step.cursor;
+            match step.need {
+                InitialLoopNeed::Reserve => natural = Some(continues.next_back().unwrap()),
+                InitialLoopNeed::Explicit | InitialLoopNeed::Natural => {
+                    let edge = match step.need {
+                        InitialLoopNeed::Explicit => continues.next(),
+                        _ => natural.take(),
+                    }.unwrap();
+                    let next_cursor = edge.cursor.clone();
+                    self.restore_initial_edge(edge);
+                    self.flow = Flow::NEXT;
+                    continuation(self, next_cursor).await?;
+                    produced = u32::from(self.flow.0);
+                }
+                InitialLoopNeed::RecordExit => {
+                    let current = self.loop_contexts.last().unwrap().iterator.as_ref().map(|(_, cursor)| cursor.clone());
+                    state.exits.push(self.loop_state(current));
+                    self.code.push(Inst::new(InstKind::Break));
+                }
+                InitialLoopNeed::Replace => {
+                    let next_code = std::mem::take(&mut self.code);
+                    inserted = next_code.len();
+                    let edit = cursor.edit;
+                    let block = unsafe { &mut *edit.block.cast::<Vec<Inst>>() };
+                    drop(block.splice(edit.index..edit.index + 1, next_code));
+                }
+                InitialLoopNeed::Append => code.extend(std::mem::take(&mut self.code)),
+                InitialLoopNeed::Complete => {
+                    self.loop_contexts.last_mut().unwrap().exits = state.exits;
+                    return Ok((code, Flow(cursor.flow as u8)));
+                }
+            }
         }
-        self.loop_contexts.last_mut().unwrap().exits = exits;
-        Ok((code, flow))
     }
     pub(super) fn emit_loop_break(&mut self) {
         self.emit(InstKind::Break);
@@ -1473,30 +1502,6 @@ fn loop_exit_paths(code: &[Inst], controls: &BTreeMap<Reg, Value>, test: &Presen
     guards
 }
 
-// Continue is the real next-iteration edge. Compile its continuation directly.
-async fn compile_initial_continuation<'a, F>(
-    builder: &mut Builder<'a>,
-    state: LoopState,
-    exits: &mut Vec<LoopState>,
-    flow: &mut Flow,
-    continuation: &mut F,
-) -> Result<Vec<Inst>>
-where
-    F: std::ops::AsyncFnMut(&mut Builder<'a>, Option<Value>) -> Result<()>,
-{
-    let cursor = state.cursor.clone();
-    builder.restore_initial_edge(state);
-    builder.flow = Flow::NEXT;
-    continuation(builder, cursor).await?;
-    *flow = flow.union(builder.flow);
-    let mut code = std::mem::take(&mut builder.code);
-    if builder.flow.continues() {
-        exits.push(builder.loop_state(builder.loop_contexts.last().unwrap().iterator.as_ref().map(|(_,cursor)|cursor.clone())));
-        code.push(Inst::new(InstKind::Break));
-    }
-    Ok(code)
-}
-
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct InitialLoopEdit {
@@ -1521,15 +1526,32 @@ struct InitialLoopEditor {
     record_break: unsafe extern "C" fn(*mut std::ffi::c_void),
 }
 
-struct InitialLoopState<'a> {
+struct InitialLoopState {
     pending: Vec<InitialLoopEdit>,
-    breaks: &'a mut std::vec::IntoIter<LoopState>,
-    exits: &'a mut Vec<LoopState>,
+    breaks: std::vec::IntoIter<LoopState>,
+    exits: Vec<LoopState>,
+}
+
+#[repr(C)]
+struct InitialLoopCursor {
+    edit: InitialLoopEdit,
+    phase: u32,
+    flow: u32,
+    natural: u32,
+}
+
+#[repr(u32)]
+enum InitialLoopNeed { Reserve, Explicit, Natural, RecordExit, Replace, Append, Complete }
+
+#[repr(C)]
+struct InitialLoopStep {
+    cursor: InitialLoopCursor,
+    need: InitialLoopNeed,
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.ir_dataflow::next_initial_loop_edit"]
-    fn next_initial_loop_edit(start: InitialLoopEdit, inserted: usize, host: InitialLoopEditor) -> InitialLoopEdit;
+    #[link_name = "bootstrap.ir_dataflow::initial_loop_step"]
+    fn initial_loop_step(cursor: InitialLoopCursor, produced: u32, inserted: usize, host: InitialLoopEditor) -> InitialLoopStep;
 }
 
 unsafe extern "C" fn initial_loop_block(block: *const std::ffi::c_void) -> dataflow::Span {
@@ -1553,54 +1575,17 @@ unsafe extern "C" fn initial_loop_bodies(block: *mut std::ffi::c_void, index: us
 }
 
 unsafe extern "C" fn push_initial_loop(context: *mut std::ffi::c_void, edit: InitialLoopEdit) {
-    unsafe { &mut *context.cast::<InitialLoopState<'_>>() }.pending.push(edit);
+    unsafe { &mut *context.cast::<InitialLoopState>() }.pending.push(edit);
 }
 
 unsafe extern "C" fn pop_initial_loop(context: *mut std::ffi::c_void) -> InitialLoopEdit {
-    unsafe { &mut *context.cast::<InitialLoopState<'_>>() }.pending.pop()
+    unsafe { &mut *context.cast::<InitialLoopState>() }.pending.pop()
         .unwrap_or(InitialLoopEdit { block: std::ptr::null_mut(), index: 0 })
 }
 
 unsafe extern "C" fn record_initial_break(context: *mut std::ffi::c_void) {
-    let state = unsafe { &mut *context.cast::<InitialLoopState<'_>>() };
+    let state = unsafe { &mut *context.cast::<InitialLoopState>() };
     state.exits.push(state.breaks.next().unwrap());
-}
-
-async fn expand_initial_code<'a, F>(
-    builder: &mut Builder<'a>,
-    code: &mut Vec<Inst>,
-    breaks: &mut std::vec::IntoIter<LoopState>,
-    continues: &mut std::vec::IntoIter<LoopState>,
-    exits: &mut Vec<LoopState>,
-    flow: &mut Flow,
-    continuation: &mut F,
-) -> Result<()>
-where
-    F: std::ops::AsyncFnMut(&mut Builder<'a>, Option<Value>) -> Result<()>,
-{
-    let mut state = InitialLoopState { pending: Vec::new(), breaks, exits };
-    let mut cursor = InitialLoopEdit { block: std::ptr::from_mut(code).cast(), index: 0 };
-    let mut inserted = 0;
-    loop {
-        // Only the selected block can be resized. Its Vec and every suspended
-        // cursor stay in the original, untouched ancestor containers.
-        cursor = unsafe {
-            next_initial_loop_edit(cursor, inserted, InitialLoopEditor {
-                ir: dataflow::HOST, context: std::ptr::from_mut(&mut state).cast(),
-                block: initial_loop_block, bodies: initial_loop_bodies,
-                push: push_initial_loop, pop: pop_initial_loop, record_break: record_initial_break,
-            })
-        };
-        if cursor.block.is_null() {
-            return Ok(());
-        }
-        let next = unsafe { builder.world.call(compile_initial_continuation(
-            builder, continues.next().unwrap(), state.exits, flow, continuation,
-        )).await }?;
-        inserted = next.len();
-        let block = unsafe { &mut *cursor.block.cast::<Vec<Inst>>() };
-        drop(block.splice(cursor.index..cursor.index + 1, next));
-    }
 }
 
 

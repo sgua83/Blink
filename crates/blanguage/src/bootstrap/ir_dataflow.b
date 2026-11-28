@@ -22,7 +22,7 @@ Node node_at(Span span,usize index,u32 kind) on cpu {
  return Node(unsafe_address(address_bits(span.data)+u64(index)*u64(span.stride)),kind);
 }
 
-extern "C" InitialLoopEdit next_initial_loop_edit(InitialLoopEdit start,usize inserted,InitialLoopEditor host) on cpu
+InitialLoopEdit next_initial_loop_edit(InitialLoopEdit start,usize inserted,InitialLoopEditor host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.bodies)
  requires nonzero(host.push) requires nonzero(host.pop) requires nonzero(host.record_break) {
  InitialLoopEdit cursor=InitialLoopEdit(start.block,start.index+inserted);
@@ -45,6 +45,42 @@ extern "C" InitialLoopEdit next_initial_loop_edit(InitialLoopEdit start,usize in
   if(index==code.count){cursor=host.pop(host.context);}
  }
  return cursor;
+}
+
+extern "C" InitialLoopStep initial_loop_step(InitialLoopCursor cursor,u32 produced,usize inserted,InitialLoopEditor host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.bodies)
+ requires nonzero(host.push) requires nonzero(host.pop) requires nonzero(host.record_break) {
+ InitialLoopCursor c=cursor;
+ if(c.phase==InitialLoopPhase::Begin){
+  c.phase=InitialLoopPhase::Scan;
+  c.flow=1;
+  if(c.natural!=0){return InitialLoopStep(c,InitialLoopNeed::Reserve);}
+ }
+ if(c.phase==InitialLoopPhase::Explicit||c.phase==InitialLoopPhase::Natural){
+  c.flow|=produced;
+  c.phase=c.phase==InitialLoopPhase::Explicit ? InitialLoopPhase::Replace : InitialLoopPhase::Append;
+  if((produced&1)!=0){return InitialLoopStep(c,InitialLoopNeed::RecordExit);}
+ }
+ if(c.phase==InitialLoopPhase::Replace){
+  c.phase=InitialLoopPhase::Scan;
+  return InitialLoopStep(c,InitialLoopNeed::Replace);
+ }
+ if(c.phase==InitialLoopPhase::Append){
+  c.phase=InitialLoopPhase::Done;
+  return InitialLoopStep(c,InitialLoopNeed::Append);
+ }
+ if(c.phase==InitialLoopPhase::Scan){
+  c.edit=next_initial_loop_edit(c.edit,inserted,host);
+  if(c.edit.block!=address()){
+   c.phase=InitialLoopPhase::Explicit;
+   return InitialLoopStep(c,InitialLoopNeed::Explicit);
+  }
+  if(c.natural!=0){
+   c.phase=InitialLoopPhase::Natural;
+   return InitialLoopStep(c,InitialLoopNeed::Natural);
+  }
+ }
+ return InitialLoopStep(c,InitialLoopNeed::Complete);
 }
 
 enum TransferSearch:u32 { LoopLocal=0; LoopAndExit=1; FunctionExit=2; };

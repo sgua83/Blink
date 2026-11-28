@@ -113,7 +113,11 @@ struct InitialLoopEditor {
  cfn<InitialLoopEdit,address> pop;
  cfn<void,address> record_break;
 };
-extern "C" InitialLoopEdit next_initial_loop_edit(InitialLoopEdit start,usize inserted,InitialLoopEditor host) on cpu
+enum InitialLoopPhase:u32 { Begin=0; Scan=1; Explicit=2; Natural=3; Replace=4; Append=5; Done=6; };
+struct InitialLoopCursor { InitialLoopEdit edit; InitialLoopPhase phase; u32 flow; u32 natural; };
+enum InitialLoopNeed:u32 { Reserve=0; Explicit=1; Natural=2; RecordExit=3; Replace=4; Append=5; Complete=6; };
+struct InitialLoopStep { InitialLoopCursor cursor; InitialLoopNeed need; };
+extern "C" InitialLoopStep initial_loop_step(InitialLoopCursor cursor,u32 produced,usize inserted,InitialLoopEditor host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.bodies)
  requires nonzero(host.push) requires nonzero(host.pop) requires nonzero(host.record_break);
 extern "C" u32 has_function_exit(Span code,Host host) on cpu requires nonzero(host.inspect);
