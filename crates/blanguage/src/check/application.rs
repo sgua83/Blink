@@ -288,15 +288,6 @@ impl ApplicationLoads<'_, '_> {
         // The result borrows a definition from the Builder's original IR.
         unsafe { found.instruction.cast::<Inst>().as_ref() }.map(|inst| (found.top, inst))
     }
-    fn pointer_call(call:&Call)->Option<Reg> {
-        let CallTarget::External(name)=&call.target else{return None;};
-        if name.library!=crate::application::RUNTIME_LIBRARY{return None;}
-        match name.symbol.as_str() {
-            "blink_address" | "blink_storage_address" if call.error.is_none()=>{},
-            _=>return None,
-        }
-        match call.arguments.get(1) {Some(CallArgument::Value{values,..})=>values.first().copied(),_=>None}
-    }
     fn constant(&self, reg: Reg) -> Option<Bits> {
         let value = unsafe { source_register_constant(self.register_source(), REGISTER_HOST, reg) };
         (value.present != 0).then_some(value.value as Bits)
@@ -308,11 +299,6 @@ impl ApplicationLoads<'_, '_> {
     fn stride(&self,value:ElementStride)->Option<u64>{match value{ElementStride::Constant(bytes)=>Some(bytes),ElementStride::Value(parts)=>Some(self.constant(parts[0])?|(self.constant(parts[1])?<<32))}}
     fn frame_root(&self, address: [Reg; 2]) -> Option<Reg> {
         unsafe { source_frame_root(self.register_source(), REGISTER_HOST, address.into()) }.option()
-    }
-
-    fn allocation(call: &Call) -> bool {
-        matches!(&call.target, CallTarget::External(name)
-            if name.library == crate::application::RUNTIME_LIBRARY && name.symbol.starts_with("blink_allocate_"))
     }
 
     fn allocated(&self, root: Reg) -> bool {
@@ -386,12 +372,13 @@ impl ApplicationLoads<'_, '_> {
                 writes(&self.0.current_address_borrow(borrow))
             });
         }
-        if call.arguments.iter().any(|arg|matches!(arg,CallArgument::Reference{access,..}if access.writes()))||call.memory.iter().any(|effect|effect.access.writes()){return true;}
-        // Private completion and explicit transfers preserve payload values; storage and address lifetimes remain owned by Frame and the transfer checker.
-        if Self::pointer_call(call).is_some()||Self::allocation(call)||matches!(&call.target,CallTarget::External(name)if name.library==crate::application::RUNTIME_LIBRARY&&(name.symbol.starts_with("blink_complete_")||matches!(name.symbol.as_str(),"blink_upload"|"blink_download"))){return false;}
-        match &call.target {
-            CallTarget::Defined(name)=>!self.0.functions.writes_only_references(name),
-            _=>true,
+        match unsafe { source_call_fallback(dataflow::Node::call(call), dataflow::HOST) } {
+            ApplicationCallEffect::Preserves => false,
+            ApplicationCallEffect::Writes => true,
+            ApplicationCallEffect::FunctionContract => {
+                let CallTarget::Defined(name) = &call.target else { unreachable!() };
+                !self.0.functions.writes_only_references(name)
+            }
         }
     }
     fn writes_local(&self, inst: &Inst, slot: usize) -> bool {
@@ -672,6 +659,16 @@ unsafe extern "C" {
 }
 
 #[repr(u32)]
+enum ApplicationCallEffect { Preserves, Writes, FunctionContract }
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.application_snapshot::application_call_fallback"]
+    fn source_call_fallback(call: dataflow::Node, ir: dataflow::Host) -> ApplicationCallEffect;
+    #[link_name = "bootstrap.application_snapshot::application_call_writes_memory"]
+    fn source_call_writes_memory(call: dataflow::Node, ir: dataflow::Host) -> u32;
+}
+
+#[repr(u32)]
 enum WriteQueryKind { Local, Indexed, Condition }
 #[repr(u32)]
 enum WriteEffectKind { Call, Store, Reference }
@@ -770,7 +767,7 @@ impl IndexedWrite<'_, '_, '_> {
             if let CallTarget::Defined(name) = &call.target
                 && call.memory_use.is_some_and(|memory| loads.0.view_model.call_at_memory(memory, false).is_some())
                 && loads.0.functions.writes_only_references(name) {
-                return call.memory.iter().any(|effect| effect.access.writes());
+                return unsafe { source_call_writes_memory(dataflow::Node::call(call), dataflow::HOST) != 0 };
             }
             if borrow.pending() || address::external_memory(borrow) { return true; }
             borrow.sources.entries().any(|(source, when)| {
@@ -874,15 +871,13 @@ struct RegisterHost {
     loop_storage: unsafe extern "C" fn(*const effects::StorageWrite) -> LoopStorage,
     scalar_bytes: unsafe extern "C" fn(*const c_void, Reg) -> u32,
     cast: unsafe extern "C" fn(*const c_void, Reg, Reg, usize) -> AddressWord,
-    pointer_root: unsafe extern "C" fn(*const c_void, *const c_void) -> AddressWord,
-    allocation: unsafe extern "C" fn(*const c_void) -> u32,
 }
 
 const REGISTER_HOST: RegisterHost = RegisterHost {
     ir: dataflow::HOST, block: snapshot_block, writes_local: snapshot_writes_local,
     writes_load: snapshot_writes_load, loop_effects: snapshot_loop_effects,
     loop_local: snapshot_loop_local, loop_storage: snapshot_loop_storage, scalar_bytes: snapshot_scalar_bytes,
-    cast: snapshot_cast, pointer_root: snapshot_pointer_root, allocation: snapshot_allocation,
+    cast: snapshot_cast,
 };
 
 #[repr(u32)]
@@ -945,14 +940,6 @@ unsafe extern "C" fn snapshot_cast(context: *const c_void, source: Reg, target: 
     let loads = unsafe { &*context.cast::<ApplicationLoads<'_, '_>>() };
     let registers = &loads.0.registers;
     AddressWord::from_option(constant::cast(registers[source], registers[target], bits as Bits).map(|b| b as usize))
-}
-
-unsafe extern "C" fn snapshot_pointer_root(_: *const c_void, call: *const c_void) -> AddressWord {
-    AddressWord::from_option(ApplicationLoads::pointer_call(unsafe { &*call.cast::<Call>() }))
-}
-
-unsafe extern "C" fn snapshot_allocation(call: *const c_void) -> u32 {
-    u32::from(ApplicationLoads::allocation(unsafe { &*call.cast::<Call>() }))
 }
 
 unsafe extern "C" fn snapshot_truth(context: *mut c_void, reg: Reg) -> SnapshotTruth {

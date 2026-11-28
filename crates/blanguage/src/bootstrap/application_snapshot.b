@@ -161,7 +161,7 @@ bool equal_register_lists(SnapshotSource source, RegisterHost host, Span left, S
     requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
     requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
-    requires nonzero(host.writes_load) requires nonzero(host.allocation) requires nonzero(host.pointer_root) {
+    requires nonzero(host.writes_load) {
     if (left.count != right.count) { return false; }
     usize index = 0u64;
     while (index < left.count) {
@@ -187,7 +187,7 @@ bool equal_register_strides(SnapshotSource source, RegisterHost host, Node left,
     requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
     requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
-    requires nonzero(host.writes_load) requires nonzero(host.allocation) requires nonzero(host.pointer_root) {
+    requires nonzero(host.writes_load) {
     View a = host.ir.inspect(left);
     View b = host.ir.inspect(right);
     if (a.tag != 0 && b.tag != 0) { return equal_register_lists(source, host, a.first, b.first); }
@@ -201,7 +201,7 @@ bool equal_loaded_values(SnapshotSource source, RegisterHost host,
     requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
     requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
-    requires nonzero(host.writes_load) requires nonzero(host.allocation) requires nonzero(host.pointer_root) {
+    requires nonzero(host.writes_load) {
     if (a.tag != b.tag || register_scalar(source.registers, a.a) != register_scalar(source.registers, b.a)) {
         return false;
     }
@@ -219,7 +219,7 @@ bool equal_snapshot_loads(SnapshotSource source, RegisterHost host, address item
     requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
     requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
-    requires nonzero(host.writes_load) requires nonzero(host.allocation) requires nonzero(host.pointer_root) {
+    requires nonzero(host.writes_load) {
     View a = instruction(item, host.ir);
     View b = instruction(read, host.ir);
     if (a.tag != b.tag) { return false; }
@@ -275,21 +275,101 @@ Word register_result_slot(Span span, usize reg) on cpu {
     return Word(0, 0u64);
 }
 
+enum RuntimeCall:u32 { Other=0; Address=1; Allocation=2; Complete=3; Transfer=4; };
+
+bool call_name_prefix<const N:u32>(Span name, read array<u8,N> prefix) on cpu {
+    if (name.count < u64(N)) { return false; }
+    u32 index = 0;
+    while (index < N) {
+        if (unsafe_position<u8>(item_at(name, u64(index))) != prefix[index]) { return false; }
+        index += 1;
+    }
+    return true;
+}
+
+bool call_name_is<const N:u32>(Span name, read array<u8,N> expected) on cpu {
+    return name.count == u64(N) && call_name_prefix(name, expected);
+}
+
+RuntimeCall runtime_call(View target) on cpu {
+    if (target.tag != 0 || !call_name_is(target.first, "@blink.application@")) { return RuntimeCall::Other; }
+    Span name = target.second;
+    if (call_name_is(name, "blink_address") || call_name_is(name, "blink_storage_address")) {
+        return RuntimeCall::Address;
+    }
+    if (call_name_prefix(name, "blink_allocate_")) { return RuntimeCall::Allocation; }
+    if (call_name_prefix(name, "blink_complete_")) { return RuntimeCall::Complete; }
+    if (call_name_is(name, "blink_upload") || call_name_is(name, "blink_download")) {
+        return RuntimeCall::Transfer;
+    }
+    return RuntimeCall::Other;
+}
+
+Word address_call_result(View call, Host ir) on cpu requires nonzero(ir.inspect) {
+    if (call.b != 0 || call.first.count <= 1u64) { return Word(0, 0u64); }
+    View input = ir.inspect(Node(item_at(call.first, 1u64), N_ARGUMENT));
+    if (input.tag != 0 || input.first.count == 0u64) { return Word(0, 0u64); }
+    return Word(1, register_at(input.first, 0u64));
+}
+
+Word frame_call_result(View call, Host ir) on cpu requires nonzero(ir.inspect) {
+    if (runtime_call(ir.inspect(call.left)) != RuntimeCall::Address) { return Word(0, 0u64); }
+    return address_call_result(call, ir);
+}
+
+bool call_writes_memory(Span effects, Host ir) on cpu requires nonzero(ir.inspect) {
+    usize index = 0u64;
+    while (index < effects.count) {
+        View effect = ir.inspect(Node(item_at(effects, index), N_MEMORY_EFFECT));
+        if (accessed(effect.a, 1)) { return true; }
+        index += 1u64;
+    }
+    return false;
+}
+
+extern "C" u32 application_call_writes_memory(Node source, Host ir) on cpu
+    requires nonzero(ir.inspect) {
+    return u32(call_writes_memory(ir.inspect(source).second, ir));
+}
+
+// Called for an invocation with no resolved memory use in the original model.
+extern "C" ApplicationCallEffect application_call_fallback(Node source, Host ir) on cpu
+    requires nonzero(ir.inspect) {
+    View call = ir.inspect(source);
+    usize index = 0u64;
+    while (index < call.first.count) {
+        View argument = ir.inspect(Node(item_at(call.first, index), N_ARGUMENT));
+        if (argument.tag == ARGUMENT_REFERENCE && accessed(argument.a, 1)) {
+            return ApplicationCallEffect::Writes;
+        }
+        index += 1u64;
+    }
+    if (call_writes_memory(call.second, ir)) { return ApplicationCallEffect::Writes; }
+    View target = ir.inspect(call.left);
+    RuntimeCall kind = runtime_call(target);
+    // These Frame operations preserve the payload and retain their normal resource lifetimes.
+    if (kind == RuntimeCall::Allocation || kind == RuntimeCall::Complete || kind == RuntimeCall::Transfer
+        || (kind == RuntimeCall::Address && address_call_result(call, ir).present != 0)) {
+        return ApplicationCallEffect::Preserves;
+    }
+    if (target.tag == 1) { return ApplicationCallEffect::FunctionContract; }
+    return ApplicationCallEffect::Writes;
+}
+
 bool equal_address_results(SnapshotSource source, RegisterHost host, View a, View b, usize left, usize right) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
     requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
-    requires nonzero(host.writes_load) requires nonzero(host.allocation) requires nonzero(host.pointer_root) {
-    Word a_root = host.pointer_root(source.context, a.left.data);
-    Word b_root = host.pointer_root(source.context, b.left.data);
+    requires nonzero(host.writes_load) {
+    View a_call = host.ir.inspect(a.left);
+    View b_call = host.ir.inspect(b.left);
+    Word a_root = frame_call_result(a_call, host.ir);
+    Word b_root = frame_call_result(b_call, host.ir);
     if (a_root.present == 0 || b_root.present == 0) { return false; }
     Word a_slot = register_result_slot(a.first, left);
     Word b_slot = register_result_slot(b.first, right);
     if (a_slot.present != b_slot.present || a_slot.value != b_slot.value
         || application_register_equal(source, host, a_root.value, b_root.value) == 0) { return false; }
-    View a_call = host.ir.inspect(a.left);
-    View b_call = host.ir.inspect(b.left);
-    if (a_call.first.count == 0u64 || b_call.first.count == 0u64) { return false; }
     View a_frame = host.ir.inspect(Node(a_call.first.data, N_ARGUMENT));
     View b_frame = host.ir.inspect(Node(b_call.first.data, N_ARGUMENT));
     return a_frame.tag == 0 && b_frame.tag == 0 && equal_register_lists(source, host, a_frame.first, b_frame.first);
@@ -299,7 +379,7 @@ extern "C" u32 application_register_equal(SnapshotSource source, RegisterHost ho
     requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
     requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
-    requires nonzero(host.writes_load) requires nonzero(host.allocation) requires nonzero(host.pointer_root) {
+    requires nonzero(host.writes_load) {
     if (left == right) { return 1; }
     if (register_scalar(source.registers, left) != register_scalar(source.registers, right)) { return 0; }
     RegisterDefinition a_definition = application_register_definition(source, host, left);
@@ -355,8 +435,8 @@ SnapshotWalk scan_block(SnapshotSource source, SnapshotHost host, Span code, add
     requires nonzero(host.registers.ir.inspect) requires nonzero(host.registers.block)
     requires nonzero(host.registers.writes_local) requires nonzero(host.registers.loop_effects) requires nonzero(host.registers.loop_local)
     requires nonzero(host.registers.loop_storage) requires nonzero(host.registers.scalar_bytes)
-    requires nonzero(host.registers.cast) requires nonzero(host.registers.writes_load) requires nonzero(host.registers.allocation)
-    requires nonzero(host.registers.pointer_root) requires nonzero(host.truth) {
+    requires nonzero(host.registers.cast) requires nonzero(host.registers.writes_load)
+ requires nonzero(host.truth) {
     address read = newest;
     usize index = code.count;
     while (index != 0u64) {
@@ -388,8 +468,8 @@ extern "C" usize read_snapshot(SnapshotSource source, SnapshotHost host, usize r
     requires nonzero(host.registers.ir.inspect) requires nonzero(host.registers.block)
     requires nonzero(host.registers.writes_local) requires nonzero(host.registers.loop_effects) requires nonzero(host.registers.loop_local)
     requires nonzero(host.registers.loop_storage) requires nonzero(host.registers.scalar_bytes)
-    requires nonzero(host.registers.cast) requires nonzero(host.registers.writes_load) requires nonzero(host.registers.allocation)
-    requires nonzero(host.registers.pointer_root) requires nonzero(host.truth) {
+    requires nonzero(host.registers.cast) requires nonzero(host.registers.writes_load)
+ requires nonzero(host.truth) {
     RegisterDefinition definition = application_register_definition(source, host.registers, register);
     if (definition.instruction == address()) { return register; }
     address read = definition.instruction;
@@ -529,40 +609,41 @@ OriginalAddress original_address(Span registers) on cpu {
 enum AddressOperation:u32 { Add=4; Multiply=6; Combine=14; ShiftLeft=16; ShiftRight=17; };
 
 bool equal_address(SnapshotSource source, RegisterHost host, OriginalAddress a, OriginalAddress b) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.pointer_root)
+    requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
     requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
-    requires nonzero(host.writes_load) requires nonzero(host.allocation) {
+    requires nonzero(host.writes_load) {
     return application_register_equal(source, host, a.low, b.low) != 0
         && application_register_equal(source, host, a.high, b.high) != 0;
 }
 
 extern "C" Word application_frame_root(SnapshotSource source, RegisterHost host, OriginalAddress address_parts) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.pointer_root) {
+    requires nonzero(host.ir.inspect) requires nonzero(host.block) {
     RegisterDefinition low = application_register_definition(source, host, address_parts.low);
     RegisterDefinition high = application_register_definition(source, host, address_parts.high);
     if (low.instruction == address() || high.instruction == address() || low.top != high.top) {
         return Word(0, 0u64);
     }
     View inst = instruction(low.instruction, host.ir);
-    if (inst.tag == OP_INVOKE) { return host.pointer_root(source.context, inst.left.data); }
+    if (inst.tag == OP_INVOKE) { return frame_call_result(host.ir.inspect(inst.left), host.ir); }
     return Word(0, 0u64);
 }
 
 extern "C" u32 application_allocated(SnapshotSource source, RegisterHost host, usize root) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.allocation) {
+    requires nonzero(host.ir.inspect) requires nonzero(host.block) {
     RegisterDefinition definition = application_register_definition(source, host, root);
     if (definition.instruction == address()) { return 0; }
     View inst = instruction(definition.instruction, host.ir);
-    if (inst.tag == OP_INVOKE) { return host.allocation(inst.left.data); }
-    return 0;
+    if (inst.tag != OP_INVOKE) { return 0; }
+    View call = host.ir.inspect(inst.left);
+    return u32(runtime_call(host.ir.inspect(call.left)) == RuntimeCall::Allocation);
 }
 
 u32 application_frame_descendant(SnapshotSource source, RegisterHost host, usize child, usize parent) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.pointer_root)
+    requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
     requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
-    requires nonzero(host.writes_load) requires nonzero(host.allocation) {
+    requires nonzero(host.writes_load) {
     usize current = child;
     while (true) {
         RegisterDefinition definition = application_register_definition(source, host, current);
@@ -577,20 +658,20 @@ u32 application_frame_descendant(SnapshotSource source, RegisterHost host, usize
 }
 
 extern "C" u32 application_storage_includes_root(SnapshotSource source, RegisterHost host, LoopStorage written, usize root) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.pointer_root)
+    requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.writes_load) requires nonzero(host.cast)
     requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
-    requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.allocation) {
+    requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) {
     if (written.descendants == 0) { return u32(written.root == root); }
     return u32(application_register_equal(source, host, root, written.root) == 0
         && application_frame_descendant(source, host, written.root, root) == 0);
 }
 
 bool distinct_loop_roots(SnapshotSource source, RegisterHost host, usize first, usize second) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.pointer_root)
+    requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.writes_load) requires nonzero(host.cast)
     requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
-    requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.allocation) {
+    requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) {
     return (first != second && application_allocated(source, host, first) != 0
         && application_allocated(source, host, second) != 0)
         || application_frame_descendant(source, host, first, second) != 0
@@ -599,10 +680,10 @@ bool distinct_loop_roots(SnapshotSource source, RegisterHost host, usize first, 
 
 extern "C" u32 application_storage_changes(SnapshotSource source, RegisterHost host, LoopEffects effects,
     Word root, ApplicationByteRange range, u32 has_range) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.pointer_root)
+    requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.writes_load) requires nonzero(host.cast)
     requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
-    requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.allocation) {
+    requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) {
     if (effects.unknown_storage != 0) { return 1; }
     usize index = 0u64;
     while (index < effects.storage.count) {
@@ -621,10 +702,10 @@ extern "C" u32 application_storage_changes(SnapshotSource source, RegisterHost h
 }
 
 bool loop_memory_changes(SnapshotSource source, RegisterHost host, usize first, usize second, View load) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.pointer_root)
+    requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.writes_load) requires nonzero(host.cast)
     requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
-    requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.allocation) {
+    requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) {
     LoopScan scan = LoopScan(min(first, second), max(first, second), 0u64, 0u64);
     Word crossed = next_crossed_loop(source, host, scan);
     while (crossed.present != 0) {
@@ -677,10 +758,10 @@ bool register_is(SnapshotSource source, RegisterHost host, usize reg, usize valu
 }
 
 extern "C" Word application_split_address(SnapshotSource source, RegisterHost host, OriginalAddress address_parts) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.pointer_root)
+    requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
     requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
-    requires nonzero(host.writes_load) requires nonzero(host.allocation) {
+    requires nonzero(host.writes_load) {
     Word low = cast_input(source, host, address_parts.low);
     Word high = cast_input(source, host, address_parts.high);
     if (low.present == 0 || high.present == 0) { return Word(0, 0u64); }
@@ -691,10 +772,10 @@ extern "C" Word application_split_address(SnapshotSource source, RegisterHost ho
 }
 
 extern "C" OffsetPosition application_offset_position(SnapshotSource source, RegisterHost host, OriginalAddress address_parts) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.pointer_root)
+    requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
     requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
-    requires nonzero(host.writes_load) requires nonzero(host.allocation) {
+    requires nonzero(host.writes_load) {
     OffsetPosition missing = OffsetPosition(0, OriginalAddress(0u64, 0u64), 0u64, 0u64, 0u64);
     Word pointer = application_split_address(source, host, address_parts);
     if (pointer.present == 0) { return missing; }
@@ -727,10 +808,10 @@ bool zero_stride(SnapshotSource source, RegisterHost host, Node stride) on cpu
 }
 
 extern "C" u32 application_same_position(SnapshotSource source, RegisterHost host, Node left, Node right, u32 exact_index) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.pointer_root)
+    requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
     requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
-    requires nonzero(host.writes_load) requires nonzero(host.allocation) {
+    requires nonzero(host.writes_load) {
     View a = host.ir.inspect(left);
     View b = host.ir.inspect(right);
     if (a.tag != INDEXED_VIEW || b.tag != INDEXED_VIEW) { return 0; }
@@ -756,10 +837,10 @@ Word original_offset(SnapshotSource source, RegisterHost host, Span optional) on
 }
 
 Word address_root(SnapshotSource source, RegisterHost host, OriginalAddress address_parts) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.pointer_root)
+    requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
     requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
-    requires nonzero(host.writes_load) requires nonzero(host.allocation) {
+    requires nonzero(host.writes_load) {
     Word frame = application_frame_root(source, host, address_parts);
     if (frame.present != 0) { return frame; }
     OffsetPosition position = application_offset_position(source, host, address_parts);
@@ -768,10 +849,10 @@ Word address_root(SnapshotSource source, RegisterHost host, OriginalAddress addr
 }
 
 bool disjoint_address_roots(SnapshotSource source, RegisterHost host, OriginalAddress left, OriginalAddress right) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.pointer_root)
+    requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
     requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
-    requires nonzero(host.writes_load) requires nonzero(host.allocation) {
+    requires nonzero(host.writes_load) {
     Word a = address_root(source, host, left);
     Word b = address_root(source, host, right);
     if (a.present == 0 || b.present == 0) { return false; }
@@ -786,10 +867,10 @@ bool disjoint_address_roots(SnapshotSource source, RegisterHost host, OriginalAd
 
 extern "C" u32 application_store_overlap(IndexedByteAccess read, IndexedByteAccess written,
     Span offset, SnapshotSource source, RegisterHost host) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.pointer_root)
+    requires nonzero(host.ir.inspect) requires nonzero(host.block)
     requires nonzero(host.writes_local) requires nonzero(host.loop_effects) requires nonzero(host.loop_local)
     requires nonzero(host.loop_storage) requires nonzero(host.scalar_bytes) requires nonzero(host.cast)
-    requires nonzero(host.writes_load) requires nonzero(host.allocation) {
+    requires nonzero(host.writes_load) {
     View from = host.ir.inspect(read.source);
     View to = host.ir.inspect(written.source);
     ApplicationByteOffset written_word = byte_offset(u64(written.word));
