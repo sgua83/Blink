@@ -422,6 +422,21 @@ struct BorrowOutputDrop {
     cfn<void,address> calls;
     cfn<void,address> reads;
 };
+extern "C" void move_borrow_write(inout address remaining, ReadWritePaths paths,
+    BorrowOutputShape output, BorrowOutputShape input, BorrowOutputMerge host, BorrowOutputDrop drop,
+    cfn<u32,address> conflict) on cpu
+    requires nonzero(output.sources.stride) requires nonzero(output.inputs.stride)
+    requires nonzero(output.calls.stride) requires nonzero(output.reads.stride)
+    requires nonzero(host.sources.compare) requires nonzero(host.sources.key)
+    requires nonzero(host.inputs.compare) requires nonzero(host.inputs.key)
+    requires nonzero(host.calls.compare) requires nonzero(host.calls.key)
+    requires nonzero(host.reads.compare) requires nonzero(host.reads.key)
+    requires nonzero(host.clauses.both) requires nonzero(host.clauses.either)
+    requires nonzero(host.clauses.canonical) requires nonzero(host.clauses.normalized)
+    requires nonzero(drop.sources) requires nonzero(drop.inputs)
+    requires nonzero(drop.calls) requires nonzero(drop.reads)
+    requires nonzero(conflict);
+
 extern "C" void finish_borrow_history(inout address earlier,
     BorrowOutputShape output, BorrowOutputShape input, BorrowOutputMerge host, BorrowOutputDrop drop) on cpu
     requires nonzero(output.sources.stride) requires nonzero(output.inputs.stride)

@@ -918,33 +918,18 @@ extern "C" void union_selected_borrow_sources(BorrowEdgeGroup source,BorrowEdgeM
     }
 }
 
-extern "C" void merge_borrow_output(inout address remaining, ReadWritePaths paths,
-    BorrowOutputShape output, BorrowOutputShape input, BorrowOutputMerge host,
-    cfn<u32,address> conflict) on cpu
-    requires nonzero(output.sources.stride) requires nonzero(output.inputs.stride)
-    requires nonzero(output.calls.stride) requires nonzero(output.reads.stride)
-    requires nonzero(host.sources.compare) requires nonzero(host.sources.key)
-    requires nonzero(host.inputs.compare) requires nonzero(host.inputs.key)
-    requires nonzero(host.calls.compare) requires nonzero(host.calls.key)
-    requires nonzero(host.reads.compare) requires nonzero(host.reads.key)
-    requires nonzero(host.clauses.both) requires nonzero(host.clauses.either)
-    requires nonzero(host.clauses.canonical) requires nonzero(host.clauses.normalized)
-    requires nonzero(conflict)
-{
+address read_write_visibility(address remaining,ReadWritePaths paths,cfn<u32,address> conflict) on cpu
+    requires nonzero(conflict) {
     address visible = paths.written;
     if (remaining != address()) {
         visible = paths.written == address() ? remaining
             : combine_clause_both(remaining,paths.written,conflict);
     }
-    address path = visible == address() ? address() : address_of(visible);
-    union_borrow_edges(output.sources,input.sources,path,
-        BorrowEdgeMerge(host.clauses,host.sources.compare,host.sources.key,address()));
-    union_borrow_edges(output.inputs,input.inputs,path,
-        BorrowEdgeMerge(host.clauses,host.inputs.compare,host.inputs.key,address()));
-    union_borrow_edges(output.calls,input.calls,path,
-        BorrowEdgeMerge(host.clauses,host.calls.compare,host.calls.key,address()));
-    union_borrow_edges(output.reads,input.reads,path,
-        BorrowEdgeMerge(host.clauses,host.reads.compare,host.reads.key,address()));
+    return visible;
+}
+
+void finish_read_write(inout address remaining,ReadWritePaths paths,address visible,cfn<u32,address> conflict) on cpu
+    requires nonzero(conflict) {
     if (remaining != address() && paths.written != address()) {
         clause_release(visible);
     }
@@ -959,6 +944,32 @@ extern "C" void merge_borrow_output(inout address remaining, ReadWritePaths path
     }
 }
 
+extern "C" void merge_borrow_output(inout address remaining, ReadWritePaths paths,
+    BorrowOutputShape output, BorrowOutputShape input, BorrowOutputMerge host,
+    cfn<u32,address> conflict) on cpu
+    requires nonzero(output.sources.stride) requires nonzero(output.inputs.stride)
+    requires nonzero(output.calls.stride) requires nonzero(output.reads.stride)
+    requires nonzero(host.sources.compare) requires nonzero(host.sources.key)
+    requires nonzero(host.inputs.compare) requires nonzero(host.inputs.key)
+    requires nonzero(host.calls.compare) requires nonzero(host.calls.key)
+    requires nonzero(host.reads.compare) requires nonzero(host.reads.key)
+    requires nonzero(host.clauses.both) requires nonzero(host.clauses.either)
+    requires nonzero(host.clauses.canonical) requires nonzero(host.clauses.normalized)
+    requires nonzero(conflict)
+{
+    address visible = read_write_visibility(remaining,paths,conflict);
+    address path = visible == address() ? address() : address_of(visible);
+    union_borrow_edges(output.sources,input.sources,path,
+        BorrowEdgeMerge(host.clauses,host.sources.compare,host.sources.key,address()));
+    union_borrow_edges(output.inputs,input.inputs,path,
+        BorrowEdgeMerge(host.clauses,host.inputs.compare,host.inputs.key,address()));
+    union_borrow_edges(output.calls,input.calls,path,
+        BorrowEdgeMerge(host.clauses,host.calls.compare,host.calls.key,address()));
+    union_borrow_edges(output.reads,input.reads,path,
+        BorrowEdgeMerge(host.clauses,host.reads.compare,host.reads.key,address()));
+    finish_read_write(remaining,paths,visible,conflict);
+}
+
 void merge_owned_borrow_edges(BorrowEdgeGroup output,address owner,address path,
     BorrowEdgeMerge host,cfn<void,address> release_key) on cpu
     requires nonzero(output.stride)
@@ -966,7 +977,11 @@ void merge_owned_borrow_edges(BorrowEdgeGroup output,address owner,address path,
     requires nonzero(host.clauses.either) requires nonzero(host.clauses.canonical)
     requires nonzero(host.clauses.normalized) requires nonzero(release_key)
 {
-    if (path == address() && unsafe_position<OrderedTree>(output.tree).count == 0u64) {
+    if (unsafe_position<OrderedTree>(output.tree).count == 0u64) {
+        if (path != address()) {
+            let group = BorrowEdgeGroup(owner,output.stride,output.condition);
+            restrict_borrow_edges(group,unsafe_position<address>(path),host.clauses.both);
+        }
         fact_tree_clear(output.tree);
         unsafe_position<OrderedTree>(output.tree) = unsafe_position<OrderedTree>(owner);
         unsafe_position<OrderedTree>(owner) = OrderedTree(address(),0u64,0u64,0u64);
@@ -1055,6 +1070,50 @@ extern "C" void restrict_borrow_output(BorrowOutputShape output,address path,cfn
     restrict_borrow_edges(output.reads,condition,both);
 }
 
+void move_borrow_output(BorrowOutputShape output,BorrowOutputShape input,address path,
+    BorrowOutputMerge host,BorrowOutputDrop drop) on cpu
+    requires nonzero(output.sources.stride) requires nonzero(output.inputs.stride)
+    requires nonzero(output.calls.stride) requires nonzero(output.reads.stride)
+    requires nonzero(host.sources.compare) requires nonzero(host.sources.key)
+    requires nonzero(host.inputs.compare) requires nonzero(host.inputs.key)
+    requires nonzero(host.calls.compare) requires nonzero(host.calls.key)
+    requires nonzero(host.reads.compare) requires nonzero(host.reads.key)
+    requires nonzero(host.clauses.both) requires nonzero(host.clauses.either)
+    requires nonzero(host.clauses.canonical) requires nonzero(host.clauses.normalized)
+    requires nonzero(drop.sources) requires nonzero(drop.inputs)
+    requires nonzero(drop.calls) requires nonzero(drop.reads)
+{
+    merge_owned_borrow_edges(output.sources,input.sources.tree,path,
+        BorrowEdgeMerge(host.clauses,host.sources.compare,host.sources.key,address()),drop.sources);
+    merge_owned_borrow_edges(output.inputs,input.inputs.tree,path,
+        BorrowEdgeMerge(host.clauses,host.inputs.compare,host.inputs.key,address()),drop.inputs);
+    merge_owned_borrow_edges(output.calls,input.calls.tree,path,
+        BorrowEdgeMerge(host.clauses,host.calls.compare,host.calls.key,address()),drop.calls);
+    merge_owned_borrow_edges(output.reads,input.reads.tree,path,
+        BorrowEdgeMerge(host.clauses,host.reads.compare,host.reads.key,address()),drop.reads);
+}
+
+extern "C" void move_borrow_write(inout address remaining, ReadWritePaths paths,
+    BorrowOutputShape output, BorrowOutputShape input, BorrowOutputMerge host, BorrowOutputDrop drop,
+    cfn<u32,address> conflict) on cpu
+    requires nonzero(output.sources.stride) requires nonzero(output.inputs.stride)
+    requires nonzero(output.calls.stride) requires nonzero(output.reads.stride)
+    requires nonzero(host.sources.compare) requires nonzero(host.sources.key)
+    requires nonzero(host.inputs.compare) requires nonzero(host.inputs.key)
+    requires nonzero(host.calls.compare) requires nonzero(host.calls.key)
+    requires nonzero(host.reads.compare) requires nonzero(host.reads.key)
+    requires nonzero(host.clauses.both) requires nonzero(host.clauses.either)
+    requires nonzero(host.clauses.canonical) requires nonzero(host.clauses.normalized)
+    requires nonzero(drop.sources) requires nonzero(drop.inputs)
+    requires nonzero(drop.calls) requires nonzero(drop.reads)
+    requires nonzero(conflict)
+{
+    address visible = read_write_visibility(remaining,paths,conflict);
+    address path = visible == address() ? address() : address_of(visible);
+    move_borrow_output(output,input,path,host,drop);
+    finish_read_write(remaining,paths,visible,conflict);
+}
+
 extern "C" void finish_borrow_history(inout address earlier,
     BorrowOutputShape output, BorrowOutputShape input, BorrowOutputMerge host, BorrowOutputDrop drop) on cpu
     requires nonzero(output.sources.stride) requires nonzero(output.inputs.stride)
@@ -1073,14 +1132,7 @@ extern "C" void finish_borrow_history(inout address earlier,
         clause_release(earlier);
         earlier = address();
     }
-    merge_owned_borrow_edges(output.sources,input.sources.tree,address(),
-        BorrowEdgeMerge(host.clauses,host.sources.compare,host.sources.key,address()),drop.sources);
-    merge_owned_borrow_edges(output.inputs,input.inputs.tree,address(),
-        BorrowEdgeMerge(host.clauses,host.inputs.compare,host.inputs.key,address()),drop.inputs);
-    merge_owned_borrow_edges(output.calls,input.calls.tree,address(),
-        BorrowEdgeMerge(host.clauses,host.calls.compare,host.calls.key,address()),drop.calls);
-    merge_owned_borrow_edges(output.reads,input.reads.tree,address(),
-        BorrowEdgeMerge(host.clauses,host.reads.compare,host.reads.key,address()),drop.reads);
+    move_borrow_output(output,input,address(),host,drop);
 }
 
 enum BorrowReachWorkKind:u32 { Group=0; Children=1; LeavePath=2; };

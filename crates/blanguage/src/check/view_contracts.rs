@@ -815,21 +815,21 @@ struct ContentAtRead {
 }
 
 impl ContentAtRead {
-    fn write(&mut self, incoming: &Borrow, when: &bounds::Condition, complete: bool) {
+    fn write(&mut self, incoming: std::borrow::Cow<'_, Borrow>, when: &bounds::Condition, complete: bool) {
         self.fold(incoming, Some(when.path(true)), complete.then(|| when.path(false)));
     }
 
-    fn fold(&mut self, incoming: &Borrow, written: Option<&bounds::Clause>, unwritten: Option<&bounds::Clause>) {
+    fn fold(&mut self, incoming: std::borrow::Cow<'_, Borrow>, written: Option<&bounds::Clause>, unwritten: Option<&bounds::Clause>) {
         self.writes.merge_paths(incoming, written, unwritten, &mut self.earlier);
     }
 
-    fn write_with_history(&mut self, incoming: &Borrow, when: &bounds::Condition, complete: bool,
+    fn write_with_history(&mut self, incoming: std::borrow::Cow<'_, Borrow>, when: &bounds::Condition, complete: bool,
         names: &bounds::OutputBindings,
     ) {
         if names.is_empty() {
             self.write(incoming, when, complete);
         } else {
-            self.write(&incoming.output_bound(names), &when.output_bound(names), complete);
+            self.write(std::borrow::Cow::Owned(incoming.output_bound(names)), &when.output_bound(names), complete);
         }
     }
 
@@ -1082,7 +1082,7 @@ impl BorrowEvaluation<'_>{
         function.visit_content_history(memory, |at, call| {
             let names = std::cell::LazyCell::new(|| function.history_names(at, memory, None));
             self.content_event(Some((origin, word)), position.as_ref(), at, || call,
-                |borrow, when, complete| result.write_with_history(&borrow, &when, complete, &names));
+                |borrow, when, complete| result.write_with_history(std::borrow::Cow::Owned(borrow), &when, complete, &names));
         });
         result.with_initial(input_contents(origin,word))
     }
@@ -1155,7 +1155,7 @@ impl BorrowEvaluation<'_>{
                         location.replay(*memory, |at, writes| {
                             let names = function.history_names(at, *memory, None);
                             for write in writes {
-                                result.write_with_history(&write.borrow, &write.when, write.complete, &names);
+                                result.write_with_history(std::borrow::Cow::Borrowed(&write.borrow), &write.when, write.complete, &names);
                             }
                         });
                         let contents = result.with_initial(input_contents(&location.origin, location.word))
@@ -1199,7 +1199,7 @@ impl BorrowEvaluation<'_>{
                 let function = self.function;
                 self.content_event(query.as_ref().map(|origin| (origin, 0)), Some(position), *memory,
                     || function.call_at_memory(*memory, true),
-                    |borrow, when, complete| result.write(&borrow, &when, complete));
+                    |borrow, when, complete| result.write(std::borrow::Cow::Owned(borrow), &when, complete));
                 result.with_initial(value).restricted_by(&function.uses[*memory].path)
             },
             ContentRead::Call{memory,origin,word,snapshots}=>{

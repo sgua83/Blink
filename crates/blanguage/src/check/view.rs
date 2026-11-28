@@ -684,6 +684,12 @@ unsafe extern "C" {
         output: BorrowOutputShape, input: BorrowOutputShape, host: BorrowOutputMerge,
         conflict: unsafe extern "C" fn(*const std::ffi::c_void) -> u32,
     );
+    #[link_name = "bootstrap.call_arguments::move_borrow_write"]
+    fn move_borrow_write(
+        remaining: &mut Option<bounds::Clause>, paths: ReadWritePaths,
+        output: BorrowOutputShape, input: BorrowOutputShape, host: BorrowOutputMerge,
+        drop: BorrowOutputDrop, conflict: unsafe extern "C" fn(*const std::ffi::c_void) -> u32,
+    );
     #[link_name = "bootstrap.call_arguments::restrict_borrow_output"]
     fn restrict_borrow_output(output: BorrowOutputShape, path: &bounds::Clause, both: EdgeCombine);
     #[link_name = "bootstrap.call_arguments::finish_borrow_history"]
@@ -1558,15 +1564,15 @@ impl Borrow{
     }
     pub fn empty(&self)->bool{self.sources.is_empty()&&self.inputs.is_empty()&&self.calls.is_empty()&&self.reads.is_empty()}
     pub fn union(&mut self, other: &Self) {
-        self.merge_paths(other, None, None, &mut None);
+        self.merge_paths(std::borrow::Cow::Borrowed(other), None, None, &mut None);
     }
 
     pub(super) fn union_restricted(&mut self, other: &Self, path: &bounds::Clause) {
-        self.merge_paths(other, Some(path), None, &mut None);
+        self.merge_paths(std::borrow::Cow::Borrowed(other), Some(path), None, &mut None);
     }
 
     pub(super) fn merge_paths(
-        &mut self, incoming: &Self, written: Option<&bounds::Clause>,
+        &mut self, incoming: std::borrow::Cow<'_, Self>, written: Option<&bounds::Clause>,
         unwritten: Option<&bounds::Clause>, remaining: &mut Option<bounds::Clause>,
     ) {
         let paths = ReadWritePaths {
@@ -1574,9 +1580,17 @@ impl Borrow{
             unwritten: unwritten.map_or(std::ptr::null_mut(), bounds::Clause::raw),
         };
         // Clause is a transparent NonNull handle, with absence represented by null.
+        let output = BorrowOutputShape::writable(self);
         unsafe {
-            merge_borrow_output(remaining, paths, BorrowOutputShape::writable(self), incoming.into(),
-                BorrowOutputMerge::OPERATIONS, bounds::clause_conflict)
+            match incoming {
+                std::borrow::Cow::Borrowed(value) => merge_borrow_output(
+                    remaining, paths, output, value.into(), BorrowOutputMerge::OPERATIONS, bounds::clause_conflict,
+                ),
+                std::borrow::Cow::Owned(mut value) => move_borrow_write(
+                    remaining, paths, output, BorrowOutputShape::writable(&mut value),
+                    BorrowOutputMerge::MOVE, BorrowOutputDrop::OPERATIONS, bounds::clause_conflict,
+                ),
+            }
         }
     }
 

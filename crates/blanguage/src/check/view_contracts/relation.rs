@@ -2755,7 +2755,7 @@ impl<'g> Query<'g> {
                         }
                         incoming.sources.union(&value.sources);
                     }
-                    content.write(&incoming, &write.when, true);
+                    content.write(Cow::Owned(incoming), &write.when, true);
                     return decision;
                 }
                 let targets = self.node(write.target);
@@ -2793,7 +2793,7 @@ impl<'g> Query<'g> {
                 }
                 let no = bounds::Clause::either(&not_written, &miss);
                 // Each incoming source already has its matching write path.
-                content.fold(&incoming, None, Some(&no));
+                content.fold(Cow::Owned(incoming), None, Some(&no));
                 decision
             });
             let value=if !ready{Borrow::default()}else if delayed{self.deferred(id)}else if content.earlier.as_ref().is_some_and(|p|!p.possible()){content.with_initial(Borrow::default())}else if origin.symbolic_input(){self.deferred(id)}else{
