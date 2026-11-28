@@ -690,6 +690,75 @@ pub(super) enum Capture { Read, Write }
 // External仅表示没有静态来源；不能把它当作与本函数实际存储不相交。
 #[derive(Default)]
 pub(super) struct MemoryEffect {external:Option<Access>,known:Vec<(Arc<Origin>,bounds::Clause,Access,Option<bounds::Proof>)>}
+
+#[repr(C)]
+struct MemoryEffectCoverage {
+    count: usize,
+    width: u32,
+    request: Access,
+    external: Access,
+    external_present: u32,
+    outside_element: u32,
+}
+
+#[repr(C)]
+struct MemoryEffectCoverageHost {
+    context: *const std::ffi::c_void,
+    access: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> Access,
+    same_element: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> u32,
+    project: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> u8,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::memory_effect_bytes"]
+    fn b_memory_effect_bytes(effect: MemoryEffectCoverage, host: MemoryEffectCoverageHost) -> u8;
+}
+
+struct EffectCoverage<'a> {
+    effect: &'a MemoryEffect,
+    position: &'a Position,
+    scalar: Scalar,
+    index: Option<bounds::Operand>,
+}
+
+impl EffectCoverage<'_> {
+    unsafe extern "C" fn access(context: *const std::ffi::c_void, at: usize) -> Access {
+        let query = unsafe { &*context.cast::<Self>() };
+        query.effect.known[at].2
+    }
+
+    unsafe extern "C" fn same_element(context: *const std::ffi::c_void, at: usize) -> u32 {
+        let query = unsafe { &*context.cast::<Self>() };
+        let (origin, when, _, _) = &query.effect.known[at];
+        u32::from(MemoryEffect::same_element(origin, when, query.position, query.index) == Some(true))
+    }
+
+    unsafe extern "C" fn project(context: *const std::ffi::c_void, at: usize) -> u8 {
+        let query = unsafe { &*context.cast::<Self>() };
+        let (origin, when, _, _) = &query.effect.known[at];
+        MemoryEffect::origin_written_bytes(origin, when, query.position, query.scalar, query.index)
+    }
+
+    fn bytes(&self, request: Access, outside_element: bool) -> u8 {
+        let effect = MemoryEffectCoverage {
+            count: self.effect.known.len(),
+            width: self.scalar.size(),
+            request,
+            external: self.effect.external.unwrap_or(Access::Value),
+            external_present: u32::from(self.effect.external.is_some()),
+            outside_element: u32::from(outside_element),
+        };
+        let host = MemoryEffectCoverageHost {
+            context: std::ptr::from_ref(self).cast(),
+            access: Self::access,
+            same_element: Self::same_element,
+            project: Self::project,
+        };
+        // B borrows this query only for the call and indexes the original entries by count.
+        unsafe { b_memory_effect_bytes(effect, host) }
+    }
+}
+
 pub(super) fn external_memory(borrow: &view::Borrow) -> bool {
     borrow.sources.entries().any(|(source, when)| {
         source_has_external_memory(source, || when.possible().then_some(&when))
@@ -765,10 +834,7 @@ impl MemoryEffect {
     }
     // The loop owner uses this query only for a forward cursor's preceding iterations.
     pub(super) fn outside_element_bytes(&self,position:&Position,scalar:Scalar,index:Option<bounds::Operand>)->u8 {
-        if self.external.is_some_and(|access|access.writes()){return ((1u16<<scalar.size())-1)as u8;}
-        self.known.iter().filter(|(_,_,access,_)|access.writes()).fold(0,|bytes,(origin,when,_,_)|{
-            bytes|if Self::same_element(origin,when,position,index)==Some(true){0}else{Self::origin_written_bytes(origin,when,position,scalar,index)}
-        })
+        self.accessed_bytes(position, scalar, index, Access::Read, true)
     }
     fn origin_written_bytes(origin:&Origin,when:&bounds::Clause,position:&Position,scalar:Scalar,index:Option<bounds::Operand>)->u8 {
         let regions = std::cell::LazyCell::new(|| origin.memory_regions(when));
@@ -801,7 +867,7 @@ impl MemoryEffect {
                     held.overlaps_source(owner,&bounds::Clause::both(active,&path)))
             });
             descendant || origin.memory_regions(&when).is_some_and(|regions|regions.iter().any(|region| {
-                let bytes=u16::from(effect.accessed_bytes(&region.position,Scalar::U64,index,|held|access.writes()||held.writes()));
+                let bytes=u16::from(effect.accessed_bytes(&region.position,Scalar::U64,index, access, false));
                 (bytes>>region.offset)&((1u16<<region.size)-1)!=0
             }))
         })
@@ -813,11 +879,13 @@ impl MemoryEffect {
     }
 
     pub(super) fn written_bytes(&self,position:&Position,scalar:Scalar,index:Option<bounds::Operand>)->u8 {
-        self.accessed_bytes(position,scalar,index,Access::writes)
+        self.accessed_bytes(position, scalar, index, Access::Read, false)
     }
-    fn accessed_bytes(&self,position:&Position,scalar:Scalar,index:Option<bounds::Operand>,select:impl Fn(Access)->bool)->u8 {
-        if self.external.is_some_and(&select){return ((1u16<<scalar.size())-1) as u8;}
-        self.known.iter().filter(|(_,_,access,_)|select(*access)).fold(0,|bytes,(origin,when,_,_)|bytes|Self::origin_written_bytes(origin,when,position,scalar,index))
+    fn accessed_bytes(
+        &self, position: &Position, scalar: Scalar, index: Option<bounds::Operand>, request: Access,
+        outside_element: bool,
+    ) -> u8 {
+        EffectCoverage { effect: self, position, scalar, index }.bytes(request, outside_element)
     }
     pub(super) fn has_external_write(&self) -> bool {
         self.external.is_some_and(Access::writes)

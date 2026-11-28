@@ -492,6 +492,24 @@ extern "C" u8 project_address_write_bytes(address position, u32 width, WriteProj
     return bytes;
 }
 
+extern "C" u8 memory_effect_bytes(MemoryEffectCoverage effect, MemoryEffectCoverageHost host) on cpu
+    requires nonzero(host.access) requires nonzero(host.same_element) requires nonzero(host.project) {
+    let selects_reads = writes(effect.request);
+    if (effect.external_present != 0 && (selects_reads || writes(effect.external))) {
+        return scalar_write_mask(effect.width);
+    }
+    u8 bytes = u8(0);
+    usize at = 0u64;
+    while (at < effect.count) {
+        if ((selects_reads || writes(host.access(host.context, at))) &&
+            (effect.outside_element == 0 || host.same_element(host.context, at) == 0)) {
+            bytes |= host.project(host.context, at);
+        }
+        at += 1u64;
+    }
+    return bytes;
+}
+
 extern "C" u32 address_tail(address context,u64 count,u32 size,u32 first,AddressTailHost host) on cpu
  requires nonzero(host.offset) requires nonzero(host.append) {
  u64 i=0u64;while(i<count){u32 at=host.offset(context,i);if(at>=first){host.append(context,i,at-first);}i+=1u64;}return size-first;

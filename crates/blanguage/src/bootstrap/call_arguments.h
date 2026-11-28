@@ -147,6 +147,23 @@ extern "C" u8 project_address_write_bytes(address position, u32 width, WriteProj
     requires nonzero(host.distinct_element) requires nonzero(host.position) requires nonzero(host.child)
     requires nonzero(host.regions) requires nonzero(host.region);
 
+struct MemoryEffectCoverage {
+    usize count;
+    u32 width;
+    CallAccess request;
+    CallAccess external;
+    u32 external_present;
+    u32 outside_element;
+};
+struct MemoryEffectCoverageHost {
+    address context;
+    cfn<CallAccess,address,usize> ensures memory(read) access;
+    cfn<u32,address,usize> same_element;
+    cfn<u8,address,usize> project;
+};
+extern "C" u8 memory_effect_bytes(MemoryEffectCoverage effect, MemoryEffectCoverageHost host) on cpu
+    requires nonzero(host.access) requires nonzero(host.same_element) requires nonzero(host.project);
+
 extern "C" u32 address_tail(address context,u64 count,u32 size,u32 first,AddressTailHost host) on cpu
  requires nonzero(host.offset) requires nonzero(host.append);
 // explicit_type: 0 is not one type, 1 is a type, 2 is a root dataset.
