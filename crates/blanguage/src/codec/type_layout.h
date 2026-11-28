@@ -193,15 +193,18 @@ struct StorageHost {
     cfn<StoragePart,address,StageSpan,usize> ensures memory(read) result;
 };
 struct TileGroup { u64 storage; usize owner; u32 first; u32 end; };
-struct StorageOutput {
-    address context;
-    cfn<void,address,usize,u32,i64> read;
+struct StorageLayout {
     address publication_phases;
     address group_storage;
     cfn<address,address,usize> reserve_groups;
+};
+struct StorageOutput {
+    address context;
+    cfn<void,address,u64,usize,u32,i64> read;
+    StorageLayout layout;
 };
 struct StorageFacts { u32 preserve; usize group_count; };
 extern "C" StorageFacts storage_facts(StageSpan code, StorageHost host, i64 phase, StorageOutput output) on cpu
     requires nonzero(host.step) requires nonzero(host.tile)
     requires nonzero(host.component) requires nonzero(host.result)
-    requires nonzero(output.read) requires nonzero(output.reserve_groups);
+    requires nonzero(output.read) requires nonzero(output.layout.reserve_groups);

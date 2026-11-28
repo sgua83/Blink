@@ -1,5 +1,6 @@
 module bootstrap.stage_fusion;
 import bootstrap.ir_dataflow;
+import codec.type_layout;
 
 struct BindingSpan {
     address data;
@@ -8,6 +9,19 @@ struct BindingSpan {
 // output contains left_count original bindings, with space for right.count more.
 // The returned index starts the sorted union in that same output buffer.
 extern "C" u64 merge_bindings(address output, u64 left_count, BindingSpan right) on cpu;
+
+struct TileUsageInput {
+    StageSpan code;
+    StorageHost source;
+    StorageLayout layout;
+    i64 first_phase;
+};
+struct TileUsageOutput { address context; cfn<address,address,usize> reserve; };
+struct TileUsageResult { StorageFacts storage; usize count; };
+extern "C" TileUsageResult collect_tile_usage(TileUsageInput input, TileUsageOutput output) on cpu
+    requires nonzero(input.source.step) requires nonzero(input.source.tile)
+    requires nonzero(input.source.component) requires nonzero(input.source.result)
+    requires nonzero(input.layout.reserve_groups) requires nonzero(output.reserve);
 
 enum TileScratch:u32 { Rows=0; Members=1; Narrow=2; Wide=3; Cells=4; };
 struct TileExtents { u64 narrow; u64 wide; };

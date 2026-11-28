@@ -13,28 +13,10 @@ pub enum SharedWord {
     Input { binding: usize, word: u32 },
     Published { tile: usize, word: u32 },
 }
-impl SharedWord {
-    pub(crate) fn aligned(self) -> Self {
-        match self {
-            Self::Input { binding, word } => Self::Input { binding, word: word & !3 },
-            Self::Published { tile, word } => Self::Published { tile, word: word & !3 },
-        }
-    }
-}
 #[cfg(feature = "compiler")]
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub(crate) struct TileKey { storage: u64, owner: usize, pub(super) byte: u32 }
-
-#[cfg(feature = "compiler")]
-impl From<SharedWord> for TileKey {
-    fn from(word: SharedWord) -> Self {
-        match word {
-            SharedWord::Input { binding, word } => Self { storage: 0, owner: binding, byte: word },
-            SharedWord::Published { tile, word } => Self { storage: 1, owner: tile, byte: word },
-        }
-    }
-}
 
 #[cfg(feature = "compiler")]
 #[derive(Clone, Copy, Default)]
@@ -188,16 +170,41 @@ pub(super) struct TileGroup {
     end: u32,
 }
 
-type StorageRead = unsafe extern "C" fn(*mut c_void, usize, u32, i64);
+type StorageRead = unsafe extern "C" fn(*mut c_void, u64, usize, u32, i64);
+
+#[repr(C)]
+struct StorageLayout {
+    publication_phases: *mut i64,
+    group_storage: *mut c_void,
+    reserve_groups: unsafe extern "C" fn(*mut c_void, usize) -> *mut c_void,
+}
 
 #[repr(C)]
 struct StorageOutput {
     context: *mut c_void,
     read: StorageRead,
-    publication_phases: *mut i64,
-    group_storage: *mut c_void,
-    reserve_groups: unsafe extern "C" fn(*mut c_void, usize) -> *mut c_void,
+    layout: StorageLayout,
 }
+
+#[cfg(feature = "compiler")]
+#[repr(C)]
+struct TileUsageInput {
+    code: StageSpan,
+    source: StorageHost,
+    layout: StorageLayout,
+    first_phase: i64,
+}
+
+#[cfg(feature = "compiler")]
+#[repr(C)]
+struct TileUsageOutput {
+    context: *mut c_void,
+    reserve: unsafe extern "C" fn(*mut c_void, usize) -> *mut dataflow::TileUse,
+}
+
+#[cfg(feature = "compiler")]
+#[repr(C)]
+struct TileUsageResult { storage: StorageFacts, count: usize }
 
 #[repr(C)]
 pub(super) struct StorageFacts { pub(super) preserve: u32, pub(super) group_count: usize }
@@ -205,6 +212,9 @@ pub(super) struct StorageFacts { pub(super) preserve: u32, pub(super) group_coun
 unsafe extern "C" {
     #[link_name = "codec.type_layout::storage_facts"]
     fn b_storage_facts(code: StageSpan, host: StorageHost, phase: i64, output: StorageOutput) -> StorageFacts;
+    #[cfg(feature = "compiler")]
+    #[link_name = "bootstrap.stage_fusion::collect_tile_usage"]
+    fn b_collect_tile_usage(input: TileUsageInput, output: TileUsageOutput) -> TileUsageResult;
 }
 
 unsafe extern "C" fn storage_step(stage: *const c_void, code: StageSpan, index: usize) -> StorageStep {
@@ -281,20 +291,43 @@ unsafe extern "C" fn reserve_tile_groups(storage: *mut c_void, count: usize) -> 
     groups.as_mut_ptr().cast()
 }
 
-pub(super) fn storage_facts(
-    stage: &Stage, context: *mut c_void, read: StorageRead,
-    layout: Option<(&mut [i64], &mut Vec<MaybeUninit<TileGroup>>)>,
-) -> StorageFacts {
-    let (phase, publication_phases, group_storage) = layout.map_or(
-        (-1, std::ptr::null_mut(), std::ptr::null_mut()),
-        |(phases, groups)| (0, phases.as_mut_ptr(), std::ptr::from_mut(groups).cast()),
-    );
-    let host = StorageHost {
+fn storage_host(stage: &Stage) -> StorageHost {
+    StorageHost {
         stage: std::ptr::from_ref(stage).cast(), step: storage_step, tile: storage_tile,
         component: storage_component, result: storage_result,
+    }
+}
+
+impl StorageLayout {
+    fn new(publication_phases: *mut i64, group_storage: *mut c_void) -> Self {
+        Self { publication_phases, group_storage, reserve_groups: reserve_tile_groups }
+    }
+}
+
+#[cfg(feature = "compiler")]
+unsafe extern "C" fn reserve_tile_reads(context: *mut c_void, count: usize) -> *mut dataflow::TileUse {
+    let reads = unsafe { &mut *context.cast::<Vec<dataflow::TileUse>>() };
+    reads.reserve_exact(count);
+    reads.as_mut_ptr()
+}
+
+#[cfg(feature = "compiler")]
+pub(super) fn storage_usage(
+    stage: &Stage, layout: Option<(&mut [i64], &mut Vec<MaybeUninit<TileGroup>>)>,
+) -> (Vec<dataflow::TileUse>, StorageFacts) {
+    let (first_phase, layout) = layout.map_or_else(
+        || (-1, StorageLayout::new(std::ptr::null_mut(), std::ptr::null_mut())),
+        |(phases, groups)| (0, StorageLayout::new(phases.as_mut_ptr(), std::ptr::from_mut(groups).cast())),
+    );
+    let mut reads = Vec::new();
+    let input = TileUsageInput {
+        code: StageSpan::borrow(&stage.code), source: storage_host(stage), layout, first_phase,
     };
-    let output = StorageOutput { context, read, publication_phases, group_storage, reserve_groups: reserve_tile_groups };
-    unsafe { b_storage_facts(StageSpan::borrow(&stage.code), host, phase, output) }
+    let output = TileUsageOutput { context: std::ptr::from_mut(&mut reads).cast(), reserve: reserve_tile_reads };
+    let result = unsafe { b_collect_tile_usage(input, output) };
+    // The collector initializes exactly the prefix it returns.
+    unsafe { reads.set_len(result.count); }
+    (reads, result.storage)
 }
 
 impl Tile {
@@ -315,12 +348,19 @@ impl Stage {
     pub fn storage_words(&self) -> BTreeSet<SharedWord> {
         let mut words = BTreeSet::new();
         if !self.tiles.is_empty() {
-            unsafe extern "C" fn read(context: *mut c_void, tile: usize, offset: u32, _phase: i64) {
-                let (stage, words) = unsafe { &mut *context.cast::<(&Stage, &mut BTreeSet<SharedWord>)>() };
-                words.insert(stage.shared_word(tile, offset));
+            unsafe extern "C" fn read(context: *mut c_void, storage: u64, owner: usize, word: u32, _phase: i64) {
+                let words = unsafe { &mut *context.cast::<BTreeSet<SharedWord>>() };
+                words.insert(if storage == 0 {
+                    SharedWord::Input { binding: owner, word }
+                } else {
+                    SharedWord::Published { tile: owner, word }
+                });
             }
-            let mut context = (self, &mut words);
-            storage_facts(self, std::ptr::from_mut(&mut context).cast(), read, None);
+            let output = StorageOutput {
+                context: std::ptr::from_mut(&mut words).cast(), read,
+                layout: StorageLayout::new(std::ptr::null_mut(), std::ptr::null_mut()),
+            };
+            unsafe { b_storage_facts(StageSpan::borrow(&self.code), storage_host(self), -1, output); }
         }
         words
     }

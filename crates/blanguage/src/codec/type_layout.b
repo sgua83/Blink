@@ -451,8 +451,8 @@ address tile_group_at(address groups,usize index) on cpu {
  return unsafe_address(address_bits(groups)+u64(index)*size_of<TileGroup>());
 }
 
-void add_tile_group(inout TileGroupBuffer groups,TileGroup next,StorageOutput output) on cpu
- requires nonzero(output.reserve_groups) {
+void add_tile_group(inout TileGroupBuffer groups,TileGroup next,StorageLayout layout) on cpu
+ requires nonzero(layout.reserve_groups) {
  TileGroup current=next;
  usize kept=0u64;
  usize read=0u64;
@@ -470,17 +470,17 @@ void add_tile_group(inout TileGroupBuffer groups,TileGroup next,StorageOutput ou
  }
  if(kept==groups.capacity) {
   groups.capacity=max(8u64,groups.capacity*2u64);
-  groups.data=output.reserve_groups(output.group_storage,groups.capacity);
+  groups.data=layout.reserve_groups(layout.group_storage,groups.capacity);
  }
  unsafe_position<TileGroup>(tile_group_at(groups.data,kept))=current;
  groups.count=kept+1u64;
 }
 
-void shared_parts(usize tile,u32 byte,u32 bytes,i64 phase,StorageOutput output) on cpu
+void shared_parts(StorageTile tile,u32 byte,u32 bytes,i64 phase,StorageOutput output) on cpu
  requires nonzero(output.read) {
  u32 part=0;
  while(part<(bytes+3)/4) {
-  output.read(output.context,tile,byte+part*4,phase);
+  output.read(output.context,tile.storage,tile.owner,tile.start+byte+part*4,phase);
   part+=1;
  }
 }
@@ -490,32 +490,34 @@ u32 storage_visit(StageSpan code, StorageHost host, i64 first_phase, bool root,
     inout TileGroupBuffer groups, StorageOutput output) on cpu
     requires nonzero(host.step) requires nonzero(host.tile)
     requires nonzero(host.component) requires nonzero(host.result)
-    requires nonzero(output.read) requires nonzero(output.reserve_groups) {
+    requires nonzero(output.read) requires nonzero(output.layout.reserve_groups) {
     i64 phase = first_phase;
     u32 preserve = 0;
     usize index = 0u64;
     while (index < code.count) {
         StorageStep step = host.step(host.stage, code, index);
         if (step.kind == StorageInstruction::Read) {
-            shared_parts(step.tile, step.byte, step.bytes, phase, output);
+            StorageTile tile = host.tile(host.stage, step.tile);
+            shared_parts(tile, step.byte, step.bytes, phase, output);
         } else if (step.kind == StorageInstruction::Components) {
             StorageTile tile = host.tile(host.stage, step.tile);
             usize component = 0u64;
             while (component < tile.components.count) {
                 StoragePart field = host.component(tile.components, component);
-                shared_parts(step.tile, field.byte, field.bytes, phase, output);
+                shared_parts(tile, field.byte, field.bytes, phase, output);
                 component += 1u64;
             }
             if (phase >= i64(0)) {
                 u32 first = tile.start / 4;
                 u32 count = u32((u64(tile.bytes) + u64(tile.start % 4) + 3u64) / 4u64);
-                add_tile_group(groups, TileGroup(tile.storage, tile.owner, first, first + count), output);
+                add_tile_group(groups, TileGroup(tile.storage, tile.owner, first, first + count), output.layout);
             }
         } else if (step.kind == StorageInstruction::Collective) {
+            StorageTile tile = host.tile(host.stage, step.tile);
             usize result = 0u64;
             while (result < step.first.count) {
                 StoragePart field = host.result(host.stage, step.first, result);
-                shared_parts(step.tile, field.byte, field.bytes, root ? phase : -i64(1), output);
+                shared_parts(tile, field.byte, field.bytes, root ? phase : -i64(1), output);
                 result += 1u64;
             }
         } else if (step.kind == StorageInstruction::Block) {
@@ -526,7 +528,7 @@ u32 storage_visit(StageSpan code, StorageHost host, i64 first_phase, bool root,
         }
         if (root && phase >= i64(0)) {
             if (step.kind == StorageInstruction::Publish) {
-                address target = unsafe_address(address_bits(output.publication_phases)
+                address target = unsafe_address(address_bits(output.layout.publication_phases)
                     + u64(step.tile) * size_of<i64>());
                 unsafe_position<i64>(target) = phase;
             }
@@ -543,7 +545,7 @@ u32 storage_visit(StageSpan code, StorageHost host, i64 first_phase, bool root,
 extern "C" StorageFacts storage_facts(StageSpan code, StorageHost host, i64 phase, StorageOutput output) on cpu
     requires nonzero(host.step) requires nonzero(host.tile)
     requires nonzero(host.component) requires nonzero(host.result)
-    requires nonzero(output.read) requires nonzero(output.reserve_groups) {
+    requires nonzero(output.read) requires nonzero(output.layout.reserve_groups) {
     TileGroupBuffer groups = TileGroupBuffer(address(), 0u64, 0u64);
     u32 preserve = storage_visit(code, host, phase, true, groups, output);
     return StorageFacts(preserve, groups.count);

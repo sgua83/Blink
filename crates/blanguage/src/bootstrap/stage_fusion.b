@@ -1,6 +1,7 @@
 module bootstrap.stage_fusion;
 import bootstrap.ir_dataflow;
 import bootstrap.names;
+import bootstrap.proof_facts;
 import codec.builtin_type;
 import codec.type_layout;
 
@@ -46,6 +47,57 @@ struct TilePlan { TileBuffer rows; TileBuffer members; Span cells; Span publicat
 
 address tile_piece<T>(address data, u64 index) on cpu {
     return unsafe_address(address_bits(data) + index * size_of<T>());
+}
+
+struct TileReadNode { OrderedNode links; TileUse usage; };
+
+extern "C" void record_tile_read(address owner, u64 storage, usize binding, u32 byte, i64 phase) on cpu {
+    OrderedTree tree = unsafe_position<OrderedTree>(owner);
+    TileKey key = TileKey(storage, binding, byte & ~u32(3));
+    u32 mask = 1 << (byte % 4);
+    usize current = tree.root;
+    usize parent = 0u64;
+    i32 order = i32(0);
+    while (current != 0u64) {
+        address row = tile_piece<TileReadNode>(tree.records, current - 1u64);
+        TileKey prior = unsafe_position<TileReadNode>(row).usage.key;
+        if (tile_key_less(key, prior)) {
+            order = -i32(1);
+        } else if (tile_key_less(prior, key)) {
+            order = i32(1);
+        } else {
+            unsafe_position<TileReadNode>(row).usage.end = max(unsafe_position<TileReadNode>(row).usage.end, phase);
+            unsafe_position<TileReadNode>(row).usage.read_mask |= mask;
+            return;
+        }
+        parent = current;
+        OrderedNode links = unsafe_position<TileReadNode>(row).links;
+        current = order < i32(0) ? links.left : links.right;
+    }
+    address row = ordered_tree_prepare(owner, size_of<TileReadNode>());
+    unsafe_position<TileReadNode>(row).usage = TileUse(key, phase, mask);
+    ordered_tree_publish(owner, size_of<TileReadNode>(), parent, order);
+}
+
+extern "C" TileUsageResult collect_tile_usage(TileUsageInput input, TileUsageOutput output) on cpu
+    requires nonzero(input.source.step) requires nonzero(input.source.tile)
+    requires nonzero(input.source.component) requires nonzero(input.source.result)
+    requires nonzero(input.layout.reserve_groups) requires nonzero(output.reserve) {
+    OrderedTree tree = OrderedTree(address(), 0u64, 0u64, 0u64);
+    address owner = address_of(tree);
+    StorageFacts storage = storage_facts(input.code, input.source, input.first_phase,
+        StorageOutput(owner, c_function(record_tile_read), input.layout));
+    address words = output.reserve(output.context, tree.count);
+    usize row = ordered_tree_first(tree, size_of<TileReadNode>());
+    usize index = 0u64;
+    while (row != 0u64) {
+        unsafe_position<TileUse>(tile_piece<TileUse>(words, index)) =
+            unsafe_position<TileReadNode>(tile_piece<TileReadNode>(tree.records, row - 1u64)).usage;
+        row = ordered_tree_next(tree, size_of<TileReadNode>(), row);
+        index += 1u64;
+    }
+    fact_tree_clear(owner);
+    return TileUsageResult(storage, index);
 }
 
 void tile_push<T>(inout TileBuffer buffer, TileScratch bank, T value, TileLayoutHost host) on cpu

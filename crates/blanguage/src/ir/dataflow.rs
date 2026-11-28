@@ -619,20 +619,9 @@ pub(super) fn float_preserve(stage: &Stage, scalar: Scalar) -> bool {
     unsafe { b_float_preserve(Node::of(stage, Kind::Stage), requested, REGISTER_HOST) != 0 }
 }
 
-fn collect_storage_reads(
-    stage: &Stage, layout: Option<(&mut [i64], &mut Vec<MaybeUninit<TileGroup>>)>,
-) -> (Vec<TileUse>, tile::StorageFacts) {
-    let mut output = ReadOutput { stage, reads: BTreeMap::new() };
-    let facts = tile::storage_facts(stage, ptr::from_mut(&mut output).cast(), emit_storage_read, layout);
-    let reads = output.reads.into_iter().map(|(word, (end, read_mask))| {
-        TileUse { key: word.into(), end, read_mask }
-    }).collect();
-    (reads, facts)
-}
-
 pub(crate) fn storage_usage(stage: &Stage) -> (Vec<TileUse>, u32) {
     if stage.tiles.is_empty() { return (Vec::new(), 0); }
-    let (reads, facts) = collect_storage_reads(stage, None);
+    let (reads, facts) = tile::storage_usage(stage, None);
     (reads, facts.preserve)
 }
 
@@ -656,30 +645,12 @@ pub(super) struct LayoutFacts {
     pub(super) groups: Vec<MaybeUninit<TileGroup>>,
 }
 
-struct ReadOutput<'a> {
-    stage: &'a Stage,
-    reads: BTreeMap<SharedWord, (i64, u32)>,
-}
-
 pub(super) fn tile_layout_facts(stage: &Stage) -> LayoutFacts {
     let mut publication_phases = vec![-1i64; stage.tiles.len()];
     let mut groups = Vec::new();
-    let (reads, facts) = collect_storage_reads(
-        stage, Some((&mut publication_phases, &mut groups)),
-    );
+    let (reads, facts) = tile::storage_usage(stage, Some((&mut publication_phases, &mut groups)));
     groups.truncate(facts.group_count);
     LayoutFacts { reads, publication_phases, groups }
-}
-
-unsafe extern "C" fn emit_storage_read(context: *mut c_void, tile: usize, offset: u32, phase: i64) {
-    let output = unsafe { &mut *context.cast::<ReadOutput<'_>>() };
-    let word = output.stage.shared_word(tile, offset);
-    let byte = match word {
-        SharedWord::Input { word, .. } | SharedWord::Published { word, .. } => word,
-    };
-    let (end, mask) = output.reads.entry(word.aligned()).or_insert((-1, 0));
-    *end = (*end).max(phase);
-    *mask |= 1 << (byte % 4);
 }
 
 #[repr(C)]
