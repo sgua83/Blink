@@ -487,7 +487,7 @@ bool visit_missing_read_position(address value, address output, InitializationRe
     return true;
 }
 
-extern "C" u32 initialization_read(address positions, address known, address output,
+extern "C" u32 initialization_read(InitializationReadSpan positions, address known, address output,
     InitializationReadMode mode, Host host, InitializationReadHost read) on cpu
     requires nonzero(host.inspect) requires nonzero(host.child)
     requires nonzero(host.equal) requires nonzero(host.identity_equal)
@@ -496,13 +496,11 @@ extern "C" u32 initialization_read(address positions, address known, address out
     requires nonzero(host.contains_element) requires nonzero(host.contains_input)
     requires nonzero(host.field_coverage) requires nonzero(host.iterate)
     requires nonzero(host.next) requires nonzero(host.drop_iterator)
-    requires nonzero(host.vector_count) requires nonzero(host.vector_at)
     requires nonzero(read.input) requires nonzero(read.emit) {
     u32 missing = 0;
-    let count = host.vector_count(positions);
-    u64 slot = 0u64;
-    while (slot < count) {
-        let value = host.vector_at(positions, slot);
+    usize slot = 0u64;
+    while (slot < positions.count) {
+        let value = unsafe_address(address_bits(positions.positions) + slot * positions.stride);
         if (ready(value, known, host) == 0) {
             missing = 1;
             if (!visit_missing_read_position(value, output, mode, host, read)) {

@@ -206,6 +206,23 @@ pub(in crate::check) fn project_dataset_output(
     if result.is_null() { value } else { *unsafe { Box::from_raw(result.cast::<Position>()) } }
 }
 
+#[repr(C)]
+struct InitializationReadSpan {
+    positions: Address,
+    count: usize,
+    stride: usize,
+}
+
+impl InitializationReadSpan {
+    fn from_positions(positions: &[Position]) -> Self {
+        Self {
+            positions: positions.as_ptr().cast_mut().cast(),
+            count: positions.len(),
+            stride: size_of::<Position>(),
+        }
+    }
+}
+
 #[repr(u32)]
 enum InitializationReadMode { Complete, Borrow }
 
@@ -218,7 +235,7 @@ struct InitializationReadHost {
 unsafe extern "C" {
     #[link_name = "bootstrap.ownership_position::initialization_read"]
     fn source_initialization_read(
-        positions: Address, known: Address, output: Address, mode: InitializationReadMode,
+        positions: InitializationReadSpan, known: Address, output: Address, mode: InitializationReadMode,
         host: Host, read: InitializationReadHost,
     ) -> u32;
 }
@@ -261,7 +278,7 @@ const READ_HOST: InitializationReadHost = InitializationReadHost {
 
 pub(in crate::check) fn initialization_read_complete(read: &address::InitializationRead) -> bool {
     unsafe {
-        source_initialization_read(pointer(&read.positions), pointer(&read.initialized),
+        source_initialization_read(InitializationReadSpan::from_positions(&read.positions), pointer(&read.initialized),
             std::ptr::null_mut(), InitializationReadMode::Complete, HOST, READ_HOST) != 0
     }
 }
@@ -269,7 +286,7 @@ pub(in crate::check) fn initialization_read_complete(read: &address::Initializat
 pub(in crate::check) fn initialization_read_borrow(read: &address::InitializationRead) -> Option<view::Borrow> {
     let mut result = view::Borrow::default();
     let missing = unsafe {
-        source_initialization_read(pointer(&read.positions), pointer(&read.initialized),
+        source_initialization_read(InitializationReadSpan::from_positions(&read.positions), pointer(&read.initialized),
             std::ptr::from_mut(&mut result).cast(), InitializationReadMode::Borrow, HOST, READ_HOST) != 0
     };
     missing.then_some(result)

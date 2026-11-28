@@ -102,7 +102,8 @@ struct InitializationReadHost {
     cfn<u32,address> input;
     cfn<void,address,address> emit;
 };
-extern "C" u32 initialization_read(address positions, address known, address output,
+struct InitializationReadSpan { address positions; usize count; usize stride; };
+extern "C" u32 initialization_read(InitializationReadSpan positions, address known, address output,
     InitializationReadMode mode, Host host, InitializationReadHost read) on cpu
     requires nonzero(host.inspect) requires nonzero(host.child)
     requires nonzero(host.equal) requires nonzero(host.identity_equal)
@@ -111,7 +112,6 @@ extern "C" u32 initialization_read(address positions, address known, address out
     requires nonzero(host.contains_element) requires nonzero(host.contains_input)
     requires nonzero(host.field_coverage) requires nonzero(host.iterate)
     requires nonzero(host.next) requires nonzero(host.drop_iterator)
-    requires nonzero(host.vector_count) requires nonzero(host.vector_at)
     requires nonzero(read.input) requires nonzero(read.emit);
 
 extern "C" u32 word_ready(address value,PositionIndex selected,u32 field,address known,Host host) on cpu

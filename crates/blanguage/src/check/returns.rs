@@ -209,7 +209,7 @@ impl Builder<'_> {
             return self.defer_position_initialization(positions,"B229",span);
         }
         let read = address::InitializationRead {
-            positions,
+            positions: positions.into_iter().collect(),
             initialized: self.initialized.clone(),
             dataset_output: address::DatasetOutput::new(data),
         };

@@ -1662,17 +1662,18 @@ fn resolved_initialization_sources(
 }
 fn resolved_read(read:&address::InitializationRead,path:&bounds::Clause,function:&Function,state:&State,known:&States)->address::InitializationRead {
     let initialized=resolved_initialization(&read.initialized,path,function,state,known);
-    let positions=read.positions.iter().map(|position|{
-        let visiting=std::cell::RefCell::new(BTreeSet::new());
-        resolved_position(position,path,&|borrow|evaluate(borrow,function,state,known,true),
-            &|input,index,word|resolved_application_position(input,index,word,&initialized,path,function,state,known,&mut visiting.borrow_mut()))
-    }).collect::<Vec<_>>();
-    let (positions, initialized) = match &read.dataset_output {
-        Some(output) => (
-            positions.into_iter().map(|position| output.project(position)).collect(),
-            initialized.into_iter().map(|position| output.project(position)).collect(),
-        ),
-        None => (positions, initialized),
+    let positions = read.positions.iter().map(|position| {
+        let visiting = std::cell::RefCell::new(BTreeSet::new());
+        let position = resolved_position(position, path, &|borrow| evaluate(borrow, function, state, known, true),
+            &|input, index, word| resolved_application_position(input, index, word, &initialized, path, function, state, known, &mut visiting.borrow_mut()));
+        match &read.dataset_output {
+            Some(output) => output.project(position),
+            None => position,
+        }
+    }).collect();
+    let initialized = match &read.dataset_output {
+        Some(output) => initialized.into_iter().map(|position| output.project(position)).collect(),
+        None => initialized,
     };
     address::InitializationRead { positions, initialized, dataset_output: None }
 }
@@ -1730,7 +1731,7 @@ fn access_at_call<'a>(access:&Access,call:&Call,path:&bounds::Clause,evaluation:
 }
 
 fn output_initialization_read(borrows:&Borrow,initialized:&[address::Initialization],path:&bounds::Clause)->address::InitializationRead {
-    let mut positions=Vec::new();
+    let mut positions = address::NativeMemoryRecords::default();
     for(source,when)in borrows.sources.entries(){
         let Origin::Position(origin)=source else {continue;};
         if !bounds::Clause::both(path, &when).possible(){continue;}

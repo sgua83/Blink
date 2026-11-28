@@ -1405,7 +1405,7 @@ pub(super) enum Capture { Read, Write }
 type KnownMemoryEffect = (Arc<Origin>, bounds::Clause, Access, Option<bounds::Proof>);
 
 #[repr(C)]
-struct NativeMemoryRecords<T> {
+pub(super) struct NativeMemoryRecords<T> {
     records: *mut std::ffi::c_void,
     root: usize,
     count: usize,
@@ -1441,6 +1441,37 @@ impl<T> NativeMemoryRecords<T> {
 
     fn append(&mut self, mut source: Self) {
         unsafe { append_memory_effect_records(std::ptr::from_mut(self).cast(), std::ptr::from_mut(&mut source).cast(), std::mem::size_of::<T>()) };
+    }
+}
+
+impl<T> Extend<T> for NativeMemoryRecords<T> {
+    fn extend<I: IntoIterator<Item = T>>(&mut self, records: I) {
+        for record in records {
+            self.push(record);
+        }
+    }
+}
+
+impl<T> FromIterator<T> for NativeMemoryRecords<T> {
+    fn from_iter<I: IntoIterator<Item = T>>(records: I) -> Self {
+        let mut result = Self::default();
+        result.extend(records);
+        result
+    }
+}
+
+impl<T: Clone> Clone for NativeMemoryRecords<T> {
+    fn clone(&self) -> Self {
+        self.iter().cloned().collect()
+    }
+}
+
+impl<'a, T> IntoIterator for &'a NativeMemoryRecords<T> {
+    type Item = &'a T;
+    type IntoIter = std::slice::Iter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
     }
 }
 
@@ -2459,7 +2490,7 @@ impl DatasetOutput {
 /// Reads retain the facts at their own use, before later calls or writes.
 #[derive(Clone)]
 pub(super) struct InitializationRead {
-    pub positions: Vec<Position>,
+    pub positions: NativeMemoryRecords<Position>,
     pub initialized: BTreeSet<Position>,
     pub dataset_output: Option<DatasetOutput>,
 }
