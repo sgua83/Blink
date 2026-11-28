@@ -766,7 +766,7 @@ enum BorrowInquiry { Active, Pending, PendingInPath, Content, Unresolved, Local 
 enum BorrowReachSourceKind { Other, Unresolved, Position, Contents, Relation, Child, Task, TaskOutput }
 
 #[repr(u32)]
-enum BorrowReachRoot { Other, Resource, Dataset, Derived }
+enum BorrowReachRoot { Other, Resource, Dataset, Derived, Storage }
 
 #[repr(u32)]
 enum BorrowReachChild { Single, Captures, Initialized, Output }
@@ -774,7 +774,7 @@ enum BorrowReachChild { Single, Captures, Initialized, Output }
 #[repr(u32)]
 enum BorrowReachLeaf {
     OriginPending, OriginLocal, OriginContent, OriginUnresolved,
-    RelationPending, RelationContent, RelationUnresolved, RelationLocal,
+    RelationPending, RelationContent, RelationUnresolved, RelationLocal, RelationReference,
 }
 
 #[repr(C)]
@@ -795,18 +795,28 @@ struct BorrowReachHost {
     possible: extern "C" fn(EdgeArgument) -> u32,
     describe: unsafe extern "C" fn(ReachSource) -> BorrowReachSource,
     child: unsafe extern "C" fn(ReachSource, BorrowReachChild, usize) -> BorrowOutputShape,
-    leaf: unsafe extern "C" fn(ReachSource, BorrowReachLeaf) -> u32,
+    leaf: unsafe extern "C" fn(ReachSource, ReachSource, BorrowReachLeaf) -> u32,
 }
 
-struct BorrowReachability<'a, 'path> {
-    initial: &'a dyn Fn() -> Option<&'path bounds::Clause>,
+enum BorrowReachability<'a, 'path> {
+    Path(&'a dyn Fn() -> Option<&'path bounds::Clause>),
+    Relation {
+        graph: &'a view_contracts::relation::Graph,
+        root: std::cell::LazyCell<bounds::Clause>,
+    },
 }
+
+#[repr(u32)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum BorrowVisibility { Carried, Public, Local }
 
 unsafe extern "C" {
     #[link_name = "bootstrap.call_arguments::query_borrow_reachability"]
     fn query_borrow_reachability(shape: BorrowOutputShape, inquiry: BorrowInquiry, host: BorrowReachHost) -> u32;
     #[link_name = "bootstrap.call_arguments::query_borrow_source"]
     fn query_borrow_source(source: ReachSource, inquiry: BorrowInquiry, host: BorrowReachHost) -> u32;
+    #[link_name = "bootstrap.call_arguments::classify_borrow_source"]
+    fn classify_borrow_source(source: ReachSource, host: BorrowReachHost) -> BorrowVisibility;
 }
 
 impl BorrowReachability<'_, '_> {
@@ -828,7 +838,10 @@ impl BorrowReachability<'_, '_> {
 
     unsafe extern "C" fn initial(context: ReachSource) -> *const bounds::Clause {
         let query = unsafe { &*context.cast::<Self>() };
-        (query.initial)().map_or(std::ptr::null(), std::ptr::from_ref)
+        match query {
+            Self::Path(initial) => initial().map_or(std::ptr::null(), std::ptr::from_ref),
+            Self::Relation { root, .. } => std::ptr::from_ref(&**root),
+        }
     }
 
     extern "C" fn possible(clause: EdgeArgument) -> u32 { u32::from(clause.possible()) }
@@ -840,16 +853,16 @@ impl BorrowReachability<'_, '_> {
         };
         result.kind = match source {
             Source::Unresolved => BorrowReachSourceKind::Unresolved,
-            Source::Position(origin) => {
+            Source::Position(origin) | Source::Contents { origin, .. } => {
                 result.root = match &origin.root {
                     address::Root::Resource { .. } => BorrowReachRoot::Resource,
                     address::Root::Dataset { .. } => BorrowReachRoot::Dataset,
                     address::Root::Derived(_) => BorrowReachRoot::Derived,
+                    address::Root::External(address::Identity::Storage(_)) => BorrowReachRoot::Storage,
                     _ => BorrowReachRoot::Other,
                 };
-                BorrowReachSourceKind::Position
+                if matches!(source, Source::Position(_)) { BorrowReachSourceKind::Position } else { BorrowReachSourceKind::Contents }
             }
-            Source::Contents { .. } => BorrowReachSourceKind::Contents,
             Source::Relation(..) => BorrowReachSourceKind::Relation,
             Source::Element { .. } | Source::Projection { .. } => BorrowReachSourceKind::Child,
             Source::Task { outputs, .. } => {
@@ -868,9 +881,9 @@ impl BorrowReachability<'_, '_> {
     unsafe extern "C" fn child(source: ReachSource, part: BorrowReachChild, index: usize) -> BorrowOutputShape {
         let source = unsafe { &*source.cast::<Source>() };
         let borrow = match (source, part) {
-            (Source::Position(origin), BorrowReachChild::Single) => match &origin.root {
+            (Source::Position(origin) | Source::Contents { origin, .. }, BorrowReachChild::Single) => match &origin.root {
                 address::Root::Resource { borrow, .. } | address::Root::Dataset { borrow, .. }
-                | address::Root::Derived(borrow) => borrow,
+                | address::Root::Derived(borrow) | address::Root::External(address::Identity::Storage(borrow)) => borrow,
                 _ => unreachable!(),
             },
             (Source::Element { parent, .. } | Source::Projection { parent, .. }, BorrowReachChild::Single) => parent,
@@ -883,7 +896,7 @@ impl BorrowReachability<'_, '_> {
         borrow.into()
     }
 
-    unsafe extern "C" fn leaf(source: ReachSource, leaf: BorrowReachLeaf) -> u32 {
+    unsafe extern "C" fn leaf(context: ReachSource, source: ReachSource, leaf: BorrowReachLeaf) -> u32 {
         let source = unsafe { &*source.cast::<Source>() };
         u32::from(match source {
             Source::Position(origin) | Source::Contents { origin, .. } => match leaf {
@@ -898,6 +911,11 @@ impl BorrowReachability<'_, '_> {
                 BorrowReachLeaf::RelationContent => graph.content_inputs(*root),
                 BorrowReachLeaf::RelationUnresolved => graph.unresolved(*root),
                 BorrowReachLeaf::RelationLocal => graph.has_local(*root),
+                BorrowReachLeaf::RelationReference => {
+                    let query = unsafe { &*context.cast::<Self>() };
+                    let Self::Relation { graph: base, .. } = query else { unreachable!() };
+                    base.extension(graph)
+                }
                 _ => unreachable!(),
             },
             _ => unreachable!(),
@@ -1512,7 +1530,7 @@ impl Borrow{
         input.result
     }
     pub(super) fn content_inputs(&self) -> bool {
-        BorrowReachability { initial: &|| None }.borrow(self, BorrowInquiry::Content)
+        BorrowReachability::Path(&|| None).borrow(self, BorrowInquiry::Content)
     }
     pub fn empty(&self)->bool{self.sources.is_empty()&&self.inputs.is_empty()&&self.calls.is_empty()&&self.reads.is_empty()}
     pub fn union(&mut self, other: &Self) {
@@ -1544,15 +1562,15 @@ impl Borrow{
     }
 
     pub fn pending(&self) -> bool {
-        BorrowReachability { initial: &|| None }.borrow(self, BorrowInquiry::Pending)
+        BorrowReachability::Path(&|| None).borrow(self, BorrowInquiry::Pending)
     }
 
     pub(in crate::check) fn pending_in_path(&self, path: &bounds::Clause) -> bool {
-        BorrowReachability { initial: &|| Some(path) }.borrow(self, BorrowInquiry::PendingInPath)
+        BorrowReachability::Path(&|| Some(path)).borrow(self, BorrowInquiry::PendingInPath)
     }
 
     pub fn active(&self) -> bool {
-        BorrowReachability { initial: &|| None }.borrow(self, BorrowInquiry::Active)
+        BorrowReachability::Path(&|| None).borrow(self, BorrowInquiry::Active)
     }
 
     fn restrict_to(&mut self, condition: &bounds::Clause) {
@@ -1663,23 +1681,25 @@ impl Borrow{
     }
 
     fn unresolved_under_lazy<'a>(&self, initial: &dyn Fn() -> Option<&'a bounds::Clause>) -> bool {
-        BorrowReachability { initial }.borrow(self, BorrowInquiry::Unresolved)
+        BorrowReachability::Path(initial).borrow(self, BorrowInquiry::Unresolved)
     }
 
     pub(super) fn source_unresolved<'a>(
         source: &Source, initial: &dyn Fn() -> Option<&'a bounds::Clause>,
     ) -> bool {
-        BorrowReachability { initial }.source(source, BorrowInquiry::Unresolved)
+        BorrowReachability::Path(initial).source(source, BorrowInquiry::Unresolved)
     }
 
     pub fn has_local(&self) -> bool {
         let root = std::cell::LazyCell::new(bounds::Clause::default);
-        BorrowReachability { initial: &|| Some(&*root) }.borrow(self, BorrowInquiry::Local)
+        BorrowReachability::Path(&|| Some(&*root)).borrow(self, BorrowInquiry::Local)
     }
 
-    pub(in crate::check) fn source_has_local(source: &Source) -> bool {
-        let root = std::cell::LazyCell::new(bounds::Clause::default);
-        BorrowReachability { initial: &|| Some(&*root) }.source(source, BorrowInquiry::Local)
+    pub(in crate::check) fn source_visibility(
+        source: &Source, graph: &view_contracts::relation::Graph,
+    ) -> BorrowVisibility {
+        let scope = BorrowReachability::Relation { graph, root: std::cell::LazyCell::new(bounds::Clause::default) };
+        unsafe { classify_borrow_source(std::ptr::from_ref(source).cast(), scope.host()) }
     }
 
     pub fn view_resources(&self)->Self {

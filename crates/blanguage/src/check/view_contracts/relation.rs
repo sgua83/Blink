@@ -1,5 +1,6 @@
 use super::*;
 use bounds::RelationPath;
+use view::BorrowVisibility;
 use std::{borrow::Cow, ffi::c_void, ptr};
 
 type Borrowed = *const c_void;
@@ -2156,18 +2157,9 @@ impl Graph {
         let public = PublicRelationValues { function, exposed, guards, relation, parameters };
         self.bind_values(RelationValues::Public(&public))
     }
-    fn extension(&self,other:&Graph)->bool{other.nodes.get(..self.nodes.len())==Some(self.nodes.as_slice())&&other.frames==self.frames&&other.variables==self.variables&&other.inputs==self.inputs}
-    fn references(&self,source:&Origin)->bool{
-        let borrow=|b:&Borrow|b.sources.iter().any(|s|self.references(s));
-        match source{
-            Origin::Relation(g,_)=>self.extension(g),
-            Origin::Element{parent,..}|Origin::Projection{parent,..}=>borrow(parent),
-            Origin::Position(p)|Origin::Contents{origin:p,..}=>match &p.root{address::Root::Derived(b)|address::Root::Resource{borrow:b,..}|address::Root::Dataset{borrow:b,..}|address::Root::External(address::Identity::Storage(b))=>borrow(b),_=>false},
-            _=>false,
-        }
-    }
+    pub(in crate::check) fn extension(&self,other:&Graph)->bool{other.nodes.get(..self.nodes.len())==Some(self.nodes.as_slice())&&other.frames==self.frames&&other.variables==self.variables&&other.inputs==self.inputs}
     fn private(&self, source: &Origin) -> bool {
-        !self.references(source) && Borrow::source_has_local(source)
+        Borrow::source_visibility(source, self) == BorrowVisibility::Local
     }
     fn residual(&self, query: &Query<'_>, plan: &EvaluationPlan) -> ResidualRelation {
         let graph = RelationView { base: self, tail: &[], residual: None };
@@ -2454,7 +2446,8 @@ impl ResidualSources<'_> {
         let selection = context.cast::<Self>();
         let (graph, local) = unsafe { ((*selection).graph, (*selection).local) };
         let source = unsafe { &*source };
-        u32::from(!graph.references(source) && Borrow::source_has_local(source) == local)
+        let expected = if local { BorrowVisibility::Local } else { BorrowVisibility::Public };
+        u32::from(Borrow::source_visibility(source, graph) == expected)
     }
 
     unsafe extern "C" fn destination(context: Slot) -> Slot {

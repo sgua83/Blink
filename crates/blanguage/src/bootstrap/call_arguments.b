@@ -1184,32 +1184,43 @@ bool inspect_borrow_reach_source(
     requires nonzero(host.initial) requires nonzero(host.both) requires nonzero(host.possible)
     requires nonzero(host.describe) requires nonzero(host.child) requires nonzero(host.leaf) {
     let shape=host.describe(source);
+    if(inquiry==BorrowInquiry::RelationReference){
+        if(shape.kind==BorrowReachSourceKind::Relation){
+            return host.leaf(host.context,source,BorrowReachLeaf::RelationReference)!=0;
+        }
+        if(shape.kind==BorrowReachSourceKind::Child||
+            ((shape.kind==BorrowReachSourceKind::Position||shape.kind==BorrowReachSourceKind::Contents)&&
+             shape.root!=BorrowReachRoot::Other)){
+            return queue_borrow_reach_groups(walk,host.child(source,BorrowReachChild::Single,0u64),inquiry);
+        }
+        return false;
+    }
     if(shape.kind==BorrowReachSourceKind::Unresolved){
         return inquiry==BorrowInquiry::Unresolved&&resolve_borrow_reach_path(walk,host)!=address();
     }
     if(shape.kind==BorrowReachSourceKind::Relation){
-        if(inquiry==BorrowInquiry::Pending){return host.leaf(source,BorrowReachLeaf::RelationPending)!=0;}
-        if(inquiry==BorrowInquiry::Content){return host.leaf(source,BorrowReachLeaf::RelationContent)!=0;}
+        if(inquiry==BorrowInquiry::Pending){return host.leaf(host.context,source,BorrowReachLeaf::RelationPending)!=0;}
+        if(inquiry==BorrowInquiry::Content){return host.leaf(host.context,source,BorrowReachLeaf::RelationContent)!=0;}
         let leaf=inquiry==BorrowInquiry::Local?BorrowReachLeaf::RelationLocal:BorrowReachLeaf::RelationUnresolved;
-        return host.leaf(source,leaf)!=0&&resolve_borrow_reach_path(walk,host)!=address();
+        return host.leaf(host.context,source,leaf)!=0&&resolve_borrow_reach_path(walk,host)!=address();
     }
     if(shape.kind==BorrowReachSourceKind::Contents){
-        if(inquiry==BorrowInquiry::Pending){return host.leaf(source,BorrowReachLeaf::OriginPending)!=0;}
+        if(inquiry==BorrowInquiry::Pending){return host.leaf(host.context,source,BorrowReachLeaf::OriginPending)!=0;}
         if(inquiry==BorrowInquiry::Content){return true;}
         if(inquiry==BorrowInquiry::Unresolved){
-            return (host.leaf(source,BorrowReachLeaf::OriginLocal)!=0||
-                host.leaf(source,BorrowReachLeaf::OriginUnresolved)!=0)&&resolve_borrow_reach_path(walk,host)!=address();
+            return (host.leaf(host.context,source,BorrowReachLeaf::OriginLocal)!=0||
+                host.leaf(host.context,source,BorrowReachLeaf::OriginUnresolved)!=0)&&resolve_borrow_reach_path(walk,host)!=address();
         }
         return false;
     }
     if(shape.kind==BorrowReachSourceKind::Position){
-        if(inquiry==BorrowInquiry::Pending){return host.leaf(source,BorrowReachLeaf::OriginPending)!=0;}
-        if(inquiry==BorrowInquiry::Content){return host.leaf(source,BorrowReachLeaf::OriginContent)!=0;}
+        if(inquiry==BorrowInquiry::Pending){return host.leaf(host.context,source,BorrowReachLeaf::OriginPending)!=0;}
+        if(inquiry==BorrowInquiry::Content){return host.leaf(host.context,source,BorrowReachLeaf::OriginContent)!=0;}
         if(shape.root==BorrowReachRoot::Dataset||shape.root==BorrowReachRoot::Derived||
             (inquiry==BorrowInquiry::Unresolved&&shape.root==BorrowReachRoot::Resource)){
             return queue_borrow_reach_groups(walk,host.child(source,BorrowReachChild::Single,0u64),inquiry);
         }
-        return inquiry==BorrowInquiry::Local&&host.leaf(source,BorrowReachLeaf::OriginLocal)!=0&&
+        return inquiry==BorrowInquiry::Local&&host.leaf(host.context,source,BorrowReachLeaf::OriginLocal)!=0&&
             resolve_borrow_reach_path(walk,host)!=address();
     }
     if(shape.kind==BorrowReachSourceKind::Task){
@@ -1252,7 +1263,8 @@ bool run_borrow_reach_walk(inout BorrowReachWalk walk,BorrowReachHost host) on c
         let edge=ordered_tree_step(pending.group.tree,pending.group.stride,address_of(pending.cursor),0);
         if(edge==address()){continue;}
         push_borrow_reach_work(walk,pending);
-        if(pending.inquiry==BorrowInquiry::Pending||pending.inquiry==BorrowInquiry::Content){
+        if(pending.inquiry==BorrowInquiry::Pending||pending.inquiry==BorrowInquiry::Content||
+            pending.inquiry==BorrowInquiry::RelationReference){
             if(inspect_borrow_reach_source(walk,edge,pending.inquiry,host)){return true;}
             continue;
         }
@@ -1313,6 +1325,14 @@ extern "C" u32 query_borrow_source(address source,BorrowInquiry inquiry,BorrowRe
     let found=inspect_borrow_reach_source(walk,source,inquiry,host)||run_borrow_reach_walk(walk,host);
     release_borrow_reach_walk(walk);
     return found?1:0;
+}
+
+extern "C" BorrowVisibility classify_borrow_source(address source,BorrowReachHost host) on cpu
+    requires nonzero(host.initial) requires nonzero(host.both) requires nonzero(host.possible)
+    requires nonzero(host.describe) requires nonzero(host.child) requires nonzero(host.leaf) {
+    if(query_borrow_source(source,BorrowInquiry::RelationReference,host)!=0){return BorrowVisibility::Carried;}
+    if(query_borrow_source(source,BorrowInquiry::Local,host)!=0){return BorrowVisibility::Local;}
+    return BorrowVisibility::Public;
 }
 
 void visit_borrow_output_group(BorrowEdgeGroup group,BorrowCallPart part,usize offset,address context,
