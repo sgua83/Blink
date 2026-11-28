@@ -574,6 +574,10 @@ unsafe extern "C" fn move_edge_key<K>(input: *const std::ffi::c_void, slot: *mut
     unsafe { slot.cast::<K>().write(input.cast::<K>().read()) };
 }
 
+unsafe extern "C" fn drop_edge_key<K>(input: *mut std::ffi::c_void) {
+    unsafe { input.cast::<K>().drop_in_place() };
+}
+
 unsafe extern "C" fn clone_edge_key<K: Clone>(input: *const std::ffi::c_void, slot: *mut std::ffi::c_void) {
     unsafe { slot.cast::<K>().write((&*input.cast::<K>()).clone()) };
 }
@@ -621,12 +625,12 @@ struct ReadWritePaths {
 #[repr(C)]
 struct BorrowOutputKey {
     compare: unsafe extern "C" fn(*const std::ffi::c_void, *const std::ffi::c_void) -> i32,
-    copy: EdgeKey,
+    key: EdgeKey,
 }
 
 impl BorrowOutputKey {
-    const fn for_key<K: Ord + Clone>() -> Self {
-        Self { compare: EdgeTree::<K>::compare, copy: clone_edge_key::<K> }
+    const fn for_key<K: Ord>(key: EdgeKey) -> Self {
+        Self { compare: EdgeTree::<K>::compare, key }
     }
 }
 
@@ -642,10 +646,34 @@ struct BorrowOutputMerge {
 impl BorrowOutputMerge {
     const OPERATIONS: Self = Self {
         clauses: BorrowEdgeClauses::OPERATIONS,
-        sources: BorrowOutputKey::for_key::<Source>(),
-        inputs: BorrowOutputKey::for_key::<LoopInput>(),
-        calls: BorrowOutputKey::for_key::<view_contracts::CallResult>(),
-        reads: BorrowOutputKey::for_key::<view_contracts::ContentRead>(),
+        sources: BorrowOutputKey::for_key::<Source>(clone_edge_key::<Source>),
+        inputs: BorrowOutputKey::for_key::<LoopInput>(clone_edge_key::<LoopInput>),
+        calls: BorrowOutputKey::for_key::<view_contracts::CallResult>(clone_edge_key::<view_contracts::CallResult>),
+        reads: BorrowOutputKey::for_key::<view_contracts::ContentRead>(clone_edge_key::<view_contracts::ContentRead>),
+    };
+    const MOVE: Self = Self {
+        clauses: BorrowEdgeClauses::OPERATIONS,
+        sources: BorrowOutputKey::for_key::<Source>(move_edge_key::<Source>),
+        inputs: BorrowOutputKey::for_key::<LoopInput>(move_edge_key::<LoopInput>),
+        calls: BorrowOutputKey::for_key::<view_contracts::CallResult>(move_edge_key::<view_contracts::CallResult>),
+        reads: BorrowOutputKey::for_key::<view_contracts::ContentRead>(move_edge_key::<view_contracts::ContentRead>),
+    };
+}
+
+#[repr(C)]
+struct BorrowOutputDrop {
+    sources: unsafe extern "C" fn(*mut std::ffi::c_void),
+    inputs: unsafe extern "C" fn(*mut std::ffi::c_void),
+    calls: unsafe extern "C" fn(*mut std::ffi::c_void),
+    reads: unsafe extern "C" fn(*mut std::ffi::c_void),
+}
+
+impl BorrowOutputDrop {
+    const OPERATIONS: Self = Self {
+        sources: drop_edge_key::<Source>,
+        inputs: drop_edge_key::<LoopInput>,
+        calls: drop_edge_key::<view_contracts::CallResult>,
+        reads: drop_edge_key::<view_contracts::ContentRead>,
     };
 }
 
@@ -661,7 +689,7 @@ unsafe extern "C" {
     #[link_name = "bootstrap.call_arguments::finish_borrow_history"]
     fn finish_borrow_history(
         earlier: &mut Option<bounds::Clause>, output: BorrowOutputShape, input: BorrowOutputShape,
-        host: BorrowOutputMerge, conflict: unsafe extern "C" fn(*const std::ffi::c_void) -> u32,
+        host: BorrowOutputMerge, drop: BorrowOutputDrop,
     );
 }
 
@@ -686,14 +714,14 @@ unsafe extern "C" {
     fn merge_evaluated_borrow_edges(
         output: BorrowEdgeGroup, count: usize, context: *mut std::ffi::c_void,
         host: BorrowEdgeMerge, evaluate: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> EvaluatedBorrowEdge,
-        move_key: EdgeKey, release_key: unsafe extern "C" fn(*mut Source),
+        move_key: EdgeKey, release_key: unsafe extern "C" fn(*mut std::ffi::c_void),
     );
     #[link_name = "bootstrap.call_arguments::replay_borrow_sources"]
     fn replay_borrow_sources(
         output: BorrowEdgeGroup, source: BorrowEdgeGroup, context: *mut std::ffi::c_void,
         host: BorrowEdgeMerge,
         read: unsafe extern "C" fn(*mut std::ffi::c_void, *const Source, &bounds::Clause) -> OrderedEdgeTree,
-        release_key: unsafe extern "C" fn(*mut Source),
+        release_key: unsafe extern "C" fn(*mut std::ffi::c_void),
     );
 }
 
@@ -710,10 +738,6 @@ impl Edges<Source> {
         let selection = BorrowSourceSelection { context: std::ptr::from_mut(context).cast(), accept, destination };
         let host = BorrowEdgeMerge::new::<Source>(clone_edge_key::<Source>, std::ptr::null_mut());
         unsafe { union_selected_borrow_sources(self.into(), host, selection) };
-    }
-
-    unsafe extern "C" fn release_key(source: *mut Source) {
-        unsafe { source.drop_in_place() };
     }
 
     pub(super) fn merge_evaluated<'a, F>(&mut self, count: usize, mut evaluate: F)
@@ -734,7 +758,7 @@ impl Edges<Source> {
         unsafe {
             merge_evaluated_borrow_edges(BorrowEdgeGroup::writable(self), count, std::ptr::from_mut(&mut evaluate).cast(),
                 BorrowEdgeMerge::new::<Source>(clone_edge_key::<Source>, std::ptr::null_mut()), edge::<F>,
-                move_edge_key::<Source>, Self::release_key);
+                move_edge_key::<Source>, drop_edge_key::<Source>);
         }
     }
 
@@ -753,7 +777,7 @@ impl Edges<Source> {
         let mut output = Self::default();
         unsafe {
             replay_borrow_sources(BorrowEdgeGroup::writable(&mut output), self.into(), std::ptr::from_mut(&mut read).cast(),
-                BorrowEdgeMerge::new::<Source>(move_edge_key::<Source>, std::ptr::null_mut()), read_source::<F>, Self::release_key);
+                BorrowEdgeMerge::new::<Source>(move_edge_key::<Source>, std::ptr::null_mut()), read_source::<F>, drop_edge_key::<Source>);
         }
         output
     }
@@ -1577,10 +1601,10 @@ impl Borrow{
         unsafe { restrict_borrow_output(BorrowOutputShape::writable(self), condition, intersect_edge_clauses) };
     }
 
-    pub(super) fn finish_history(&mut self, writes: &Self, earlier: &mut Option<bounds::Clause>) {
+    pub(super) fn finish_history(&mut self, mut writes: Self, mut earlier: Option<bounds::Clause>) {
         unsafe {
-            finish_borrow_history(earlier, BorrowOutputShape::writable(self), writes.into(),
-                BorrowOutputMerge::OPERATIONS, bounds::clause_conflict)
+            finish_borrow_history(&mut earlier, BorrowOutputShape::writable(self),
+                BorrowOutputShape::writable(&mut writes), BorrowOutputMerge::MOVE, BorrowOutputDrop::OPERATIONS)
         }
     }
 

@@ -833,8 +833,8 @@ impl ContentAtRead {
         }
     }
 
-    fn with_initial(mut self, mut initial: Borrow) -> Borrow {
-        initial.finish_history(&self.writes, &mut self.earlier);
+    fn with_initial(self, mut initial: Borrow) -> Borrow {
+        initial.finish_history(self.writes, self.earlier);
         initial
     }
 }

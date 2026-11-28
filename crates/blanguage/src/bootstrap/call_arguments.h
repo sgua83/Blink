@@ -369,7 +369,7 @@ extern "C" void union_selected_borrow_sources(BorrowEdgeGroup source,BorrowEdgeM
 struct BorrowOutputShape { BorrowEdgeGroup inputs; BorrowEdgeGroup calls; BorrowEdgeGroup reads; BorrowEdgeGroup sources; };
 
 struct ReadWritePaths { address written; address unwritten; };
-struct BorrowOutputKey { cfn<i32,address,address> compare; cfn<void,address,address> copy; };
+struct BorrowOutputKey { cfn<i32,address,address> compare; cfn<void,address,address> key; };
 struct BorrowOutputMerge {
     BorrowEdgeClauses clauses;
     BorrowOutputKey sources;
@@ -383,10 +383,10 @@ extern "C" void merge_borrow_output(inout address remaining, ReadWritePaths path
     cfn<u32,address> conflict) on cpu
     requires nonzero(output.sources.stride) requires nonzero(output.inputs.stride)
     requires nonzero(output.calls.stride) requires nonzero(output.reads.stride)
-    requires nonzero(host.sources.compare) requires nonzero(host.sources.copy)
-    requires nonzero(host.inputs.compare) requires nonzero(host.inputs.copy)
-    requires nonzero(host.calls.compare) requires nonzero(host.calls.copy)
-    requires nonzero(host.reads.compare) requires nonzero(host.reads.copy)
+    requires nonzero(host.sources.compare) requires nonzero(host.sources.key)
+    requires nonzero(host.inputs.compare) requires nonzero(host.inputs.key)
+    requires nonzero(host.calls.compare) requires nonzero(host.calls.key)
+    requires nonzero(host.reads.compare) requires nonzero(host.reads.key)
     requires nonzero(host.clauses.both) requires nonzero(host.clauses.either)
     requires nonzero(host.clauses.canonical) requires nonzero(host.clauses.normalized)
     requires nonzero(conflict);
@@ -416,18 +416,24 @@ extern "C" void replay_borrow_sources(BorrowEdgeGroup output,BorrowEdgeGroup sou
 
 extern "C" void restrict_borrow_output(BorrowOutputShape output,address path,cfn<address,address,address> both) on cpu
     requires nonzero(both);
+struct BorrowOutputDrop {
+    cfn<void,address> sources;
+    cfn<void,address> inputs;
+    cfn<void,address> calls;
+    cfn<void,address> reads;
+};
 extern "C" void finish_borrow_history(inout address earlier,
-    BorrowOutputShape output, BorrowOutputShape input, BorrowOutputMerge host,
-    cfn<u32,address> conflict) on cpu
+    BorrowOutputShape output, BorrowOutputShape input, BorrowOutputMerge host, BorrowOutputDrop drop) on cpu
     requires nonzero(output.sources.stride) requires nonzero(output.inputs.stride)
     requires nonzero(output.calls.stride) requires nonzero(output.reads.stride)
-    requires nonzero(host.sources.compare) requires nonzero(host.sources.copy)
-    requires nonzero(host.inputs.compare) requires nonzero(host.inputs.copy)
-    requires nonzero(host.calls.compare) requires nonzero(host.calls.copy)
-    requires nonzero(host.reads.compare) requires nonzero(host.reads.copy)
+    requires nonzero(host.sources.compare) requires nonzero(host.sources.key)
+    requires nonzero(host.inputs.compare) requires nonzero(host.inputs.key)
+    requires nonzero(host.calls.compare) requires nonzero(host.calls.key)
+    requires nonzero(host.reads.compare) requires nonzero(host.reads.key)
     requires nonzero(host.clauses.both) requires nonzero(host.clauses.either)
     requires nonzero(host.clauses.canonical) requires nonzero(host.clauses.normalized)
-    requires nonzero(conflict);
+    requires nonzero(drop.sources) requires nonzero(drop.inputs)
+    requires nonzero(drop.calls) requires nonzero(drop.reads);
 
 enum BorrowInquiry:u32 { Active=0; Pending=1; PendingInPath=2; Content=3; Unresolved=4; Local=5; RelationReference=6; };
 enum BorrowReachSourceKind:u32 { Other=0; Unresolved=1; Position=2; Contents=3; Relation=4; Child=5; Task=6; TaskOutput=7; };
