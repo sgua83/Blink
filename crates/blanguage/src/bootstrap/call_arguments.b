@@ -828,12 +828,11 @@ address borrow_edge_condition(BorrowEdgeGroup group,address edge) on cpu {
     return unsafe_address(address_bits(edge)+group.condition);
 }
 
-u32 write_borrow_edge(BorrowEdgeGroup group,address key,address incoming,BorrowEdgeMode mode,
+u32 write_borrow_edge(BorrowEdgeGroup group,OrderedPlace place,address key,address incoming,BorrowEdgeMode mode,
     BorrowEdgeMerge host) on cpu requires nonzero(group.stride)
-    requires nonzero(host.compare) requires nonzero(host.key)
+    requires nonzero(host.key)
     requires nonzero(host.clauses.either) requires nonzero(host.clauses.canonical)
     requires nonzero(host.clauses.normalized) {
-    let place = ordered_tree_seek(group.tree,group.stride,key,host.compare);
     address value = incoming;
     if (place.entry != address()) {
         address current = borrow_edge_condition(group,place.entry);
@@ -870,7 +869,8 @@ extern "C" u32 merge_borrow_edge(BorrowEdgeGroup group,address key,address when,
     requires nonzero(host.clauses.normalized) {
     address incoming = unsafe_position<address>(when);
     clause_retain(incoming);
-    return write_borrow_edge(group,key,incoming,mode,host);
+    let place = ordered_tree_seek(group.tree,group.stride,key,host.compare);
+    return write_borrow_edge(group,place,key,incoming,mode,host);
 }
 
 extern "C" void union_borrow_edges(BorrowEdgeGroup group,BorrowEdgeGroup source,address path,BorrowEdgeMerge host) on cpu
@@ -879,6 +879,7 @@ extern "C" void union_borrow_edges(BorrowEdgeGroup group,BorrowEdgeGroup source,
     requires nonzero(host.clauses.either) requires nonzero(host.clauses.canonical)
     requires nonzero(host.clauses.normalized) {
     FactCursor cursor = ordered_tree_cursor(source.tree,source.stride);
+    u64 position = 0u64;
     while (true) {
         address edge = ordered_tree_step(source.tree,source.stride,address_of(cursor),0);
         if (edge == address()) { return; }
@@ -888,7 +889,8 @@ extern "C" void union_borrow_edges(BorrowEdgeGroup group,BorrowEdgeGroup source,
         } else {
             incoming = host.clauses.both(incoming,unsafe_position<address>(path));
         }
-        write_borrow_edge(group,edge,incoming,BorrowEdgeMode::Union,host);
+        OrderedPlace place = ordered_tree_seek_next(group.tree,group.stride,edge,position,host.compare);
+        write_borrow_edge(group,place,edge,incoming,BorrowEdgeMode::Union,host);
     }
 }
 

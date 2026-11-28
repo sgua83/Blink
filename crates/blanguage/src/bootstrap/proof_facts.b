@@ -292,13 +292,12 @@ u64 erase<const DOMAIN:u32 in {0,1,2}>(address owner,address records,u64 count,u
     return erase_ordered(TreeRows(owner,records,tree_stride<DOMAIN>()),count,erased);
 }
 
-extern "C" OrderedPlace ordered_tree_seek(address owner,u64 stride,address key,cfn<i32,address,address> compare) on cpu
-    requires nonzero(compare) {
-    OrderedTree tree = unsafe_position<OrderedTree>(owner);
-    u64 current = tree.root;
-    OrderedPlace place = OrderedPlace(address(),0u64,i32(0));
+OrderedPlace find_ordered_place(address records,u64 stride,address key,
+    u64 start,u64 parent,i32 side,cfn<i32,address,address> compare) on cpu requires nonzero(compare) {
+    OrderedPlace place = OrderedPlace(address(),parent,side);
+    u64 current = start;
     while (current != 0u64) {
-        let cell = row(tree.records,stride,current);
+        let cell = row(records,stride,current);
         let entry = offset(cell,size_of<OrderedNode>());
         place.order = compare(key,entry);
         if (place.order == 0) {
@@ -312,6 +311,52 @@ extern "C" OrderedPlace ordered_tree_seek(address owner,u64 stride,address key,c
     return place;
 }
 
+u64 tree_entry_index(OrderedTree tree,u64 stride,address entry) on cpu requires nonzero(stride) {
+    return (address_bits(entry)-address_bits(tree.records)-size_of<OrderedNode>())/stride+1u64;
+}
+
+extern "C" OrderedPlace ordered_tree_seek(address owner,u64 stride,address key,cfn<i32,address,address> compare) on cpu
+    requires nonzero(compare) {
+    OrderedTree tree = unsafe_position<OrderedTree>(owner);
+    return find_ordered_place(tree.records,stride,key,tree.root,0u64,i32(0),compare);
+}
+
+// Each incoming key is greater than the previous key, which the caller has
+// already merged. Rotations and growth leave its row index valid.
+OrderedPlace ordered_tree_seek_next(address owner,u64 stride,address key,
+    inout u64 position,cfn<i32,address,address> compare) on cpu
+    requires nonzero(stride) requires nonzero(compare) {
+    OrderedTree tree = unsafe_position<OrderedTree>(owner);
+    u64 start = tree.root;
+    u64 lower = position;
+    i32 side = i32(0);
+    if (lower != 0u64) {
+        u64 child = lower;
+        u64 above = unsafe_position<OrderedNode>(row(tree.records,stride,child)).parent;
+        while (above != 0u64) {
+            address cell = row(tree.records,stride,above);
+            OrderedNode node = unsafe_position<OrderedNode>(cell);
+            if (node.left == child) {
+                address entry = offset(cell,size_of<OrderedNode>());
+                i32 order = compare(key,entry);
+                if (order < 0) { break; }
+                if (order == 0) {
+                    position = above;
+                    return OrderedPlace(entry,node.parent,i32(0));
+                }
+                lower = above;
+            }
+            child = above;
+            above = node.parent;
+        }
+        start = unsafe_position<OrderedNode>(row(tree.records,stride,lower)).right;
+        side = i32(1);
+    }
+    OrderedPlace place = find_ordered_place(tree.records,stride,key,start,lower,side,compare);
+    position = place.entry == address() ? tree.count+1u64 : tree_entry_index(tree,stride,place.entry);
+    return place;
+}
+
 extern "C" address ordered_tree_insert_slot(address owner,u64 stride,u64 parent,i32 order) on cpu
     requires nonzero(stride) {
     let cell = ordered_tree_prepare(owner,stride);
@@ -322,7 +367,7 @@ extern "C" address ordered_tree_insert_slot(address owner,u64 stride,u64 parent,
 extern "C" void ordered_tree_erase_slot(address owner,u64 stride,address entry) on cpu
     requires nonzero(stride) {
     OrderedTree tree = unsafe_position<OrderedTree>(owner);
-    u64 index = (address_bits(entry)-address_bits(tree.records)-size_of<OrderedNode>())/stride+1u64;
+    u64 index = tree_entry_index(tree,stride,entry);
     erase_ordered(TreeRows(owner,tree.records,stride),tree.count,index);
 }
 

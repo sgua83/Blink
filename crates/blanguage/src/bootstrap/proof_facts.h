@@ -13,6 +13,9 @@ struct FactBound { address key; u32 exclusive; };
 struct OrderedPlace { address entry; u64 parent; i32 order; };
 extern "C" OrderedPlace ordered_tree_seek(address owner,u64 stride,address key,cfn<i32,address,address> compare) on cpu
     requires nonzero(compare);
+OrderedPlace ordered_tree_seek_next(address owner,u64 stride,address key,
+    inout u64 position,cfn<i32,address,address> compare) on cpu
+    requires nonzero(stride) requires nonzero(compare);
 extern "C" address ordered_tree_insert_slot(address owner,u64 stride,u64 parent,i32 order) on cpu
     requires nonzero(stride);
 extern "C" void ordered_tree_erase_slot(address owner,u64 stride,address entry) on cpu
