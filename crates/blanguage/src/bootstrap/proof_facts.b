@@ -182,15 +182,19 @@ extern "C" void fact_tree_clear(address owner) on cpu {
     unsafe_position<OrderedTree>(owner) = OrderedTree(address(),0u64,0u64,0u64);
 }
 
-extern "C" void fact_tree_copy(address original, address output) on cpu {
+void ordered_tree_copy(address original,address output,u64 stride) on cpu {
     OrderedTree tree = unsafe_position<OrderedTree>(original);
     if (tree.count != 0u64) {
-        u64 bytes = tree.count * size_of<FactCell>();
+        u64 bytes = tree.count * stride;
         address records = HeapAlloc(GetProcessHeap(),0,bytes);
         if (records == address()) { abort(); return; }
         RtlMoveMemory(records,tree.records,bytes);
         unsafe_position<OrderedTree>(output) = OrderedTree(records,tree.root,tree.count,tree.count);
     }
+}
+
+extern "C" void fact_tree_copy(address original, address output) on cpu {
+    ordered_tree_copy(original,output,size_of<FactCell>());
 }
 
 address ordered_tree_prepare(address owner,u64 stride) on cpu requires nonzero(stride) {

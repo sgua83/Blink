@@ -60,7 +60,7 @@ impl Returned {
                 value(&mut v.length, registers.map(|r| &r[1..]), bindings, aliases);
                 v.elements=std::mem::take(&mut v.elements).map(&mut |mut elements|{
                     if let Some(value)=elements.view_value_mut(){
-                        value.proof.origins.resize_with(value.regs.len(),Vec::new);
+                        value.proof.origins.resize(value.regs.len());
                         for(component,origins)in value.proof.origins.iter_mut().enumerate(){if origins.is_empty(){origins.push(ValueIdentity::ElementComponent(component));}}
                     }
                     elements.bind_outputs(None,bindings,aliases);elements

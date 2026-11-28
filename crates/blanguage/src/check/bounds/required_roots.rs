@@ -1,13 +1,12 @@
-use super::{Clause, ClauseNode, Facts, RequiredFacts};
+use super::{Clause, ClauseIdentity, Facts, RequiredFacts};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap},
-    sync::{Arc, Weak},
 };
 
 struct Root {
     // A weak owner keeps the allocation identity valid for this function.
-    _source: Weak<ClauseNode>,
+    _source: ClauseIdentity,
     environments: BTreeMap<Facts, Option<RequiredFacts>>,
 }
 
@@ -46,7 +45,7 @@ fn remember(
     RESULTS.with_borrow_mut(|active| {
         if let Some(results) = active {
             results.entry(root.key()).or_insert_with(|| Root {
-                _source: Arc::downgrade(&root.0),
+                _source: root.retain_identity(),
                 environments: BTreeMap::new(),
             }).environments.insert(environment.clone(), value());
         }

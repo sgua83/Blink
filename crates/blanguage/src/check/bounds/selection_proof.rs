@@ -62,7 +62,7 @@ unsafe extern "C" fn project(context: *mut c_void, choice: usize) {
     };
     let mut proof = state.proof.project(components, state.source.components.len());
     if let Some(registers) = state.registers {
-        proof.origins.resize_with(width, Vec::new);
+        proof.origins.resize(width);
         for (origins, register) in proof.origins.iter_mut().zip(registers) {
             let identity = ValueIdentity::Register(*register);
             origins.retain(|origin| *origin != identity);
@@ -170,7 +170,7 @@ unsafe extern "C" fn capture_component(context: *mut c_void, component: usize, r
         let (range, nonzero) = value.component_numeric_facts(component);
         (range, nonzero, value.component_origins(component), Proof::value_condition(value, component))
     } else {
-        (ScalarRanges::default(), false, Vec::new(), None)
+        (ScalarRanges::default(), false, super::OriginList::new(), None)
     };
 
     let proof = &value.proof;

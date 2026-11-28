@@ -1703,7 +1703,7 @@ impl Builder<'_> {
     WhileNeed::Inspect=>{
      let value=c.as_ref().unwrap();self.require_bool(value,condition.span())?;
      self.loop_contexts.last_mut().unwrap().control_source=view_contracts::LoopControl::capture(value,&self.env,None);
-     partition=Some(Arc::new(bounds::Condition::of(value)));condition_prefix=self.code.len();condition_env=Some(self.env.clone());condition_path=Some(self.path.clone());
+     partition=Some(bounds::Condition::of(value).shared());condition_prefix=self.code.len();condition_env=Some(self.env.clone());condition_path=Some(self.path.clone());
      facts.truth=value.constant.as_ref().map_or(0,|bits|if bits[0]==0{1}else{2});facts.condition=u32::from(value.uniform);
     },
     WhileNeed::Refine=>self.refine_bounds(partition.as_ref().unwrap(),true),
@@ -1791,7 +1791,7 @@ impl Builder<'_> {
     },
     ForNeed::Test=>{test=Some(self.binary("<",cursor.as_ref().unwrap().clone(),limit.as_ref().unwrap().clone(),span,None)?);condition=Some(std::mem::take(&mut self.code));},
     ForNeed::BodyCursor=>{body_cursor=Some(Value {proof:if initial {bounds::Proof::capture(&begin)}else{bounds::for_cursor(&begin,limit.as_ref().unwrap(),facts.seeks!=0)},..cursor.as_ref().unwrap().clone()});},
-    ForNeed::RefineStart=>{self.refine_bounds(&Arc::new(bounds::Condition::comparison(Comparison::LessEqual,original_begin,cursor.as_ref().unwrap())),true);},
+    ForNeed::RefineStart=>{self.refine_bounds(&bounds::Condition::comparison(Comparison::LessEqual,original_begin,cursor.as_ref().unwrap()).shared(),true);},
     ForNeed::Application=>{
      let data=application.as_mut().unwrap();data.data.root.proof.set_view_borrow(0,data.root.proof.view_borrow(0).joined(self.data_borrow(&data.sources)));
     },
@@ -1823,7 +1823,7 @@ impl Builder<'_> {
      iteration=Some(match self.env.get(&name) {Some(Binding::Value(value))=>ownership::ApplicationIndex::of(value),_=>ownership::ApplicationIndex::of(cursor.as_ref().unwrap())});
     },
     ForNeed::Natural=>{
-     let condition_env=self.env.clone();let condition_path=self.path.clone();let partition=Arc::new(bounds::Condition::of(test.as_ref().unwrap()));self.refine_bounds(&partition,false);natural=Some(self.loop_state(self.loop_contexts.last().unwrap().iterator.as_ref().map(|(_,cursor)|cursor.clone())));
+     let condition_env=self.env.clone();let condition_path=self.path.clone();let partition=bounds::Condition::of(test.as_ref().unwrap()).shared();self.refine_bounds(&partition,false);natural=Some(self.loop_state(self.loop_contexts.last().unwrap().iterator.as_ref().map(|(_,cursor)|cursor.clone())));
      self.env=condition_env;self.path=condition_path;self.refine_bounds(&partition,true);facts.outer=u32::from(self.control_uniform);
     },
     ForNeed::Retain=>{unsafe {self.world.call(self.retain_loop_bounds(None,body,environment.as_ref().unwrap(),&mut natural.as_mut().unwrap().env)).await}?;facts.outer=u32::from(self.control_uniform);},

@@ -383,7 +383,7 @@ impl Identity {
             Self::Storage(borrow)=>Self::Storage(borrow.substitute_values(values)),
             Self::Value(ids)=>{
                 for id in ids {if let Some(value)=values.get(id).and_then(|proof|proof.addresses.first()).cloned().flatten(){return value;}}
-                Self::Value(ids.iter().flat_map(|id|match values.get(id){Some(proof)=>proof.origins.first().cloned().unwrap_or_default(),None=>vec![*id]}).collect())
+                Self::Value(ids.iter().flat_map(|id|match values.get(id){Some(proof)=>proof.origins.first().map(|row| row.to_vec()).unwrap_or_default(),None=>vec![*id]}).collect())
             },
         }
     }
@@ -1643,7 +1643,7 @@ impl Builder<'_> {
             ExternalPositionNeed::Identity=>{identity=value.as_ref().unwrap().proof.addresses.first().cloned().flatten();facts.identity=u32::from(identity.is_some());},
             ExternalPositionNeed::KnownBits=>{let value=value.as_ref().unwrap();bits=bounds::Proof::capture(value).known_value(&value.ty);facts.constant=u32::from(bits.is_some());},
             ExternalPositionNeed::ConstantIdentity=>identity=Some(Identity::Constant(bits.take().unwrap()[0])),
-            ExternalPositionNeed::DynamicIdentity=>identity=Some(Identity::Value(value.as_ref().unwrap().component_origins(0))),
+            ExternalPositionNeed::DynamicIdentity=>identity=Some(Identity::Value(value.as_ref().unwrap().component_origins(0).to_vec())),
             ExternalPositionNeed::Reword=>value.as_mut().unwrap().ty=Ty::scalar(Scalar::U64),
             ExternalPositionNeed::Low=>low=Some(self.cast(value.as_ref().unwrap().clone(),Scalar::U32).regs[0]),
             ExternalPositionNeed::High=>{let shift=self.constant(Scalar::U64,32);let shifted=self.binary(">>",value.take().unwrap(),shift,span,None)?;high=Some(self.cast(shifted,Scalar::U32).regs[0]);},

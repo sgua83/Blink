@@ -2188,7 +2188,7 @@ impl Builder<'_> {
             let mut proof=bounds::Proof::default();
             if let Some(identity)=identity {
                 proof.origins=regs.iter().enumerate().map(|(component,reg)|
-                    vec![ValueIdentity::Register(*reg),ValueIdentity::TaskCompletion(identity,component)]).collect();
+                    bounds::origin_store::OriginList::from([ValueIdentity::Register(*reg),ValueIdentity::TaskCompletion(identity,component)])).collect();
             }
             for component in view_contracts::components(&result){
                 let source=identity.zip(origins.get(&component)).map(|(input,(slot,_))|
@@ -3043,7 +3043,7 @@ impl Builder<'_> {
                     let sources = length.component_origins(0).into_iter().filter(|id| !matches!(id,
                         ValueIdentity::ElementComponent(_) | ValueIdentity::ElementParent(..)
                             | ValueIdentity::ElementIndex(_) | ValueIdentity::DatasetContent(..))).collect::<Vec<_>>();
-                    let strict = Proof::below_length((&origins, &domains), (length.proof.origins.first().map(Vec::as_slice).unwrap_or_default(), &length.proof.domains(0)), true)
+                    let strict = Proof::below_length((&origins, &domains), (length.proof.origins.first().map(|row| row.as_slice()).unwrap_or_default(), &length.proof.domains(0)), true)
                         || domains.contains(&IndexDomain::ApplicationData(data.root.identity()))
                             && length.regs == data.length.regs;
                     let same = sources.iter().any(|source| origins.contains(source));
@@ -3889,7 +3889,7 @@ impl Builder<'_> {
                 if scalar == Scalar::U32 {
                     for (target, (_, data)) in captured.iter().enumerate() {
                         let length = std::iter::once_with(|| (
-                            Cow::Owned(data.length.component_origins(0)),
+                            Cow::Owned(data.length.component_origins(0).to_vec()),
                             data.length.proof.domains(0),
                         ));
                         if self.index_known(&model, component, IndexDomain::ApplicationData(data.root.identity()),
@@ -4430,7 +4430,7 @@ impl Builder<'_> {
         if address_changed{return Ok(proof);}
         let loads=ApplicationLoads(self);let locations=unsafe { self.world.call(loads.resource_storage(input,&source.resource)).await }?;
         let scopes=self.element_resource_scopes(&target.resource,&source.resource,(path,&self.env));
-        proof.origins.resize_with(ty.components.len(),Vec::new);
+        proof.origins.resize(ty.components.len());
         for(output,choices)in parts.iter().enumerate(){
             let mut merged=None::<bounds::Proof>;
             for &component in choices {
@@ -4743,7 +4743,7 @@ impl Builder<'_> {
         let original=model.clone();native_function::rebind_model(&mut model,components);
         native_function::translate_returned(&mut model,&original,&bindings,true);
         if let Some(value)=model.view_value_mut(){
-            value.proof.origins.resize_with(value.regs.len(),Vec::new);
+            value.proof.origins.resize(value.regs.len());
             for(component,origins)in value.proof.origins.iter_mut().enumerate(){
                 let id=ValueIdentity::ElementComponent(value.regs[component]);
                 if !origins.contains(&id){origins.push(id);}
@@ -4997,7 +4997,7 @@ impl Builder<'_> {
                     proof.join_condition(&previous.project(&components,old.regs.len()),components.len(),selected.as_ref());
                     updated.proof.assign(&components,old.regs.len(),proof);
                 }
-                updated.proof.origins.resize_with(updated.regs.len(),Vec::new);
+                updated.proof.origins.resize(updated.regs.len());
                 for(component,origins)in updated.proof.origins.iter_mut().enumerate(){
                     let identity=ValueIdentity::ElementComponent(updated.regs[component]);
                     if !origins.contains(&identity){origins.push(identity);}

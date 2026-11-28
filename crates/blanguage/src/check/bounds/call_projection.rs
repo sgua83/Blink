@@ -76,7 +76,7 @@ unsafe extern "C" fn boolean(value: Borrowed) -> u32 {
 unsafe extern "C" fn case(value: Borrowed, truth: u32) -> Case {
     unsafe { optional_proof(value) }.and_then(|proof| proof.component_condition(0)).map(|value| {
         let value = &value.cases[truth as usize];
-        Case { original: ptr::from_ref(value).cast(), empty: u32::from(matches!(&**value.0, ClauseNode::Facts(facts) if facts.is_empty())) }
+        Case { original: ptr::from_ref(value).cast(), empty: u32::from(matches!(value.view(), ClauseNode::Facts(facts) if facts.is_empty())) }
     }).unwrap_or(Case { original: ptr::null(), empty: 1 })
 }
 unsafe extern "C" fn include<P>(slot: Slot, value: Borrowed) {
@@ -241,7 +241,7 @@ unsafe extern "C" fn proof_begin<P>(slot: Slot, component: usize, origins: u32, 
     state.origins = state.source.origins.get(source).map(|origins| origins.iter()).unwrap_or_default();
     state.domains = state.source.domains.get(source).map(|domains| domains.iter()).unwrap_or_default();
     if origins != 0 {
-        state.output.origins.push(Vec::new());
+        state.output.origins.push(super::OriginList::new());
         state.output.ranges.resize_with(state.output.ranges.len().max(component + 1), ScalarRanges::default);
         state.output.nonzero.resize(state.output.nonzero.len().max(component + 1), false);
     }
@@ -396,7 +396,7 @@ pub(super) fn project_proof<P: CallBindings>(
         Box::new(Condition { cases: [rewritten.next().unwrap(), rewritten.next().unwrap()] })
     })).collect();
     let output = Proof {
-        origins: Vec::with_capacity(widths.origins),
+        origins: super::OriginRows::new(),
         domains: Vec::with_capacity(widths.origins.max(widths.domains)),
         conditions,
         ranges: components.map_or_else(|| proof.ranges.clone(), |selected| {

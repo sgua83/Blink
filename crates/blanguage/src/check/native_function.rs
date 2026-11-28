@@ -1818,7 +1818,7 @@ fn publish_views(module: &mut Module, outputs: ViewOutputs) {
                 Returned::Dataset(value)=>if component==0{(&mut value.root,0)}else{(&mut value.length,0)},
                 Returned::Unit=>unreachable!(),
             };
-            value.proof.origins.resize_with(value.regs.len(),Vec::new);
+            value.proof.origins.resize(value.regs.len());
             let origins=&mut value.proof.origins[component];let id=ValueIdentity::Register(input);
             if !origins.contains(&id){origins.push(id);}
         }}

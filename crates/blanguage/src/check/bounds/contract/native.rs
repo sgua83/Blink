@@ -1009,7 +1009,7 @@ unsafe extern "C" fn emit_both(s: Slot, index: usize) {
     let c = unsafe { frame::<Emit>(s) };
     let child = unsafe { &*c.normal }.emitted[&index].clone();
     let guard = unsafe { c.guard.read() };
-    unsafe { c.guard.write(Clause::node(ClauseNode::Both(guard, child))) };
+    unsafe { c.guard.write(Clause::both_node(guard, child)) };
 }
 unsafe extern "C" fn emit_first(s: Slot) {
     let c = unsafe { frame::<Emit>(s) };
@@ -1020,7 +1020,7 @@ unsafe extern "C" fn emit_either(s: Slot) {
     let (previous, term) = unsafe { (c.result.read(), c.guard.read()) };
     unsafe {
         c.result
-            .write(Clause::node(ClauseNode::Either(previous, term)))
+            .write(Clause::either_node(previous, term))
     };
 }
 unsafe extern "C" fn emit_remember(s: Slot, index: usize, found: u32) {

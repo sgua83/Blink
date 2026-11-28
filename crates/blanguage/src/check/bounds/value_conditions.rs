@@ -126,7 +126,7 @@ pub(super) fn component(value: &Value, component: usize) -> Condition {
                 .iter()
                 .enumerate()
                 .fold(0, |mask, (truth, case)| {
-                    mask | if matches!(&**case.0, ClauseNode::Impossible) {
+                    mask | if matches!(case.view(), ClauseNode::Impossible) {
                         0
                     } else {
                         1 << truth

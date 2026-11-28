@@ -151,7 +151,7 @@ unsafe fn write_iter<'a, T: Native + 'a, I: Iterator<Item = &'a T>>(
         write_sequence(count, slot(&mut iterator), output, next::<T, I>, write_value::<T>, append)
     }
 }
-unsafe fn write_slice<T: Native>(values: &[T], output: Slot) {
+pub(crate) unsafe fn write_slice<T: Native>(values: &[T], output: Slot) {
     unsafe { write_iter(values.iter(), values.len(), output) }
 }
 pub(crate) unsafe extern "C" fn write_slice_pair_value<T: Native>(value: Address, output: Slot) {

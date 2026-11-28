@@ -2,7 +2,7 @@
 //! its physical containers and borrows immutable Clause/Fact fields until return.
 use super::facts;
 use super::{
-    CallBindings, Clause, ClauseNode, ClausePostorder, Condition, EncodedClause, Fact, Facts, IndexDomain, OutputBindings, Proof, Value, ValueIdentity,
+    CallBindings, Clause, ClauseNode, ClausePostorder, Condition, SharedCondition, EncodedClause, Fact, Facts, IndexDomain, OutputBindings, Proof, Value, ValueIdentity,
     TraversalStack, internal_conflicts, map_domain, output_identity,
 };
 use std::{
@@ -290,7 +290,7 @@ unsafe extern "C" fn allocate_parents(slot: Slot, count: usize) -> *mut usize {
 
 pub(super) fn source_node(clause: &Clause) -> SourceNode {
     let mut out = SourceNode::default();
-    match &**clause.0 {
+    match clause.view() {
         ClauseNode::Impossible => {}
         ClauseNode::Facts(facts) => {
             out.kind = 1;
@@ -312,7 +312,7 @@ pub(super) fn source_node(clause: &Clause) -> SourceNode {
             out.left = std::ptr::from_ref(parent).cast();
             out.right = std::ptr::from_ref(&condition.cases[1]).cast();
             out.no = std::ptr::from_ref(&condition.cases[0]).cast();
-            out.truth = u32::from(*truth);
+            out.truth = u32::from(truth);
             out.condition = std::ptr::from_ref(condition).cast();
         }
     }
@@ -327,7 +327,7 @@ struct OutputRename<'a, 'out> {
     output_index: usize,
     pending: Vec<(&'a Clause, bool)>,
     clauses: BTreeMap<usize, Clause>,
-    conditions: BTreeMap<usize, Arc<Condition>>,
+    conditions: BTreeMap<usize, SharedCondition>,
     facts: facts::Iter<'a>,
     renamed: Facts,
 }
@@ -393,7 +393,7 @@ unsafe extern "C" fn output_status(slot: Slot, source: Borrowed) -> OutputStatus
     let source = unsafe { source_clause(source) };
     match ctx.clauses.get(&source.key()) {
         None => OutputStatus::Pending,
-        Some(result) if Arc::ptr_eq(&source.0, &result.0) => OutputStatus::Original,
+        Some(result) if source.same_node(result) => OutputStatus::Original,
         Some(_) => OutputStatus::Replaced,
     }
 }
@@ -433,12 +433,12 @@ unsafe extern "C" fn output_build(slot: Slot, source: Borrowed, node: SourceNode
         }
         OutputBuild::Branch | OutputBuild::MappedBranch => {
             let parent = &ctx.clauses[&unsafe { source_clause(node.left) }.key()];
-            let original = unsafe { &*node.condition.cast::<Arc<Condition>>() };
+            let original = unsafe { &*node.condition.cast::<SharedCondition>() };
             let condition = if build == OutputBuild::MappedBranch {
-                ctx.conditions.entry(Arc::as_ptr(original) as usize).or_insert_with(|| {
-                    Arc::new(Condition {
+                ctx.conditions.entry(original.key()).or_insert_with(|| {
+                    Condition {
                         cases: original.cases.each_ref().map(|case| ctx.clauses[&case.key()].clone()),
-                    })
+                    }.shared()
                 })
             } else {
                 original
@@ -552,8 +552,8 @@ unsafe extern "C" fn bind_output_view(slot: Slot, component: usize) {
 
 unsafe extern "C" fn bind_output_origins(slot: Slot, component: usize) {
     let ctx = unsafe { &mut *slot.cast::<ProofOutput<'_>>() };
-    let source = ctx.source.origins.get(component).map(Vec::as_slice).unwrap_or_default();
-    let mut origins: Vec<_> = source.iter().map(|&id| output_identity(id, ctx.bindings)).collect();
+    let source = ctx.source.origins.get(component).map(|row| row.as_slice()).unwrap_or_default();
+    let mut origins: super::OriginList = source.iter().map(|&id| output_identity(id, ctx.bindings)).collect();
     if let Some(value) = ctx.capture {
         if origins.is_empty() {
             origins.push(output_identity(ValueIdentity::Register(value.regs[component]), ctx.bindings));
@@ -621,7 +621,7 @@ pub(super) fn bind_output_proof(source: &Proof, capture: Option<&Value>, binding
         nonzero,
         addresses: Vec::with_capacity(shape.addresses),
         views: Vec::with_capacity(shape.views),
-        origins: Vec::with_capacity(shape.origins),
+        origins: super::OriginRows::new(),
         domains: Vec::with_capacity(shape.domains),
         conditions: Vec::with_capacity(capture.map_or(source.conditions.len(), |value| value.regs.len())),
     };

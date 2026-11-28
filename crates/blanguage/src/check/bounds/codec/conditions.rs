@@ -132,7 +132,7 @@ unsafe extern "C" fn next(context: Slot, graph: *const c_void) -> ClauseFields {
         return ClauseFields::default();
     };
     let mut result = ClauseFields { present: 1, key: clause.key(), ..Default::default() };
-    match &**clause.0 {
+    match clause.view() {
         ClauseNode::Impossible => result.kind = ClauseKind::Impossible,
         ClauseNode::Facts(facts) => {
             result.kind = ClauseKind::Facts;
@@ -151,7 +151,7 @@ unsafe extern "C" fn next(context: Slot, graph: *const c_void) -> ClauseFields {
         ClauseNode::Branch(parent, condition, truth) => {
             result.kind = ClauseKind::Branch;
             result.first = parent.key();
-            result.second = condition.cases[usize::from(*truth)].key();
+            result.second = condition.cases[usize::from(truth)].key();
         }
     }
     result
@@ -337,10 +337,10 @@ pub(in crate::check::bounds) unsafe fn read_borrowed(context:crate::codec::contr
                 EncodedClause::Impossible => Clause::impossible(),
                 EncodedClause::Facts(facts) => Clause::facts(facts),
                 EncodedClause::Both(a, b) => {
-                    Clause::node(ClauseNode::Both(node(&nodes, a)?, node(&nodes, b)?))
+                    Clause::both_node(node(&nodes, a)?, node(&nodes, b)?)
                 }
                 EncodedClause::Either(a, b) => {
-                    Clause::node(ClauseNode::Either(node(&nodes, a)?, node(&nodes, b)?))
+                    Clause::either_node(node(&nodes, a)?, node(&nodes, b)?)
                 }
             });
         }

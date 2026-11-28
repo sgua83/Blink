@@ -26,7 +26,7 @@ unsafe extern "C" fn inspect(slot: Slot, index: usize) -> condition_graph::Sourc
 }
 unsafe extern "C" fn begin(slot: Slot, index: usize) {
     let context = unsafe { context(slot) };
-    context.leaf = match &**context.nodes[index].0 {
+    context.leaf = match context.nodes[index].view() {
         ClauseNode::Facts(facts) => Some(facts),
         _ => None,
     };

@@ -1,7 +1,7 @@
 //! B chooses the complete Clause composition. Rust owns the original typed
 //! output and necessary intermediate slots; borrowed inputs remain pinned.
-use super::{Clause, ClauseNode, Condition, Domains, Fact, Facts, IndexDomain, Proof, Scalar, Ty, ValueIdentity, condition_graph, contradictory, fact_fields};
-use std::{ffi::c_void, mem::MaybeUninit, ptr, sync::Arc};
+use super::{Clause, Condition, SharedCondition, Domains, Fact, Facts, IndexDomain, Proof, Scalar, Ty, ValueIdentity, condition_graph, contradictory, fact_fields};
+use std::{ffi::c_void, mem::MaybeUninit, ptr};
 type Slot = *mut c_void;
 type Borrowed = *const c_void;
 fn borrowed<T>(value: &T) -> Borrowed {
@@ -11,14 +11,11 @@ unsafe extern "C" fn inspect(source: Borrowed) -> condition_graph::SourceNode {
     condition_graph::source_node(unsafe { &*source.cast::<Clause>() })
 }
 unsafe extern "C" fn same(left: Borrowed, right: Borrowed) -> u32 {
-    u32::from(unsafe { Arc::ptr_eq(&(*left.cast::<Clause>()).0, &(*right.cast::<Clause>()).0) })
+    u32::from(unsafe { (*left.cast::<Clause>()).same_node(&*right.cast::<Clause>()) })
 }
 unsafe extern "C" fn same_condition(left: Borrowed, right: Borrowed) -> u32 {
     u32::from(unsafe {
-        Arc::ptr_eq(
-            &*left.cast::<Arc<Condition>>(),
-            &*right.cast::<Arc<Condition>>(),
-        )
+        (&*left.cast::<SharedCondition>()).same_node(&*right.cast::<SharedCondition>())
     })
 }
 unsafe extern "C" fn subset(left: Borrowed, right: Borrowed) -> u32 {
@@ -35,26 +32,26 @@ unsafe extern "C" fn impossible(output: Slot) {
     unsafe { output.cast::<Clause>().write(Clause::impossible()) };
 }
 unsafe extern "C" fn make_both(output: Slot, left: Borrowed, right: Borrowed) {
-    let value = Clause::node(ClauseNode::Both(
+    let value = Clause::both_node(
         unsafe { (&*left.cast::<Clause>()).clone() },
         unsafe { (&*right.cast::<Clause>()).clone() },
-    ));
+    );
     unsafe { output.cast::<Clause>().write(value) };
 }
 unsafe extern "C" fn make_either(output: Slot, left: Borrowed, right: Borrowed) {
-    let value = Clause::node(ClauseNode::Either(
+    let value = Clause::either_node(
         unsafe { (&*left.cast::<Clause>()).clone() },
         unsafe { (&*right.cast::<Clause>()).clone() },
-    ));
+    );
     unsafe { output.cast::<Clause>().write(value) };
 }
 unsafe extern "C" fn conflict(source: Borrowed) -> u32 {
     u32::from(contradictory(unsafe { &*source.cast::<Facts>() }))
 }
 unsafe extern "C" fn make_facts(output: Slot, source: Slot) {
-    let value = Clause::node(ClauseNode::Facts(std::mem::take(unsafe {
+    let value = Clause::raw_facts(std::mem::take(unsafe {
         &mut *source.cast::<Facts>()
-    })));
+    }));
     unsafe { output.cast::<Clause>().write(value) };
 }
 #[repr(C)]
@@ -125,14 +122,14 @@ fn either_host() -> EitherHost {
     }
 }
 unsafe extern "C" fn case(condition: Borrowed, truth: u32) -> Borrowed {
-    borrowed(&unsafe { &*condition.cast::<Arc<Condition>>() }.cases[truth as usize])
+    borrowed(&unsafe { &*condition.cast::<SharedCondition>() }.cases[truth as usize])
 }
 unsafe extern "C" fn make_branch(output: Slot, parent: Borrowed, condition: Borrowed, truth: u32) {
-    let value = Clause::node(ClauseNode::Branch(
+    let value = Clause::branch_node(
         unsafe { (&*parent.cast::<Clause>()).clone() },
-        unsafe { (&*condition.cast::<Arc<Condition>>()).clone() },
+        unsafe { (&*condition.cast::<SharedCondition>()).clone() },
         truth != 0,
-    ));
+    );
     unsafe { output.cast::<Clause>().write(value) };
 }
 #[repr(C)]
@@ -187,7 +184,7 @@ pub(super) fn either(left: &Clause, right: &Clause) -> Clause {
         output.assume_init()
     }
 }
-pub(super) fn branch(parent: &Clause, condition: &Arc<Condition>, truth: bool) -> Clause {
+pub(super) fn branch(parent: &Clause, condition: &SharedCondition, truth: bool) -> Clause {
     let mut output = MaybeUninit::<Clause>::uninit();
     unsafe {
         b_branch(
@@ -225,7 +222,7 @@ struct PathHost {
 
 struct PathBinding<'a> {
     scalars: &'a [(Scalar, u32)],
-    origins: &'a [Vec<ValueIdentity>],
+    origins: &'a [super::OriginList],
     conditions: &'a mut [Option<Box<Condition>>],
     path: &'a Clause,
 }
@@ -286,7 +283,7 @@ pub(super) fn bind_proof_path(proof: &mut Proof, ty: &Ty, path: &Clause) {
 }
 
 fn bind_path_conditions(
-    origins: &[Vec<ValueIdentity>], conditions: &mut Vec<Option<Box<Condition>>>,
+    origins: &[super::OriginList], conditions: &mut Vec<Option<Box<Condition>>>,
     ty: &Ty, path: &Clause,
 ) {
     conditions.resize_with(conditions.len().max(ty.components.len()), || None);
@@ -344,7 +341,7 @@ impl<'a> ConditionOperand<'a> {
 struct ConditionJoin<'a> {
     operands: [ConditionOperand<'a>; 2],
     branch: Option<&'a Condition>,
-    shared: Option<Arc<Condition>>,
+    shared: Option<SharedCondition>,
     result: Vec<Option<Box<Condition>>>,
 }
 
@@ -404,7 +401,7 @@ unsafe extern "C" fn selected_joined_condition(context: Slot, component: usize) 
     let left = left.take_condition(component);
     let right = right.take_condition(component);
     let branch = state.branch.unwrap();
-    let shared = state.shared.get_or_insert_with(|| Arc::new(branch.clone()));
+    let shared = state.shared.get_or_insert_with(|| branch.clone().shared());
     state.result.push(Some(Box::new(Condition::branch_on(shared, left, right))));
 }
 
@@ -518,14 +515,14 @@ unsafe extern "C" fn joined_domains(context: Slot, component: usize) -> NumericJ
 
 unsafe extern "C" fn store_joined_numeric(context: Slot, component: usize, nonzero: u32) {
     let state = unsafe { &mut *context.cast::<NumericJoin<'_>>() };
-    let other = state.right.origins.get(component).map(Vec::as_slice).unwrap_or_default();
+    let other = state.right.origins.get(component).map(super::OriginList::as_slice).unwrap_or_default();
     state.left.origins[component].retain(|identity| other.contains(identity));
     state.left.ranges[component] = state.left.ranges[component].union(&state.right.range_set(component));
     state.left.nonzero[component] = nonzero != 0;
 }
 
 pub(super) fn join_numeric(left: &mut Proof, right: &Proof, width: usize) {
-    left.origins.resize_with(width, Vec::new);
+    left.origins.resize(width);
     left.domains.resize_with(width, Domains::new);
     left.ranges.resize_with(width, super::ScalarRanges::default);
     left.nonzero.resize(width, false);

@@ -64,7 +64,7 @@ unsafe extern "C" fn impossible(slot: Slot, source: Borrowed) {
         .insert(unsafe { clause(source) }.key(), Clause::impossible());
 }
 unsafe extern "C" fn begin_facts(slot: Slot, source: Borrowed) {
-    if let ClauseNode::Facts(facts) = &**unsafe { clause(source) }.0 {
+    if let ClauseNode::Facts(facts) = unsafe { clause(source) }.view() {
         unsafe { context(slot) }.facts = facts.iter();
     }
 }

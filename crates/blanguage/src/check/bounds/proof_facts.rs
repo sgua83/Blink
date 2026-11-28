@@ -62,7 +62,7 @@ unsafe extern "C" fn boolean_cases(slot:Slot)->u32 {
     };
     cases.map_or(0, |cases| {
         cases.iter().enumerate().fold(0, |mask, (truth, case)| {
-            mask | if matches!(&**case.0, ClauseNode::Impossible) { 1 << truth } else { 0 }
+            mask | if matches!(case.view(), ClauseNode::Impossible) { 1 << truth } else { 0 }
         })
     })
 }
@@ -92,7 +92,7 @@ fn fields(proof:&Proof,value:Option<&Value>,component:usize,scalar:&Scalar,prima
     let constant=value.and_then(|v|v.constant.as_ref()).map(|v|v[component]);
     Input{scalar:unsafe{fact_fields::scalar(scalar_ref)},scalar_ref,
         primary:primary.map(|id|ptr::from_ref(id).cast()).unwrap_or(ptr::null()),
-        origins:proof.origins.get(component).map_or(0,Vec::len),ranges:proof.ranges.get(component).map_or(1,|r|r.0.len()),
+        origins:proof.origins.get(component).map_or(0,|row|row.len()),ranges:proof.ranges.get(component).map_or(1,|r|r.0.len()),
         mode,nonzero:u32::from(proof.nonzero.get(component)==Some(&true)),constant:u32::from(constant.is_some()),bits:constant.unwrap_or(0),numeric_only:u32::from(numeric_only)}
 }
 fn append(facts:&mut Facts,proof:&Proof,value:Option<&Value>,component:usize,scalar:&Scalar,primary:Option<&ValueIdentity>,mode:u32,numeric_only:bool) {

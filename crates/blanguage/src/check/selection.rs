@@ -60,7 +60,7 @@ impl Builder<'_> {
             let step=unsafe {selection_step(cursor,facts)};cursor=step.cursor;
             match step.need {
                 SelectionNeed::Prepare=>{
-                    self.remember_loop_control(&c);partition=Some(Arc::new(bounds::Condition::of(&c)));
+                    self.remember_loop_control(&c);partition=Some(bounds::Condition::of(&c).shared());
                     let prefix=self.code.len();let outer_regions=std::mem::take(&mut self.memory_regions);let environment=self.env.clone();
                     let original=environment.keys().cloned().collect::<BTreeSet<_>>();let path=self.path.clone();let initialized=self.application_initialization_state();
                     let effects=(self.reads.clone(),self.writes.clone(),self.cross_access.clone());
@@ -176,7 +176,7 @@ struct BranchExit {code:Vec<Inst>,initialized:BTreeSet<Position>,environment:BTr
 impl Builder<'_> {
     pub(super) async fn conditional_blocks(&mut self,c:Value,
         yes_body:impl std::ops::AsyncFnOnce(&mut Self)->Result<()>,no_body:impl std::ops::AsyncFnOnce(&mut Self)->Result<()>,span:Span)->Result<()> {
-        let partition=Arc::new(bounds::Condition::of(&c));
+        let partition=bounds::Condition::of(&c).shared();
         let mut facts=BranchFacts {truth:match partition.boolean_constant(){None=>0,Some(false)=>1,Some(true)=>2},
             outer_control:u32::from(self.control_uniform),condition_uniform:u32::from(c.uniform),yes_live:0,no_live:0};
         let mut cursor=BranchCursor {phase:0};let mut yes_body=Some(yes_body);let mut no_body=Some(no_body);
@@ -240,7 +240,7 @@ unsafe extern "C" {
  #[link_name="bootstrap.function_body::selection_result"] fn selection_result(input:SelectionResultInput,host:SelectionHost<'_,'_>);
 }
 struct SelectionValues<'a,'w> {
- builder:&'a mut Builder<'w>,condition:Value,partition:Arc<bounds::Condition>,
+ builder:&'a mut Builder<'w>,condition:Value,partition:bounds::SharedCondition,
  yes:Vec<Inst>,no:Vec<Inst>,yes_result:Option<returns::Returned>,no_result:Option<returns::Returned>,
  a:Option<Value>,b:Option<Value>,slots:Vec<usize>,regs:Vec<Reg>,selected:Option<bounds::Clause>,proof:Option<bounds::Proof>,output:Option<returns::Returned>,
 }

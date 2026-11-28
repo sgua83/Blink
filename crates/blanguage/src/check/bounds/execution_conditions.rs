@@ -1,6 +1,6 @@
 //! B owns execution-condition traversal and formulas; native storage owns cases.
 use super::{Clause, Condition, condition_graph::SourceNode};
-use std::{collections::BTreeMap, ffi::c_void, ptr, sync::Arc};
+use std::{collections::BTreeMap, ffi::c_void, ptr};
 
 type Borrowed = *const c_void;
 type Slot = *mut c_void;
@@ -57,7 +57,7 @@ unsafe extern "C" fn guard(slot: Slot, source: Borrowed) {
 }
 unsafe fn case<'a>(context: &'a Context<'_>, input: &Case) -> &'a Clause {
     let condition = if input.original != 0 {
-        unsafe { &*input.source.cast::<Arc<Condition>>() }.as_ref()
+        &**unsafe { &*input.source.cast::<super::SharedCondition>() }
     } else {
         &context.values[&unsafe { clause(input.source) }.key()]
     };

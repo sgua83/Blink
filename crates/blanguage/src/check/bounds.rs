@@ -3,6 +3,8 @@ mod condition_graph;
 mod selection_proof;
 mod cross_facts;
 mod fact_fields;
+pub(super) mod origin_store;
+use origin_store::{OriginList, OriginRows};
 mod negation;
 mod internal_conflicts;
 mod common_facts;
@@ -396,7 +398,7 @@ impl<'a> CallInput<'a> {
 
     fn origins(&self) -> &[ValueIdentity] {
         match self {
-            Self::Proof(proof) => proof.origins.first().map(Vec::as_slice).unwrap_or_default(),
+            Self::Proof(proof) => proof.origins.first().map(OriginList::as_slice).unwrap_or_default(),
             Self::Original(id) => std::slice::from_ref(id),
         }
     }
@@ -560,7 +562,7 @@ impl KnownBits {
 #[derive(Clone, Default)]
 pub(crate) struct Proof {
     // 首项是实际来源，其余是当前路径已经证明相等的快照。
-    pub(super) origins: Vec<Vec<ValueIdentity>>,
+    pub(super) origins: OriginRows,
     conditions: Vec<Option<Box<Condition>>>,
     // 标量按数值次序编码；整数符号偏置和可逆浮点有序位复用同一区间集合。
     ranges: Vec<ScalarRanges>,
@@ -689,7 +691,7 @@ impl Proof {
         range_sets::covers_element(source, scalar, excluded, known_bits, intervals, required_bits)
     }
     pub(super) fn assign_elements(&mut self, components: &[usize], width: usize, fresh: &Self) {
-        self.origins.resize_with(width, Vec::new);
+        self.origins.resize(width);
         self.ranges.resize_with(width, ScalarRanges::default);
         self.domains.resize_with(width, Domains::new);
         self.conditions.resize_with(width, || None);
@@ -720,7 +722,7 @@ impl Proof {
         }
     }
     pub(super) fn assume_same_length(&mut self, other: &Self) {
-        self.origins.resize_with(self.origins.len().max(1), Vec::new);
+        self.origins.resize(self.origins.len().max(1));
         for &identity in other.origins.first().into_iter().flatten() {
             if !self.origins[0].contains(&identity) { self.origins[0].push(identity); }
         }
@@ -828,7 +830,7 @@ impl Proof {
     ) -> Self {
         let mut proof = Self::capture_output(value, bindings);
         if let Some(registers) = registers {
-            proof.origins.resize_with(registers.len(), Vec::new);
+            proof.origins.resize(registers.len());
             for (origins, reg) in proof.origins.iter_mut().zip(registers) {
                 let identity = ValueIdentity::Register(*reg);
                 if !origins.contains(&identity) {
@@ -1058,7 +1060,7 @@ impl Proof {
             *self = Self { views, ..Self::default() };
         } else {
             self.views.resize_with(width, view::Borrow::default);
-            self.origins.resize_with(width, Vec::new);
+            self.origins.resize(width);
             self.conditions.resize_with(width, || None);
             self.nonzero.resize(width, false);
             self.ranges.resize_with(width, ScalarRanges::default);
@@ -1089,7 +1091,7 @@ impl Proof {
             *self = fresh;
         } else {
             self.views.resize_with(width, view::Borrow::default);
-            self.origins.resize_with(width, Vec::new);
+            self.origins.resize(width);
             self.conditions.resize_with(width, || None);
             self.nonzero.resize(width, false);
             self.ranges.resize_with(width, ScalarRanges::default);
@@ -1221,20 +1223,20 @@ impl Proof {
         index_domains::length_relation(index, length, strict)
     }
     pub(super) fn with_component_identity(mut self,component:usize,identity:ValueIdentity)->Self {
-        self.origins.resize_with(self.origins.len().max(component+1),Vec::new);
-        self.origins[component]=vec![identity];self
+        self.origins.resize(self.origins.len().max(component+1));
+        self.origins[component]=[identity].into();self
     }
     pub(super) fn with_identity(mut self, identity: ValueIdentity) -> Self {
         let mut origins = self.origins.first_mut().map(std::mem::take).unwrap_or_default();
         origins.retain(|origin| *origin != identity);
         origins.insert(0, identity);
-        self.origins = vec![origins];
+        self.origins = [origins].into();
         self
     }
     pub(super) fn parameter_content(parameter: usize, width: usize) -> Self {
         Self {
             origins: (0..width)
-                .map(|component| vec![ValueIdentity::ParameterContent(parameter, component)])
+                .map(|component| OriginList::from([ValueIdentity::ParameterContent(parameter, component)]))
                 .collect(),
             ..Self::default()
         }
@@ -1271,7 +1273,7 @@ impl Proof {
         let mut proof = Self {
             ranges: Vec::with_capacity(width),
             nonzero: Vec::with_capacity(width),
-            origins: Vec::with_capacity(width),
+            origins: OriginRows::new(),
             conditions: Vec::with_capacity(width),
             domains: vec![Domains::new(); value.proof.domains.len()],
             views: value.proof.views.clone(),
@@ -1307,17 +1309,17 @@ impl Proof {
             }
             let origins = match effect.origin {
                 floating::CastOrigin::Preserve => value.component_origins(i),
-                floating::CastOrigin::Discard => Vec::new(),
+                floating::CastOrigin::Discard => OriginList::new(),
                 floating::CastOrigin::Relate => {
                     let origins = value.proof.origins.get(i).filter(|origins| !origins.is_empty())
-                        .map_or(std::slice::from_ref(&identity), Vec::as_slice);
+                        .map_or(std::slice::from_ref(&identity), OriginList::as_slice);
                     for &id in origins {
                         let range = IndexDomain::CommonRange(id, source, source, source, source);
                         if let Some(domain) = cast_domain(range, path) {
                             proof.mark_domain(i, domain);
                         }
                     }
-                    Vec::new()
+                    OriginList::new()
                 }
             };
             proof.origins.push(origins);
@@ -1442,7 +1444,8 @@ impl Proof {
         if !self.addresses.is_empty(){self.addresses=vec![self.addresses[0].clone();width];}
         self.views = vec![self.view_borrow(0); width];
         self.conditions = vec![self.conditions.first().cloned().flatten(); width];
-        self.origins = vec![self.origins[0].clone(); width];
+        let origins = self.origins[0].clone();
+        self.origins = std::iter::repeat(origins).take(width).collect();
         self.nonzero = vec![self.nonzero[0]; width];
         self.ranges = vec![self.ranges[0].clone(); width];
         self.domains = vec![self.domains[0].clone(); width];
@@ -1610,7 +1613,7 @@ impl Value {
             }
             required = Clause::both(&required, &either);
         }
-        if matches!(&**required.0, ClauseNode::Facts(facts) if facts.is_empty()) { return; }
+        if matches!(required.view(), ClauseNode::Facts(facts) if facts.is_empty()) { return; }
         let mut condition = Condition::component(self, 0);
         for case in &mut condition.cases { *case = Clause::both(case, &required); }
         self.proof.conditions.resize_with(self.regs.len(), || None);
@@ -1681,13 +1684,13 @@ impl Value {
             .copied()
             .unwrap_or(ValueIdentity::Register(self.regs[index]))
     }
-    pub(super) fn component_origins(&self, index: usize) -> Vec<ValueIdentity> {
+    pub(super) fn component_origins(&self, index: usize) -> OriginList {
         self.proof
             .origins
             .get(index)
             .filter(|origins| !origins.is_empty())
             .cloned()
-            .unwrap_or_else(|| vec![ValueIdentity::Register(self.regs[index])])
+            .unwrap_or_else(|| [ValueIdentity::Register(self.regs[index])].into())
     }
     pub(super) fn same_component(&self, index: usize, other: &Self, other_index: usize) -> bool {
         let first_fallback;
@@ -1722,6 +1725,7 @@ impl Value {
     }
 }
 #[derive(Clone)]
+#[repr(C)]
 pub(super) struct Condition {
     // false／true 的条件图保留析取，实参代入后才提取各路径共有的事实。
     cases: [Clause; 2],
@@ -1733,8 +1737,128 @@ impl Default for Condition {
         }
     }
 }
-#[derive(Clone)]
-pub(super) struct Clause(ManuallyDrop<Arc<ClauseNode>>);
+#[repr(transparent)]
+pub(super) struct Clause(std::ptr::NonNull<StoredClause>);
+
+#[derive(Clone, Copy)]
+#[repr(u32)]
+enum StoredClauseKind {
+    Impossible,
+    Facts,
+    Both,
+    Either,
+    Branch,
+    Condition,
+}
+
+#[repr(C)]
+struct StoredClause {
+    kind: StoredClauseKind,
+    truth: u32,
+}
+
+#[repr(C)]
+struct ClausePair {
+    first: Clause,
+    second: Clause,
+}
+
+#[repr(C)]
+struct StoredBranch {
+    parent: Clause,
+    condition: SharedCondition,
+}
+
+// B holds the initialized immutable payload until the last atomic strong release.
+unsafe impl Send for Clause {}
+unsafe impl Sync for Clause {}
+
+#[repr(transparent)]
+pub(super) struct SharedCondition(std::ptr::NonNull<StoredClause>);
+
+// A shared condition uses the same allocation and strong references as a clause.
+unsafe impl Send for SharedCondition {}
+unsafe impl Sync for SharedCondition {}
+
+impl SharedCondition {
+    fn raw(&self) -> *mut std::ffi::c_void {
+        self.0.as_ptr().cast()
+    }
+
+    fn into_raw(self) -> *mut std::ffi::c_void {
+        ManuallyDrop::new(self).raw()
+    }
+
+    fn key(&self) -> usize {
+        self.raw() as usize
+    }
+
+    fn same_node(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl std::ops::Deref for SharedCondition {
+    type Target = Condition;
+
+    fn deref(&self) -> &Condition {
+        // For a Condition node the tail holds its two actual Clause handles.
+        unsafe { &*self.0.as_ptr().add(1).cast::<Condition>() }
+    }
+}
+
+impl Clone for SharedCondition {
+    fn clone(&self) -> Self {
+        unsafe { clause_retain(self.raw()) };
+        Self(self.0)
+    }
+}
+
+impl Drop for SharedCondition {
+    fn drop(&mut self) {
+        unsafe { clause_release(self.raw()) };
+    }
+}
+
+struct ClauseIdentity(*mut std::ffi::c_void);
+
+// A pin keeps only the allocation address unique while a cache uses it.
+unsafe impl Send for ClauseIdentity {}
+unsafe impl Sync for ClauseIdentity {}
+impl Drop for ClauseIdentity {
+    fn drop(&mut self) {
+        unsafe { clause_release_identity(self.0) };
+    }
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.clause_storage::clause_impossible"]
+    fn clause_impossible() -> *mut StoredClause;
+    #[link_name = "bootstrap.clause_storage::clause_facts"]
+    fn clause_facts(facts: *mut Facts) -> *mut StoredClause;
+    #[link_name = "bootstrap.clause_storage::clause_pair"]
+    fn clause_pair(
+        kind: StoredClauseKind,
+        truth: u32,
+        first: *mut std::ffi::c_void,
+        second: *mut std::ffi::c_void,
+    ) -> *mut StoredClause;
+    #[link_name = "bootstrap.clause_storage::clause_retain"]
+    fn clause_retain(payload: *mut std::ffi::c_void);
+    #[link_name = "bootstrap.clause_storage::clause_retain_identity"]
+    fn clause_retain_identity(payload: *mut std::ffi::c_void);
+    #[link_name = "bootstrap.clause_storage::clause_release_identity"]
+    fn clause_release_identity(payload: *mut std::ffi::c_void);
+    #[link_name = "bootstrap.clause_storage::clause_release"]
+    fn clause_release(payload: *mut std::ffi::c_void);
+}
+
+impl Clone for Clause {
+    fn clone(&self) -> Self {
+        unsafe { clause_retain(self.raw()) };
+        Self(self.0)
+    }
+}
 // One stored-output pass has one fixed public binding and owns its guard results.
 pub(super) struct PublicGuards<'a> {
     pub(super) bindings: &'a BTreeMap<ValueIdentity, Proof>,
@@ -1815,8 +1939,8 @@ pub(super) struct RelationGuards {
 
 struct ProjectedEdge {
     // Keep the identities of the actual projection inputs stable for this pass.
-    _path: std::sync::Weak<ClauseNode>,
-    _exclusion: Option<std::sync::Weak<ClauseNode>>,
+    _path: ClauseIdentity,
+    _exclusion: Option<ClauseIdentity>,
     value: Clause,
 }
 
@@ -1830,8 +1954,8 @@ impl RelationGuards {
         let key = (path.key(), exclusion.map(Clause::key));
         let mut projected = self.projected.borrow_mut();
         projected.entry(key).or_insert_with(|| ProjectedEdge {
-            _path: Arc::downgrade(&path.0),
-            _exclusion: exclusion.map(|case| Arc::downgrade(&case.0)),
+            _path: path.retain_identity(),
+            _exclusion: exclusion.map(Clause::retain_identity),
             value: source.project(&self.bindings),
         }).value.clone()
     }
@@ -1839,7 +1963,7 @@ impl RelationGuards {
 
 struct PublicGuard {
     // Keep the source address unique for this pass without retaining its condition graph.
-    _source: std::sync::Weak<ClauseNode>,
+    _source: ClauseIdentity,
     possible: Option<bool>,
     facts: Option<Facts>,
     projected: Option<Clause>,
@@ -1847,7 +1971,7 @@ struct PublicGuard {
 
 impl PublicGuard {
     fn new(source: &Clause) -> Self {
-        Self { _source: Arc::downgrade(&source.0), possible: None, facts: None, projected: None }
+        Self { _source: source.retain_identity(), possible: None, facts: None, projected: None }
     }
 }
 
@@ -1872,7 +1996,7 @@ impl<'a> PublicGuards<'a> {
 
     pub(super) fn possible(&self, source: &Clause) -> bool {
         let Some(results) = &self.results else { return source.possible(); };
-        if !matches!(&**source.0, ClauseNode::Both(..) | ClauseNode::Either(..) | ClauseNode::Branch(..)) {
+        if !matches!(source.view(), ClauseNode::Both(..) | ClauseNode::Either(..) | ClauseNode::Branch(..)) {
             return source.possible();
         }
         let mut results = results.borrow_mut();
@@ -1916,7 +2040,7 @@ impl<'a> GuardProjection<'a> {
         Self { source, bindings, projected: std::cell::OnceCell::new() }
     }
     pub(super) fn project(&self, source: &Clause, bindings: &BTreeMap<ValueIdentity, Proof>) -> Clause {
-        if Arc::ptr_eq(&source.0, &self.source.0) && std::ptr::eq(bindings, self.bindings) {
+        if source.same_node(self.source) && std::ptr::eq(bindings, self.bindings) {
             self.projected.get_or_init(|| self.source.project_guard(self.bindings)).clone()
         } else {
             source.project_guard(bindings)
@@ -1928,34 +2052,17 @@ impl Default for Clause {
         Self::facts(Facts::new())
     }
 }
-enum ClauseNode {
+enum ClauseNode<'a> {
     Impossible,
-    Facts(Facts),
-    Both(Clause, Clause),
-    Either(Clause, Clause),
-    Branch(Clause, Arc<Condition>, bool),
+    Facts(&'a Facts),
+    Both(&'a Clause, &'a Clause),
+    Either(&'a Clause, &'a Clause),
+    Branch(&'a Clause, &'a SharedCondition, bool),
 }
+
 impl Drop for Clause {
     fn drop(&mut self) {
-        // 同一引用只消费一次；ManuallyDrop字段不会在这里再次自动析构。
-        let mut next = Some(unsafe { ManuallyDrop::take(&mut self.0) });
-        let mut pending: Vec<Arc<ClauseNode>> = Vec::new();
-        while let Some(node) = next.take().or_else(|| pending.pop()) {
-            let Some(node) = Arc::into_inner(node) else { continue; };
-            match node {
-                ClauseNode::Both(a, b) | ClauseNode::Either(a, b) => {
-                    pending.push(b.into_node());
-                    next = Some(a.into_node());
-                }
-                ClauseNode::Branch(parent, condition, _) => {
-                    if let Some(Condition { cases }) = Arc::into_inner(condition) {
-                        pending.extend(cases.map(Self::into_node));
-                    }
-                    next = Some(parent.into_node());
-                }
-                ClauseNode::Impossible | ClauseNode::Facts(_) => {}
-            }
-        }
+        unsafe { clause_release(self.raw()) };
     }
 }
 #[repr(C)]
@@ -2041,7 +2148,7 @@ impl Clause {
         let mut outputs = roots.iter().copied()
             .filter(|root| {
                 let (mapped, _) = &clauses[&root.key()];
-                !matches!(&**mapped.0, ClauseNode::Impossible)
+                !matches!(mapped.view(), ClauseNode::Impossible)
             })
             .peekable();
         // The other case can trigger numeric projection without itself being projected.
@@ -2069,14 +2176,14 @@ impl Clause {
             ),
             None => Self::impossible(),
         };
-        let numeric = match &**numeric.0 {
+        let numeric = match numeric.view() {
             ClauseNode::Facts(bounds) if !bounds.is_empty() => {
                 let missing = condition_graph::missing_call_bounds(mapped, bounds);
                 if missing.is_empty() {
                     return;
                 }
                 // These are the remaining members of the already checked numeric clause.
-                Self::node(ClauseNode::Facts(missing))
+                Self::raw_facts(missing)
             }
             _ => numeric,
         };
@@ -2127,7 +2234,7 @@ impl Clause {
         distinct.dedup_by_key(|root| root.key());
         for root in distinct {
             let (mapped, private) = clauses.get_mut(&root.key()).unwrap();
-            if !matches!(&**mapped.0, ClauseNode::Impossible) && (*private || root.guard_needs_numeric(bindings)) {
+            if !matches!(mapped.view(), ClauseNode::Impossible) && (*private || root.guard_needs_numeric(bindings)) {
                 Self::supplement_call_bounds(mapped, bindings, root.required());
             }
         }
@@ -2162,12 +2269,12 @@ impl Clause {
     fn fold_call_facts(mut facts: impl Iterator<Item = Clause>) -> Self {
         let mut projected = Facts::new();
         for clause in facts.by_ref() {
-            match &**clause.0 {
+            match clause.view() {
                 ClauseNode::Impossible => return clause,
                 ClauseNode::Facts(value) => projected.extend(value.iter().copied()),
                 _ => {
                     let mut result = Self::both(&Self::facts(projected), &clause);
-                    while !matches!(&**result.0, ClauseNode::Impossible) {
+                    while !matches!(result.view(), ClauseNode::Impossible) {
                         let Some(clause) = facts.next() else { break; };
                         result = Self::both(&result, &clause);
                     }
@@ -2193,7 +2300,7 @@ impl Clause {
         identity: &impl Fn(ValueIdentity) -> ValueIdentity,
     ) {
         for &clause in ordered {
-            if let ClauseNode::Facts(facts) = &**clause.0 {
+            if let ClauseNode::Facts(facts) = clause.view() {
                 for fact in facts {
                     fact.map(identity);
                 }
@@ -2201,13 +2308,66 @@ impl Clause {
         }
     }
 
-    fn node(value: ClauseNode) -> Self {
-        Self(ManuallyDrop::new(Arc::new(value)))
+    fn raw_facts(facts: Facts) -> Self {
+        let mut transferred = ManuallyDrop::new(facts);
+        let payload = unsafe { clause_facts(&mut *transferred) };
+        Self(unsafe { std::ptr::NonNull::new_unchecked(payload) })
     }
-    fn into_node(self) -> Arc<ClauseNode> {
-        let mut owned = ManuallyDrop::new(self);
-        // 已消费Clause不再运行Drop，直接转交它原来持有的Arc。
-        unsafe { ManuallyDrop::take(&mut owned.0) }
+
+    fn pair_node(kind: StoredClauseKind, truth: bool,
+        first: *mut std::ffi::c_void, second: *mut std::ffi::c_void,
+    ) -> std::ptr::NonNull<StoredClause> {
+        let payload = unsafe { clause_pair(kind, u32::from(truth), first, second) };
+        unsafe { std::ptr::NonNull::new_unchecked(payload) }
+    }
+
+    fn both_node(first: Clause, second: Clause) -> Self {
+        Self(Self::pair_node(StoredClauseKind::Both, false, first.into_raw(), second.into_raw()))
+    }
+
+    fn either_node(first: Clause, second: Clause) -> Self {
+        Self(Self::pair_node(StoredClauseKind::Either, false, first.into_raw(), second.into_raw()))
+    }
+
+    fn branch_node(parent: Clause, condition: SharedCondition, truth: bool) -> Self {
+        Self(Self::pair_node(StoredClauseKind::Branch, truth, parent.into_raw(), condition.into_raw()))
+    }
+
+    fn view(&self) -> ClauseNode<'_> {
+        let header = unsafe { self.0.as_ref() };
+        let fields = unsafe { self.0.as_ptr().add(1) };
+        match header.kind {
+            StoredClauseKind::Impossible => ClauseNode::Impossible,
+            StoredClauseKind::Facts => ClauseNode::Facts(unsafe { &*fields.cast::<Facts>() }),
+            StoredClauseKind::Branch => {
+                let branch = unsafe { &*fields.cast::<StoredBranch>() };
+                ClauseNode::Branch(&branch.parent, &branch.condition, header.truth != 0)
+            }
+            StoredClauseKind::Both | StoredClauseKind::Either => {
+                let pair = unsafe { &*fields.cast::<ClausePair>() };
+                if matches!(header.kind, StoredClauseKind::Both) {
+                    ClauseNode::Both(&pair.first, &pair.second)
+                } else {
+                    ClauseNode::Either(&pair.first, &pair.second)
+                }
+            }
+            StoredClauseKind::Condition => unreachable!("a condition handle is not a clause"),
+        }
+    }
+
+    fn raw(&self) -> *mut std::ffi::c_void {
+        self.0.as_ptr().cast()
+    }
+    fn into_raw(self) -> *mut std::ffi::c_void {
+        ManuallyDrop::new(self).raw()
+    }
+    fn same_node(&self, other: &Self) -> bool {
+        self.raw() == other.raw()
+    }
+    fn retain_identity(&self) -> ClauseIdentity {
+        let payload = self.raw();
+        unsafe { clause_retain_identity(payload) };
+        ClauseIdentity(payload)
     }
 
     fn negate(&self)->Self { negation::negate(self) }
@@ -2240,30 +2400,30 @@ impl Clause {
         }
     }
     pub(super) fn impossible() -> Self {
-        Self::node(ClauseNode::Impossible)
+        Self(unsafe { std::ptr::NonNull::new_unchecked(clause_impossible()) })
     }
     fn facts(facts: Facts) -> Self { combination::facts(facts) }
     pub(super) fn both(a: &Self, b: &Self) -> Self { combination::both(a, b) }
     fn observed(parent:&Self,facts:Facts)->Self {
-        let known=Arc::new(Condition{cases:[Self::impossible(),Self::facts(facts)]});
+        let known=Condition{cases:[Self::impossible(),Self::facts(facts)]}.shared();
         Self::branch(parent,&known,true)
     }
-    fn branch(parent: &Self, condition: &Arc<Condition>, truth: bool) -> Self {
+    fn branch(parent: &Self, condition: &SharedCondition, truth: bool) -> Self {
         combination::branch(parent, condition, truth)
     }
     pub(super) fn either(a: &Self, b: &Self) -> Self { combination::either(a, b) }
 
     fn query_inputs(&self) -> Option<(&Self, &Self, bool)> {
-        match &**self.0 {
+        match self.view() {
             ClauseNode::Both(a, b) => Some((a, b, false)),
             ClauseNode::Branch(parent, condition, truth) =>
-                Some((parent, &condition.cases[usize::from(*truth)], false)),
+                Some((parent, &condition.cases[usize::from(truth)], false)),
             ClauseNode::Either(a, b) => Some((a, b, true)),
             _ => None,
         }
     }
     fn key(&self) -> usize {
-        Arc::as_ptr(&self.0) as usize
+        self.raw() as usize
     }
     pub(super) fn scalar_identities<'a>(roots:impl IntoIterator<Item=&'a Self>)->BTreeSet<ValueIdentity> {
         let identities=std::cell::RefCell::new(BTreeSet::new());
@@ -2386,7 +2546,7 @@ impl Clause {
         }
     }
     pub(super) fn possible(&self) -> bool {
-        match &**self.0 {
+        match self.view() {
             ClauseNode::Impossible => false,
             ClauseNode::Facts(_) => true,
             ClauseNode::Both(..) | ClauseNode::Either(..) | ClauseNode::Branch(..) => {
@@ -2451,7 +2611,7 @@ impl PartialOrd for Clause {
 }
 impl Ord for Clause {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        if Arc::ptr_eq(&self.0, &other.0) {
+        if self.same_node(other) {
             return std::cmp::Ordering::Equal;
         }
         Condition::paths(self.clone(), Self::impossible())
@@ -2470,7 +2630,7 @@ impl PartialOrd for Condition {
 }
 impl Ord for Condition {
     fn cmp(&self,other:&Self)->std::cmp::Ordering {
-        if self.cases.iter().zip(&other.cases).all(|(a,b)| Arc::ptr_eq(&a.0,&b.0)) {
+        if self.cases.iter().zip(&other.cases).all(|(a,b)| a.same_node(b)) {
             return std::cmp::Ordering::Equal;
         }
         codec::conditions::order(self, other)
@@ -2617,7 +2777,7 @@ impl Condition {
     }
     pub(super) fn impossible(&self)->bool{self.cases.iter().all(|case|!case.possible())}
     pub(super) fn paths(yes:Clause,no:Clause)->Self{Self{cases:[no,yes]}}
-    pub(super) fn unconstrained(&self)->bool{self.cases.iter().all(|case|matches!(&**case.0,ClauseNode::Facts(facts)if facts.is_empty()))}
+    pub(super) fn unconstrained(&self)->bool{self.cases.iter().all(|case|matches!(case.view(),ClauseNode::Facts(facts)if facts.is_empty()))}
     pub(super) fn exclusive(&self)->bool{!Clause::both(&self.cases[0],&self.cases[1]).possible()}
     pub(super) fn at_call(&self,bindings:&impl CallBindings)->Self{
         let mut cases=Clause::at_calls(&self.cases.each_ref(), bindings, || false, Clause::required).into_iter();
@@ -2657,7 +2817,7 @@ impl Condition {
         match self
             .cases
             .each_ref()
-            .map(|case| matches!(&**case.0, ClauseNode::Impossible))
+            .map(|case| matches!(case.view(), ClauseNode::Impossible))
         {
             [true, false] => Some(true),
             [false, true] => Some(false),
@@ -2695,11 +2855,18 @@ impl Condition {
         self.cases.swap(0, 1);
         self
     }
-    pub(super) fn branch(c: Self, a: Self, b: Self) -> Self {
-        Self::branch_on(&Arc::new(c), a, b)
+    pub(super) fn shared(self) -> SharedCondition {
+        let [no, yes] = self.cases;
+        SharedCondition(Clause::pair_node(
+            StoredClauseKind::Condition, false, no.into_raw(), yes.into_raw(),
+        ))
     }
 
-    fn branch_on(condition: &Arc<Self>, a: Self, b: Self) -> Self {
+    pub(super) fn branch(c: Self, a: Self, b: Self) -> Self {
+        Self::branch_on(&c.shared(), a, b)
+    }
+
+    fn branch_on(condition: &SharedCondition, a: Self, b: Self) -> Self {
         Self {
             cases: std::array::from_fn(|truth| {
                 Clause::either(
@@ -3103,7 +3270,7 @@ impl Builder<'_> {
         let environment = environment_facts(&self.env);
         let (proof, _, _) = self.env.get_mut(&name)?.proof_storage()?;
         if registers.is_some() {
-            proof.origins.resize_with(source.components.len(), Vec::new);
+            proof.origins.resize(source.components.len());
             for (components, _) in &choices {
                 for component in components {
                     if proof.origins[*component].is_empty() {
@@ -3247,7 +3414,7 @@ impl Builder<'_> {
         let limit = lengths.iter().map(|(proof, component)| proof.unsigned_minimum(*component)).fold(minimum, u32::max);
         if self.index_known(value, 0, domain, limit, || value.component_ranges(0).0.last().map(|range| range.upper),
             lengths.iter().map(|&(proof, component)| (
-                Cow::Borrowed(proof.origins.get(component).map(Vec::as_slice).unwrap_or_default()),
+                Cow::Borrowed(proof.origins.get(component).map(OriginList::as_slice).unwrap_or_default()),
                 proof.domains(component),
             ))) { return true; }
         // 非固定范围消费同一条原路径；运算仍只求值一次，不新增运行时检查。
@@ -3329,7 +3496,7 @@ impl Builder<'_> {
                     .value
                     .proof
                     .origins
-                    .resize_with(owner.value.ty.components.len(), Vec::new);
+                    .resize(owner.value.ty.components.len());
                 for (origin, now) in owner
                     .value
                     .proof
@@ -3347,7 +3514,7 @@ impl Builder<'_> {
                     owner
                         .proof
                         .origins
-                        .resize_with(owner.place.ty().components.len(), Vec::new);
+                        .resize(owner.place.ty().components.len());
                     for (origin, current) in
                         owner.proof.origins.iter_mut().zip(&current.proof.origins)
                     {
@@ -3371,7 +3538,7 @@ impl Builder<'_> {
             None
         }
     }
-    pub(super) fn refine_bounds(&mut self, condition: &Arc<Condition>, truth: bool) {
+    pub(super) fn refine_bounds(&mut self, condition: &SharedCondition, truth: bool) {
         self.path = Clause::branch(&self.path, condition, truth);
         let environment = environment_facts(&self.env);
         let mut consumers = self.env.values_mut().filter(|binding| match binding {
@@ -3510,7 +3677,7 @@ impl Builder<'_> {
                 let selected=proof.project(&components,width);
                 selected.output_bindings(&regs,0,names);
                 *alias=bounds::Clause::both(alias,&selected.output_aliases(&regs,&self.registers,&bindings));
-                proof.origins.resize_with(width,Vec::new);
+                proof.origins.resize(width);
                 for(&component,&reg)in components.iter().zip(&regs){proof.origins[component].push(ValueIdentity::Register(reg));}
             }
         }
@@ -3635,7 +3802,7 @@ impl Builder<'_> {
                 continue;
             };
             let width = owner.ty().components.len();
-            proof.origins.resize_with(width, Vec::new);
+            proof.origins.resize(width);
             for (target,(component,reg)) in components.iter().zip(regs).enumerate() {
                 if proof.origins[*component].is_empty() {
                     proof.origins[*component].push(ValueIdentity::Register(*reg));
@@ -3661,7 +3828,7 @@ impl Builder<'_> {
                     (Some((proof, _)), None) | (None, Some(proof)) => proof,
                     (None, None) => projected(self),
                 };
-                proof.origins.resize_with(regs.len(), Vec::new);
+                proof.origins.resize(regs.len());
                 for (origins, snapshot) in proof.origins.iter_mut().zip(snapshots) {
                     let identity = ValueIdentity::Register(snapshot);
                     origins.retain(|origin| *origin != identity);
@@ -3677,7 +3844,7 @@ impl Builder<'_> {
                 if let Some(common) = self.common_element_proof((*binding, 0), words, self.memory_regions.get(binding).map(|(_, writes)| writes)) {
                     proof.constrain_common_ranges(&common, regs.len());
                 }
-                proof.origins.resize_with(regs.len(), Vec::new);
+                proof.origins.resize(regs.len());
                 let mut snapshot = self.application_read_snapshots();
                 for (origins, reg) in proof.origins.iter_mut().zip(regs) {
                     if origins.is_empty() {
@@ -3787,7 +3954,7 @@ enum EncodedClause<F> {
 }
 
 fn same_condition_roots<const N: usize>(left: [&Clause; N], right: [&Clause; N]) -> bool {
-    if left.iter().zip(&right).all(|(a, b)| Arc::ptr_eq(&a.0, &b.0)) {
+    if left.iter().zip(&right).all(|(a, b)| a.same_node(b)) {
         return true;
     }
     let graph = codec::conditions::node_ids(left.into_iter().chain(right), false);
@@ -3948,7 +4115,7 @@ const _: () = {
                         addresses: contracts::address(&blank.addresses).cast_mut(),
                     },
                     Writer {
-                        origins: contracts::write_value::<Vec<Vec<ValueIdentity>>>,
+                        origins: contracts::write_value::<OriginRows>,
                         conditions: write_one,
                         ranges: contracts::write_value::<Vec<ScalarRanges>>,
                         nonzero: contracts::write_value::<Vec<bool>>,
@@ -3992,7 +4159,7 @@ const _: () = {
                         addresses: contracts::address(&self.addresses).cast_mut(),
                     },
                     Writer {
-                        origins: contracts::write_value::<Vec<Vec<ValueIdentity>>>,
+                        origins: contracts::write_value::<OriginRows>,
                         conditions: write_conditions,
                         ranges: contracts::write_value::<Vec<ScalarRanges>>,
                         nonzero: contracts::write_value::<Vec<bool>>,
@@ -4004,7 +4171,7 @@ const _: () = {
             }
         }
         unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
-            let mut origins = <Vec<Vec<ValueIdentity>> as Native>::empty();
+            let mut origins = <OriginRows as Native>::empty();
             let mut conditions = <Vec<Option<Box<Condition>>> as Native>::empty();
             let mut ranges = <Vec<ScalarRanges> as Native>::empty();
             let mut nonzero = <Vec<bool> as Native>::empty();
@@ -4024,7 +4191,7 @@ const _: () = {
                         addresses: contracts::slot(&mut addresses),
                     },
                     Reader {
-                        origins: contracts::read_value::<Vec<Vec<ValueIdentity>>>,
+                        origins: contracts::read_value::<OriginRows>,
                         conditions: read_conditions,
                         ranges: contracts::read_value::<Vec<ScalarRanges>>,
                         nonzero: contracts::read_value::<Vec<bool>>,
