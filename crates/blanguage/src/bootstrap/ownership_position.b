@@ -285,6 +285,37 @@ extern "C" address word(address value,PositionIndex selected,u32 field,Host host
     requires nonzero(host.make_position)
     requires nonzero(host.clone_position) { return materialize(Projection(value,2,selected,field),host);}
 
+extern "C" handle GetProcessHeap() on cpu from "KERNEL32.dll";
+extern "C" address HeapAlloc(handle heap, u32 flags, usize bytes) on cpu from "KERNEL32.dll";
+extern "C" address HeapReAlloc(handle heap, u32 flags, address data, usize bytes) on cpu from "KERNEL32.dll";
+extern "C" i32 HeapFree(handle heap, u32 flags, address data) on cpu from "KERNEL32.dll";
+
+const u32 DATASET_HEAP_EXCEPTIONS = 4;
+
+struct DatasetFrame {
+    address source;
+    PositionNode shape;
+    usize child;
+    address partial;
+};
+struct DatasetFrames { address data; usize capacity; };
+
+address dataset_frame(address data, usize index) on cpu {
+    return unsafe_address(address_bits(data) + index * size_of<DatasetFrame>());
+}
+
+void push_dataset_frame(inout DatasetFrames frames, usize depth, DatasetFrame frame) on cpu {
+    if (depth == frames.capacity) {
+        usize capacity = max(8u64, frames.capacity * 2u64);
+        handle heap = GetProcessHeap();
+        frames.data = frames.capacity == 0u64
+            ? HeapAlloc(heap, DATASET_HEAP_EXCEPTIONS, capacity * size_of<DatasetFrame>())
+            : HeapReAlloc(heap, DATASET_HEAP_EXCEPTIONS, frames.data, capacity * size_of<DatasetFrame>());
+        frames.capacity = capacity;
+    }
+    unsafe_position<DatasetFrame>(dataset_frame(frames.data, depth)) = frame;
+}
+
 extern "C" address dataset_position(address value, PositionIndex selected, Host host,
     DatasetPositionCleanup cleanup) on cpu
     requires nonzero(host.inspect) requires nonzero(host.child)
@@ -293,50 +324,76 @@ extern "C" address dataset_position(address value, PositionIndex selected, Host 
     requires nonzero(host.make_position) requires nonzero(host.clone_position)
     requires nonzero(cleanup.position) requires nonzero(cleanup.vector) {
     let absent = address();
-    PositionNode shape = host.inspect(value);
-    if (shape.kind == 0 || shape.kind == 4 || shape.kind == 8) { return host.clone_position(value); }
-    if (selected.kind == 0) { return absent; }
-
-    if (shape.kind == 7 || shape.kind == 9) {
-        if (shape.kind == 7) { shape.kind = 8; }
-        shape.index = selected;
-        return host.make_position(shape, absent, absent, absent);
-    }
-    if (shape.kind == 10) {
-        let choices = host.fresh_vector();
-        u64 slot = 0u64;
-        while (slot < shape.count) {
-            let entry = dataset_position(host.child(value, slot), selected, host, cleanup);
-            if (entry == absent) {
-                cleanup.vector(choices);
-                return absent;
+    DatasetFrames frames = DatasetFrames(absent, 0u64);
+    usize depth = 0u64;
+    address current = value;
+    address result = absent;
+    while (true) {
+        PositionNode shape = host.inspect(current);
+        if (shape.kind == 0 || shape.kind == 4 || shape.kind == 8) {
+            result = host.clone_position(current);
+        } else if (selected.kind == 0) {
+            result = absent;
+        } else if (shape.kind == 7 || shape.kind == 9) {
+            if (shape.kind == 7) { shape.kind = 8; }
+            shape.index = selected;
+            result = host.make_position(shape, absent, absent, absent);
+        } else if (shape.kind == 10 || shape.kind == 11 || shape.kind == 12) {
+            address partial = shape.kind == 10 ? host.fresh_vector() : absent;
+            if (shape.kind == 10 && shape.count == 0u64) {
+                result = host.make_position(shape, absent, absent, partial);
+            } else {
+                push_dataset_frame(frames, depth, DatasetFrame(current, shape, 0u64, partial));
+                depth += 1u64;
+                current = host.child(current, 0u64);
+                continue;
             }
-            host.push_vector(choices, entry);
-            slot += 1u64;
+        } else {
+            result = absent;
         }
-        return host.make_position(shape, absent, absent, choices);
-    }
-    if (shape.kind != 11 && shape.kind != 12) { return absent; }
 
-    let left = dataset_position(host.child(value, 0u64), selected, host, cleanup);
-    if (left == absent) { return absent; }
-    let right = dataset_position(host.child(value, 1u64), selected, host, cleanup);
-    if (right == absent) {
-        cleanup.position(left);
-        return absent;
+        // A frame holds only children which have returned and still belong to this node.
+        while (depth != 0u64) {
+            address top = dataset_frame(frames.data, depth - 1u64);
+            DatasetFrame frame = unsafe_position<DatasetFrame>(top);
+            if (result == absent) {
+                if (frame.shape.kind == 10) { cleanup.vector(frame.partial); }
+                else if (frame.child != 0u64) { cleanup.position(frame.partial); }
+            } else if (frame.shape.kind == 10) {
+                host.push_vector(frame.partial, result);
+                usize next = frame.child + 1u64;
+                if (next < frame.shape.count) {
+                    unsafe_position<DatasetFrame>(top).child = next;
+                    current = host.child(frame.source, next);
+                    break;
+                }
+                result = host.make_position(frame.shape, absent, absent, frame.partial);
+            } else if (frame.child == 0u64) {
+                unsafe_position<DatasetFrame>(top).partial = result;
+                unsafe_position<DatasetFrame>(top).child = 1u64;
+                current = host.child(frame.source, 1u64);
+                break;
+            } else {
+                address left = frame.partial;
+                address right = result;
+                u32 choice = frame.shape.kind == 11
+                    ? select(frame.shape.condition, left, right, host.equal, host.presence_kind)
+                    : both(left, right, host.equal, host.inspect);
+                if (choice == 0) {
+                    cleanup.position(right);
+                    result = left;
+                } else if (choice == 1) {
+                    cleanup.position(left);
+                } else {
+                    result = host.make_position(frame.shape, left, right, absent);
+                }
+            }
+            depth -= 1u64;
+        }
+        if (depth == 0u64) { break; }
     }
-    let choice = shape.kind == 11
-        ? select(shape.condition, left, right, host.equal, host.presence_kind)
-        : both(left, right, host.equal, host.inspect);
-    if (choice == 0) {
-        cleanup.position(right);
-        return left;
-    }
-    if (choice == 1) {
-        cleanup.position(left);
-        return right;
-    }
-    return host.make_position(shape, left, right, absent);
+    if (frames.capacity != 0u64) { HeapFree(GetProcessHeap(), 0, frames.data); }
+    return result;
 }
 
 extern "C" u32 ready(address value,address known,Host host) on cpu
