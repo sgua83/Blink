@@ -179,11 +179,6 @@ unsafe extern "C" fn input_offset(inputs: Address, index: PositionIndex) -> u32 
     };
     u32::from(found)
 }
-unsafe extern "C" fn condition_truth_in(value: Address, path: Address) -> u32 {
-    match unsafe { &*value.cast::<bounds::Condition>() }.truth_in(unsafe { &*path.cast::<bounds::Clause>() }) {
-        None => 0, Some(false) => 1, Some(true) => 2,
-    }
-}
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Host {
@@ -200,7 +195,7 @@ struct Host {
     condition_index: unsafe extern "C" fn(Address, u32, PositionIndex, PositionIndex),
     condition_substitute: unsafe extern "C" fn(Address, Address, Address, PositionIndex, PositionIndex),
     input_offset: unsafe extern "C" fn(Address, PositionIndex) -> u32,
-    condition_truth_in: unsafe extern "C" fn(Address, Address) -> u32,
+    condition_query: unsafe extern "C" fn(&bounds::Clause) -> u32,
 }
 const HOST: Host = Host {
     layout: &PRESENCE_VIEW, input_mentions, clone_input, drop_payload,
@@ -208,7 +203,7 @@ const HOST: Host = Host {
     position_equal,
     condition_conflict: bounds::condition_conflict,
     condition_input, condition_index, condition_substitute,
-    input_offset, condition_truth_in,
+    input_offset, condition_query: bounds::condition_query,
 };
 unsafe extern "C" {
     #[link_name = "bootstrap.ownership_presence::relation"] fn source_relation(output: Address, value: Selection, host: Host);

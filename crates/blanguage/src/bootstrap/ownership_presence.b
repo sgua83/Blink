@@ -177,7 +177,7 @@ extern "C" u32 clone_callback(address temporary,address data,Host host) on cpu
     requires nonzero(host.condition_index)
     requires nonzero(host.condition_substitute)
     requires nonzero(host.input_offset)
-    requires nonzero(host.condition_truth_in) {
+    requires nonzero(host.condition_query) {
 CloneContext context=unsafe_position<CloneContext>(data);
     if(context.prepend!=0){combine(temporary,context.output,context.any,host);move_presence(context.output,temporary, host.layout, host.drop_payload);}
     else{combine(context.output,temporary,context.any,host);}
@@ -197,7 +197,7 @@ void combine_cloned(address output,address other,u32 any,u32 prepend,Host host) 
     requires nonzero(host.condition_index)
     requires nonzero(host.condition_substitute)
     requires nonzero(host.input_offset)
-    requires nonzero(host.condition_truth_in) {
+    requires nonzero(host.condition_query) {
 CloneContext context=CloneContext(output,any,prepend);
     host.clone_scope(other,address_of(context),host,c_function(clone_callback));
 }
@@ -215,7 +215,7 @@ extern "C" u32 either_callback(address temporary,address data,Host host) on cpu
     requires nonzero(host.condition_index)
     requires nonzero(host.condition_substitute)
     requires nonzero(host.input_offset)
-    requires nonzero(host.condition_truth_in) {
+    requires nonzero(host.condition_query) {
 EitherContext context=unsafe_position<EitherContext>(data);
     relation(temporary,context.original,host);
     combine_cloned(temporary,context.branch,0,0,host);
@@ -272,7 +272,7 @@ void apply_presence_match(address output, Selection original, PresenceReduction 
     requires nonzero(host.condition_index)
     requires nonzero(host.condition_substitute)
     requires nonzero(host.input_offset)
-    requires nonzero(host.condition_truth_in) {
+    requires nonzero(host.condition_query) {
     masked_relation(output, original, selected.mask, host);
     usize depth = selected.depth;
     while (depth != 0u64) {
@@ -302,7 +302,7 @@ extern "C" u32 within_selected(address output, address other, Selection original
     requires nonzero(host.condition_index)
     requires nonzero(host.condition_substitute)
     requires nonzero(host.input_offset)
-    requires nonzero(host.condition_truth_in) {
+    requires nonzero(host.condition_query) {
     PositionFrames frames = PositionFrames(address(), 0u64);
     let selected = find_presence_match(other, original, host.layout, frames);
     if (selected.mask != 8) { apply_presence_match(output, original, selected, frames, host); }
@@ -324,7 +324,7 @@ u32 with_saved_selection(address output, address other, Selection value, Host ho
     requires nonzero(argument3.condition_index)
     requires nonzero(argument3.condition_substitute)
     requires nonzero(argument3.input_offset)
-    requires nonzero(argument3.condition_truth_in) apply) on cpu
+    requires nonzero(argument3.condition_query) apply) on cpu
     requires nonzero(apply)
     requires nonzero(host.input_mentions)
     requires nonzero(host.drop_payload)
@@ -338,7 +338,7 @@ u32 with_saved_selection(address output, address other, Selection value, Host ho
     requires nonzero(host.condition_index)
     requires nonzero(host.condition_substitute)
     requires nonzero(host.input_offset)
-    requires nonzero(host.condition_truth_in) {
+    requires nonzero(host.condition_query) {
     SavedIdentities storage = selection_storage();
     let saved = save_selection(value, address_of(storage.a), address_of(storage.b));
     return apply(output, other, saved, host);
@@ -357,7 +357,7 @@ u32 within(address output,address other,Host host) on cpu
     requires nonzero(host.condition_index)
     requires nonzero(host.condition_substitute)
     requires nonzero(host.input_offset)
-    requires nonzero(host.condition_truth_in) {
+    requires nonzero(host.condition_query) {
 Node node=read_presence(output, host.layout);
     if(node.kind!=3){return 0;}
     return with_saved_selection(output, other, Selection(node.operation, node.a, node.b),
@@ -377,7 +377,7 @@ extern "C" void combine(address left,address right,u32 any,Host host) on cpu
     requires nonzero(host.condition_index)
     requires nonzero(host.condition_substitute)
     requires nonzero(host.input_offset)
-    requires nonzero(host.condition_truth_in) {
+    requires nonzero(host.condition_query) {
 if(compare(left,right,host)==0){return;}
     Node a=read_presence(left, host.layout);Node b=read_presence(right, host.layout);
     if((a.kind==4&&compare(a.first,right,host)==0)||(b.kind==4&&compare(left,b.first,host)==0)){write_truth(left,any, host.layout, host.drop_payload);return;}
@@ -407,7 +407,7 @@ extern "C" u32 not_children(address output,address left,address right,address da
     requires nonzero(host.condition_index)
     requires nonzero(host.condition_substitute)
     requires nonzero(host.input_offset)
-    requires nonzero(host.condition_truth_in) {
+    requires nonzero(host.condition_query) {
 NotContext context=unsafe_position<NotContext>(data);
     if(context.mode!=0){negate(left,host);negate(right,host);combine(left,right,context.mode==1 ? 1 : 0,host);}
     move_presence(output,left, host.layout, host.drop_payload);return 1;
@@ -426,7 +426,7 @@ extern "C" void negate(address value,Host host) on cpu
     requires nonzero(host.condition_index)
     requires nonzero(host.condition_substitute)
     requires nonzero(host.input_offset)
-    requires nonzero(host.condition_truth_in) {
+    requires nonzero(host.condition_query) {
 Node node=read_presence(value, host.layout);
     if(node.kind==0||node.kind==1){write_truth(value,node.kind==0 ? 1 : 0, host.layout, host.drop_payload);return;}
     if (node.kind == 3) {
@@ -450,7 +450,7 @@ extern "C" u32 select_choice(address actual,address data,Host host) on cpu
     requires nonzero(host.condition_index)
     requires nonzero(host.condition_substitute)
     requires nonzero(host.input_offset)
-    requires nonzero(host.condition_truth_in) {
+    requires nonzero(host.condition_query) {
 SelectBranchContext context=unsafe_position<SelectBranchContext>(data);
     selected(actual,context.choice,context.wanted,host);
     combine(context.predicate,actual,0,host);combine(context.output,context.predicate,1,host);return 1;
@@ -469,7 +469,7 @@ extern "C" u32 select_predicate(address predicate,address data,Host host) on cpu
     requires nonzero(host.condition_index)
     requires nonzero(host.condition_substitute)
     requires nonzero(host.input_offset)
-    requires nonzero(host.condition_truth_in) {
+    requires nonzero(host.condition_query) {
 SelectContext context=unsafe_position<SelectContext>(data);
     PositionIndex constant=PositionIndex(1,u32(context.at),address(),0u64);
     relation(predicate,Selection(0,context.index,constant),host);
@@ -491,7 +491,7 @@ void project_position_choices(address output, address position, address wanted,
     requires nonzero(host.condition_index)
     requires nonzero(host.condition_substitute)
     requires nonzero(host.input_offset)
-    requires nonzero(host.condition_truth_in) {
+    requires nonzero(host.condition_query) {
     u64 at = 0u64;
     while (at < count) {
         let choice = bootstrap.ownership_position::position_child(position, at, view);
@@ -514,7 +514,7 @@ extern "C" void selected(address output,address position,address wanted,Host hos
     requires nonzero(host.condition_index)
     requires nonzero(host.condition_substitute)
     requires nonzero(host.input_offset)
-    requires nonzero(host.condition_truth_in) {
+    requires nonzero(host.condition_query) {
     let layout = unsafe_position<PresenceView>(host.layout);
     let view = unsafe_position<PositionView>(layout.positions);
     let node = bootstrap.ownership_position::inspect_position(position, view);
@@ -606,7 +606,7 @@ extern "C" u32 project_selected(address temporary,address data,Host host) on cpu
     requires nonzero(host.condition_index)
     requires nonzero(host.condition_substitute)
     requires nonzero(host.input_offset)
-    requires nonzero(host.condition_truth_in) {
+    requires nonzero(host.condition_query) {
 ProjectSelected context=unsafe_position<ProjectSelected>(data);
     relation(temporary,context.value,host);
     project(context.output,temporary,address(),0,host);
@@ -626,7 +626,7 @@ void project(address output,address value,address inputs,u32 looped,Host host) o
     requires nonzero(host.condition_index)
     requires nonzero(host.condition_substitute)
     requires nonzero(host.input_offset)
-    requires nonzero(host.condition_truth_in) {
+    requires nonzero(host.condition_query) {
 Node node=read_presence(value, host.layout);
     if(node.kind==0||node.kind==1){project_truth(output,node.kind,inputs,looped,host);return;}
     if(node.kind==2){host.condition_input(output,node.value);if(looped!=0){substitute_condition(output,inputs,omitted_index(),omitted_index(),host);}return;}
@@ -671,7 +671,7 @@ extern "C" void condition(address output,address value,Host host) on cpu
     requires nonzero(host.condition_index)
     requires nonzero(host.condition_substitute)
     requires nonzero(host.input_offset)
-    requires nonzero(host.condition_truth_in) {
+    requires nonzero(host.condition_query) {
 project(output,value,address(),0,host);
 }
 
@@ -688,7 +688,7 @@ extern "C" void loop_condition(address output,address value,address inputs,Host 
     requires nonzero(host.condition_index)
     requires nonzero(host.condition_substitute)
     requires nonzero(host.input_offset)
-    requires nonzero(host.condition_truth_in) {
+    requires nonzero(host.condition_query) {
 project(output,value,inputs,1,host);
 }
 
@@ -735,7 +735,7 @@ extern "C" u32 choice_right(address right,address data,Host host) on cpu
     requires nonzero(host.condition_index)
     requires nonzero(host.condition_substitute)
     requires nonzero(host.input_offset)
-    requires nonzero(host.condition_truth_in) {
+    requires nonzero(host.condition_query) {
 OwnerChoiceRight context=unsafe_position<OwnerChoiceRight>(data);
     negate(right,host);combine(right,context.b,0,host);combine(context.left,right,1,host);
     ownership_from_presence(context.output,context.left,host);return 1;
@@ -754,7 +754,7 @@ extern "C" u32 choice_left(address left,address data,Host host) on cpu
     requires nonzero(host.condition_index)
     requires nonzero(host.condition_substitute)
     requires nonzero(host.input_offset)
-    requires nonzero(host.condition_truth_in) {
+    requires nonzero(host.condition_query) {
 OwnerChoice context=unsafe_position<OwnerChoice>(data);
     combine(left,context.a,0,host);
     OwnerChoiceRight next=OwnerChoiceRight(context.output,left,context.b);
@@ -774,7 +774,7 @@ extern "C" u32 owner_second(address b,address data,Host host) on cpu
     requires nonzero(host.condition_index)
     requires nonzero(host.condition_substitute)
     requires nonzero(host.input_offset)
-    requires nonzero(host.condition_truth_in) {
+    requires nonzero(host.condition_query) {
 OwnerSecond context=unsafe_position<OwnerSecond>(data);
     ownership_presence(b,context.pair.b,host);
     if(context.pair.has_choice==0){combine(context.a_presence,b,0,host);ownership_from_presence(context.pair.output,context.a_presence,host);return 1;}
@@ -795,7 +795,7 @@ extern "C" u32 owner_first(address a,address data,Host host) on cpu
     requires nonzero(host.condition_index)
     requires nonzero(host.condition_substitute)
     requires nonzero(host.input_offset)
-    requires nonzero(host.condition_truth_in) {
+    requires nonzero(host.condition_query) {
 OwnerPair context=unsafe_position<OwnerPair>(data);
     ownership_presence(a,context.a,host);
     OwnerSecond next=OwnerSecond(context,a);
@@ -815,7 +815,7 @@ extern "C" void ownership_either(address output,address a,address b,address choi
     requires nonzero(host.condition_index)
     requires nonzero(host.condition_substitute)
     requires nonzero(host.input_offset)
-    requires nonzero(host.condition_truth_in) {
+    requires nonzero(host.condition_query) {
 if(same_ownership(a,b,host)!=0){clone_ownership(output,a,host.layout,host.drop_payload);return;}
     OwnershipNode left=read_ownership(a, host.layout);OwnershipNode right=read_ownership(b, host.layout);
     if(left.kind==2||right.kind==2){write_ownership_constant(output,0, host.layout, host.drop_payload);return;}
@@ -836,7 +836,7 @@ extern "C" u32 restrict_right(address right,address data,Host host) on cpu
     requires nonzero(host.condition_index)
     requires nonzero(host.condition_substitute)
     requires nonzero(host.input_offset)
-    requires nonzero(host.condition_truth_in) {
+    requires nonzero(host.condition_query) {
 OwnerRestrictRight context=unsafe_position<OwnerRestrictRight>(data);
     combine(context.left,right,0,host);ownership_from_presence(context.output,context.left,host);return 1;
 }
@@ -854,7 +854,7 @@ extern "C" u32 restrict_left(address left,address data,Host host) on cpu
     requires nonzero(host.condition_index)
     requires nonzero(host.condition_substitute)
     requires nonzero(host.input_offset)
-    requires nonzero(host.condition_truth_in) {
+    requires nonzero(host.condition_query) {
 OwnerRestrict context=unsafe_position<OwnerRestrict>(data);
     ownership_presence(left,context.owner,host);
     OwnerRestrictRight next=OwnerRestrictRight(context.output,left);
@@ -874,7 +874,7 @@ extern "C" void ownership_restricted(address output,address value,address when,H
     requires nonzero(host.condition_index)
     requires nonzero(host.condition_substitute)
     requires nonzero(host.input_offset)
-    requires nonzero(host.condition_truth_in) {
+    requires nonzero(host.condition_query) {
 OwnershipNode node=read_ownership(value, host.layout);
     if(node.kind==2){write_ownership_constant(output,2, host.layout, host.drop_payload);return;}
     OwnerRestrict context=OwnerRestrict(output,value,when);
@@ -894,7 +894,7 @@ extern "C" u32 ownership_compatible(address a,address b,address inputs,address p
     requires nonzero(host.condition_index)
     requires nonzero(host.condition_substitute)
     requires nonzero(host.input_offset)
-    requires nonzero(host.condition_truth_in) {
+    requires nonzero(host.condition_query) {
 OwnershipNode left=read_ownership(a, host.layout);OwnershipNode right=read_ownership(b, host.layout);
     if((left.kind==2&&right.kind==2)||(left.kind==1&&right.kind==1)){return 1;}
     if(left.kind==2||right.kind==2){return 0;}
@@ -911,7 +911,7 @@ OwnershipNode left=read_ownership(a, host.layout);OwnershipNode right=read_owner
     let difference = join_cases(missing, excess, 1, host.condition_conflict);
     release_cases(excess);
     release_cases(missing);
-    let matches = host.condition_truth_in(address_of(difference), path) == 1;
+    let matches = condition_truth_in(address_of(difference), path, host.condition_conflict, host.condition_query) == PathTruth::False;
     release_cases(difference);
     release_cases(actual);
     release_cases(expected);

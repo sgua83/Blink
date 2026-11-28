@@ -29,6 +29,14 @@ extern "C" address combine_clause_both(address left,address right,cfn<u32,addres
  requires nonzero(conflict);
 extern "C" address combine_clause_either(address left,address right,cfn<u32,address> conflict) on cpu
  requires nonzero(conflict);
+enum PathTruth:u32 { Unknown=0; False=1; True=2; };
+
+extern "C" u32 clause_possible(address value,cfn<u32,address> query) on cpu
+    requires nonzero(query);
+extern "C" PathTruth condition_truth_in(address value,address path,cfn<u32,address> conflict,cfn<u32,address> query) on cpu
+    requires nonzero(conflict)
+    requires nonzero(query);
+
 extern "C" address combine_clause_branch(address parent,address condition,u32 truth) on cpu;
 
 extern "C" void clause_walk_drop(address owner) on cpu;

@@ -305,6 +305,33 @@ extern "C" address combine_clause_either(address left,address right,cfn<u32,addr
     return pair_of(StoredClauseKind::Either,0,left,right);
 }
 
+extern "C" u32 clause_possible(address value,cfn<u32,address> query) on cpu
+    requires nonzero(query) {
+    let node = clause_header(unsafe_position<address>(value));
+    if (node.kind == StoredClauseKind::Impossible) { return 0; }
+    if (node.kind == StoredClauseKind::Facts) { return 1; }
+    return query(value);
+}
+
+bool case_possible_on_path(address path,address condition,cfn<u32,address> conflict,cfn<u32,address> query) on cpu
+    requires nonzero(conflict)
+    requires nonzero(query) {
+    let joined = combine_clause_both(path, condition, conflict);
+    let possible = clause_possible(address_of(joined), query) != 0;
+    clause_release(joined);
+    return possible;
+}
+
+extern "C" PathTruth condition_truth_in(address value,address path,cfn<u32,address> conflict,cfn<u32,address> query) on cpu
+    requires nonzero(conflict)
+    requires nonzero(query) {
+    let cases = unsafe_position<ClausePair>(value);
+    let premise = unsafe_position<address>(path);
+    if (!case_possible_on_path(premise, cases.first, conflict, query)) { return PathTruth::True; }
+    if (!case_possible_on_path(premise, cases.second, conflict, query)) { return PathTruth::False; }
+    return PathTruth::Unknown;
+}
+
 extern "C" address combine_clause_branch(address parent,address condition,u32 truth) on cpu {
     if(clause_header(parent).kind==StoredClauseKind::Impossible||
        clause_header(selected_case(condition,truth)).kind==StoredClauseKind::Impossible){

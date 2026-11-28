@@ -1769,6 +1769,12 @@ unsafe extern "C" {
     fn clause_impossible() -> *mut StoredClause;
     #[link_name = "bootstrap.clause_storage::clause_facts"]
     fn clause_facts(facts: *mut Facts) -> *mut StoredClause;
+    #[link_name = "bootstrap.clause_storage::clause_possible"]
+    fn native_clause_possible(value: &Clause, query: unsafe extern "C" fn(&Clause) -> u32) -> u32;
+    #[link_name = "bootstrap.clause_storage::condition_truth_in"]
+    fn native_condition_truth_in(value: &Condition, path: &Clause,
+        conflict: unsafe extern "C" fn(*const std::ffi::c_void) -> u32,
+        query: unsafe extern "C" fn(&Clause) -> u32) -> u32;
     #[link_name = "bootstrap.clause_storage::clause_pair"]
     fn clause_pair(
         kind: StoredClauseKind,
@@ -2491,13 +2497,7 @@ impl Clause {
         }
     }
     pub(super) fn possible(&self) -> bool {
-        match self.view() {
-            ClauseNode::Impossible => false,
-            ClauseNode::Facts(_) => true,
-            ClauseNode::Both(..) | ClauseNode::Either(..) | ClauseNode::Branch(..) => {
-                self.possible_in(&Facts::new())
-            }
-        }
+        unsafe { native_clause_possible(self, condition_query) != 0 }
     }
     pub(super) fn overlaps(&self, other: &Self) -> bool {
         self.overlap_query(other, true)
@@ -2512,6 +2512,10 @@ impl Clause {
     }
 
 }
+pub(super) unsafe extern "C" fn condition_query(value: &Clause) -> u32 {
+    u32::from(value.possible_in(&Facts::new()))
+}
+
 fn contradictory(facts: &Facts) -> bool {
     contradictory_with_roots(facts, &equality_roots(facts))
 }
@@ -2734,8 +2738,12 @@ impl Condition {
     }
     pub(super) fn path(&self, truth: bool) -> &Clause { &self.cases[usize::from(truth)] }
     pub(super) fn assume(&self,path:&Clause,truth:bool)->Clause{Clause::both(path,self.path(truth))}
-    pub(super) fn truth_in(&self,path:&Clause)->Option<bool>{
-        if !self.assume(path,false).possible(){Some(true)}else if !self.assume(path,true).possible(){Some(false)}else{None}
+    pub(super) fn truth_in(&self, path: &Clause) -> Option<bool> {
+        match unsafe { native_condition_truth_in(self, path, condition_conflict, condition_query) } {
+            1 => Some(false),
+            2 => Some(true),
+            _ => None,
+        }
     }
     pub(super) fn mentions(&self, identity: ValueIdentity) -> bool {
         condition_graph::condition_inputs(&self.cases, |input| *input == identity)
