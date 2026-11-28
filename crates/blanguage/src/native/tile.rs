@@ -58,7 +58,8 @@ struct TilePublishHost {
     commit: unsafe extern "C" fn(TileSlot, usize),
     scalar: unsafe extern "C" fn(*const c_void, Reg) -> ScalarEncoding,
     location: unsafe extern "C" fn(*const c_void, Reg) -> operands::MoveLocation,
-    slot: unsafe extern "C" fn(*const c_void, TileKey) -> u32,
+    placed: Span,
+    used: unsafe extern "C" fn(*const c_void, TileKey) -> u32,
     observe: unsafe extern "C" fn(TileSlot, usize, usize, usize, TilePublishCode, TilePublishField),
 }
 
@@ -87,9 +88,6 @@ impl Emitter<'_> {
     fn tile_length_slot(&self) -> u32 {
         self.frame.end as u32
     }
-    pub(super) fn shared_stream(&self, word: SharedWord) -> u32 {
-        self.frame.shared_offset(word.aligned().into())
-    }
     pub(super) fn tile_length(&mut self, dst: Reg) {
         self.copy(self.location(dst), Location::Stack(self.tile_length_slot()));
     }
@@ -104,13 +102,15 @@ impl Emitter<'_> {
 
     pub(super) fn publish_values(&mut self, publication: View) {
         let base_offset = self.tile_length_slot() + 4;
+        let placed = self.frame.shared_words();
         unsafe {
             emit_tile_publish(std::ptr::from_mut(self).cast(), publication, base_offset, TilePublishHost {
                 reserve: structure::reserve_scalar,
                 commit: structure::commit_scalar,
                 scalar: operands::body_value_scalar,
                 location: operands::body_value_location,
-                slot: publication_slot,
+                placed,
+                used: publication_word_used,
                 observe: observe_publish,
             });
         }
@@ -121,7 +121,7 @@ impl Emitter<'_> {
             length_offset: self.tile_length_slot(),
             plane_stride: self.workgroup * 4,
         };
-        let slots = operands::TileSlots { tiles: Span::slice(self.tiles), slot: operands::body_tile_slot };
+        let slots = operands::TileSlots::new(self.tiles, &self.frame);
         unsafe {
             emit_tile_collective(std::ptr::from_mut(self).cast(), collective, layout, TileCollectiveHost {
                 ir: HOST,
@@ -136,14 +136,9 @@ impl Emitter<'_> {
     }
 }
 
-unsafe extern "C" fn publication_slot(slot: *const c_void, key: TileKey) -> u32 {
+unsafe extern "C" fn publication_word_used(slot: *const c_void, key: TileKey) -> u32 {
     let emitter = unsafe { &*slot.cast::<Emitter<'_>>() };
-    let word = key.word();
-    if emitter.used_tile_words.contains(&word) {
-        emitter.shared_stream(word)
-    } else {
-        u32::MAX
-    }
+    u32::from(emitter.used_tile_words.contains(&key.word()))
 }
 
 unsafe extern "C" fn observe_publish(

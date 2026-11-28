@@ -24,7 +24,7 @@ impl SharedWord {
     }
 }
 #[cfg(feature = "compiler")]
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy)]
 #[repr(C)]
 pub(crate) struct TileKey { storage: u64, owner: usize, byte: u32 }
 

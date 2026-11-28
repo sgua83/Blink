@@ -38,12 +38,6 @@ struct TilePlacement { i64 begin; i64 end; u64 first; u64 count; u64 width; u32 
 struct TileBuffer { address data; u64 count; u64 capacity; };
 struct TilePlan { TileBuffer rows; TileBuffer members; };
 
-bool tile_key_less(TileKey a, TileKey b) on cpu {
-    if (a.storage != b.storage) { return a.storage < b.storage; }
-    if (a.owner != b.owner) { return a.owner < b.owner; }
-    return a.byte < b.byte;
-}
-
 address tile_piece<T>(address data, u64 index) on cpu {
     return unsafe_address(address_bits(data) + index * size_of<T>());
 }

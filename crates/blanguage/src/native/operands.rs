@@ -2,7 +2,7 @@
 use super::*;
 use allocation::Location;
 use crate::builtin_types::ScalarEncoding;
-use crate::ir::{TileKey, dataflow::{HOST, Host, Span, View}};
+use crate::ir::dataflow::{HOST, Host, Span, View};
 
 #[derive(Clone, Copy)]
 pub(super) struct Memory {
@@ -128,7 +128,7 @@ impl<'a> ScalarLocations<'a> {
     }
 
     pub(super) fn indexed_host(&self) -> IndexedAddressHost {
-        IndexedAddressHost::new(self.host(), TileSlots { tiles: Span::slice(self.tiles), slot: indexed_tile_slot }, self.workgroup)
+        IndexedAddressHost::new(self.host(), TileSlots::new(self.tiles, self.frame), self.workgroup)
     }
 
     pub(super) fn host(&self) -> ScalarValueHost {
@@ -150,8 +150,14 @@ impl<'a> ScalarLocations<'a> {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(super) struct TileSlots {
-    pub(super) tiles: Span,
-    pub(super) slot: unsafe extern "C" fn(*const std::ffi::c_void, TileKey) -> u32,
+    tiles: Span,
+    placed: Span,
+}
+
+impl TileSlots {
+    pub(super) fn new(tiles: &[Tile], frame: &Frame) -> Self {
+        Self { tiles: Span::slice(tiles), placed: frame.shared_words() }
+    }
 }
 
 #[repr(C)]
@@ -170,11 +176,6 @@ impl IndexedAddressHost {
     }
 }
 
-unsafe extern "C" fn indexed_tile_slot(context: *const std::ffi::c_void, key: TileKey) -> u32 {
-    let locations = unsafe { &*context.cast::<ScalarLocations<'_>>() };
-    locations.frame.shared_offset(key)
-}
-
 pub(super) unsafe extern "C" fn value_local(context: *const std::ffi::c_void, local: usize) -> MoveLocation {
     unsafe { &*context.cast::<ScalarLocations<'_>>() }.location(PrivateSlot::Local(local))
 }
@@ -187,10 +188,10 @@ unsafe extern "C" fn value_scalar(context: *const std::ffi::c_void, reg: Reg) ->
     unsafe { &*context.cast::<ScalarLocations<'_>>() }.scalar(reg)
 }
 
-pub(super) fn scalar_body_addresses(context: *const std::ffi::c_void, workgroup: u32, tiles: Span) -> IndexedAddressHost {
+pub(super) fn scalar_body_addresses(context: *const std::ffi::c_void, workgroup: u32, tiles: TileSlots) -> IndexedAddressHost {
     IndexedAddressHost::new(
         ScalarValueHost { ir: HOST, context, location: body_value_location, scalar: body_value_scalar },
-        TileSlots { tiles, slot: body_tile_slot },
+        tiles,
         workgroup,
     )
 }
@@ -205,11 +206,6 @@ pub(super) unsafe extern "C" fn body_value_location(context: *const std::ffi::c_
 
 pub(super) unsafe extern "C" fn body_value_scalar(context: *const std::ffi::c_void, reg: Reg) -> ScalarEncoding {
     ScalarLocations::from_emitter(unsafe { &*context.cast::<Emitter<'_>>() }).scalar(reg)
-}
-
-pub(super) unsafe extern "C" fn body_tile_slot(context: *const std::ffi::c_void, key: TileKey) -> u32 {
-    let emitter = unsafe { &*context.cast::<Emitter<'_>>() };
-    emitter.frame.shared_offset(key)
 }
 
 unsafe extern "C" {

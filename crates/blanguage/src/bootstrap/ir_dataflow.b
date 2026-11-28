@@ -2020,6 +2020,29 @@ extern "C" u64 coalesce_tile_groups(address groups,u64 count) on cpu {
  return used;
 }
 
+bool tile_key_less(TileKey a, TileKey b) on cpu {
+    if (a.storage != b.storage) { return a.storage < b.storage; }
+    if (a.owner != b.owner) { return a.owner < b.owner; }
+    return a.byte < b.byte;
+}
+
+address tile_placed_word(Span placed, TileKey key) on cpu {
+    usize low = 0u64;
+    usize high = placed.count;
+    while (low < high) {
+        usize middle = low + (high - low) / 2u64;
+        address row = node_at(placed, middle, 0).data;
+        if (tile_key_less(unsafe_position<TilePlacedWord>(row).key, key)) {
+            low = middle + 1u64;
+        } else {
+            high = middle;
+        }
+    }
+    if (low == placed.count) { return address(); }
+    address row = node_at(placed, low, 0).data;
+    return tile_key_less(key, unsafe_position<TilePlacedWord>(row).key) ? address() : row;
+}
+
 TileInputFragment tile_input_fragment(Span fragments, usize index) on cpu {
  return unsafe_position<TileInputFragment>(node_at(fragments,index,0).data);
 }

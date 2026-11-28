@@ -1,6 +1,6 @@
 //! 输入与中间发布共用共享布局；阶段屏障覆盖所有 workgroup invocations。
 use super::*;
-use crate::ir::{TileKey, dataflow::InputFragments};
+use crate::ir::dataflow::InputFragments;
 use std::ffi::c_void;
 
 #[repr(C)]
@@ -46,14 +46,6 @@ unsafe extern "C" fn tile_phase_value(context: StructuredContext, register: Reg)
 }
 
 #[repr(C)]
-struct TileCell {
-    unit: ScalarCode,
-    slot: u32,
-    byte: u32,
-    present: u32,
-}
-
-#[repr(C)]
 struct TilePlanes {
     narrow: u32,
     narrow_pointer: u32,
@@ -63,7 +55,7 @@ struct TilePlanes {
 
 #[repr(C)]
 pub(super) struct TileStorage {
-    cell: unsafe extern "C" fn(*mut c_void, TileKey) -> TileCell,
+    placed: Span,
     tiles: Span,
     components: unsafe extern "C" fn(*mut c_void, usize) -> *mut scan::TreeComponent,
     planes: TilePlanes,
@@ -71,19 +63,6 @@ pub(super) struct TileStorage {
     lane: u32,
     length: u32,
     data_words: u32,
-}
-
-unsafe extern "C" fn tile_cell(context: *mut c_void, key: TileKey) -> TileCell {
-    let emitter = unsafe { &*context.cast::<Emitter<'_>>() };
-    let layout = emitter.tile_layout;
-    layout.binary_search_by_key(&key, |placed| placed.key).map_or(TileCell::ABSENT, |index| {
-        let placed = layout[index];
-        TileCell { unit: placed.unit, slot: placed.position as u32, byte: placed.part, present: 1 }
-    })
-}
-
-impl TileCell {
-    const ABSENT: Self = Self { unit: ScalarCode::U32, slot: 0, byte: 0, present: 0 };
 }
 
 unsafe extern "C" fn tile_tree_components(context: *mut c_void, count: usize) -> *mut scan::TreeComponent {
@@ -147,7 +126,8 @@ impl Emitter<'_> {
 
     pub(super) fn tile_storage(&self) -> TileStorage {
         TileStorage {
-            cell: tile_cell, tiles: Span::slice(&self.stage.tiles), components: tile_tree_components,
+            placed: Span::slice(self.tile_layout),
+            tiles: Span::slice(&self.stage.tiles), components: tile_tree_components,
             planes: self.tile_planes(), width: self.workgroup_width,
             lane: self.tile_lane, length: self.tile_length, data_words: self.tile_data_words,
         }

@@ -5,6 +5,8 @@ import bootstrap.names;
 import bootstrap.stage_fusion;
 import codec.builtin_type;
 
+extern "C" void abort() on cpu from "ucrtbase.dll";
+
 struct BinaryEncoding {
     u64 length;
     u64 left_literal;
@@ -462,7 +464,7 @@ ControlKind native_control_kind(u32 tag) on cpu {
 
 extern "C" u32 emit_scalar_body(address context, address emitter, Span code, ControlTargets targets, ScalarBodyHost host) on cpu
     requires nonzero(host.addresses.values.ir.inspect) requires nonzero(host.addresses.values.location)
-    requires nonzero(host.addresses.values.scalar) requires nonzero(host.addresses.tiles.slot)
+    requires nonzero(host.addresses.values.scalar)
     requires nonzero(host.local) requires nonzero(host.reserve) requires nonzero(host.commit)
     requires nonzero(host.literal) requires nonzero(host.math_symbol)
     requires nonzero(host.mark) requires nonzero(host.publish) requires nonzero(host.emit)
@@ -4235,16 +4237,23 @@ TilePublishCode tile_publish_value(TilePublishInput input, address output) on cp
     return TilePublishCode(cursor - start, value_end - start, high_start - start, high_store - start);
 }
 
+u32 tile_frame_offset(Span placed, TileKey key) on cpu {
+    address row = tile_placed_word(placed, key);
+    if (row == address()) { abort(); }
+    return u32(unsafe_position<TilePlacedWord>(row).position);
+}
+
 u32 tile_publication_offset(address context, usize tile, u32 word, TilePublishHost host) on cpu
-    requires nonzero(host.slot) {
-    u32 slot = host.slot(context, TileKey(1u64, tile, word));
-    return slot == 0xffffffff ? slot : slot + word % 4;
+    requires nonzero(host.used) {
+    if (host.used(context, TileKey(1u64, tile, word)) == 0) { return 0xffffffff; }
+    u32 slot = tile_frame_offset(host.placed, TileKey(1u64, tile, word & 0xfffffffc));
+    return slot + word % 4;
 }
 
 extern "C" void emit_tile_publish(address context, View publication, u32 base_offset, TilePublishHost host) on cpu
     requires nonzero(host.reserve) requires nonzero(host.commit)
     requires nonzero(host.scalar) requires nonzero(host.location)
-    requires nonzero(host.slot) requires nonzero(host.observe) {
+    requires nonzero(host.used) requires nonzero(host.observe) {
     bool first = true;
     Span words = publication.second;
     usize index = 0u64;
@@ -4373,8 +4382,8 @@ u64 tile_input_copy(TileInputCopy input, address output) on cpu {
     return tile_counted_back_edge(cursor, begin) - start;
 }
 
-u32 tile_slot(TileSlots slots, address context, TileKey key) on cpu requires nonzero(slots.slot) {
-    return slots.slot(context, TileKey(key.storage, key.owner, key.byte & 0xfffffffc));
+u32 tile_slot(TileSlots slots, TileKey key) on cpu {
+    return tile_frame_offset(slots.placed, TileKey(key.storage, key.owner, key.byte & 0xfffffffc));
 }
 
 TileCollectiveCode tile_collective(ReductionOperator operation, bool exclusive,
@@ -4437,7 +4446,7 @@ TileCollectiveCode tile_collective(ReductionOperator operation, bool exclusive,
 
 extern "C" void emit_tile_collective(address context, View collective, TileCollectiveLayout layout,
     TileCollectiveHost host) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.slots.slot)
+    requires nonzero(host.ir.inspect)
     requires nonzero(host.reserve) requires nonzero(host.commit)
     requires nonzero(host.scalar) requires nonzero(host.destination) requires nonzero(host.observe) {
     ReductionOperator operation = ReductionOperator(u32(collective.b));
@@ -4454,9 +4463,9 @@ extern "C" void emit_tile_collective(address context, View collective, TileColle
             u32(scalar.kind == ScalarKind::Signed), u32(scalar.kind == ScalarKind::Float));
         TileCollectiveField field = TileCollectiveField(identity, scalar, host.destination(context, result), word, result);
         TileKey key = tile_key(host.slots.tiles, collective.a, word, host.ir);
-        u32 low = tile_slot(host.slots, context, key);
+        u32 low = tile_slot(host.slots, key);
         u32 high_delta = scalar.width == 64
-            ? tile_slot(host.slots, context, TileKey(key.storage, key.owner, key.byte + 4)) - low : 0;
+            ? tile_slot(host.slots, TileKey(key.storage, key.owner, key.byte + 4)) - low : 0;
         TileCollectiveInput input = TileCollectiveInput(low + key.byte % 4, high_delta);
 
         NativeCodeBuffer buffer = host.reserve(context, 128u64);
@@ -5632,7 +5641,7 @@ u64 move_tile_base(MapRangeHost host, u32 offset, u64 phase, bool restore) on cp
 
 void emit_map_tile_input(MapRangeInput input, MapRangeHost host) on cpu
     requires nonzero(host.reserve) requires nonzero(host.commit) requires nonzero(host.observe)
-    requires nonzero(host.input_slot) requires nonzero(host.observe_input) {
+    requires nonzero(host.observe_input) {
     NativeCodeBuffer buffer = host.reserve(host.context, 48u64);
     address output = unsafe_address(address_bits(buffer.image) + buffer.end);
     TileInputBoundaryCode boundary = tile_input_boundary(input.workgroup, input.slots, output);
@@ -5650,7 +5659,7 @@ void emit_map_tile_input(MapRangeInput input, MapRangeHost host) on cpu
         if (index == 0u64 || item.binding != binding || aligned != word) {
             binding = item.binding;
             word = aligned;
-            storage_base = host.input_slot(host.context, TileKey(0u64, binding, word));
+            storage_base = tile_frame_offset(input.placed, TileKey(0u64, binding, word));
         }
         u32 data = u32(binding) * input.buffer_bytes;
         u32 storage = storage_base + item.byte % 4;
@@ -5704,7 +5713,7 @@ void advance_tile_phase(MapRangeInput input, MapRangeHost host, Span saved, u64 
 
 bool emit_map_tile_phases(MapRangeInput input, MapRangeHost host, ControlTargets targets) on cpu
     requires nonzero(host.reserve) requires nonzero(host.commit) requires nonzero(host.observe)
-    requires nonzero(host.scalar) requires nonzero(host.input_slot) requires nonzero(host.observe_input)
+    requires nonzero(host.scalar) requires nonzero(host.observe_input)
     requires nonzero(host.ir.inspect) requires nonzero(host.phase)
     requires nonzero(host.private_place) requires nonzero(host.observe_private) requires nonzero(host.tile_step) {
     u32 base = input.slots + 4;
@@ -5745,7 +5754,7 @@ u64 finish_range_frame(u32 frame, RangePrologue entry, u64 exits, address contex
 extern "C" u32 emit_map_range(MapRangeInput input, MapRangeHost host) on cpu
     requires nonzero(host.frame.reserve) requires nonzero(host.frame.publish) requires nonzero(host.reserve)
     requires nonzero(host.commit) requires nonzero(host.observe)
-    requires nonzero(host.packet) requires nonzero(host.scalar) requires nonzero(host.input_slot) requires nonzero(host.observe_input)
+    requires nonzero(host.packet) requires nonzero(host.scalar) requires nonzero(host.observe_input)
     requires nonzero(host.ir.inspect) requires nonzero(host.phase)
     requires nonzero(host.private_place) requires nonzero(host.observe_private) requires nonzero(host.tile_step) {
     u64 exits = 0u64;
@@ -5884,9 +5893,9 @@ ViewElement indexed_view_element(Span pair, usize index, View stride, ScalarValu
 struct IndexedTileWord { u32 offset; u32 byte_offset; };
 
 IndexedTileWord indexed_tile_word(IndexedAddressHost host, usize tile, u32 word) on cpu
-    requires nonzero(host.values.ir.inspect) requires nonzero(host.tiles.slot) {
+    requires nonzero(host.values.ir.inspect) {
     TileKey key = tile_key(host.tiles.tiles, tile, word, host.values.ir);
-    return IndexedTileWord(tile_slot(host.tiles, host.values.context, key), key.byte % 4);
+    return IndexedTileWord(tile_slot(host.tiles, key), key.byte % 4);
 }
 
 enum IndexedAddressMode:u32 { Base=0; Memory=1; Address=2; };
@@ -5894,7 +5903,7 @@ enum IndexedAddressMode:u32 { Base=0; Memory=1; Address=2; };
 AddressEncoding indexed_operand(View base, usize offset, u32 word,
     IndexedAddressMode mode, IndexedAddressHost host, address output) on cpu
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
-    requires nonzero(host.values.scalar) requires nonzero(host.tiles.slot) {
+    requires nonzero(host.values.scalar) {
     ScalarValueHost values = host.values;
     address context = values.context;
     u64 prefix;
@@ -5935,7 +5944,7 @@ AddressEncoding indexed_operand(View base, usize offset, u32 word,
 extern "C" u64 emit_reference_address(Node reference, IndexedAddressHost host,
     cfn<MoveLocation,address,usize> ensures memory(read) local, address output) on cpu
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
-    requires nonzero(host.values.scalar) requires nonzero(host.tiles.slot) requires nonzero(local) {
+    requires nonzero(host.values.scalar) requires nonzero(local) {
     ScalarValueHost values = host.values;
     View address_view = values.ir.inspect(reference);
     View storage = values.ir.inspect(address_view.left);
@@ -5970,7 +5979,7 @@ MoveLocation indexed_move_location(AddressEncoding memory) on cpu {
 
 u64 indexed_tile_read(View inst, View source, bool dynamic, IndexedAddressHost host, address output) on cpu
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
-    requires nonzero(host.values.scalar) requires nonzero(host.tiles.slot) {
+    requires nonzero(host.values.scalar) {
     ScalarValueHost values = host.values;
     address context = values.context;
     ScalarEncoding scalar = values.scalar(context, inst.a);
@@ -6011,7 +6020,7 @@ u64 indexed_tile_read(View inst, View source, bool dynamic, IndexedAddressHost h
 u64 emit_indexed_storage(View inst, IndexedAddressHost host,
     cfn<MoveLocation,address,usize> ensures memory(read) local, address output) on cpu
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
-    requires nonzero(host.values.scalar) requires nonzero(host.tiles.slot) requires nonzero(local) {
+    requires nonzero(host.values.scalar) requires nonzero(local) {
     ScalarValueHost values = host.values;
     address context = values.context;
     if (inst.tag == OP_POSITION_ADDRESS) {
@@ -6051,7 +6060,7 @@ u64 emit_view_load(View load, ScalarValueHost host, address output) on cpu
 
 u64 emit_atomic(View value, IndexedAddressHost host, address output) on cpu
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
-    requires nonzero(host.values.scalar) requires nonzero(host.tiles.slot) {
+    requires nonzero(host.values.scalar) {
     ScalarValueHost values = host.values;
     address context = values.context;
     View target = values.ir.inspect(value.left);
@@ -6137,7 +6146,7 @@ extern "C" CustomRangeProduct emit_custom_range(address emitter, CustomRangeInpu
     requires nonzero(host.frame.reserve) requires nonzero(host.frame.publish)
     requires nonzero(host.summary_component)
     requires nonzero(scalar.addresses.values.ir.inspect) requires nonzero(scalar.addresses.values.location)
-    requires nonzero(scalar.addresses.values.scalar) requires nonzero(scalar.addresses.tiles.slot)
+    requires nonzero(scalar.addresses.values.scalar)
     requires nonzero(scalar.local) requires nonzero(scalar.reserve) requires nonzero(scalar.commit)
     requires nonzero(scalar.literal) requires nonzero(scalar.math_symbol)
     requires nonzero(scalar.mark) requires nonzero(scalar.publish) requires nonzero(scalar.emit)

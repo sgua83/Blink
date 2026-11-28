@@ -527,7 +527,8 @@ struct TilePublishHost {
     cfn<void,address,u64> commit;
     cfn<ScalarEncoding,address,usize> ensures memory(read) scalar;
     cfn<MoveLocation,address,usize> ensures memory(read) location;
-    cfn<u32,address,TileKey> ensures memory(read) slot;
+    Span placed;
+    cfn<u32,address,TileKey> ensures memory(read) used;
     cfn<void,address,usize,u64,u64,TilePublishCode,TilePublishField> observe;
 };
 
@@ -535,11 +536,11 @@ struct TilePublishHost {
 extern "C" void emit_tile_publish(address context, View publication, u32 base_offset, TilePublishHost host) on cpu
     requires nonzero(host.reserve) requires nonzero(host.commit)
     requires nonzero(host.scalar) requires nonzero(host.location)
-    requires nonzero(host.slot) requires nonzero(host.observe);
+    requires nonzero(host.used) requires nonzero(host.observe);
 
 struct TileSlots {
     Span tiles;
-    cfn<u32,address,TileKey> ensures memory(read) slot;
+    Span placed;
 };
 
 struct TileCollectiveLayout {
@@ -578,7 +579,7 @@ struct TileCollectiveHost {
 
 extern "C" void emit_tile_collective(address context, View collective, TileCollectiveLayout layout,
     TileCollectiveHost host) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.slots.slot)
+    requires nonzero(host.ir.inspect)
     requires nonzero(host.reserve) requires nonzero(host.commit)
     requires nonzero(host.scalar) requires nonzero(host.destination) requires nonzero(host.observe);
 
@@ -700,6 +701,7 @@ enum MapRangePart:u32 {
 struct MapRangeInput {
     Span code;
     Span inputs;
+    Span placed;
     address packet;
     u64 phase_count;
     usize binding;
@@ -728,7 +730,6 @@ struct MapRangeHost {
     cfn<void,address,u64> commit;
     cfn<void,address,address,ControlTargets> packet;
     cfn<u32,address,Span,ControlTargets> scalar;
-    cfn<u32,address,TileKey> ensures memory(read) input_slot;
     cfn<void,address,u64,u64,usize,u32,u32,u32> observe_input;
     Host ir;
     cfn<TilePhaseView,address,u64> phase;
@@ -742,7 +743,7 @@ struct MapRangeHost {
 extern "C" u32 emit_map_range(MapRangeInput input, MapRangeHost host) on cpu
     requires nonzero(host.frame.reserve) requires nonzero(host.frame.publish) requires nonzero(host.reserve)
     requires nonzero(host.commit) requires nonzero(host.observe)
-    requires nonzero(host.packet) requires nonzero(host.scalar) requires nonzero(host.input_slot) requires nonzero(host.observe_input)
+    requires nonzero(host.packet) requires nonzero(host.scalar) requires nonzero(host.observe_input)
     requires nonzero(host.ir.inspect) requires nonzero(host.phase)
     requires nonzero(host.private_place) requires nonzero(host.observe_private) requires nonzero(host.tile_step);
 
@@ -764,7 +765,7 @@ struct IndexedAddressHost {
 extern "C" u64 emit_reference_address(Node reference, IndexedAddressHost host,
     cfn<MoveLocation,address,usize> ensures memory(read) local, address output) on cpu
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
-    requires nonzero(host.values.scalar) requires nonzero(host.tiles.slot) requires nonzero(local);
+    requires nonzero(host.values.scalar) requires nonzero(local);
 
 struct ScalarBodyHost {
     ControlHost control;
@@ -780,7 +781,7 @@ struct ScalarBodyHost {
 };
 extern "C" u32 emit_scalar_body(address context, address emitter, Span code, ControlTargets targets, ScalarBodyHost host) on cpu
     requires nonzero(host.addresses.values.ir.inspect) requires nonzero(host.addresses.values.location)
-    requires nonzero(host.addresses.values.scalar) requires nonzero(host.addresses.tiles.slot)
+    requires nonzero(host.addresses.values.scalar)
     requires nonzero(host.local) requires nonzero(host.reserve) requires nonzero(host.commit)
     requires nonzero(host.literal) requires nonzero(host.math_symbol)
     requires nonzero(host.mark) requires nonzero(host.publish) requires nonzero(host.emit)
@@ -813,7 +814,7 @@ extern "C" CustomRangeProduct emit_custom_range(address emitter, CustomRangeInpu
     requires nonzero(host.frame.reserve) requires nonzero(host.frame.publish)
     requires nonzero(host.summary_component)
     requires nonzero(scalar.addresses.values.ir.inspect) requires nonzero(scalar.addresses.values.location)
-    requires nonzero(scalar.addresses.values.scalar) requires nonzero(scalar.addresses.tiles.slot)
+    requires nonzero(scalar.addresses.values.scalar)
     requires nonzero(scalar.local) requires nonzero(scalar.reserve) requires nonzero(scalar.commit)
     requires nonzero(scalar.literal) requires nonzero(scalar.math_symbol)
     requires nonzero(scalar.mark) requires nonzero(scalar.publish) requires nonzero(scalar.emit)

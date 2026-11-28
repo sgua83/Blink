@@ -377,7 +377,6 @@ struct BlockPaging {
 };
 struct BlockSubgroup { u32 lane; u32 size; u32 id; u32 ballot_type; };
 struct BlockLocals { address slots; Span arrays; address pointers; };
-struct TileCell { BuiltinScalar unit; u32 slot; u32 byte; u32 present; };
 struct TilePlanes { u32 narrow; u32 narrow_pointer; u32 wide; u32 wide_pointer; };
 struct TileInputLayout {
     PageInputs page;
@@ -396,7 +395,7 @@ extern "C" TileInputRange emit_tile_input(TileInputLayout input, TileInputSource
     requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve) requires nonzero(memory.finish_body);
 
 struct TileStorage {
-    cfn<TileCell,address,TileKey> cell;
+    Span placed;
     Span tiles;
     cfn<address,address,usize> components;
     TilePlanes planes;
@@ -443,7 +442,6 @@ extern "C" BlockFlow emit_instruction_block(Span code, StructuredHost host, Bloc
     requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
     requires nonzero(emit.textures.declaration) requires nonzero(emit.rays.declare_type)
     requires nonzero(emit.tile.components)
-    requires nonzero(emit.tile.cell)
     requires nonzero(emit.paging.finish_body)
     requires nonzero(emit.paging.current_label)
     requires nonzero(emit.values.scalar) requires nonzero(emit.values.binary) requires nonzero(emit.values.finish)
@@ -463,7 +461,6 @@ extern "C" void emit_tile_phases(u32 active, StructuredHost control, TilePhaseHo
     requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
     requires nonzero(emit.textures.declaration) requires nonzero(emit.rays.declare_type)
     requires nonzero(emit.tile.components)
-    requires nonzero(emit.tile.cell)
     requires nonzero(emit.paging.finish_body)
     requires nonzero(emit.paging.current_label)
     requires nonzero(emit.values.scalar) requires nonzero(emit.values.binary) requires nonzero(emit.values.finish)

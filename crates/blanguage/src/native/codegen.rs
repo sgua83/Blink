@@ -309,6 +309,7 @@ impl Emitter<'_> {
 struct MapRangeInput {
     code: Span,
     inputs: Span,
+    placed: Span,
     packet: *const std::ffi::c_void,
     phase_count: usize,
     binding: usize,
@@ -370,7 +371,6 @@ struct MapRangeHost {
     commit: unsafe extern "C" fn(MapRangeSlot, usize),
     packet: unsafe extern "C" fn(MapRangeSlot, *const std::ffi::c_void, structure::ControlTargets),
     scalar: unsafe extern "C" fn(MapRangeSlot, Span, structure::ControlTargets) -> u32,
-    input_slot: unsafe extern "C" fn(MapRangeSlot, TileKey) -> u32,
     observe_input: unsafe extern "C" fn(MapRangeSlot, usize, usize, usize, u32, u32, u32),
     ir: dataflow::Host,
     phase: unsafe extern "C" fn(MapRangeSlot, usize) -> TilePhaseView,
@@ -427,11 +427,6 @@ unsafe extern "C" fn map_range_scalar(slot: MapRangeSlot, code: Span, targets: s
     let range = unsafe { &mut *slot.cast::<MapRange<'_, '_>>() };
     range.result = range.emitter.block(unsafe { code.as_slice() }, targets);
     u32::from(range.result.is_ok())
-}
-
-unsafe extern "C" fn map_range_input_slot(slot: MapRangeSlot, key: TileKey) -> u32 {
-    let range = unsafe { &*slot.cast::<MapRange<'_, '_>>() };
-    range.emitter.shared_stream(key.word())
 }
 
 unsafe extern "C" fn map_range_observe_input(
@@ -573,6 +568,7 @@ fn emit_map(
     let input = MapRangeInput {
         code: Span::slice(&code),
         inputs: Span::slice(inputs),
+        placed: e.frame.shared_words(),
         phase_count: phases.len(),
         packet: packet.as_ref().map_or(std::ptr::null(), |packet| std::ptr::from_ref(packet).cast()),
         binding, word, selected, frame, slots: e.frame.end as u32,
@@ -591,7 +587,7 @@ fn emit_map(
             frame: RangeFrameHost { reserve: map_range_frame, publish: map_range_publish_frame },
             reserve: map_range_reserve, commit: map_range_commit,
             packet: map_range_packet, scalar: map_range_scalar,
-            input_slot: map_range_input_slot, observe_input: map_range_observe_input,
+            observe_input: map_range_observe_input,
             ir: dataflow::HOST, phase: map_range_phase,
             private_place: map_range_private_place, observe_private: map_range_observe_private,
             tile_step: map_range_tile_step, observe: map_range_observe,

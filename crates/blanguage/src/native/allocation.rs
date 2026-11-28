@@ -206,9 +206,8 @@ impl Frame {
         end
     }
 
-    pub(super) fn shared_offset(&self, key: TileKey) -> u32 {
-        let index = self.tile_shared.binary_search_by_key(&key, |row| row.key).unwrap();
-        self.tile_shared[index].position as u32
+    pub(super) fn shared_words(&self) -> Span {
+        Span::slice(&self.tile_shared)
     }
 
     pub(super) fn private_offset(&self, key: PrivateSlot) -> u32 {
