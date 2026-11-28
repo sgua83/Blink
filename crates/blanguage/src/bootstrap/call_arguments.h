@@ -249,6 +249,19 @@ extern "C" void join_borrow_components(usize width, u32 conditional, BorrowJoinH
     requires nonzero(host.equal) requires nonzero(host.branch_paths) requires nonzero(host.restrict_left)
     requires nonzero(host.merge_right) requires nonzero(host.union_right);
 
+enum BorrowCallPart:u32 { Inputs=0; Calls=1; Reads=2; Sources=3; };
+struct BorrowCallCounts { usize inputs; usize calls; usize reads; usize sources; };
+struct BorrowCallHost {
+    address context;
+    cfn<void,address,BorrowCallPart> collect;
+    cfn<void,address> project;
+    cfn<void,address,BorrowCallPart> restore;
+    cfn<void,address> map_source;
+};
+extern "C" void map_call_borrows(BorrowCallCounts counts, BorrowCallHost host) on cpu
+    requires nonzero(host.collect) requires nonzero(host.project)
+    requires nonzero(host.restore) requires nonzero(host.map_source);
+
 struct AddressRequirements { u32 writable; u32 initialized; u32 atomic; };
 enum AddressViolation:u32 { None=0; Inactive=1; Layout=2; Atomic=3; ReadOnly=4; Uninitialized=5; };
 struct AddressRequirementHost {

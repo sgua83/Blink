@@ -664,6 +664,24 @@ extern "C" void join_borrow_components(usize width, u32 conditional, BorrowJoinH
     }
 }
 
+extern "C" void map_call_borrows(BorrowCallCounts counts, BorrowCallHost host) on cpu
+    requires nonzero(host.collect) requires nonzero(host.project)
+    requires nonzero(host.restore) requires nonzero(host.map_source) {
+    if (counts.inputs != 0u64) { host.collect(host.context, BorrowCallPart::Inputs); }
+    if (counts.calls != 0u64) { host.collect(host.context, BorrowCallPart::Calls); }
+    if (counts.reads != 0u64) { host.collect(host.context, BorrowCallPart::Reads); }
+    if (counts.sources != 0u64) { host.collect(host.context, BorrowCallPart::Sources); }
+    host.project(host.context);
+    if (counts.inputs != 0u64) { host.restore(host.context, BorrowCallPart::Inputs); }
+    if (counts.calls != 0u64) { host.restore(host.context, BorrowCallPart::Calls); }
+    if (counts.reads != 0u64) { host.restore(host.context, BorrowCallPart::Reads); }
+    usize source = 0u64;
+    while (source < counts.sources) {
+        host.map_source(host.context);
+        source += 1u64;
+    }
+}
+
 extern "C" AddressViolation validate_address_requirements(AddressRequirements required, AddressRequirementHost host) on cpu
     requires nonzero(host.next) requires nonzero(host.valid_layout) requires nonzero(host.blink_storage)
     requires nonzero(host.writable) requires nonzero(host.initialized) requires nonzero(host.possible)

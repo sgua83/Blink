@@ -192,6 +192,78 @@ pub(super) fn join_borrow_components(left: &mut Vec<Borrow>, right: &[Borrow], w
     BorrowJoin { left, right, empty: Borrow::default(), condition, paths: None }.join();
 }
 
+#[repr(u32)]
+enum BorrowCallPart { Inputs, Calls, Reads, Sources }
+
+#[repr(C)]
+struct BorrowCallCounts { inputs: usize, calls: usize, reads: usize, sources: usize }
+
+#[repr(C)]
+struct BorrowCallHost {
+    context: *mut std::ffi::c_void,
+    collect: unsafe extern "C" fn(*mut std::ffi::c_void, BorrowCallPart),
+    project: unsafe extern "C" fn(*mut std::ffi::c_void),
+    restore: unsafe extern "C" fn(*mut std::ffi::c_void, BorrowCallPart),
+    map_source: unsafe extern "C" fn(*mut std::ffi::c_void),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::map_call_borrows"]
+    fn b_map_call_borrows(counts: BorrowCallCounts, host: BorrowCallHost);
+}
+
+struct BorrowCallMapping<'a, F> {
+    borrow: &'a Borrow,
+    bindings: &'a BTreeMap<ValueIdentity, bounds::Proof>,
+    map: F,
+    roots: Vec<&'a bounds::Clause>,
+    projected: std::vec::IntoIter<bounds::Clause>,
+    sources: std::collections::btree_map::Iter<'a, Source, bounds::Clause>,
+    output: Borrow,
+}
+
+impl<F: Fn(Source, &bounds::Clause) -> Borrow> BorrowCallMapping<'_, F> {
+    unsafe extern "C" fn collect(context: *mut std::ffi::c_void, part: BorrowCallPart) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        match part {
+            BorrowCallPart::Inputs => input.roots.extend(input.borrow.inputs.paths()),
+            BorrowCallPart::Calls => input.roots.extend(input.borrow.calls.paths()),
+            BorrowCallPart::Reads => input.roots.extend(input.borrow.reads.paths()),
+            BorrowCallPart::Sources => input.roots.extend(input.borrow.sources.paths()),
+        }
+    }
+
+    unsafe extern "C" fn project(context: *mut std::ffi::c_void) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let roots = std::mem::take(&mut input.roots);
+        input.projected = bounds::Clause::project_guard_paths(roots, input.bindings).into_iter();
+    }
+
+    unsafe extern "C" fn restore(context: *mut std::ffi::c_void, part: BorrowCallPart) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        match part {
+            BorrowCallPart::Inputs => input.output.inputs = input.borrow.inputs.with_paths(&mut input.projected),
+            BorrowCallPart::Calls => input.output.calls = input.borrow.calls.with_paths(&mut input.projected),
+            BorrowCallPart::Reads => input.output.reads = input.borrow.reads.with_paths(&mut input.projected),
+            BorrowCallPart::Sources => unreachable!(),
+        }
+    }
+
+    unsafe extern "C" fn map_source(context: *mut std::ffi::c_void) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let (source, original) = input.sources.next().unwrap();
+        let path = input.projected.next().unwrap();
+        input.output.union_restricted(&(input.map)(source.clone(), original), &path);
+    }
+
+    fn project_sources(mut self, counts: BorrowCallCounts) -> Borrow {
+        let host = BorrowCallHost { context: std::ptr::from_mut(&mut self).cast(), collect: Self::collect,
+            project: Self::project, restore: Self::restore, map_source: Self::map_source };
+        unsafe { b_map_call_borrows(counts, host) };
+        self.output
+    }
+}
+
 #[repr(C)]
 struct LoopBorrowEdge {
     level: usize,
@@ -604,19 +676,13 @@ impl Borrow{
     pub(super) fn map_sources_at_call(
         &self, bindings: &BTreeMap<ValueIdentity, bounds::Proof>, map: impl Fn(Source, &bounds::Clause) -> Self,
     ) -> Self {
-        let roots = self.inputs.paths().chain(self.calls.paths())
-            .chain(self.reads.paths()).chain(self.sources.paths());
-        let mut projected = bounds::Clause::project_guard_paths(roots, bindings).into_iter();
-        let mut result = Self {
-            inputs: self.inputs.with_paths(&mut projected),
-            calls: self.calls.with_paths(&mut projected),
-            reads: self.reads.with_paths(&mut projected),
-            ..Self::default()
+        let counts = BorrowCallCounts { inputs: self.inputs.0.len(), calls: self.calls.0.len(),
+            reads: self.reads.0.len(), sources: self.sources.0.len() };
+        let input = BorrowCallMapping { borrow: self, bindings, map,
+            roots: Vec::with_capacity(counts.inputs + counts.calls + counts.reads + counts.sources),
+            projected: std::vec::IntoIter::default(), sources: self.sources.0.iter(), output: Self::default(),
         };
-        for ((source, original), path) in self.sources.0.iter().zip(projected) {
-            result.union_restricted(&map(source.clone(), original), &path);
-        }
-        result
+        input.project_sources(counts)
     }
     pub(super) fn bind_guards(&self,bindings:&bounds::OutputBindings)->Self {
         Self{sources:self.sources.output_bound(bindings),inputs:self.inputs.output_bound(bindings),
