@@ -1,5 +1,6 @@
 module bootstrap.call_arguments;
 import bootstrap.proof_facts;
+import bootstrap.clause_storage;
 import bootstrap.output_bindings;
 import bootstrap.ir_dataflow;
 import bootstrap.names;
@@ -817,7 +818,89 @@ extern "C" void bind_output_borrow_source(CallSourceShape source,address binding
     }
 }
 
-void visit_borrow_output_group(BorrowOutputGroup group,BorrowCallPart part,usize offset,address context,
+address borrow_edge_condition(BorrowEdgeGroup group,address edge) on cpu {
+    return unsafe_address(address_bits(edge)+group.condition);
+}
+
+u32 write_borrow_edge(BorrowEdgeGroup group,address key,address incoming,BorrowEdgeMode mode,
+    BorrowEdgeMerge host) on cpu requires nonzero(group.stride)
+    requires nonzero(host.compare) requires nonzero(host.key)
+    requires nonzero(host.clauses.either) requires nonzero(host.clauses.canonical)
+    requires nonzero(host.clauses.normalized) {
+    let place = ordered_tree_seek(group.tree,group.stride,key,host.compare);
+    address value = incoming;
+    if (place.entry != address()) {
+        address current = borrow_edge_condition(group,place.entry);
+        address combined = host.clauses.either(unsafe_position<address>(current),value);
+        clause_release(value);
+        value = combined;
+    }
+    if (mode == BorrowEdgeMode::Canonical && place.entry != address()) {
+        address result = host.clauses.canonical(value);
+        clause_release(value);
+        value = result;
+    }
+    if (mode == BorrowEdgeMode::Normalized) {
+        address result = host.clauses.normalized(host.normal,value);
+        clause_release(value);
+        value = result;
+    }
+    if (place.entry != address()) {
+        address current = borrow_edge_condition(group,place.entry);
+        clause_release(unsafe_position<address>(current));
+        unsafe_position<address>(current) = value;
+        return 0;
+    }
+    address slot = ordered_tree_insert_slot(group.tree,group.stride,place.parent,place.order);
+    host.key(key,slot);
+    unsafe_position<address>(borrow_edge_condition(group,slot)) = value;
+    return 1;
+}
+
+extern "C" u32 merge_borrow_edge(BorrowEdgeGroup group,address key,address when,BorrowEdgeMode mode,BorrowEdgeMerge host) on cpu
+    requires nonzero(group.stride)
+    requires nonzero(host.compare) requires nonzero(host.key)
+    requires nonzero(host.clauses.either) requires nonzero(host.clauses.canonical)
+    requires nonzero(host.clauses.normalized) {
+    address incoming = unsafe_position<address>(when);
+    clause_retain(incoming);
+    return write_borrow_edge(group,key,incoming,mode,host);
+}
+
+extern "C" void union_borrow_edges(BorrowEdgeGroup group,BorrowEdgeGroup source,address path,BorrowEdgeMerge host) on cpu
+    requires nonzero(group.stride)
+    requires nonzero(host.compare) requires nonzero(host.key) requires nonzero(host.clauses.both)
+    requires nonzero(host.clauses.either) requires nonzero(host.clauses.canonical)
+    requires nonzero(host.clauses.normalized) {
+    FactCursor cursor = ordered_tree_cursor(source.tree,source.stride);
+    while (true) {
+        address edge = ordered_tree_step(source.tree,source.stride,address_of(cursor),0);
+        if (edge == address()) { return; }
+        address incoming = unsafe_position<address>(borrow_edge_condition(source,edge));
+        if (path == address()) {
+            clause_retain(incoming);
+        } else {
+            incoming = host.clauses.both(incoming,unsafe_position<address>(path));
+        }
+        write_borrow_edge(group,edge,incoming,BorrowEdgeMode::Union,host);
+    }
+}
+
+extern "C" void restrict_borrow_edges(BorrowEdgeGroup group,address path,cfn<address,address,address> both) on cpu
+    requires nonzero(both) {
+    address condition = unsafe_position<address>(path);
+    FactCursor cursor = ordered_tree_cursor(group.tree,group.stride);
+    while (true) {
+        address edge = ordered_tree_step(group.tree,group.stride,address_of(cursor),0);
+        if (edge == address()) { return; }
+        address current = borrow_edge_condition(group,edge);
+        address previous = unsafe_position<address>(current);
+        unsafe_position<address>(current) = both(previous,condition);
+        clause_release(previous);
+    }
+}
+
+void visit_borrow_output_group(BorrowEdgeGroup group,BorrowCallPart part,usize offset,address context,
     cfn<void,address,BorrowCallPart,address> visit) on cpu requires nonzero(visit) {
     FactCursor cursor = ordered_tree_cursor(group.tree,group.stride);
     while (true) {

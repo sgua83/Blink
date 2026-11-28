@@ -284,36 +284,39 @@ impl<K:Ord+Clone> Edges<K>{
     pub fn insert(&mut self, key: K) { self.insert_when(key, bounds::Clause::default()); }
 
     pub fn insert_when(&mut self, key: K, when: bounds::Clause) {
-        self.0.insert_with(key, |previous| match previous {
-            Some(previous) => bounds::Clause::either(previous, &when).canonical(),
-            None => when,
-        });
+        self.merge(key, &when, BorrowEdgeMode::Canonical, std::ptr::null_mut());
     }
 
     pub fn union(&mut self, other: &Self) {
-        for (key, when) in &other.0 {
-            self.union_when(key.clone(), when);
-        }
+        self.union_paths(other, std::ptr::null());
     }
 
     pub(in crate::check) fn union_restricted(&mut self, other: &Self, path: &bounds::Clause) {
-        for (key, when) in &other.0 {
-            self.union_when(key.clone(), &bounds::Clause::both(when, path));
-        }
+        self.union_paths(other, path);
+    }
+
+    fn union_paths(&mut self, other: &Self, path: *const bounds::Clause) {
+        let host = BorrowEdgeMerge::new::<K>(clone_edge_key::<K>, std::ptr::null_mut());
+        unsafe { union_borrow_edges(BorrowEdgeGroup::writable(self), other.into(), path, host) };
     }
 
     pub(in crate::check) fn union_when(&mut self, key: K, when: &bounds::Clause) {
-        self.0.insert_with(key, |previous| match previous {
-            Some(previous) => bounds::Clause::either(previous, when),
-            None => when.clone(),
-        });
+        self.merge(key, when, BorrowEdgeMode::Union, std::ptr::null_mut());
     }
 
     pub(in crate::check) fn insert_normalized(&mut self, key: K, when: bounds::Clause, normal: &mut bounds::Normalizer) {
-        self.0.insert_with(key, |previous| match previous {
-            Some(previous) => normal.clause(&bounds::Clause::either(previous, &when)),
-            None => normal.clause(&when),
-        });
+        self.merge(key, &when, BorrowEdgeMode::Normalized, normal);
+    }
+
+    fn merge(&mut self, key: K, when: &bounds::Clause, mode: BorrowEdgeMode, normal: *mut bounds::Normalizer) {
+        let mut key = std::mem::ManuallyDrop::new(key);
+        let host = BorrowEdgeMerge::new::<K>(move_edge_key::<K>, normal);
+        let moved = unsafe {
+            merge_borrow_edge(BorrowEdgeGroup::writable(self), std::ptr::from_mut(&mut *key).cast(), when, mode, host)
+        };
+        if moved == 0 {
+            unsafe { std::mem::ManuallyDrop::drop(&mut key) };
+        }
     }
 
     pub(super) fn same_sources(&self, other: &Self) -> bool {
@@ -347,9 +350,7 @@ impl<K:Ord+Clone> Edges<K>{
     }
 
     fn restrict(&mut self, path: &bounds::Clause) {
-        for when in self.0.values_mut() {
-            *when = bounds::Clause::both(when, path);
-        }
+        unsafe { restrict_borrow_edges(BorrowEdgeGroup::writable(self), path, intersect_edge_clauses) };
     }
 
     fn with_paths(&self, paths: &mut impl Iterator<Item = bounds::Clause>) -> Self {
@@ -459,25 +460,101 @@ enum BorrowCallPart { Inputs, Calls, Reads, Sources }
 struct BorrowCallCounts { inputs: usize, calls: usize, reads: usize, sources: usize }
 
 #[repr(C)]
-struct BorrowOutputGroup {
+struct BorrowEdgeGroup {
     tree: *const OrderedEdgeTree,
     stride: usize,
     condition: usize,
 }
 
-impl<K: Ord> From<&Edges<K>> for BorrowOutputGroup {
+impl<K: Ord> From<&Edges<K>> for BorrowEdgeGroup {
     fn from(edges: &Edges<K>) -> Self {
         Self { tree: &edges.0.tree, stride: EdgeTree::<K>::STRIDE,
             condition: std::mem::offset_of!(EdgePayload<K>, when) }
     }
 }
 
+impl BorrowEdgeGroup {
+    fn writable<K: Ord>(edges: &mut Edges<K>) -> Self {
+        Self { tree: std::ptr::from_mut(&mut edges.0.tree), stride: EdgeTree::<K>::STRIDE,
+            condition: std::mem::offset_of!(EdgePayload<K>, when) }
+    }
+}
+
+#[repr(u32)]
+enum BorrowEdgeMode { Union, Canonical, Normalized }
+
+// B owns the retained handles. Typed callbacks borrow them for the duration
+// of the call and return one owned handle under the Clause pointer ABI.
+type EdgeArgument = std::mem::ManuallyDrop<bounds::Clause>;
+type EdgeCombine = extern "C" fn(EdgeArgument, EdgeArgument) -> bounds::Clause;
+type EdgeKey = unsafe extern "C" fn(*const std::ffi::c_void, *mut std::ffi::c_void);
+
+#[repr(C)]
+struct BorrowEdgeClauses {
+    both: EdgeCombine,
+    either: EdgeCombine,
+    canonical: extern "C" fn(EdgeArgument) -> bounds::Clause,
+    normalized: unsafe extern "C" fn(*mut bounds::Normalizer, EdgeArgument) -> bounds::Clause,
+}
+
+#[repr(C)]
+struct BorrowEdgeMerge {
+    clauses: BorrowEdgeClauses,
+    compare: unsafe extern "C" fn(*const std::ffi::c_void, *const std::ffi::c_void) -> i32,
+    key: EdgeKey,
+    normal: *mut bounds::Normalizer,
+}
+
+impl BorrowEdgeMerge {
+    fn new<K: Ord>(key: EdgeKey, normal: *mut bounds::Normalizer) -> Self {
+        Self {
+            clauses: BorrowEdgeClauses {
+                both: intersect_edge_clauses, either: join_edge_clauses,
+                canonical: canonical_edge_clause, normalized: normalize_edge_clause,
+            },
+            compare: EdgeTree::<K>::compare, key, normal,
+        }
+    }
+}
+
+extern "C" fn intersect_edge_clauses(left: EdgeArgument, right: EdgeArgument) -> bounds::Clause {
+    bounds::Clause::both(&left, &right)
+}
+
+extern "C" fn join_edge_clauses(left: EdgeArgument, right: EdgeArgument) -> bounds::Clause {
+    bounds::Clause::either(&left, &right)
+}
+
+extern "C" fn canonical_edge_clause(clause: EdgeArgument) -> bounds::Clause { clause.canonical() }
+
+unsafe extern "C" fn normalize_edge_clause(normal: *mut bounds::Normalizer, clause: EdgeArgument) -> bounds::Clause {
+    unsafe { &mut *normal }.clause(&clause)
+}
+
+unsafe extern "C" fn move_edge_key<K>(input: *const std::ffi::c_void, slot: *mut std::ffi::c_void) {
+    unsafe { slot.cast::<K>().write(input.cast::<K>().read()) };
+}
+
+unsafe extern "C" fn clone_edge_key<K: Clone>(input: *const std::ffi::c_void, slot: *mut std::ffi::c_void) {
+    unsafe { slot.cast::<K>().write((&*input.cast::<K>()).clone()) };
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::merge_borrow_edge"]
+    fn merge_borrow_edge(group: BorrowEdgeGroup, key: *const std::ffi::c_void, when: &bounds::Clause,
+        mode: BorrowEdgeMode, host: BorrowEdgeMerge) -> u32;
+    #[link_name = "bootstrap.call_arguments::union_borrow_edges"]
+    fn union_borrow_edges(group: BorrowEdgeGroup, source: BorrowEdgeGroup, path: *const bounds::Clause, host: BorrowEdgeMerge);
+    #[link_name = "bootstrap.call_arguments::restrict_borrow_edges"]
+    fn restrict_borrow_edges(group: BorrowEdgeGroup, path: &bounds::Clause, both: EdgeCombine);
+}
+
 #[repr(C)]
 struct BorrowOutputShape {
-    inputs: BorrowOutputGroup,
-    calls: BorrowOutputGroup,
-    reads: BorrowOutputGroup,
-    sources: BorrowOutputGroup,
+    inputs: BorrowEdgeGroup,
+    calls: BorrowEdgeGroup,
+    reads: BorrowEdgeGroup,
+    sources: BorrowEdgeGroup,
 }
 
 #[repr(C)]

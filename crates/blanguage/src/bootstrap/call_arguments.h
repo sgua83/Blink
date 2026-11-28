@@ -327,8 +327,36 @@ struct OutputSourceHost {
 extern "C" void bind_output_borrow_source(CallSourceShape source,address bindings,OutputSourceHost host) on cpu
     requires nonzero(host.identity) requires nonzero(host.rename) requires nonzero(host.child) requires nonzero(host.task);
 
-struct BorrowOutputGroup { address tree; usize stride; usize condition; };
-struct BorrowOutputShape { BorrowOutputGroup inputs; BorrowOutputGroup calls; BorrowOutputGroup reads; BorrowOutputGroup sources; };
+struct BorrowEdgeGroup { address tree; usize stride; usize condition; };
+
+enum BorrowEdgeMode : u32 { Union=0; Canonical=1; Normalized=2; };
+struct BorrowEdgeClauses {
+    cfn<address,address,address> both;
+    cfn<address,address,address> either;
+    cfn<address,address> canonical;
+    cfn<address,address,address> normalized;
+};
+struct BorrowEdgeMerge {
+    BorrowEdgeClauses clauses;
+    cfn<i32,address,address> compare;
+    cfn<void,address,address> key;
+    address normal;
+};
+
+extern "C" u32 merge_borrow_edge(BorrowEdgeGroup group,address key,address when,BorrowEdgeMode mode,BorrowEdgeMerge host) on cpu
+    requires nonzero(group.stride)
+    requires nonzero(host.compare) requires nonzero(host.key)
+    requires nonzero(host.clauses.either) requires nonzero(host.clauses.canonical)
+    requires nonzero(host.clauses.normalized);
+extern "C" void union_borrow_edges(BorrowEdgeGroup group,BorrowEdgeGroup source,address path,BorrowEdgeMerge host) on cpu
+    requires nonzero(group.stride)
+    requires nonzero(host.compare) requires nonzero(host.key) requires nonzero(host.clauses.both)
+    requires nonzero(host.clauses.either) requires nonzero(host.clauses.canonical)
+    requires nonzero(host.clauses.normalized);
+extern "C" void restrict_borrow_edges(BorrowEdgeGroup group,address path,cfn<address,address,address> both) on cpu
+    requires nonzero(both);
+
+struct BorrowOutputShape { BorrowEdgeGroup inputs; BorrowEdgeGroup calls; BorrowEdgeGroup reads; BorrowEdgeGroup sources; };
 struct BorrowOutputHost {
     address context;
     cfn<void,address,BorrowCallPart,address> collect;
