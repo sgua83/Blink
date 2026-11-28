@@ -391,6 +391,122 @@ impl TaskInputCompletion {
 pub(super) enum TaskProjection { Returned(usize,Option<ValueIdentity>), Writes, Places, Initialized(Vec<Option<ValueIdentity>>) }
 
 
+#[repr(u32)]
+#[derive(Clone, Copy)]
+enum TaskBorrowProjection { Returned, ReturnedWithCompletion, Writes, Places, Initialized }
+
+impl From<&TaskProjection> for TaskBorrowProjection {
+    fn from(projection: &TaskProjection) -> Self {
+        match projection {
+            TaskProjection::Returned(_, None) => Self::Returned,
+            TaskProjection::Returned(_, Some(_)) => Self::ReturnedWithCompletion,
+            TaskProjection::Writes => Self::Writes,
+            TaskProjection::Places => Self::Places,
+            TaskProjection::Initialized(_) => Self::Initialized,
+        }
+    }
+}
+
+#[repr(u32)]
+enum TaskBorrowSource { Task, TaskOutput, Position, Storage, Inactive, Unresolved, Other }
+
+#[repr(u32)]
+enum TaskBorrowAction {
+    TakeReturned, TakeInitialized, ProjectCaptures, ProjectReturnedOwners,
+    ProjectWrites, ProjectRequested, Keep, Defer, Omit,
+}
+
+#[repr(C)]
+struct TaskBorrowEdge {
+    source: *const Source,
+    condition: *const bounds::Clause,
+    kind: TaskBorrowSource,
+    held: TaskBorrowProjection,
+    writable: u32,
+}
+
+#[repr(C)]
+struct TaskBorrowHost {
+    context: *mut std::ffi::c_void,
+    next: unsafe extern "C" fn(*mut std::ffi::c_void) -> TaskBorrowEdge,
+    emit: unsafe extern "C" fn(*mut std::ffi::c_void, TaskBorrowEdge, TaskBorrowAction),
+    emit_pending: unsafe extern "C" fn(*mut std::ffi::c_void),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::project_task_borrows"]
+    fn b_project_task_borrows(count: usize, projection: TaskBorrowProjection, pending: u32, host: TaskBorrowHost);
+}
+
+struct TaskBorrowProjectionContext<'a> {
+    borrow: &'a Borrow,
+    remaining: std::collections::btree_map::Iter<'a, Source, bounds::Clause>,
+    projection: TaskProjection,
+    result: Borrow,
+}
+
+impl TaskBorrowProjectionContext<'_> {
+    unsafe extern "C" fn next(context: *mut std::ffi::c_void) -> TaskBorrowEdge {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let (source, condition) = input.remaining.next().unwrap();
+        let kind = match source {
+            Source::Task { .. } => TaskBorrowSource::Task,
+            Source::TaskOutput { .. } => TaskBorrowSource::TaskOutput,
+            Source::Position(_) => TaskBorrowSource::Position,
+            Source::Data(_) | Source::External => TaskBorrowSource::Storage,
+            Source::Inactive => TaskBorrowSource::Inactive,
+            Source::Unresolved => TaskBorrowSource::Unresolved,
+            _ => TaskBorrowSource::Other,
+        };
+        let held = match source {
+            Source::TaskOutput { projection, .. } => projection.into(),
+            _ => TaskBorrowProjection::Returned,
+        };
+        let writable = u32::from(matches!(source, Source::Position(origin) if origin.writable));
+        TaskBorrowEdge { source, condition, kind, held, writable }
+    }
+
+    unsafe extern "C" fn emit(context: *mut std::ffi::c_void, edge: TaskBorrowEdge, action: TaskBorrowAction) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let source = unsafe { &*edge.source };
+        let condition = unsafe { &*edge.condition };
+        let projection = &input.projection;
+        let value = match (action, source, projection) {
+            (TaskBorrowAction::TakeReturned, Source::Task { outputs, .. }, TaskProjection::Returned(component, None)) =>
+                outputs[*component].clone(),
+            (TaskBorrowAction::TakeInitialized, Source::Task { initialized, .. }, TaskProjection::Initialized(returned)) =>
+                initialized.initialization_guards(|id| match id {
+                    ValueIdentity::TaskResult(component) => returned[component].map(identity_proof),
+                    _ => Some(identity_proof(id)),
+                }),
+            (TaskBorrowAction::ProjectCaptures, Source::Task { captures, .. }, _) =>
+                captures.task_projection(projection.clone()),
+            (TaskBorrowAction::ProjectReturnedOwners,
+                Source::TaskOutput { task, projection: TaskProjection::Returned(component, Some(_)) }, _) =>
+                task.task_projection(TaskProjection::Returned(*component, None)).task_projection(projection.clone()),
+            (TaskBorrowAction::ProjectWrites, Source::TaskOutput { task, .. }, _) =>
+                task.task_projection(TaskProjection::Writes),
+            (TaskBorrowAction::ProjectRequested, Source::TaskOutput { task, .. }, _) =>
+                task.task_projection(projection.clone()),
+            (TaskBorrowAction::Keep, _, _) => Borrow::source(source.clone()),
+            (TaskBorrowAction::Defer, _, _) => Borrow::source(Source::TaskOutput {
+                task: Box::new(Borrow::source(source.clone())), projection: projection.clone(),
+            }),
+            _ => unreachable!(),
+        };
+        input.result.union_restricted(&value, condition);
+    }
+
+    unsafe extern "C" fn emit_pending(context: *mut std::ffi::c_void) {
+        let input = unsafe { &mut *context.cast::<Self>() };
+        let borrow = input.borrow;
+        let task = Borrow {
+            inputs: borrow.inputs.clone(), calls: borrow.calls.clone(), reads: borrow.reads.clone(), ..Borrow::default()
+        };
+        input.result.sources.insert(Source::TaskOutput { task: Box::new(task), projection: input.projection.clone() });
+    }
+}
+
 impl TaskProjection {
     pub(super) fn map_result(&self, map:impl Fn(ValueIdentity)->Option<ValueIdentity>)->Self {
         match self {
@@ -536,42 +652,17 @@ impl Borrow{
         result
     }
     pub(super) fn task_projection(&self,projection:TaskProjection)->Self {
-        let mut result=Self::default();
-        for (source,when) in self.sources.entries() {
-            let value=match (source,&projection) {
-                (Source::Task{outputs,..},TaskProjection::Returned(component,None)) => outputs[*component].clone(),
-                (Source::Task{initialized,..},TaskProjection::Initialized(returned)) => initialized.initialization_guards(|id|match id {
-                    ValueIdentity::TaskResult(component)=>returned[component].map(identity_proof),
-                    _=>Some(identity_proof(id)),
-                }),
-                (Source::Inactive,TaskProjection::Initialized(_)) => Self::default(),
-                (Source::Task{captures,..},TaskProjection::Writes|TaskProjection::Places) => captures.task_projection(projection.clone()),
-                (Source::Position(origin),TaskProjection::Writes) if origin.writable => Self::source(source.clone()),
-                (Source::Position(_),TaskProjection::Places) => Self::source(source.clone()),
-                // Memory effects use all possible returned owners. The completion marker
-                // selects the concrete owner only when the caller receives the result.
-                (Source::TaskOutput{task,projection:TaskProjection::Returned(component,Some(_))},
-                    TaskProjection::Writes|TaskProjection::Places) => {
-                    task.task_projection(TaskProjection::Returned(*component,None)).task_projection(projection.clone())
-                },
-                (Source::TaskOutput{task,projection:held},TaskProjection::Writes|TaskProjection::Places)
-                    if matches!(held,TaskProjection::Writes|TaskProjection::Places) =>
-                {
-                    task.task_projection(if *held==TaskProjection::Writes { TaskProjection::Writes } else { projection.clone() })
-                },
-                (Source::Inactive|Source::Data(_)|Source::Position(_)|Source::External,TaskProjection::Writes|TaskProjection::Places) => Self::default(),
-                (Source::Inactive|Source::Unresolved,_) => Self::source(source.clone()),
-                _ => Self::source(Source::TaskOutput{task:Box::new(Self::source(source.clone())),projection:projection.clone()}),
-            };
-            result.union_restricted(&value,&when);
-        }
-        if !self.inputs.is_empty()||!self.calls.is_empty()||!self.reads.is_empty(){
-            result.sources.insert(Source::TaskOutput{
-                task:Box::new(Self{inputs:self.inputs.clone(),calls:self.calls.clone(),reads:self.reads.clone(),..Self::default()}),
-                projection,
-            });
-        }
-        result
+        let pending = !self.inputs.is_empty() || !self.calls.is_empty() || !self.reads.is_empty();
+        let kind = (&projection).into();
+        let mut input = TaskBorrowProjectionContext {
+            borrow: self, remaining: self.sources.0.iter(), projection, result: Self::default(),
+        };
+        let host = TaskBorrowHost {
+            context: std::ptr::from_mut(&mut input).cast(), next: TaskBorrowProjectionContext::next,
+            emit: TaskBorrowProjectionContext::emit, emit_pending: TaskBorrowProjectionContext::emit_pending,
+        };
+        unsafe { b_project_task_borrows(self.sources.0.len(), kind, u32::from(pending), host) };
+        input.result
     }
     pub(super) fn content_inputs(&self)->bool{self.sources.iter().any(|source|match source{
         Source::Contents{..}=>true,

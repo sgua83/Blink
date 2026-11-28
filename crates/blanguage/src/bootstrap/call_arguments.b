@@ -664,6 +664,48 @@ extern "C" void join_borrow_components(usize width, u32 conditional, BorrowJoinH
     }
 }
 
+TaskBorrowAction task_borrow_action(TaskBorrowEdge edge, TaskBorrowProjection projection) on cpu {
+    if (edge.kind == TaskBorrowSource::Task) {
+        if (projection == TaskBorrowProjection::Returned) { return TaskBorrowAction::TakeReturned; }
+        if (projection == TaskBorrowProjection::Initialized) { return TaskBorrowAction::TakeInitialized; }
+    }
+    if (edge.kind == TaskBorrowSource::Inactive && projection == TaskBorrowProjection::Initialized) {
+        return TaskBorrowAction::Omit;
+    }
+    if (projection == TaskBorrowProjection::Writes || projection == TaskBorrowProjection::Places) {
+        if (edge.kind == TaskBorrowSource::Task) { return TaskBorrowAction::ProjectCaptures; }
+        if (edge.kind == TaskBorrowSource::Position) {
+            return projection == TaskBorrowProjection::Places || edge.writable != 0
+                ? TaskBorrowAction::Keep : TaskBorrowAction::Omit;
+        }
+        if (edge.kind == TaskBorrowSource::TaskOutput) {
+            // Until completion is received, a memory effect covers all returned owners.
+            if (edge.held == TaskBorrowProjection::ReturnedWithCompletion) { return TaskBorrowAction::ProjectReturnedOwners; }
+            if (edge.held == TaskBorrowProjection::Writes) { return TaskBorrowAction::ProjectWrites; }
+            if (edge.held == TaskBorrowProjection::Places) { return TaskBorrowAction::ProjectRequested; }
+        }
+        if (edge.kind == TaskBorrowSource::Inactive || edge.kind == TaskBorrowSource::Storage) {
+            return TaskBorrowAction::Omit;
+        }
+    }
+    if (edge.kind == TaskBorrowSource::Inactive || edge.kind == TaskBorrowSource::Unresolved) {
+        return TaskBorrowAction::Keep;
+    }
+    return TaskBorrowAction::Defer;
+}
+
+extern "C" void project_task_borrows(usize count, TaskBorrowProjection projection, u32 pending, TaskBorrowHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.emit) requires nonzero(host.emit_pending) {
+    usize source = 0u64;
+    while (source < count) {
+        TaskBorrowEdge edge = host.next(host.context);
+        TaskBorrowAction action = task_borrow_action(edge, projection);
+        if (action != TaskBorrowAction::Omit) { host.emit(host.context, edge, action); }
+        source += 1u64;
+    }
+    if (pending != 0) { host.emit_pending(host.context); }
+}
+
 extern "C" void map_call_borrows(BorrowCallCounts counts, BorrowCallHost host) on cpu
     requires nonzero(host.collect) requires nonzero(host.project)
     requires nonzero(host.restore) requires nonzero(host.map_source) {

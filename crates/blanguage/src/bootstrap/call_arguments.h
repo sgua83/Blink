@@ -262,6 +262,28 @@ extern "C" void map_call_borrows(BorrowCallCounts counts, BorrowCallHost host) o
     requires nonzero(host.collect) requires nonzero(host.project)
     requires nonzero(host.restore) requires nonzero(host.map_source);
 
+enum TaskBorrowProjection:u32 { Returned=0; ReturnedWithCompletion=1; Writes=2; Places=3; Initialized=4; };
+enum TaskBorrowSource:u32 { Task=0; TaskOutput=1; Position=2; Storage=3; Inactive=4; Unresolved=5; Other=6; };
+enum TaskBorrowAction:u32 {
+    TakeReturned=0; TakeInitialized=1; ProjectCaptures=2; ProjectReturnedOwners=3;
+    ProjectWrites=4; ProjectRequested=5; Keep=6; Defer=7; Omit=8;
+};
+struct TaskBorrowEdge {
+    address source;
+    address condition;
+    TaskBorrowSource kind;
+    TaskBorrowProjection held;
+    u32 writable;
+};
+struct TaskBorrowHost {
+    address context;
+    cfn<TaskBorrowEdge,address> next;
+    cfn<void,address,TaskBorrowEdge,TaskBorrowAction> emit;
+    cfn<void,address> emit_pending;
+};
+extern "C" void project_task_borrows(usize count, TaskBorrowProjection projection, u32 pending, TaskBorrowHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.emit) requires nonzero(host.emit_pending);
+
 struct AddressRequirements { u32 writable; u32 initialized; u32 atomic; };
 enum AddressViolation:u32 { None=0; Inactive=1; Layout=2; Atomic=3; ReadOnly=4; Uninitialized=5; };
 struct AddressRequirementHost {
