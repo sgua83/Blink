@@ -4,6 +4,8 @@ import bootstrap.unwind;
 import bootstrap.ir_dataflow;
 import bootstrap.stage_fusion;
 
+extern "C" void abort() on cpu from "ucrtbase.dll";
+
 u64 preserve_registers(SavedLayout saved, u64 offset, address operations, address output) on cpu {
     u64 start = address_bits(output);
     u64 cursor = start;
@@ -84,6 +86,21 @@ extern "C" u64 tile_frame(u64 data_end, u64 width, bool steps, Span shared, Span
         index += 1u64;
     }
     return end;
+}
+
+u32 tile_private_offset(Span placed, TilePrivateKey key) on cpu {
+    usize first = 0u64;
+    usize end = placed.count;
+    while (first < end) {
+        usize middle = first + (end - first) / 2u64;
+        address entry = unsafe_address(address_bits(placed.data) + middle * placed.stride);
+        TileFramePrivateSlot row = unsafe_position<TileFramePrivateSlot>(entry);
+        if (row.key.space == key.space && row.key.index == key.index) { return row.offset; }
+        bool before = row.key.space == key.space ? row.key.index < key.index : u64(row.key.space) < u64(key.space);
+        if (before) { first = middle + 1u64; } else { end = middle; }
+    }
+    abort();
+    return 0;
 }
 
 const u32 RANGE_SAVE_COUNT = 5;

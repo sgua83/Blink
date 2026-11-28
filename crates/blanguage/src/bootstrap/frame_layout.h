@@ -1,5 +1,6 @@
 module bootstrap.frame_layout;
 import bootstrap.ir_dataflow;
+import bootstrap.stage_fusion;
 
 struct ColorLayout { u64 end; u32 gpr; u32 xmm; };
 struct SavedLayout { u64 gpr_base; u64 xmm_base; u32 gpr; u32 xmm; };
@@ -10,6 +11,7 @@ extern "C" FrameSaveLayout frame_save_layout(ColorLayout scalar, ColorLayout pac
 // The ordered shared rows become frame byte positions. Private rows receive
 // their byte offsets in the same pass, with one plane per 32-bit part.
 extern "C" u64 tile_frame(u64 data_end, u64 width, bool steps, Span shared, Span private_slots) on cpu;
+u32 tile_private_offset(Span placed, TilePrivateKey key) on cpu;
 
 // Code and unwind rows both belong to the original emitter. Offsets use
 // the image start, including the ordinary function's register-home writes.

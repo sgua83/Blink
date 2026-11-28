@@ -570,10 +570,10 @@ struct TileCollectiveCode {
 struct TileCollectiveHost {
     Host ir;
     TileSlots slots;
+    Span private_slots;
     cfn<NativeCodeBuffer,address,u64> reserve;
     cfn<void,address,u64> commit;
     cfn<ScalarEncoding,address,usize> ensures memory(read) scalar;
-    cfn<u32,address,usize> ensures memory(read) destination;
     cfn<void,address,address,u64,TileCollectiveLayout,TileCollectiveCode,TileCollectiveField,TileCollectiveInput> observe;
 };
 
@@ -581,7 +581,7 @@ extern "C" void emit_tile_collective(address context, View collective, TileColle
     TileCollectiveHost host) on cpu
     requires nonzero(host.ir.inspect)
     requires nonzero(host.reserve) requires nonzero(host.commit)
-    requires nonzero(host.scalar) requires nonzero(host.destination) requires nonzero(host.observe);
+    requires nonzero(host.scalar) requires nonzero(host.observe);
 
 // Reduction body capacity is 256 bytes.
 extern "C" CollectiveLeaf reduce_range(ReductionRange input, CollectiveLeafOutput output) on cpu;
@@ -702,6 +702,7 @@ struct MapRangeInput {
     Span code;
     Span inputs;
     Span placed;
+    Span private_slots;
     address packet;
     u64 phase_count;
     usize binding;
@@ -721,7 +722,6 @@ struct TilePrivatePlace {
     MoveLocation location;
     ScalarEncoding scalar;
     address scalar_origin;
-    u32 storage_offset;
 };
 struct MapRangeHost {
     address context;
@@ -734,7 +734,7 @@ struct MapRangeHost {
     Host ir;
     cfn<TilePhaseView,address,u64> phase;
     cfn<TilePrivatePlace,address,TilePrivateKey> ensures memory(read) private_place;
-    cfn<void,address,u64,u64,u64,bool,TilePrivateKey,TilePrivatePlace> observe_private;
+    cfn<void,address,u64,u64,u64,bool,TilePrivateKey,u32,address> observe_private;
     cfn<void,address,address,ScalarLeaf,View> tile_step;
     cfn<void,address,MapRangeObservation> observe;
 };

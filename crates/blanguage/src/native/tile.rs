@@ -67,10 +67,10 @@ struct TilePublishHost {
 struct TileCollectiveHost {
     ir: Host,
     slots: operands::TileSlots,
+    private_slots: Span,
     reserve: unsafe extern "C" fn(TileSlot, usize) -> NativeCodeBuffer,
     commit: unsafe extern "C" fn(TileSlot, usize),
     scalar: unsafe extern "C" fn(*const c_void, Reg) -> ScalarEncoding,
-    destination: unsafe extern "C" fn(*const c_void, Reg) -> u32,
     observe: unsafe extern "C" fn(TileSlot, *const TileCollective, usize, TileCollectiveLayout, TileCollectiveCode,
         TileCollectiveField, TileCollectiveInput),
 }
@@ -96,10 +96,6 @@ impl Emitter<'_> {
         self.emit_bytes(16, |output| unsafe { encode_tile_lane(width, output) });
         self.store(dst);
     }
-    pub(super) fn private_stream(&self, slot: PrivateSlot) -> u32 {
-        self.frame.private_offset(slot)
-    }
-
     pub(super) fn publish_values(&mut self, publication: View) {
         let base_offset = self.tile_length_slot() + 4;
         let placed = self.frame.shared_words();
@@ -122,14 +118,15 @@ impl Emitter<'_> {
             plane_stride: self.workgroup * 4,
         };
         let slots = operands::TileSlots::new(self.tiles, &self.frame);
+        let private_slots = self.frame.private_slots();
         unsafe {
             emit_tile_collective(std::ptr::from_mut(self).cast(), collective, layout, TileCollectiveHost {
                 ir: HOST,
                 slots,
+                private_slots,
                 reserve: structure::reserve_scalar,
                 commit: structure::commit_scalar,
                 scalar: operands::body_value_scalar,
-                destination: collective_destination,
                 observe: observe_collective,
             });
         }
@@ -170,11 +167,6 @@ unsafe extern "C" fn observe_publish(
             tile, word, value, scalar, part: 1, storage_offset: high_offset, unit_bytes: 4,
         });
     }
-}
-
-unsafe extern "C" fn collective_destination(slot: *const c_void, result: Reg) -> u32 {
-    let emitter = unsafe { &*slot.cast::<Emitter<'_>>() };
-    emitter.private_stream(PrivateSlot::Register(result))
 }
 
 unsafe extern "C" fn observe_collective(

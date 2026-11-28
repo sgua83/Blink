@@ -310,6 +310,7 @@ struct MapRangeInput {
     code: Span,
     inputs: Span,
     placed: Span,
+    private_slots: Span,
     packet: *const std::ffi::c_void,
     phase_count: usize,
     binding: usize,
@@ -358,7 +359,6 @@ struct TilePrivatePlace {
     location: operands::MoveLocation,
     scalar: ScalarEncoding,
     scalar_origin: *const Scalar,
-    storage_offset: u32,
 }
 
 type MapRangeSlot = *mut std::ffi::c_void;
@@ -375,7 +375,7 @@ struct MapRangeHost {
     ir: dataflow::Host,
     phase: unsafe extern "C" fn(MapRangeSlot, usize) -> TilePhaseView,
     private_place: unsafe extern "C" fn(MapRangeSlot, PrivateSlot) -> TilePrivatePlace,
-    observe_private: unsafe extern "C" fn(MapRangeSlot, usize, usize, usize, u32, PrivateSlot, TilePrivatePlace),
+    observe_private: unsafe extern "C" fn(MapRangeSlot, usize, usize, usize, u32, PrivateSlot, u32, *const Scalar),
     tile_step: unsafe extern "C" fn(MapRangeSlot, *const Inst, ScalarLeaf, View),
     observe: unsafe extern "C" fn(MapRangeSlot, MapRangeObservation),
 }
@@ -457,12 +457,12 @@ unsafe extern "C" fn map_range_private_place(slot: MapRangeSlot, value: PrivateS
         location: range.emitter.allocation.location(value).into(),
         scalar: (*scalar).into(),
         scalar_origin: scalar,
-        storage_offset: range.emitter.private_stream(value),
     }
 }
 
 unsafe extern "C" fn map_range_observe_private(
-    slot: MapRangeSlot, start: usize, end: usize, phase: usize, restore: u32, value: PrivateSlot, place: TilePrivatePlace,
+    slot: MapRangeSlot, start: usize, end: usize, phase: usize, restore: u32, value: PrivateSlot,
+    storage_offset: u32, scalar: *const Scalar,
 ) {
     let range = unsafe { &mut *slot.cast::<MapRange<'_, '_>>() };
     let (local, index) = match value {
@@ -471,7 +471,7 @@ unsafe extern "C" fn map_range_observe_private(
     };
     range.emitter.parallel_abi_range(start..end, super::ParallelRangePart::TilePrivate {
         phase, restore: restore != 0, local, slot: index,
-        storage_offset: place.storage_offset, scalar: unsafe { *place.scalar_origin },
+        storage_offset, scalar: unsafe { *scalar },
     });
 }
 
@@ -569,6 +569,7 @@ fn emit_map(
         code: Span::slice(&code),
         inputs: Span::slice(inputs),
         placed: e.frame.shared_words(),
+        private_slots: e.frame.private_slots(),
         phase_count: phases.len(),
         packet: packet.as_ref().map_or(std::ptr::null(), |packet| std::ptr::from_ref(packet).cast()),
         binding, word, selected, frame, slots: e.frame.end as u32,

@@ -210,9 +210,8 @@ impl Frame {
         Span::slice(&self.tile_shared)
     }
 
-    pub(super) fn private_offset(&self, key: PrivateSlot) -> u32 {
-        let index = self.tile_private.binary_search_by_key(&key, |row| row.key).unwrap();
-        self.tile_private[index].offset
+    pub(super) fn private_slots(&self) -> Span {
+        Span::slice(&self.tile_private)
     }
 
     pub fn new(scalar: &Allocation, packet: Option<&PacketAllocation>) -> Self {

@@ -4448,7 +4448,7 @@ extern "C" void emit_tile_collective(address context, View collective, TileColle
     TileCollectiveHost host) on cpu
     requires nonzero(host.ir.inspect)
     requires nonzero(host.reserve) requires nonzero(host.commit)
-    requires nonzero(host.scalar) requires nonzero(host.destination) requires nonzero(host.observe) {
+    requires nonzero(host.scalar) requires nonzero(host.observe) {
     ReductionOperator operation = ReductionOperator(u32(collective.b));
     bool exclusive = collective.c != 0u64;
     Span words = collective.second;
@@ -4461,7 +4461,8 @@ extern "C" void emit_tile_collective(address context, View collective, TileColle
         ScalarEncoding scalar = host.scalar(context, result);
         u64 identity = collective_identity(CollectiveOperation(u32(operation)), scalar.width,
             u32(scalar.kind == ScalarKind::Signed), u32(scalar.kind == ScalarKind::Float));
-        TileCollectiveField field = TileCollectiveField(identity, scalar, host.destination(context, result), word, result);
+        u32 offset = tile_private_offset(host.private_slots, TilePrivateKey(TilePrivateSpace::Register, result));
+        TileCollectiveField field = TileCollectiveField(identity, scalar, offset, word, result);
         TileKey key = tile_key(host.slots.tiles, collective.a, word, host.ir);
         u32 low = tile_slot(host.slots, key);
         u32 high_delta = scalar.width == 64
@@ -5689,13 +5690,14 @@ void emit_tile_private_values(MapRangeInput input, MapRangeHost host, Span slots
     usize index = 0u64;
     while (index < slots.count) {
         TilePrivateKey slot = tile_private_at(slots, index);
+        u32 offset = tile_private_offset(input.private_slots, slot);
         TilePrivatePlace place = host.private_place(host.context, slot);
         buffer = host.reserve(host.context, 64u64);
         output = unsafe_address(address_bits(buffer.image) + buffer.end);
-        TilePrivateCopy copy = TilePrivateCopy(place.location, place.scalar, place.storage_offset, stride, restore);
+        TilePrivateCopy copy = TilePrivateCopy(place.location, place.scalar, offset, stride, restore);
         end = buffer.end + tile_private_copy(copy, output);
         host.commit(host.context, end);
-        host.observe_private(host.context, buffer.end, end, phase, restore, slot, place);
+        host.observe_private(host.context, buffer.end, end, phase, restore, slot, offset, place.scalar_origin);
         index += 1u64;
     }
 }
