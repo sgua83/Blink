@@ -935,9 +935,8 @@ extern "C" void merge_borrow_output(inout address remaining, ReadWritePaths path
     }
 }
 
-extern "C" void restrict_borrow_edges(BorrowEdgeGroup group,address path,cfn<address,address,address> both) on cpu
+void restrict_borrow_edges(BorrowEdgeGroup group,address condition,cfn<address,address,address> both) on cpu
     requires nonzero(both) {
-    address condition = unsafe_position<address>(path);
     FactCursor cursor = ordered_tree_cursor(group.tree,group.stride);
     while (true) {
         address edge = ordered_tree_step(group.tree,group.stride,address_of(cursor),0);
@@ -947,6 +946,36 @@ extern "C" void restrict_borrow_edges(BorrowEdgeGroup group,address path,cfn<add
         unsafe_position<address>(current) = both(previous,condition);
         clause_release(previous);
     }
+}
+
+extern "C" void restrict_borrow_output(BorrowOutputShape output,address path,cfn<address,address,address> both) on cpu
+    requires nonzero(both) {
+    address condition = unsafe_position<address>(path);
+    restrict_borrow_edges(output.sources,condition,both);
+    restrict_borrow_edges(output.inputs,condition,both);
+    restrict_borrow_edges(output.calls,condition,both);
+    restrict_borrow_edges(output.reads,condition,both);
+}
+
+extern "C" void finish_borrow_history(inout address earlier,
+    BorrowOutputShape output, BorrowOutputShape input, BorrowOutputMerge host,
+    cfn<u32,address> conflict) on cpu
+    requires nonzero(output.sources.stride) requires nonzero(output.inputs.stride)
+    requires nonzero(output.calls.stride) requires nonzero(output.reads.stride)
+    requires nonzero(host.sources.compare) requires nonzero(host.sources.copy)
+    requires nonzero(host.inputs.compare) requires nonzero(host.inputs.copy)
+    requires nonzero(host.calls.compare) requires nonzero(host.calls.copy)
+    requires nonzero(host.reads.compare) requires nonzero(host.reads.copy)
+    requires nonzero(host.clauses.both) requires nonzero(host.clauses.either)
+    requires nonzero(host.clauses.canonical) requires nonzero(host.clauses.normalized)
+    requires nonzero(conflict)
+{
+    if (earlier != address()) {
+        restrict_borrow_output(output,address_of(earlier),host.clauses.both);
+        clause_release(earlier);
+        earlier = address();
+    }
+    merge_borrow_output(earlier,ReadWritePaths(address(),address()),output,input,host,conflict);
 }
 
 enum BorrowReachWorkKind:u32 { Group=0; Children=1; LeavePath=2; };

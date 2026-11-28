@@ -833,12 +833,9 @@ impl ContentAtRead {
         }
     }
 
-    fn with_initial(self, initial: Borrow) -> Borrow {
-        let initial = match self.earlier {
-            Some(earlier) => initial.restricted_by(&earlier),
-            None => initial,
-        };
-        initial.joined(self.writes)
+    fn with_initial(mut self, mut initial: Borrow) -> Borrow {
+        initial.finish_history(&self.writes, &mut self.earlier);
+        initial
     }
 }
 

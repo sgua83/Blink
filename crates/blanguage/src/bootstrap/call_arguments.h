@@ -353,9 +353,6 @@ extern "C" void union_borrow_edges(BorrowEdgeGroup group,BorrowEdgeGroup source,
     requires nonzero(host.compare) requires nonzero(host.key) requires nonzero(host.clauses.both)
     requires nonzero(host.clauses.either) requires nonzero(host.clauses.canonical)
     requires nonzero(host.clauses.normalized);
-extern "C" void restrict_borrow_edges(BorrowEdgeGroup group,address path,cfn<address,address,address> both) on cpu
-    requires nonzero(both);
-
 struct BorrowOutputShape { BorrowEdgeGroup inputs; BorrowEdgeGroup calls; BorrowEdgeGroup reads; BorrowEdgeGroup sources; };
 
 struct ReadWritePaths { address written; address unwritten; };
@@ -369,6 +366,21 @@ struct BorrowOutputMerge {
 };
 
 extern "C" void merge_borrow_output(inout address remaining, ReadWritePaths paths,
+    BorrowOutputShape output, BorrowOutputShape input, BorrowOutputMerge host,
+    cfn<u32,address> conflict) on cpu
+    requires nonzero(output.sources.stride) requires nonzero(output.inputs.stride)
+    requires nonzero(output.calls.stride) requires nonzero(output.reads.stride)
+    requires nonzero(host.sources.compare) requires nonzero(host.sources.copy)
+    requires nonzero(host.inputs.compare) requires nonzero(host.inputs.copy)
+    requires nonzero(host.calls.compare) requires nonzero(host.calls.copy)
+    requires nonzero(host.reads.compare) requires nonzero(host.reads.copy)
+    requires nonzero(host.clauses.both) requires nonzero(host.clauses.either)
+    requires nonzero(host.clauses.canonical) requires nonzero(host.clauses.normalized)
+    requires nonzero(conflict);
+
+extern "C" void restrict_borrow_output(BorrowOutputShape output,address path,cfn<address,address,address> both) on cpu
+    requires nonzero(both);
+extern "C" void finish_borrow_history(inout address earlier,
     BorrowOutputShape output, BorrowOutputShape input, BorrowOutputMerge host,
     cfn<u32,address> conflict) on cpu
     requires nonzero(output.sources.stride) requires nonzero(output.inputs.stride)

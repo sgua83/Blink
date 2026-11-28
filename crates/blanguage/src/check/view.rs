@@ -388,10 +388,6 @@ impl<K:Ord+Clone> Edges<K>{
         bounds::Condition::guard(self.when(key)).assume(&bounds::Clause::default(), false)
     }
 
-    fn restrict(&mut self, path: &bounds::Clause) {
-        unsafe { restrict_borrow_edges(BorrowEdgeGroup::writable(self), path, intersect_edge_clauses) };
-    }
-
     fn with_paths(&self, paths: &mut impl Iterator<Item = bounds::Clause>) -> Self {
         Self(self.0.keys().cloned().zip(paths).collect())
     }
@@ -588,8 +584,6 @@ unsafe extern "C" {
         mode: BorrowEdgeMode, host: BorrowEdgeMerge) -> u32;
     #[link_name = "bootstrap.call_arguments::union_borrow_edges"]
     fn union_borrow_edges(group: BorrowEdgeGroup, source: BorrowEdgeGroup, path: *const bounds::Clause, host: BorrowEdgeMerge);
-    #[link_name = "bootstrap.call_arguments::restrict_borrow_edges"]
-    fn restrict_borrow_edges(group: BorrowEdgeGroup, path: &bounds::Clause, both: EdgeCombine);
 }
 
 #[repr(C)]
@@ -661,6 +655,13 @@ unsafe extern "C" {
         remaining: &mut Option<bounds::Clause>, paths: ReadWritePaths,
         output: BorrowOutputShape, input: BorrowOutputShape, host: BorrowOutputMerge,
         conflict: unsafe extern "C" fn(*const std::ffi::c_void) -> u32,
+    );
+    #[link_name = "bootstrap.call_arguments::restrict_borrow_output"]
+    fn restrict_borrow_output(output: BorrowOutputShape, path: &bounds::Clause, both: EdgeCombine);
+    #[link_name = "bootstrap.call_arguments::finish_borrow_history"]
+    fn finish_borrow_history(
+        earlier: &mut Option<bounds::Clause>, output: BorrowOutputShape, input: BorrowOutputShape,
+        host: BorrowOutputMerge, conflict: unsafe extern "C" fn(*const std::ffi::c_void) -> u32,
     );
 }
 
@@ -1461,10 +1462,14 @@ impl Borrow{
     }
 
     fn restrict_to(&mut self, condition: &bounds::Clause) {
-        self.sources.restrict(condition);
-        self.inputs.restrict(condition);
-        self.calls.restrict(condition);
-        self.reads.restrict(condition);
+        unsafe { restrict_borrow_output(BorrowOutputShape::writable(self), condition, intersect_edge_clauses) };
+    }
+
+    pub(super) fn finish_history(&mut self, writes: &Self, earlier: &mut Option<bounds::Clause>) {
+        unsafe {
+            finish_borrow_history(earlier, BorrowOutputShape::writable(self), writes.into(),
+                BorrowOutputMerge::OPERATIONS, bounds::clause_conflict)
+        }
     }
 
     pub(in crate::check) fn restricted_by(mut self, condition: &bounds::Clause) -> Self {
