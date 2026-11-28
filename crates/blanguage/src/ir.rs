@@ -1510,23 +1510,7 @@ impl Stage {
         }
     }
     pub fn requires_maximal_reconvergence(&self) -> bool {
-        #[cfg(feature = "compiler")]
-        { dataflow::maximal_reconvergence(self) }
-        #[cfg(not(feature = "compiler"))]
-        {
-            fn uses(code: &[Inst]) -> bool {
-                code.iter().any(|i| match &(i).kind {
-                    InstKind::Append(_) => true,
-                    InstKind::Scope(body) => uses(body),
-                    InstKind::If { yes, no, .. } => uses(yes) || uses(no),
-                    InstKind::Loop {
-                        condition, body, ..
-                    } => uses(condition) || uses(body),
-                    _ => false,
-                })
-            }
-            uses(&self.code)
-        }
+        stage_subgroup_uses(&self.code, true) != 0
     }
     pub fn requires_float_preserve(&self, scalar: Scalar) -> bool {
         #[cfg(feature = "compiler")]
@@ -1657,7 +1641,7 @@ impl Stage {
         }
     }
     pub fn subgroup_operations(&self) -> BTreeSet<SubgroupOp> {
-        let used = subgroup_uses(&self.code, None, 0);
+        let used = stage_subgroup_uses(&self.code, false);
         SUBGROUP_OPERATIONS.into_iter()
             .filter(|operation| (used & (1 << *operation as u32)) != 0)
             .collect()
@@ -1670,10 +1654,37 @@ impl SubgroupCapabilities {
     }
 }
 
-fn subgroup_uses(code: &[Inst], registers: Option<&[Scalar]>, used: u32) -> u32 {
-    let registers = registers.map_or(std::ptr::null(), |values| values.as_ptr().cast());
-    // The stage and its register layout remain borrowed through the call.
-    unsafe { b_subgroup_uses(StageSpan::borrow(code), registers, used, stage_instruction, subgroup_scalar_bytes) }
+#[repr(C)]
+struct StageSubgroupSource {
+    code: StageSpan,
+    registers: *const c_void,
+}
+
+#[repr(C)]
+struct StageSubgroupHost {
+    inspect: unsafe extern "C" fn(StageSpan, usize) -> StageInstructionFields,
+    scalar_bytes: unsafe extern "C" fn(*const c_void, usize) -> u32,
+}
+
+const STAGE_SUBGROUP_HOST: StageSubgroupHost = StageSubgroupHost {
+    inspect: stage_instruction, scalar_bytes: subgroup_scalar_bytes,
+};
+
+fn stage_subgroup_uses(code: &[Inst], append_only: bool) -> u32 {
+    let source = StageSubgroupSource { code: StageSpan::borrow(code), registers: std::ptr::null() };
+    unsafe { b_subgroup_uses(source, 0, u32::from(append_only), STAGE_SUBGROUP_HOST) }
+}
+
+fn program_subgroup_uses(stages: &[Stage], append_only: bool) -> u32 {
+    unsafe {
+        b_program_subgroup_uses(StageSpan::borrow(stages), u32::from(append_only),
+            stage_subgroup_source, STAGE_SUBGROUP_HOST)
+    }
+}
+
+unsafe extern "C" fn stage_subgroup_source(stages: StageSpan, index: usize) -> StageSubgroupSource {
+    let stage = unsafe { &*stages.data.cast::<Stage>().add(index) };
+    StageSubgroupSource { code: StageSpan::borrow(&stage.code), registers: stage.registers.as_ptr().cast() }
 }
 
 fn subgroup_flags(used: u32) -> SubgroupCapabilities {
@@ -1686,9 +1697,10 @@ unsafe extern "C" fn subgroup_scalar_bytes(registers: *const c_void, result: usi
 
 unsafe extern "C" {
     #[link_name = "codec.type_layout::subgroup_uses"]
-    fn b_subgroup_uses(code: StageSpan, registers: *const c_void, used: u32,
-        inspect: unsafe extern "C" fn(StageSpan, usize) -> StageInstructionFields,
-        scalar_bytes: unsafe extern "C" fn(*const c_void, usize) -> u32) -> u32;
+    fn b_subgroup_uses(source: StageSubgroupSource, used: u32, append_only: u32, host: StageSubgroupHost) -> u32;
+    #[link_name = "codec.type_layout::program_subgroup_uses"]
+    fn b_program_subgroup_uses(stages: StageSpan, append_only: u32,
+        stage: unsafe extern "C" fn(StageSpan, usize) -> StageSubgroupSource, host: StageSubgroupHost) -> u32;
     #[link_name = "codec.type_layout::subgroup_flags"]
     fn b_subgroup_flags(used: u32) -> SubgroupFlags;
 }
@@ -1766,21 +1778,12 @@ impl Program {
         self.textures.iter().any(|t| t.count.is_some())
     }
     pub fn requires_maximal_reconvergence(&self) -> bool {
-        #[cfg(feature = "compiler")]
-        { dataflow::program_maximal_reconvergence(self) }
-        #[cfg(not(feature = "compiler"))]
-        {
-            self.stages
-                .iter()
-                .any(Stage::requires_maximal_reconvergence)
-        }
+        program_subgroup_uses(&self.stages, true) != 0
     }
     pub fn subgroup_capabilities(&self) -> SubgroupCapabilities {
-        let used = self.stages.iter().fold(0, |used, stage| {
-            subgroup_uses(&stage.code, Some(&stage.registers), used)
-        });
-        subgroup_flags(used)
+        subgroup_flags(program_subgroup_uses(&self.stages, false))
     }
+
     /// 内部设备绑定：集合中间量与间接域参数各有一个必要槽，不占源码参数。
     pub fn indirect_buffer(&self) -> usize { self.execution_buffers().indirect }
     pub fn selection_buffer(&self) -> usize { self.indirect_buffer() + 1 }

@@ -965,19 +965,6 @@ pub(crate) fn numeric_requirements(program: &Program) -> (bool, bool, bool) {
 fn atomic64_flags(flags: u32) -> (bool, bool) { (flags & 1 != 0, flags & 2 != 0) }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.ir_dataflow::maximal_reconvergence"]
-    fn b_maximal_reconvergence(code: Span, host: Host) -> u32;
-    #[link_name = "bootstrap.ir_dataflow::program_maximal_reconvergence"]
-    fn b_program_maximal_reconvergence(stages: Span, host: Host) -> u32;
-}
-pub(super) fn maximal_reconvergence(stage: &Stage) -> bool {
-    unsafe { b_maximal_reconvergence(Span::slice(&stage.code), HOST) != 0 }
-}
-pub(super) fn program_maximal_reconvergence(program: &Program) -> bool {
-    unsafe { b_program_maximal_reconvergence(Span::slice(program.stages()), HOST) != 0 }
-}
-
-unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::shader_pages_fit"]
     fn b_shader_pages_fit(buffers: Span, bytes: u32, host: Host) -> u32;
 }

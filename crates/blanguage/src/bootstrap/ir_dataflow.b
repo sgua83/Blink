@@ -2089,19 +2089,6 @@ extern "C" void tile_input_words(Span tiles,Host host,Span uses,address output,
  }
 }
 
-u32 has_append(Span code,Host host) on cpu requires nonzero(host.inspect) {
- usize index=0u64;
- while(index<code.count) {
-  View value=host.inspect(node_at(code,index,N_INSTRUCTION));
-  if(value.tag==OP_APPEND){return 1;}
-  if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE) {
-   if(has_append(value.first,host)!=0){return 1;}
-   if(has_append(value.second,host)!=0){return 1;}
-  }
-  index+=1u64;
- }
- return 0;
-}
 const u32 CODE_SUBGROUPS=1;
 const u32 CODE_SUBGROUP_WIDTHS=2;
 const u32 CODE_ATOMICS=4;
@@ -2304,19 +2291,6 @@ extern "C" NumericRequirements numeric_requirements(Span stages,Span buffers,Spa
   index+=1u64;
  }
  return flags;
-}
-
-extern "C" u32 maximal_reconvergence(Span code,Host host) on cpu requires nonzero(host.inspect) {
- return has_append(code,host);
-}
-extern "C" u32 program_maximal_reconvergence(Span stages,Host host) on cpu requires nonzero(host.inspect) {
- usize index=0u64;
- while(index<stages.count) {
-  View stage=host.inspect(node_at(stages,index,N_STAGE));
-  if(has_append(stage.first,host)!=0){return 1;}
-  index+=1u64;
- }
- return 0;
 }
 
 const u32 N_PAGE_BUFFER=28;

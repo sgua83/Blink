@@ -409,26 +409,37 @@ extern "C" SubgroupFlags subgroup_flags(u32 used) on cpu {
   u32((used&SUBGROUP_EXTENDED)!=0));
 }
 
-extern "C" u32 subgroup_uses(StageSpan code, address registers, u32 initial,
-    cfn<StageInstructionFields,StageSpan,usize> ensures memory(read) inspect,
-    cfn<u32,address,usize> ensures memory(read) scalar_bytes) on cpu
-    requires nonzero(inspect) requires nonzero(scalar_bytes) {
+extern "C" u32 subgroup_uses(StageSubgroupSource source, u32 initial, u32 append_only,
+    StageSubgroupHost host) on cpu requires nonzero(host.inspect) requires nonzero(host.scalar_bytes) {
     u32 used = initial;
     usize index = 0u64;
-    while (index < code.count) {
-        StageInstructionFields instruction = inspect(code, index);
-        if (instruction.kind == StageInstruction::Subgroup) {
+    while (index < source.code.count && (append_only == 0 || used == 0)) {
+        StageInstructionFields instruction = host.inspect(source.code, index);
+        if (instruction.kind == StageInstruction::Subgroup && append_only == 0) {
             used |= 1 << instruction.operand;
-            if (registers != address() && (used & SUBGROUP_EXTENDED) == 0
-                && scalar_bytes(registers, instruction.index) != 4) {
+            if (source.registers != address() && (used & SUBGROUP_EXTENDED) == 0
+                && host.scalar_bytes(source.registers, instruction.index) != 4) {
                 used |= SUBGROUP_EXTENDED;
             }
         } else if (instruction.kind == StageInstruction::Append) {
-            used |= APPEND_OPERATIONS;
+            used |= append_only != 0 ? SUBGROUP_APPEND : APPEND_OPERATIONS;
         } else if (instruction.kind == StageInstruction::Block) {
-            used = subgroup_uses(instruction.first, registers, used, inspect, scalar_bytes);
-            used = subgroup_uses(instruction.second, registers, used, inspect, scalar_bytes);
+            used = subgroup_uses(StageSubgroupSource(instruction.first, source.registers), used, append_only, host);
+            used = subgroup_uses(StageSubgroupSource(instruction.second, source.registers), used, append_only, host);
         }
+        index += 1u64;
+    }
+    return used;
+}
+
+extern "C" u32 program_subgroup_uses(StageSpan stages, u32 append_only,
+    cfn<StageSubgroupSource,StageSpan,usize> ensures memory(read) stage,
+    StageSubgroupHost host) on cpu
+    requires nonzero(stage) requires nonzero(host.inspect) requires nonzero(host.scalar_bytes) {
+    u32 used = 0;
+    usize index = 0u64;
+    while (index < stages.count && (append_only == 0 || used == 0)) {
+        used = subgroup_uses(stage(stages, index), used, append_only, host);
         index += 1u64;
     }
     return used;

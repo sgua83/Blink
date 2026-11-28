@@ -582,8 +582,6 @@ struct NumericHost {
 extern "C" NumericRequirements numeric_requirements(Span stages,Span buffers,Span uniforms,NumericHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.locals);
 
-extern "C" u32 maximal_reconvergence(Span code,Host host) on cpu requires nonzero(host.inspect);
-extern "C" u32 program_maximal_reconvergence(Span stages,Host host) on cpu requires nonzero(host.inspect);
 
 // The original program's buffers and type storage are borrowed synchronously.
 extern "C" u32 shader_pages_fit(Span buffers,u32 bytes,Host host) on cpu requires nonzero(host.inspect);

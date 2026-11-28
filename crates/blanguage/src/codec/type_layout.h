@@ -162,7 +162,14 @@ struct SubgroupFlags {
  u32 shuffle; u32 shuffle_relative; u32 extended_types;
 };
 extern "C" SubgroupFlags subgroup_flags(u32 used) on cpu;
-extern "C" u32 subgroup_uses(StageSpan code, address registers, u32 initial,
-    cfn<StageInstructionFields,StageSpan,usize> ensures memory(read) inspect,
-    cfn<u32,address,usize> ensures memory(read) scalar_bytes) on cpu
-    requires nonzero(inspect) requires nonzero(scalar_bytes);
+struct StageSubgroupSource { StageSpan code; address registers; };
+struct StageSubgroupHost {
+    cfn<StageInstructionFields,StageSpan,usize> ensures memory(read) inspect;
+    cfn<u32,address,usize> ensures memory(read) scalar_bytes;
+};
+extern "C" u32 subgroup_uses(StageSubgroupSource source, u32 initial, u32 append_only,
+    StageSubgroupHost host) on cpu requires nonzero(host.inspect) requires nonzero(host.scalar_bytes);
+extern "C" u32 program_subgroup_uses(StageSpan stages, u32 append_only,
+    cfn<StageSubgroupSource,StageSpan,usize> ensures memory(read) stage,
+    StageSubgroupHost host) on cpu
+    requires nonzero(stage) requires nonzero(host.inspect) requires nonzero(host.scalar_bytes);
