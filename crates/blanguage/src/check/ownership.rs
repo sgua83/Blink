@@ -5,6 +5,9 @@ mod position;
 #[path="ownership/place.rs"]
 mod place;
 use position::{PositionChild, PositionCondition};
+pub(in crate::check) use position::{
+    PositionIndex, PositionView, POSITION_VIEW, equal as position_equal, position_index, required_index,
+};
 
 #[repr(C, u32)]
 #[derive(Clone, Copy)]

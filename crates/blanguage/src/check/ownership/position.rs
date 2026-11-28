@@ -232,27 +232,32 @@ impl std::ops::Deref for PositionChild {
 
 #[repr(C)]
 #[derive(Clone,Copy)]
-struct Index { kind:u32, value:u32, identity:Address, reg:u64 }
+pub(in crate::check) struct PositionIndex {
+    pub(in crate::check) kind: u32,
+    value: u32,
+    pub(in crate::check) identity: Address,
+    reg: u64,
+}
 #[repr(C)]
 #[derive(Clone,Copy)]
-struct Node { kind:u32, owner:u64, member:u64, word:u64, index:Index, condition:Address, count:u64 }
+struct Node { kind:u32, owner:u64, member:u64, word:u64, index:PositionIndex, condition:Address, count:u64 }
 #[repr(C)]
 struct Item { node:Address, present:u32 }
 fn pointer<T>(value:&T)->Address {(value as *const T).cast_mut().cast()}
-fn index(value:Option<&ApplicationIndex>)->Index {
+pub(in crate::check) fn position_index(value:Option<&ApplicationIndex>)->PositionIndex {
     match value {
-        None=>Index{kind:0,value:0,identity:std::ptr::null_mut(),reg:0},
-        Some(ApplicationIndex::Constant(value))=>Index{kind:1,value:*value,identity:std::ptr::null_mut(),reg:0},
-        Some(ApplicationIndex::Value(identity,reg))=>Index{kind:2,value:0,identity:pointer(identity),reg:*reg as u64},
+        None=>PositionIndex{kind:0,value:0,identity:std::ptr::null_mut(),reg:0},
+        Some(ApplicationIndex::Constant(value))=>PositionIndex{kind:1,value:*value,identity:std::ptr::null_mut(),reg:0},
+        Some(ApplicationIndex::Value(identity,reg))=>PositionIndex{kind:2,value:0,identity:pointer(identity),reg:*reg as u64},
     }
 }
-unsafe fn required_index(value:Index)->ApplicationIndex {
+pub(in crate::check) unsafe fn required_index(value:PositionIndex)->ApplicationIndex {
     if value.kind==1 {ApplicationIndex::Constant(value.value)}else{ApplicationIndex::Value(unsafe{*value.identity.cast::<ValueIdentity>()},value.reg as Reg)}
 }
-unsafe fn actual_index(value:Index)->Option<ApplicationIndex> {if value.kind==0{None}else{Some(unsafe{required_index(value)})}}
+unsafe fn actual_index(value:PositionIndex)->Option<ApplicationIndex> {if value.kind==0{None}else{Some(unsafe{required_index(value)})}}
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct PositionView {
+pub(in crate::check) struct PositionView {
     payload_offset: usize,
     stride: usize,
     index_payload_offset: usize,
@@ -262,7 +267,7 @@ struct PositionView {
     selection_width: usize,
 }
 
-const POSITION_VIEW: PositionView = PositionView {
+pub(in crate::check) const POSITION_VIEW: PositionView = PositionView {
     // repr(C, u32) puts each tag before its aligned union of variant payloads.
     payload_offset: size_of::<u32>().next_multiple_of(align_of::<Position>()),
     stride: size_of::<Position>(),
@@ -273,20 +278,20 @@ const POSITION_VIEW: PositionView = PositionView {
     selection_width: size_of::<ApplicationSelection>(),
 };
 
-unsafe extern "C" fn equal(a:Address,b:Address)->u32 {u32::from(unsafe{&*a.cast::<Position>()==&*b.cast::<Position>()})}
+pub(in crate::check) unsafe extern "C" fn equal(a:Address,b:Address)->u32 {u32::from(unsafe{&*a.cast::<Position>()==&*b.cast::<Position>()})}
 unsafe extern "C" fn identity_equal(a:Address,b:Address)->u32 {u32::from(unsafe{*a.cast::<ValueIdentity>()==*b.cast::<ValueIdentity>()})}
 unsafe extern "C" fn presence_kind(value:Address)->u32 {
     match unsafe{&*value.cast::<owned_presence::Presence>()} {owned_presence::Presence::All=>1,owned_presence::Presence::None=>0,_=>2}
 }
 unsafe extern "C" fn presence_equal(a:Address,b:Address)->u32 {u32::from(unsafe{&*a.cast::<owned_presence::Presence>()==&*b.cast::<owned_presence::Presence>()})}
-unsafe extern "C" fn presence_uses_index(value:Address,at:Index)->u32 {
+unsafe extern "C" fn presence_uses_index(value:Address,at:PositionIndex)->u32 {
     u32::from(unsafe{&*value.cast::<owned_presence::Presence>()}.uses_index(unsafe{required_index(at)}))
 }
 unsafe extern "C" fn contains(set:Address,value:Address)->u32 {u32::from(unsafe{&*set.cast::<BTreeSet<Position>>()}.contains(unsafe{&*value.cast::<Position>()}))}
 // These are scalar keys for the original BTreeSet, never projected trees.
 unsafe extern "C" fn contains_parameter(set:Address,owner:u64,word:u64)->u32 {u32::from(unsafe{&*set.cast::<BTreeSet<Position>>()}.contains(&Position::Parameter(owner as usize,word as usize)))}
-unsafe extern "C" fn contains_element(set:Address,owner:u64,at:Index,word:u32)->u32 {u32::from(unsafe{&*set.cast::<BTreeSet<Position>>()}.contains(&Position::ApplicationElement(owner as usize,unsafe{required_index(at)},word)))}
-unsafe extern "C" fn contains_input(set:Address,owner:u64,member:u64,at:Index,word:u32)->u32 {u32::from(unsafe{&*set.cast::<BTreeSet<Position>>()}.contains(&Position::application_input(view::LoopInput{level:owner as usize,index:member as usize},unsafe{actual_index(at)},word)))}
+unsafe extern "C" fn contains_element(set:Address,owner:u64,at:PositionIndex,word:u32)->u32 {u32::from(unsafe{&*set.cast::<BTreeSet<Position>>()}.contains(&Position::ApplicationElement(owner as usize,unsafe{required_index(at)},word)))}
+unsafe extern "C" fn contains_input(set:Address,owner:u64,member:u64,at:PositionIndex,word:u32)->u32 {u32::from(unsafe{&*set.cast::<BTreeSet<Position>>()}.contains(&Position::application_input(view::LoopInput{level:owner as usize,index:member as usize},unsafe{actual_index(at)},word)))}
 enum Iter { One(btree_set::Iter<'static,Position>), Difference(btree_set::Difference<'static,Position>) }
 unsafe extern "C" fn iterate(a:Address,b:Address)->Address {
     // The B traversal borrows the actual input sets and drops this iterator
@@ -330,11 +335,11 @@ struct Host {
     identity_equal:unsafe extern "C" fn(Address,Address)->u32,
     presence_kind:unsafe extern "C" fn(Address)->u32,
     presence_equal:unsafe extern "C" fn(Address,Address)->u32,
-    presence_uses_index:unsafe extern "C" fn(Address,Index)->u32,
+    presence_uses_index:unsafe extern "C" fn(Address,PositionIndex)->u32,
     contains:unsafe extern "C" fn(Address,Address)->u32,
     contains_parameter:unsafe extern "C" fn(Address,u64,u64)->u32,
-    contains_element:unsafe extern "C" fn(Address,u64,Index,u32)->u32,
-    contains_input:unsafe extern "C" fn(Address,u64,u64,Index,u32)->u32,
+    contains_element:unsafe extern "C" fn(Address,u64,PositionIndex,u32)->u32,
+    contains_input:unsafe extern "C" fn(Address,u64,u64,PositionIndex,u32)->u32,
     field_coverage: unsafe extern "C" fn(LoopFieldState, Node) -> u32,
     iterate:unsafe extern "C" fn(Address,Address)->Address,
     next:unsafe extern "C" fn(Address)->Item,
@@ -361,12 +366,12 @@ unsafe extern "C" fn drop_position_vector(value: Address) { drop(unsafe { Box::f
 unsafe extern "C" {
     #[link_name="bootstrap.ownership_position::select"] fn source_select(when:Address,a:Address,b:Address,equal:EqualPosition,presence_kind:PresenceKind)->u32;
     #[link_name="bootstrap.ownership_position::both"] fn source_both(a:Address,b:Address,equal:EqualPosition)->u32;
-    #[link_name="bootstrap.ownership_position::index"] fn source_index(values:Address,index:Index,width:u64,host:Host)->Address;
-    #[link_name="bootstrap.ownership_position::word"] fn source_word(value:Address,index:Index,word:u32,host:Host)->Address;
+    #[link_name="bootstrap.ownership_position::index"] fn source_index(values:Address,index:PositionIndex,width:u64,host:Host)->Address;
+    #[link_name="bootstrap.ownership_position::word"] fn source_word(value:Address,index:PositionIndex,word:u32,host:Host)->Address;
     #[link_name = "bootstrap.ownership_position::dataset_position"]
-    fn source_dataset_position(value: Address, selected: Index, host: Host, cleanup: DatasetPositionCleanup) -> Address;
+    fn source_dataset_position(value: Address, selected: PositionIndex, host: Host, cleanup: DatasetPositionCleanup) -> Address;
     #[link_name="bootstrap.ownership_position::ready"] fn source_ready(value:Address,known:Address,host:Host)->u32;
-    #[link_name="bootstrap.ownership_position::word_ready"] fn source_word_ready(value:Address,at:Index,word:u32,known:Address,host:Host)->u32;
+    #[link_name="bootstrap.ownership_position::word_ready"] fn source_word_ready(value:Address,at:PositionIndex,word:u32,known:Address,host:Host)->u32;
     #[link_name="bootstrap.ownership_position::prefix_ready"] fn source_prefix(value:Address,length:u32,word:u32,known:Address,host:Host)->u32;
     #[link_name="bootstrap.ownership_position::uses_scope"] fn source_scope(value:Address,owner:u64,host:Host)->u32;
     #[link_name = "bootstrap.ownership_position::merge_initialization"]
@@ -379,8 +384,8 @@ pub(super) fn selected(when:owned_presence::Presence,a:Position,b:Position)->Pos
     match unsafe{source_select(pointer(&when),pointer(&a),pointer(&b),equal,presence_kind)} {0=>a,1=>b,_=>Position::Conditional(PositionCondition::new(when),PositionChild::new(a),PositionChild::new(b))}
 }
 pub(super) fn both(a:Position,b:Position)->Position {match unsafe{source_both(pointer(&a),pointer(&b),equal)} {0=>a,1=>b,_=>Position::Both(PositionChild::new(a),PositionChild::new(b))}}
-pub(super) fn indexed(values:Vec<Position>,at:ApplicationIndex,width:usize)->Vec<Position> {*unsafe{Box::from_raw(source_index(pointer(&values),index(Some(&at)),width as u64,HOST).cast::<Vec<Position>>())}}
-pub(super) fn word(value:&Position,at:Option<ApplicationIndex>,word:u32)->Position {*unsafe{Box::from_raw(source_word(pointer(value),index(at.as_ref()),word,HOST).cast::<Position>())}}
+pub(super) fn indexed(values:Vec<Position>,at:ApplicationIndex,width:usize)->Vec<Position> {*unsafe{Box::from_raw(source_index(pointer(&values),position_index(Some(&at)),width as u64,HOST).cast::<Vec<Position>>())}}
+pub(super) fn word(value:&Position,at:Option<ApplicationIndex>,word:u32)->Position {*unsafe{Box::from_raw(source_word(pointer(value),position_index(at.as_ref()),word,HOST).cast::<Position>())}}
 pub(super) fn dataset_position(value: &Position, operand: bounds::Operand) -> Option<Position> {
     let selected = match operand {
         bounds::Operand::Constant(Scalar::U32, value) => Some(ApplicationIndex::Constant(value as u32)),
@@ -388,7 +393,7 @@ pub(super) fn dataset_position(value: &Position, operand: bounds::Operand) -> Op
         _ => None,
     };
     let cleanup = DatasetPositionCleanup { position: drop_position, vector: drop_position_vector };
-    let result = unsafe { source_dataset_position(pointer(value), index(selected.as_ref()), HOST, cleanup) };
+    let result = unsafe { source_dataset_position(pointer(value), position_index(selected.as_ref()), HOST, cleanup) };
     (!result.is_null()).then(|| *unsafe { Box::from_raw(result.cast::<Position>()) })
 }
 #[repr(C)]
@@ -514,7 +519,7 @@ pub(in crate::check) fn initialization_read_borrow(read: &address::Initializatio
 
 pub(super) fn initialized(value:&Position,known:&BTreeSet<Position>)->bool {unsafe{source_ready(pointer(value),pointer(known),HOST)!=0}}
 pub(super) fn word_initialized(value:&Position,at:Option<ApplicationIndex>,word:u32,known:&BTreeSet<Position>)->bool {
-    unsafe{source_word_ready(pointer(value),index(at.as_ref()),word,pointer(known),HOST)!=0}
+    unsafe{source_word_ready(pointer(value),position_index(at.as_ref()),word,pointer(known),HOST)!=0}
 }
 pub(super) fn prefix(value:&Position,length:u32,word:u32,known:&BTreeSet<Position>)->bool {unsafe{source_prefix(pointer(value),length,word,pointer(known),HOST)!=0}}
 pub(super) fn scope(value:&Position,owner:usize)->bool {unsafe{source_scope(pointer(value),owner as u64,HOST)!=0}}
@@ -625,7 +630,7 @@ unsafe extern "C" {
     #[link_name = "bootstrap.ownership_position::loop_field_initialization"]
     fn source_loop_fields(
         context: Address, output: Address, rows: usize, states: usize,
-        selected: Index, host: Host, exit: LoopFieldHost,
+        selected: PositionIndex, host: Host, exit: LoopFieldHost,
     );
 }
 
@@ -675,7 +680,7 @@ unsafe extern "C" {
     #[link_name = "bootstrap.ownership_position::array_initialization"]
     fn source_array_initialization(
         context: Address, output: Address, count: usize, range: ArrayRange,
-        index: Index, host: Host, exits: ArrayExitHost,
+        index: PositionIndex, host: Host, exits: ArrayExitHost,
     );
 }
 
@@ -697,7 +702,7 @@ impl Position {
         unsafe {
             source_loop_fields(
                 pointer(&context), std::ptr::from_mut(output).cast(),
-                rows.len(), states.len(), index(Some(&at)), HOST, exit,
+                rows.len(), states.len(), position_index(Some(&at)), HOST, exit,
             );
         }
     }
@@ -720,7 +725,7 @@ impl Position {
         unsafe {
             source_array_initialization(
                 std::ptr::from_mut(&mut context).cast(), std::ptr::from_mut(output).cast(),
-                states.len(), range, index(Some(&at)), HOST,
+                states.len(), range, position_index(Some(&at)), HOST,
                 ArrayExitHost { next: next_array_position::<T>, state: array_state::<T> },
             );
         }
@@ -732,7 +737,7 @@ impl Position {
 struct InitializationEffectsHost {
     enter: unsafe extern "C" fn(Address, Node, u64),
     leave: unsafe extern "C" fn(Address),
-    effect: unsafe extern "C" fn(Address, Address, Index) -> u32,
+    effect: unsafe extern "C" fn(Address, Address, PositionIndex) -> u32,
 }
 
 struct InitializationEffects<F> {
@@ -758,8 +763,8 @@ unsafe extern "C" fn leave_effect<F>(context: Address) {
     state.branches.pop();
 }
 
-unsafe extern "C" fn initialization_effect<F>(context: Address, value: Address, index: Index) -> u32
-where F: FnMut(&Position, &bounds::Condition, Index) -> bool {
+unsafe extern "C" fn initialization_effect<F>(context: Address, value: Address, index: PositionIndex) -> u32
+where F: FnMut(&Position, &bounds::Condition, PositionIndex) -> bool {
     let state = unsafe { &mut *context.cast::<InitializationEffects<F>>() };
     let position = unsafe { &*value.cast::<Position>() };
     let when = state.branches.last().unwrap_or(&state.root);
@@ -798,7 +803,7 @@ unsafe extern "C" fn field_coverage(edge: LoopFieldState, field: Node) -> u32 {
     let filter = InitializationFilter {
         kind: field.kind, indexed: field.index.kind, owner: field.owner, member: field.member, word: field.word,
     };
-    let mut cover = |_: &Position, when: &bounds::Condition, index: Index| {
+    let mut cover = |_: &Position, when: &bounds::Condition, index: PositionIndex| {
         let actual = unsafe { actual_index(index) };
         remaining = match (wanted, actual) {
             (Some(wanted), Some(actual)) if wanted != actual => {
@@ -827,7 +832,7 @@ enum InitializationInput<'a> {
 fn visit_initializations<F>(
     input: InitializationInput<'_>, root: bounds::Condition, filter: InitializationFilter, effect: F,
 ) -> bool
-where F: FnMut(&Position, &bounds::Condition, Index) -> bool {
+where F: FnMut(&Position, &bounds::Condition, PositionIndex) -> bool {
     let mut context = InitializationEffects { root, branches: Vec::new(), effect };
     let sink = InitializationEffectsHost {
         enter: enter_effect::<F>, leave: leave_effect::<F>, effect: initialization_effect::<F>,
@@ -909,7 +914,7 @@ unsafe extern "C" fn resolution_mark(context: Address) -> ResolutionBase {
     ResolutionBase { choices: state.choices.len() as u64, results: state.results.len() as u64 }
 }
 
-unsafe extern "C" fn resolution_query_choice(context: Address, index: Index, at: u64) -> u32 {
+unsafe extern "C" fn resolution_query_choice(context: Address, index: PositionIndex, at: u64) -> u32 {
     let state = unsafe { resolution(context) };
     let when = Presence::indices(
         Comparison::Equal, unsafe { required_index(index) }, ApplicationIndex::Constant(at as u32),
@@ -970,7 +975,7 @@ unsafe extern "C" fn resolution_result(context: Address, at: u64) -> Address {
     pointer(&state.results[at as usize])
 }
 
-unsafe extern "C" fn resolution_finish_indexed(context: Address, index: Index, base: u64, uniform: u32) {
+unsafe extern "C" fn resolution_finish_indexed(context: Address, index: PositionIndex, base: u64, uniform: u32) {
     let results = &mut unsafe { resolution(context) }.results;
     let mut choices = results.drain(base as usize..);
     let position = if uniform != 0 {
@@ -991,14 +996,14 @@ struct ResolutionHost {
     assume: unsafe extern "C" fn(Address,Address,u32),
     leave: unsafe extern "C" fn(Address),
     mark: unsafe extern "C" fn(Address) -> ResolutionBase,
-    query_choice: unsafe extern "C" fn(Address,Index,u64) -> u32,
+    query_choice: unsafe extern "C" fn(Address,PositionIndex,u64) -> u32,
     assume_choice: unsafe extern "C" fn(Address,u64) -> u32,
     release_choices: unsafe extern "C" fn(Address,u64),
     emit: unsafe extern "C" fn(Address,Address),
     pair: unsafe extern "C" fn(Address) -> ResolutionPair,
     finish_pair: unsafe extern "C" fn(Address,Address,u32),
     result: unsafe extern "C" fn(Address,u64) -> Address,
-    finish_indexed: unsafe extern "C" fn(Address,Index,u64,u32),
+    finish_indexed: unsafe extern "C" fn(Address,PositionIndex,u64,u32),
 }
 
 unsafe extern "C" {

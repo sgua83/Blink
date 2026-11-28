@@ -1,14 +1,15 @@
 module bootstrap.ownership_presence;
+import bootstrap.ownership_position;
 
 struct CloneContext { address output; u32 any; u32 prepend; };
 struct WithinContext { address output; address other; };
 struct EitherContext { address output; address branch; Selection original; u32 prepend; };
 struct NotContext { u32 mode; };
-struct SelectContext { address output; address choice; address wanted; Index index; u64 at; };
+struct SelectContext { address output; address choice; address wanted; PositionIndex index; u64 at; };
 struct SelectBranchContext { address output; address predicate; address choice; address wanted; };
 
 struct ProjectOther { address output; address value; address inputs; u32 looped; u32 any; };
-struct ProjectSelected { address output; address inputs; Selection value; Index omit_a; Index omit_b; };
+struct ProjectSelected { address output; address inputs; Selection value; PositionIndex omit_a; PositionIndex omit_b; };
 struct OwnerPair { address output; address a; address b; address choice; u32 has_choice; };
 struct OwnerSecond { OwnerPair pair; address a_presence; };
 struct OwnerChoice { address output; address a; address b; address choice; };
@@ -50,7 +51,7 @@ Selection current=value;
         u32 bit=current.a.value<current.b.value ? 1 : (current.a.value==current.b.value ? 2 : 4);
         host.truth(output,(comparison_mask(current.operation)&bit)!=0 ? 1 : 0);return;
     }
-    if(current.a.kind==1){Index saved=current.a;current.a=current.b;current.b=saved;current.operation=reverse_comparison(current.operation);}
+    if(current.a.kind==1){PositionIndex saved=current.a;current.a=current.b;current.b=saved;current.operation=reverse_comparison(current.operation);}
     if(current.b.kind==1&&current.b.value==0){
         if(current.operation==2){host.truth(output,0);return;}
         if(current.operation==5){host.truth(output,1);return;}
@@ -81,7 +82,7 @@ Node left=host.inspect(a);Node right=host.inspect(b);
     return i32(0);
 }
 
-extern "C" u32 uses_index(address value,Index wanted,Host host) on cpu
+extern "C" u32 uses_index(address value,PositionIndex wanted,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.compare_index)
     requires nonzero(host.input_uses_index) {
@@ -138,8 +139,6 @@ extern "C" u32 clone_callback(address temporary,address data,Host host) on cpu
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -178,8 +177,6 @@ void combine_cloned(address output,address other,u32 any,u32 prepend,Host host) 
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -216,8 +213,6 @@ extern "C" u32 either_callback(address temporary,address data,Host host) on cpu
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -258,8 +253,6 @@ u32 within_selected(address output,address other,Selection original,Host host) o
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -306,8 +299,6 @@ extern "C" u32 within_callback(Selection original,address data,Host host) on cpu
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -344,8 +335,6 @@ u32 within(address output,address other,Host host) on cpu
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -384,8 +373,6 @@ extern "C" void combine(address left,address right,u32 any,Host host) on cpu
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -434,8 +421,6 @@ extern "C" u32 not_children(address output,address left,address right,address da
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -473,8 +458,6 @@ extern "C" u32 not_selected(Selection value,address data,Host host) on cpu
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -511,8 +494,6 @@ extern "C" void negate(address value,Host host) on cpu
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -552,8 +533,6 @@ extern "C" u32 select_choice(address actual,address data,Host host) on cpu
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -591,8 +570,6 @@ extern "C" u32 select_predicate(address predicate,address data,Host host) on cpu
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -610,7 +587,7 @@ extern "C" u32 select_predicate(address predicate,address data,Host host) on cpu
     requires nonzero(host.ownership_conditional)
     requires nonzero(host.copy_value) {
 SelectContext context=unsafe_position<SelectContext>(data);
-    Index constant=Index(1,u32(context.at),address(),0u64);
+    PositionIndex constant=PositionIndex(1,u32(context.at),address(),0u64);
     relation(predicate,Selection(0,context.index,constant),host);
     SelectBranchContext child=SelectBranchContext(context.output,predicate,context.choice,context.wanted);
     return host.truth_scope(0,address_of(child),host,c_function(select_choice));
@@ -632,8 +609,6 @@ extern "C" void selected(address output,address position,address wanted,Host hos
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -650,18 +625,31 @@ extern "C" void selected(address output,address position,address wanted,Host hos
     requires nonzero(host.ownership_constant)
     requires nonzero(host.ownership_conditional)
     requires nonzero(host.copy_value) {
-PositionNode node=host.position(position);
-    if(node.indexed==0){host.truth(output,host.position_equal(position,wanted));return;}
-    host.truth(output,0);
-    if(node.index.kind==1){if(u64(node.index.value)<node.count){selected(output,host.position_child(position,u64(node.index.value)),wanted,host);}return;}
-    u64 i=0u64;while(i<node.count){
-        SelectContext context=SelectContext(output,host.position_child(position,i),wanted,node.index,i);
-        host.truth_scope(0,address_of(context),host,c_function(select_predicate));i+=1u64;
+    let view = unsafe_position<PositionView>(host.positions);
+    let node = bootstrap.ownership_position::inspect_position(position, view);
+    if (node.kind != 10) {
+        host.truth(output, host.position_equal(position, wanted));
+        return;
+    }
+    host.truth(output, 0);
+    if (node.index.kind == 1) {
+        let at = u64(node.index.value);
+        if (at < node.count) {
+            selected(output, bootstrap.ownership_position::position_child(position, at, view), wanted, host);
+        }
+        return;
+    }
+    u64 at = 0u64;
+    while (at < node.count) {
+        let choice = bootstrap.ownership_position::position_child(position, at, view);
+        SelectContext context = SelectContext(output, choice, wanted, node.index, at);
+        host.truth_scope(0, address_of(context), host, c_function(select_predicate));
+        at += 1u64;
     }
 }
 
-Index omitted_index() on cpu {
-return Index(0,0,address(),0u64);
+PositionIndex omitted_index() on cpu {
+return PositionIndex(0,0,address(),0u64);
 }
 
 void index_condition(address output,Selection value,Host host) on cpu
@@ -688,8 +676,6 @@ extern "C" u32 project_other(address temporary,address data,Host host) on cpu
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -727,8 +713,6 @@ extern "C" u32 project_selected(address temporary,address data,Host host) on cpu
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -767,8 +751,6 @@ void project(address output,address value,address inputs,u32 looped,Host host) o
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -791,7 +773,7 @@ Node node=host.inspect(value);
     if(node.kind==3){
         Selection actual=Selection(node.operation,node.a,node.b);
         if(looped==0){index_condition(output,actual,host);return;}
-        Index omit_a=omitted_index();Index omit_b=omitted_index();
+        PositionIndex omit_a=omitted_index();PositionIndex omit_b=omitted_index();
         if(host.input_offset(inputs,node.b)!=0){
             if(actual.operation==5){actual.operation=3;omit_b=node.b;}
             else if(actual.operation==2){actual.operation=4;omit_b=node.b;}
@@ -825,8 +807,6 @@ extern "C" void condition(address output,address value,Host host) on cpu
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -862,8 +842,6 @@ extern "C" void loop_condition(address output,address value,address inputs,Host 
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -935,8 +913,6 @@ extern "C" u32 choice_right(address right,address data,Host host) on cpu
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -974,8 +950,6 @@ extern "C" u32 choice_left(address left,address data,Host host) on cpu
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -1014,8 +988,6 @@ extern "C" u32 owner_second(address b,address data,Host host) on cpu
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -1055,8 +1027,6 @@ extern "C" u32 owner_first(address a,address data,Host host) on cpu
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -1095,8 +1065,6 @@ extern "C" void ownership_either(address output,address a,address b,address choi
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -1136,8 +1104,6 @@ extern "C" u32 restrict_right(address right,address data,Host host) on cpu
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -1174,8 +1140,6 @@ extern "C" u32 restrict_left(address left,address data,Host host) on cpu
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -1214,8 +1178,6 @@ extern "C" void ownership_restricted(address output,address value,address when,H
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -1254,8 +1216,6 @@ extern "C" u32 xor_actual(address right,address data,Host host) on cpu
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -1295,8 +1255,6 @@ extern "C" u32 xor_expected(address left,address data,Host host) on cpu
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -1334,8 +1292,6 @@ extern "C" u32 actual_condition(address actual,address data,Host host) on cpu
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -1374,8 +1330,6 @@ extern "C" u32 actual_presence(address presence,address data,Host host) on cpu
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -1414,8 +1368,6 @@ extern "C" u32 expected_condition(address expected,address data,Host host) on cp
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -1454,8 +1406,6 @@ extern "C" u32 expected_presence(address presence,address data,Host host) on cpu
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -1494,8 +1444,6 @@ extern "C" u32 ownership_compatible(address a,address b,address inputs,address p
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -1519,7 +1467,7 @@ OwnershipNode left=host.ownership_read(a);OwnershipNode right=host.ownership_rea
     return host.truth_scope(0,address_of(context),host,c_function(expected_presence));
 }
 
-u64 emit_index(address context,Index index,cfn<u64,address,u32,u32> literal) on cpu
+u64 emit_index(address context,PositionIndex index,cfn<u64,address,u32,u32> literal) on cpu
     requires nonzero(literal) {
     if(index.kind==1){return literal(context,index.value,1);}
     return index.reg;

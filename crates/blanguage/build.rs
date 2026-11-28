@@ -150,6 +150,7 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
             let name = jobs[index].name;
             let inputs: &[&str] = match name {
                 "condition_index" => &["proof_facts", "clause_storage"],
+                "ownership_presence" => &["ownership_position"],
                 "clause_storage" => &["proof_facts", "fact_key"],
                 "capture_inputs" => &["declarations"],
                 "output_bindings" => &["fact_key", "proof_facts", "proof_origins"],

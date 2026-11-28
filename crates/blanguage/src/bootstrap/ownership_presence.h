@@ -1,7 +1,8 @@
 module bootstrap.ownership_presence;
-struct Index { u32 kind; u32 value; address identity; u64 reg; };
-struct Selection { u32 operation; Index a; Index b; };
-struct Node { u32 kind; u32 operation; Index a; Index b; address first; address second; address value; };
+import bootstrap.ownership_position;
+
+struct Selection { u32 operation; PositionIndex a; PositionIndex b; };
+struct Node { u32 kind; u32 operation; PositionIndex a; PositionIndex b; address first; address second; address value; };
 struct EmitBranch { address value; u64 slot; u64 condition; u32 either; };
 struct EmitHost {
     cfn<Node,address> inspect;
@@ -18,16 +19,15 @@ struct EmitHost {
     cfn<void,address,u64,address,address> branch;
 };
 
-struct PositionNode { u32 indexed; u64 count; Index index; };
 struct OwnershipNode { u32 kind; address presence; };
 // Opaque nodes stay in their original Rust containers. Scoped callbacks borrow
 // actual Rust stack values synchronously; no address survives its owner.
 struct Host {
     cfn<Node,address> inspect;
-    cfn<i32,Index,Index> compare_index;
+    cfn<i32,PositionIndex,PositionIndex> compare_index;
     cfn<i32,address,address> compare_input;
     cfn<u32,address> constant_input;
-    cfn<u32,address,Index> input_uses_index;
+    cfn<u32,address,PositionIndex> input_uses_index;
     cfn<void,address,u32> truth;
     cfn<void,address,Selection> selected;
     cfn<void,address,address> input;
@@ -50,8 +50,6 @@ struct Host {
     requires nonzero(argument4.selected_scope)
     requires nonzero(argument4.clone_scope)
     requires nonzero(argument4.truth_scope)
-    requires nonzero(argument4.position)
-    requires nonzero(argument4.position_child)
     requires nonzero(argument4.position_equal)
     requires nonzero(argument4.condition_scope)
     requires nonzero(argument4.condition_clone_scope)
@@ -83,8 +81,6 @@ struct Host {
     requires nonzero(argument2.selected_scope)
     requires nonzero(argument2.clone_scope)
     requires nonzero(argument2.truth_scope)
-    requires nonzero(argument2.position)
-    requires nonzero(argument2.position_child)
     requires nonzero(argument2.position_equal)
     requires nonzero(argument2.condition_scope)
     requires nonzero(argument2.condition_clone_scope)
@@ -118,8 +114,6 @@ struct Host {
     requires nonzero(argument2.selected_scope)
     requires nonzero(argument2.clone_scope)
     requires nonzero(argument2.truth_scope)
-    requires nonzero(argument2.position)
-    requires nonzero(argument2.position_child)
     requires nonzero(argument2.position_equal)
     requires nonzero(argument2.condition_scope)
     requires nonzero(argument2.condition_clone_scope)
@@ -151,8 +145,6 @@ struct Host {
     requires nonzero(argument2.selected_scope)
     requires nonzero(argument2.clone_scope)
     requires nonzero(argument2.truth_scope)
-    requires nonzero(argument2.position)
-    requires nonzero(argument2.position_child)
     requires nonzero(argument2.position_equal)
     requires nonzero(argument2.condition_scope)
     requires nonzero(argument2.condition_clone_scope)
@@ -186,8 +178,6 @@ struct Host {
     requires nonzero(argument2.selected_scope)
     requires nonzero(argument2.clone_scope)
     requires nonzero(argument2.truth_scope)
-    requires nonzero(argument2.position)
-    requires nonzero(argument2.position_child)
     requires nonzero(argument2.position_equal)
     requires nonzero(argument2.condition_scope)
     requires nonzero(argument2.condition_clone_scope)
@@ -219,8 +209,6 @@ struct Host {
     requires nonzero(argument2.selected_scope)
     requires nonzero(argument2.clone_scope)
     requires nonzero(argument2.truth_scope)
-    requires nonzero(argument2.position)
-    requires nonzero(argument2.position_child)
     requires nonzero(argument2.position_equal)
     requires nonzero(argument2.condition_scope)
     requires nonzero(argument2.condition_clone_scope)
@@ -254,8 +242,6 @@ struct Host {
     requires nonzero(argument2.selected_scope)
     requires nonzero(argument2.clone_scope)
     requires nonzero(argument2.truth_scope)
-    requires nonzero(argument2.position)
-    requires nonzero(argument2.position_child)
     requires nonzero(argument2.position_equal)
     requires nonzero(argument2.condition_scope)
     requires nonzero(argument2.condition_clone_scope)
@@ -287,8 +273,6 @@ struct Host {
     requires nonzero(argument2.selected_scope)
     requires nonzero(argument2.clone_scope)
     requires nonzero(argument2.truth_scope)
-    requires nonzero(argument2.position)
-    requires nonzero(argument2.position_child)
     requires nonzero(argument2.position_equal)
     requires nonzero(argument2.condition_scope)
     requires nonzero(argument2.condition_clone_scope)
@@ -306,8 +290,7 @@ struct Host {
     requires nonzero(argument2.ownership_conditional)
     requires nonzero(argument2.copy_value)
     requires nonzero(argument3) truth_scope;
-    cfn<PositionNode,address> position;
-    cfn<address,address,u64> position_child;
+    address positions;
     cfn<u32,address,address> position_equal;
     cfn<u32,address,Host,cfn<u32,address,address,Host>
     requires nonzero(argument2.inspect)
@@ -325,8 +308,6 @@ struct Host {
     requires nonzero(argument2.selected_scope)
     requires nonzero(argument2.clone_scope)
     requires nonzero(argument2.truth_scope)
-    requires nonzero(argument2.position)
-    requires nonzero(argument2.position_child)
     requires nonzero(argument2.position_equal)
     requires nonzero(argument2.condition_scope)
     requires nonzero(argument2.condition_clone_scope)
@@ -358,8 +339,6 @@ struct Host {
     requires nonzero(argument1.selected_scope)
     requires nonzero(argument1.clone_scope)
     requires nonzero(argument1.truth_scope)
-    requires nonzero(argument1.position)
-    requires nonzero(argument1.position_child)
     requires nonzero(argument1.position_equal)
     requires nonzero(argument1.condition_scope)
     requires nonzero(argument1.condition_clone_scope)
@@ -393,8 +372,6 @@ struct Host {
     requires nonzero(argument2.selected_scope)
     requires nonzero(argument2.clone_scope)
     requires nonzero(argument2.truth_scope)
-    requires nonzero(argument2.position)
-    requires nonzero(argument2.position_child)
     requires nonzero(argument2.position_equal)
     requires nonzero(argument2.condition_scope)
     requires nonzero(argument2.condition_clone_scope)
@@ -426,8 +403,6 @@ struct Host {
     requires nonzero(argument2.selected_scope)
     requires nonzero(argument2.clone_scope)
     requires nonzero(argument2.truth_scope)
-    requires nonzero(argument2.position)
-    requires nonzero(argument2.position_child)
     requires nonzero(argument2.position_equal)
     requires nonzero(argument2.condition_scope)
     requires nonzero(argument2.condition_clone_scope)
@@ -447,11 +422,11 @@ struct Host {
     requires nonzero(argument3) condition_clone_scope;
     cfn<void,address,u32> condition_truth;
     cfn<void,address,address> condition_input;
-    cfn<void,address,u32,Index,Index> condition_index;
+    cfn<void,address,u32,PositionIndex,PositionIndex> condition_index;
     cfn<void,address> condition_negate;
     cfn<void,address,address,u32> condition_logical;
-    cfn<void,address,address,Index,Index> condition_substitute;
-    cfn<u32,address,Index> input_offset;
+    cfn<void,address,address,PositionIndex,PositionIndex> condition_substitute;
+    cfn<u32,address,PositionIndex> input_offset;
     cfn<u32,address,address> condition_truth_in;
     cfn<OwnershipNode,address> ownership_read;
     cfn<void,address,address> ownership_copy;
@@ -470,7 +445,7 @@ extern "C" i32 compare(address a,address b,Host host) on cpu
     requires nonzero(host.compare_index)
     requires nonzero(host.compare_input);
 
-extern "C" u32 uses_index(address value,Index wanted,Host host) on cpu
+extern "C" u32 uses_index(address value,PositionIndex wanted,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.compare_index)
     requires nonzero(host.input_uses_index);
@@ -496,8 +471,6 @@ extern "C" void combine(address left,address right,u32 any,Host host) on cpu
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -531,8 +504,6 @@ extern "C" void negate(address value,Host host) on cpu
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -566,8 +537,6 @@ extern "C" void selected(address output,address position,address wanted,Host hos
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -601,8 +570,6 @@ extern "C" void condition(address output,address value,Host host) on cpu
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -636,8 +603,6 @@ extern "C" void loop_condition(address output,address value,address inputs,Host 
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -687,8 +652,6 @@ extern "C" void ownership_either(address output,address a,address b,address choi
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -722,8 +685,6 @@ extern "C" void ownership_restricted(address output,address value,address when,H
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)
@@ -757,8 +718,6 @@ extern "C" u32 ownership_compatible(address a,address b,address inputs,address p
     requires nonzero(host.selected_scope)
     requires nonzero(host.clone_scope)
     requires nonzero(host.truth_scope)
-    requires nonzero(host.position)
-    requires nonzero(host.position_child)
     requires nonzero(host.position_equal)
     requires nonzero(host.condition_scope)
     requires nonzero(host.condition_clone_scope)

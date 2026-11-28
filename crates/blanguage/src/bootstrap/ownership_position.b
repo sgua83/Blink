@@ -26,7 +26,7 @@ PositionIndex read_index(address value, PositionView view) on cpu {
 
 struct LoopPositionInput { u64 level; u64 index; };
 
-PositionNode inspect_position(address value, PositionView view) on cpu {
+extern "C" PositionNode inspect_position(address value, PositionView view) on cpu {
     let kind = position_kind(value);
     let payload = position_payload(value, view);
     PositionNode shape = PositionNode(kind, 0u64, 0u64, 0u64, absent_index(), address(), 0u64);
@@ -60,7 +60,7 @@ PositionNode inspect_position(address value, PositionView view) on cpu {
     return shape;
 }
 
-address position_child(address value, u64 at, PositionView view) on cpu {
+extern "C" address position_child(address value, u64 at, PositionView view) on cpu {
     let kind = position_kind(value);
     let payload = position_payload(value, view);
     if (kind == 10) {

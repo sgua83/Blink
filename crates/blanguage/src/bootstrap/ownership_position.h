@@ -10,6 +10,9 @@ struct PositionView {
     usize selection_width;
 };
 struct PositionNode { u32 kind; u64 owner; u64 member; u64 word; PositionIndex index; address condition; u64 count; };
+extern "C" PositionNode inspect_position(address value, PositionView view) on cpu;
+extern "C" address position_child(address value, u64 at, PositionView view) on cpu;
+
 struct PositionItem { address node; u32 present; };
 struct LoopFieldState { address known; address path; address effects; };
 // Every address is borrowed for this synchronous model operation or belongs to

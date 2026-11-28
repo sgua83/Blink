@@ -1,33 +1,18 @@
 //! Native storage operations for the original Presence and Position owners.
 use super::*;
+use ownership::{PositionIndex, PositionView, POSITION_VIEW, position_equal, position_index, required_index};
 use std::ffi::c_void;
 
 type Address = *mut c_void;
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct Index { kind: u32, value: u32, identity: Address, reg: u64 }
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Selection { operation: u32, a: Index, b: Index }
+struct Selection { operation: u32, a: PositionIndex, b: PositionIndex }
 #[repr(C)]
 struct Node {
-    kind: u32, operation: u32, a: Index, b: Index,
+    kind: u32, operation: u32, a: PositionIndex, b: PositionIndex,
     first: Address, second: Address, value: Address,
 }
-#[repr(C)]
-struct PositionNode { indexed: u32, count: u64, index: Index }
 fn pointer<T>(value: &T) -> Address { (value as *const T).cast_mut().cast() }
-fn absent_index() -> Index { Index { kind: 0, value: 0, identity: std::ptr::null_mut(), reg: 0 } }
-fn index(value: &ownership::ApplicationIndex) -> Index {
-    match value {
-        ownership::ApplicationIndex::Constant(value) => Index { kind: 1, value: *value, ..absent_index() },
-        ownership::ApplicationIndex::Value(identity, reg) => Index { kind: 2, identity: pointer(identity), reg: *reg as u64, ..absent_index() },
-    }
-}
-unsafe fn actual_index(value: Index) -> ownership::ApplicationIndex {
-    if value.kind == 1 { ownership::ApplicationIndex::Constant(value.value) }
-    else { ownership::ApplicationIndex::Value(unsafe { *value.identity.cast::<ValueIdentity>() }, value.reg as Reg) }
-}
 fn comparison(value: u32) -> Comparison {
     [Comparison::Equal, Comparison::NotEqual, Comparison::Less,
      Comparison::Greater, Comparison::LessEqual, Comparison::GreaterEqual][value as usize]
@@ -35,21 +20,21 @@ fn comparison(value: u32) -> Comparison {
 unsafe fn take(value: Address) -> Presence { std::mem::replace(unsafe { &mut *value.cast::<Presence>() }, Presence::None) }
 unsafe extern "C" fn inspect(value: Address) -> Node {
     let mut node = Node {
-        kind: 0, operation: 0, a: absent_index(), b: absent_index(),
+        kind: 0, operation: 0, a: position_index(None), b: position_index(None),
         first: std::ptr::null_mut(), second: std::ptr::null_mut(), value: std::ptr::null_mut(),
     };
     match unsafe { &*value.cast::<Presence>() } {
         Presence::None => {}, Presence::All => node.kind = 1,
         Presence::Input(value) => { node.kind = 2; node.value = pointer(value); },
-        Presence::Selected(operation, a, b) => { node.kind = 3; node.operation = *operation as u32; node.a = index(a); node.b = index(b); },
+        Presence::Selected(operation, a, b) => { node.kind = 3; node.operation = *operation as u32; node.a = position_index(Some(a)); node.b = position_index(Some(b)); },
         Presence::Not(value) => { node.kind = 4; node.first = pointer(value.as_ref()); },
         Presence::Both(a, b) => { node.kind = 5; node.first = pointer(a.as_ref()); node.second = pointer(b.as_ref()); },
         Presence::Either(a, b) => { node.kind = 6; node.first = pointer(a.as_ref()); node.second = pointer(b.as_ref()); },
     }
     node
 }
-unsafe extern "C" fn compare_index(a: Index, b: Index) -> i32 {
-    unsafe { actual_index(a) }.cmp(&unsafe { actual_index(b) }) as i32
+unsafe extern "C" fn compare_index(a: PositionIndex, b: PositionIndex) -> i32 {
+    unsafe { required_index(a) }.cmp(&unsafe { required_index(b) }) as i32
 }
 unsafe extern "C" fn compare_input(a: Address, b: Address) -> i32 {
     unsafe { &*a.cast::<Value>() }.identity().cmp(&unsafe { &*b.cast::<Value>() }.identity()) as i32
@@ -57,9 +42,9 @@ unsafe extern "C" fn compare_input(a: Address, b: Address) -> i32 {
 unsafe extern "C" fn constant_input(value: Address) -> u32 {
     match unsafe { &*value.cast::<Value>() }.constant.as_deref() { Some([0]) => 1, Some([_]) => 2, _ => 0 }
 }
-unsafe extern "C" fn input_uses_index(value: Address, at: Index) -> u32 {
+unsafe extern "C" fn input_uses_index(value: Address, at: PositionIndex) -> u32 {
     let value = unsafe { &*value.cast::<Value>() };
-    u32::from(match unsafe { actual_index(at) } {
+    u32::from(match unsafe { required_index(at) } {
         ownership::ApplicationIndex::Constant(_) => false,
         ownership::ApplicationIndex::Value(id, _) => value.identity() == id || bounds::Condition::of(value).mentions(id),
     })
@@ -69,7 +54,7 @@ unsafe extern "C" fn truth(output: Address, value: u32) {
 }
 unsafe extern "C" fn selected(output: Address, value: Selection) {
     // Read both original indices before replacing the owner that may contain them.
-    let a = unsafe { actual_index(value.a) }; let b = unsafe { actual_index(value.b) };
+    let a = unsafe { required_index(value.a) }; let b = unsafe { required_index(value.b) };
     unsafe { *output.cast::<Presence>() = Presence::Selected(comparison(value.operation), a, b); }
 }
 unsafe extern "C" fn input(output: Address, value: Address) {
@@ -101,8 +86,8 @@ unsafe extern "C" fn children_scope(value: Address, context: Address, host: Host
 unsafe extern "C" fn selected_scope(value: Selection, context: Address, host: Host, apply: Selected) -> u32 {
     // The mutable target can replace its selected node during the callback.
     // These actual Copy indices stay on this original Rust stack until return.
-    let a = unsafe { actual_index(value.a) }; let b = unsafe { actual_index(value.b) };
-    let saved = Selection { operation: value.operation, a: index(&a), b: index(&b) };
+    let a = unsafe { required_index(value.a) }; let b = unsafe { required_index(value.b) };
+    let saved = Selection { operation: value.operation, a: position_index(Some(&a)), b: position_index(Some(&b)) };
     unsafe { apply(saved, context, host) }
 }
 unsafe extern "C" fn clone_scope(value: Address, context: Address, host: Host, apply: Scoped) -> u32 {
@@ -112,21 +97,6 @@ unsafe extern "C" fn clone_scope(value: Address, context: Address, host: Host, a
 unsafe extern "C" fn truth_scope(value: u32, context: Address, host: Host, apply: Scoped) -> u32 {
     let mut value = if value == 0 { Presence::None } else { Presence::All };
     unsafe { apply(pointer(&mut value), context, host) }
-}
-unsafe extern "C" fn position(value: Address) -> PositionNode {
-    match unsafe { &*value.cast::<Position>() } {
-        Position::Indexed(choices, at) => PositionNode { indexed: 1, count: choices.len() as u64, index: index(at) },
-        _ => PositionNode { indexed: 0, count: 0, index: absent_index() },
-    }
-}
-unsafe extern "C" fn position_child(value: Address, at: u64) -> Address {
-    match unsafe { &*value.cast::<Position>() } {
-        Position::Indexed(choices, _) => pointer(&choices[at as usize]),
-        _ => std::ptr::null_mut(),
-    }
-}
-unsafe extern "C" fn position_equal(a: Address, b: Address) -> u32 {
-    u32::from(unsafe { &*a.cast::<Position>() == &*b.cast::<Position>() })
 }
 type ConditionSlot = Option<bounds::Condition>;
 unsafe extern "C" fn condition_scope(context: Address, host: Host, apply: Scoped) -> u32 {
@@ -144,8 +114,8 @@ unsafe extern "C" fn condition_input(output: Address, value: Address) {
     let value = bounds::Condition::of(unsafe { &*value.cast::<Value>() });
     unsafe { *output.cast::<ConditionSlot>() = Some(value); }
 }
-unsafe extern "C" fn condition_index(output: Address, kind: u32, a: Index, b: Index) {
-    let operand = |value| match unsafe { actual_index(value) } {
+unsafe extern "C" fn condition_index(output: Address, kind: u32, a: PositionIndex, b: PositionIndex) {
+    let operand = |value| match unsafe { required_index(value) } {
         ownership::ApplicationIndex::Constant(value) => bounds::Operand::Constant(Scalar::U32, Bits::from(value)),
         ownership::ApplicationIndex::Value(value, _) => bounds::Operand::Value(value),
     };
@@ -163,9 +133,9 @@ unsafe extern "C" fn condition_logical(left: Address, right: Address, any: u32) 
     let b = unsafe { &mut *right.cast::<ConditionSlot>() }.take().unwrap();
     unsafe { *left.cast::<ConditionSlot>() = Some(a.logical(b, any != 0)); }
 }
-unsafe extern "C" fn condition_substitute(value: Address, inputs: Address, a: Index, b: Index) {
+unsafe extern "C" fn condition_substitute(value: Address, inputs: Address, a: PositionIndex, b: PositionIndex) {
     let inputs = unsafe { &*inputs.cast::<BTreeMap<ValueIdentity, bounds::Proof>>() };
-    let omitted = |index: Index| if index.kind == 2 { Some(unsafe { *index.identity.cast::<ValueIdentity>() }) } else { None };
+    let omitted = |index: PositionIndex| if index.kind == 2 { Some(unsafe { *index.identity.cast::<ValueIdentity>() }) } else { None };
     let a = omitted(a); let b = omitted(b);
     let slot = unsafe { &mut *value.cast::<ConditionSlot>() };
     let condition = slot.as_ref().unwrap();
@@ -173,9 +143,9 @@ unsafe extern "C" fn condition_substitute(value: Address, inputs: Address, a: In
         if Some(id) == a || Some(id) == b { None } else { inputs.get(&id) }
     }));
 }
-unsafe extern "C" fn input_offset(inputs: Address, index: Index) -> u32 {
+unsafe extern "C" fn input_offset(inputs: Address, index: PositionIndex) -> u32 {
     let inputs = unsafe { &*inputs.cast::<BTreeMap<ValueIdentity, bounds::Proof>>() };
-    let found = match unsafe { actual_index(index) } {
+    let found = match unsafe { required_index(index) } {
         ownership::ApplicationIndex::Constant(_) => false,
         ownership::ApplicationIndex::Value(id, _) => inputs.get(&id).is_some_and(|proof| proof.domains(0).contains(&IndexDomain::Offset(id, 1))),
     };
@@ -217,10 +187,10 @@ unsafe extern "C" fn copy_value(output: Address, source: Address) {
 #[derive(Clone, Copy)]
 struct Host {
     inspect: unsafe extern "C" fn(Address) -> Node,
-    compare_index: unsafe extern "C" fn(Index, Index) -> i32,
+    compare_index: unsafe extern "C" fn(PositionIndex, PositionIndex) -> i32,
     compare_input: unsafe extern "C" fn(Address, Address) -> i32,
     constant_input: unsafe extern "C" fn(Address) -> u32,
-    input_uses_index: unsafe extern "C" fn(Address, Index) -> u32,
+    input_uses_index: unsafe extern "C" fn(Address, PositionIndex) -> u32,
     truth: unsafe extern "C" fn(Address, u32),
     selected: unsafe extern "C" fn(Address, Selection),
     input: unsafe extern "C" fn(Address, Address),
@@ -231,18 +201,17 @@ struct Host {
     selected_scope: unsafe extern "C" fn(Selection, Address, Host, Selected) -> u32,
     clone_scope: unsafe extern "C" fn(Address, Address, Host, Scoped) -> u32,
     truth_scope: unsafe extern "C" fn(u32, Address, Host, Scoped) -> u32,
-    position: unsafe extern "C" fn(Address) -> PositionNode,
-    position_child: unsafe extern "C" fn(Address, u64) -> Address,
+    positions: &'static PositionView,
     position_equal: unsafe extern "C" fn(Address, Address) -> u32,
     condition_scope: unsafe extern "C" fn(Address, Host, Scoped) -> u32,
     condition_clone_scope: unsafe extern "C" fn(Address, Address, Host, Scoped) -> u32,
     condition_truth: unsafe extern "C" fn(Address, u32),
     condition_input: unsafe extern "C" fn(Address, Address),
-    condition_index: unsafe extern "C" fn(Address, u32, Index, Index),
+    condition_index: unsafe extern "C" fn(Address, u32, PositionIndex, PositionIndex),
     condition_negate: unsafe extern "C" fn(Address),
     condition_logical: unsafe extern "C" fn(Address, Address, u32),
-    condition_substitute: unsafe extern "C" fn(Address, Address, Index, Index),
-    input_offset: unsafe extern "C" fn(Address, Index) -> u32,
+    condition_substitute: unsafe extern "C" fn(Address, Address, PositionIndex, PositionIndex),
+    input_offset: unsafe extern "C" fn(Address, PositionIndex) -> u32,
     condition_truth_in: unsafe extern "C" fn(Address, Address) -> u32,
     ownership_read: unsafe extern "C" fn(Address) -> OwnershipNode,
     ownership_copy: unsafe extern "C" fn(Address, Address),
@@ -254,7 +223,7 @@ const HOST: Host = Host {
     inspect, compare_index, compare_input, constant_input, input_uses_index,
     truth, selected, input, move_value, pair, wrap_not,
     children_scope, selected_scope, clone_scope, truth_scope,
-    position, position_child, position_equal,
+    positions: &POSITION_VIEW, position_equal,
     condition_scope, condition_clone_scope, condition_truth, condition_input,
     condition_index, condition_negate, condition_logical, condition_substitute,
     input_offset, condition_truth_in, ownership_read, ownership_copy,
@@ -263,7 +232,7 @@ const HOST: Host = Host {
 unsafe extern "C" {
     #[link_name = "bootstrap.ownership_presence::relation"] fn source_relation(output: Address, value: Selection, host: Host);
     #[link_name = "bootstrap.ownership_presence::compare"] fn source_compare(a: Address, b: Address, host: Host) -> i32;
-    #[link_name = "bootstrap.ownership_presence::uses_index"] fn source_uses_index(value: Address, wanted: Index, host: Host) -> u32;
+    #[link_name = "bootstrap.ownership_presence::uses_index"] fn source_uses_index(value: Address, wanted: PositionIndex, host: Host) -> u32;
     #[link_name = "bootstrap.ownership_presence::from_value"] fn source_from_value(output: Address, value: Address, host: Host);
     #[link_name = "bootstrap.ownership_presence::combine"] fn source_combine(left: Address, right: Address, any: u32, host: Host);
     #[link_name = "bootstrap.ownership_presence::negate"] fn source_negate(value: Address, host: Host);
@@ -280,14 +249,14 @@ unsafe extern "C" {
 }
 pub(super) fn relation(operation: Comparison, a: ownership::ApplicationIndex, b: ownership::ApplicationIndex) -> Presence {
     let mut output = Presence::None;
-    unsafe { source_relation(pointer(&mut output), Selection { operation: operation as u32, a: index(&a), b: index(&b) }, HOST); }
+    unsafe { source_relation(pointer(&mut output), Selection { operation: operation as u32, a: position_index(Some(&a)), b: position_index(Some(&b)) }, HOST); }
     output
 }
 pub(super) fn compare(a: &Presence, b: &Presence) -> std::cmp::Ordering {
     unsafe { source_compare(pointer(a), pointer(b), HOST) }.cmp(&0)
 }
 pub(super) fn uses_index(value: &Presence, at: ownership::ApplicationIndex) -> bool {
-    unsafe { source_uses_index(pointer(value), index(&at), HOST) != 0 }
+    unsafe { source_uses_index(pointer(value), position_index(Some(&at)), HOST) != 0 }
 }
 pub(super) fn from_value(value: &Value) -> Presence {
     let mut output = Presence::None; unsafe { source_from_value(pointer(&mut output), pointer(value), HOST); } output
