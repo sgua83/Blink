@@ -94,7 +94,25 @@ mod compilation {
 
     type CpuStage = (ExecutionStage, native::StageCode);
     type GpuStage = (ExecutionStage, spirv::StageCode);
-    type GpuJob = Result<(usize, usize), &'static str>;
+    #[repr(C)]
+    struct ResourceRange {
+        // B reads only this C-layout prefix and uses the original row stride.
+        end: usize,
+        source: Result<usize, &'static str>,
+    }
+
+    #[repr(C)]
+    struct ResourceJob { row: usize, stage: usize }
+
+    #[repr(C)]
+    struct PreparedGpu { end: *mut usize, ready: u32 }
+
+    fn job_at(ranges: &[ResourceRange], ordinal: usize) -> Result<(usize, usize), &'static str> {
+        let job = unsafe {
+            resource_job(ranges.as_ptr().cast(), ranges.len(), mem::size_of::<ResourceRange>(), ordinal)
+        };
+        Ok((ranges[job.row].source?, job.stage))
+    }
 
     struct GpuProgram {
         index: usize,
@@ -107,25 +125,25 @@ mod compilation {
     #[repr(C)]
     struct ResourceHost {
         describe: unsafe extern "C" fn(*const c_void, usize) -> ResourceProgram,
-        cpu_jobs: unsafe extern "C" fn(*mut c_void, usize, usize),
-        compile_cpu: unsafe extern "C" fn(*mut c_void) -> u32,
-        gpu_pages: unsafe extern "C" fn(*mut c_void, usize) -> u32,
-        gpu_jobs: unsafe extern "C" fn(*mut c_void, usize, usize),
-        compile_gpu: unsafe extern "C" fn(*mut c_void) -> u32,
+        cpu_range: unsafe extern "C" fn(*mut c_void, usize, usize),
+        compile_cpu: unsafe extern "C" fn(*mut c_void, usize) -> u32,
+        prepare_gpu: unsafe extern "C" fn(*mut c_void, usize) -> PreparedGpu,
+        compile_gpu: unsafe extern "C" fn(*mut c_void, usize) -> u32,
         emit_cpu: unsafe extern "C" fn(*mut c_void, usize, usize),
         emit_gpu: unsafe extern "C" fn(*mut c_void, usize, usize),
     }
     unsafe extern "C" {
         #[link_name = "bootstrap.build_schedule::compile_resource_images"]
         fn run_images(count: usize, context: *mut c_void, host: ResourceHost);
+        #[link_name = "bootstrap.build_schedule::resource_job"]
+        fn resource_job(rows: *const c_void, count: usize, stride: usize, ordinal: usize) -> ResourceJob;
     }
 
     struct ResourceCompiler<'a, F, C> {
         resources: &'a crate::application::Resources,
         worker: &'a crate::compiler::Worker,
         cpu_stage: F,
-        cpu_jobs: Vec<(usize, usize)>,
-        gpu_jobs: Vec<GpuJob>,
+        jobs: Vec<ResourceRange>,
         gpu_programs: Vec<GpuProgram>,
         cpu: std::vec::IntoIter<CpuStage>,
         gpu: std::vec::IntoIter<GpuStage>,
@@ -140,49 +158,54 @@ mod compilation {
             ResourceProgram { stages: program.stages().len(), cpu: u32::from(*target == Target::Cpu) }
         }
 
-        unsafe extern "C" fn cpu_jobs(context: *mut c_void, index: usize, count: usize) {
+        unsafe extern "C" fn cpu_range(context: *mut c_void, index: usize, end: usize) {
             let state = unsafe { &mut *context.cast::<Self>() };
-            state.cpu_jobs.extend((0..count).map(|stage| (index, stage)));
+            state.jobs.push(ResourceRange { end, source: Ok(index) });
         }
 
-        unsafe extern "C" fn compile_cpu(context: *mut c_void) -> u32 {
+        unsafe extern "C" fn compile_cpu(context: *mut c_void, count: usize) -> u32 {
             let state = unsafe { &mut *context.cast::<Self>() };
             let resources = &state.resources;
-            match crate::parallel::try_map(state.worker, mem::take(&mut state.cpu_jobs), |_| (), |_, (index, stage)| {
+            let ranges = &state.jobs;
+            let compiled = crate::parallel::try_map(state.worker, 0..count, |_| (), |_, ordinal| {
+                let (index, stage) = job_at(ranges, ordinal)?;
                 native::program::compile_stage(&resources.programs[index].1, stage)
-            }) {
+            });
+            state.jobs.clear();
+            match compiled {
                 Ok(stages) => { state.cpu = stages.into_iter(); 1 }
                 Err(error) => { state.error = Some(std::io::Error::other(error.to_string())); 0 }
             }
         }
 
-        unsafe extern "C" fn gpu_pages(context: *mut c_void, index: usize) -> u32 {
-            let state = unsafe { &mut *context.cast::<Self>() };
-            match spirv::program::check_shader_pages(&state.resources.programs[index].1) {
-                Ok(()) => 1,
-                Err(error) => { state.gpu_jobs.push(Err(error)); 0 }
-            }
-        }
-
-        unsafe extern "C" fn gpu_jobs(context: *mut c_void, index: usize, count: usize) {
+        unsafe extern "C" fn prepare_gpu(context: *mut c_void, index: usize) -> PreparedGpu {
             let state = unsafe { &mut *context.cast::<Self>() };
             let program = &state.resources.programs[index].1;
-            let slot = state.gpu_programs.len();
-            state.gpu_programs.push(GpuProgram {
-                index, requirements: program.requirements(), buffers: program.execution_buffers(),
+            let source = spirv::program::check_shader_pages(program).map(|()| {
+                let slot = state.gpu_programs.len();
+                state.gpu_programs.push(GpuProgram {
+                    index, requirements: program.requirements(), buffers: program.execution_buffers(),
+                });
+                slot
             });
-            state.gpu_jobs.extend((0..count).map(|stage| Ok((slot, stage))));
+            let ready = u32::from(source.is_ok());
+            state.jobs.push(ResourceRange { end: 0, source });
+            // B writes this row's end before preparing the next program.
+            PreparedGpu { end: &mut state.jobs.last_mut().unwrap().end, ready }
         }
 
-        unsafe extern "C" fn compile_gpu(context: *mut c_void) -> u32 {
+        unsafe extern "C" fn compile_gpu(context: *mut c_void, count: usize) -> u32 {
             let state = unsafe { &mut *context.cast::<Self>() };
             let resources = &state.resources;
             let programs = &state.gpu_programs;
-            match crate::parallel::try_map(state.worker, mem::take(&mut state.gpu_jobs), |_| (), |_, job| {
-                let (slot, stage) = job?;
+            let ranges = &state.jobs;
+            let compiled = crate::parallel::try_map(state.worker, 0..count, |_| (), |_, ordinal| {
+                let (slot, stage) = job_at(ranges, ordinal)?;
                 let actual = &programs[slot];
                 spirv::program::compile_stage(&resources.programs[actual.index].1, stage, actual.requirements, actual.buffers)
-            }) {
+            });
+            state.jobs.clear();
+            match compiled {
                 Ok(stages) => { state.gpu = stages.into_iter(); 1 }
                 Err(error) => { state.error = Some(std::io::Error::other(error.to_string())); 0 }
             }
@@ -209,8 +232,8 @@ mod compilation {
         }
 
         const HOST: ResourceHost = ResourceHost {
-            describe: Self::program, cpu_jobs: Self::cpu_jobs, compile_cpu: Self::compile_cpu,
-            gpu_pages: Self::gpu_pages, gpu_jobs: Self::gpu_jobs, compile_gpu: Self::compile_gpu,
+            describe: Self::program, cpu_range: Self::cpu_range, compile_cpu: Self::compile_cpu,
+            prepare_gpu: Self::prepare_gpu, compile_gpu: Self::compile_gpu,
             emit_cpu: Self::emit_cpu, emit_gpu: Self::emit_gpu,
         };
     }
@@ -223,7 +246,7 @@ mod compilation {
     where F: FnMut(native::StageCode) -> native::StageCode<C> {
         let count = resources.programs.len();
         let mut state = ResourceCompiler {
-            resources, worker, cpu_stage, cpu_jobs: Vec::new(), gpu_jobs: Vec::new(),
+            resources, worker, cpu_stage, jobs: Vec::new(),
             gpu_programs: Vec::new(), cpu: Vec::new().into_iter(), gpu: Vec::new().into_iter(),
             images: Vec::with_capacity(count), error: None,
         };

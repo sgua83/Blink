@@ -80,26 +80,47 @@ extern "C" void run_worker(address context,WorkHost host) on cpu
     }
 }
 
+extern "C" ResourceJob resource_job(address rows,u64 count,u64 stride,u64 ordinal) on cpu {
+    u64 low=0u64;
+    u64 high=count;
+    // Empty programs can repeat an end. A claimed ordinal belongs to the first greater end.
+    while(low<high) {
+        u64 middle=low+(high-low)/2u64;
+        u64 end=unsafe_position<u64>(offset(rows,middle*stride));
+        if(end<=ordinal) { low=middle+1u64; } else { high=middle; }
+    }
+    u64 start=low==0u64 ? 0u64 : unsafe_position<u64>(offset(rows,(low-1u64)*stride));
+    return ResourceJob(low,ordinal-start);
+}
+
 extern "C" void compile_resource_images(u64 count,address context,ResourceHost host) on cpu
- requires nonzero(host.describe) requires nonzero(host.cpu_jobs) requires nonzero(host.compile_cpu)
- requires nonzero(host.gpu_pages) requires nonzero(host.gpu_jobs) requires nonzero(host.compile_gpu)
+ requires nonzero(host.describe) requires nonzero(host.cpu_range) requires nonzero(host.compile_cpu)
+ requires nonzero(host.prepare_gpu) requires nonzero(host.compile_gpu)
  requires nonzero(host.emit_cpu) requires nonzero(host.emit_gpu) {
+    u64 end=0u64;
     u64 index=0u64;
     while (index<count) {
         ResourceProgram current=host.describe(context,index);
-        if (current.cpu!=0) { host.cpu_jobs(context,index,current.stages); }
-        index+=1u64;
-    }
-    if (host.compile_cpu(context)==0) { return; }
-    index=0u64;
-    while (index<count) {
-        ResourceProgram current=host.describe(context,index);
-        if (current.cpu==0 && host.gpu_pages(context,index)!=0) {
-            host.gpu_jobs(context,index,current.stages);
+        if (current.cpu!=0 && current.stages!=0u64) {
+            end+=current.stages;
+            host.cpu_range(context,index,end);
         }
         index+=1u64;
     }
-    if (host.compile_gpu(context)==0) { return; }
+    if (host.compile_cpu(context,end)==0) { return; }
+    end=0u64;
+    index=0u64;
+    while (index<count) {
+        ResourceProgram current=host.describe(context,index);
+        if (current.cpu==0) {
+            PreparedGpu prepared=host.prepare_gpu(context,index);
+            // A page error occupies the original program's first work position.
+            end+=prepared.ready!=0 ? current.stages : 1u64;
+            unsafe_position<u64>(prepared.end)=end;
+        }
+        index+=1u64;
+    }
+    if (host.compile_gpu(context,end)==0) { return; }
     u64 gpu=0u64;
     index=0u64;
     while (index<count) {
