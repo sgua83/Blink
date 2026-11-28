@@ -1,6 +1,7 @@
 module bootstrap.call_arguments;
 import bootstrap.ast_storage;
 import bootstrap.signatures;
+import bootstrap.ir_dataflow;
 enum CallAccess:u32 {Value=0;Read=1;Write=2;InOut=3;Atomic=4;};
 enum ParameterForm:u32 {Ordinary=0;Dataset=1;Tile=2;Acceleration=3;Texture=4;};
 enum ArgumentKind:u32 {BorrowedData=0;Acceleration=1;Texture=2;Value=3;Dataset=4;Data=5;Scoped=6;OwnedValue=7;OwnedReference=8;Tile=9;Atomic=10;Reference=11;};
@@ -159,6 +160,16 @@ struct EffectSourceHost {
 extern "C" u32 collect_memory_effect_sources(CallAccess request, EffectSourceHost host) on cpu
     requires nonzero(host.next) requires nonzero(host.possible) requires nonzero(host.external)
     requires nonzero(host.record);
+
+enum MemoryIrOwner:u32 { Instruction=0; Argument=1; };
+struct MemoryIrHost {
+    bootstrap.ir_dataflow::Host ir;
+    cfn<bootstrap.ir_dataflow::Span,address,address> call;
+    cfn<void,address,address,MemoryIrOwner,usize> pointer;
+    cfn<bootstrap.ir_dataflow::Span,address,u32> child;
+};
+extern "C" void publish_ir_memory(bootstrap.ir_dataflow::Span code, address context, MemoryIrHost host) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.call) requires nonzero(host.pointer) requires nonzero(host.child);
 
 enum ResourceIdentityKind:u32 { Unknown=0; Input=1; Data=2; Element=3; Projection=4; };
 struct ResourceIdentityView { ResourceIdentityKind kind; address key; address parent; };

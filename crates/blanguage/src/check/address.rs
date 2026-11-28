@@ -1384,33 +1384,86 @@ impl MemoryAccesses {
         effects
     }
 }
-pub(super) fn apply_memory(code:&mut [Inst],memory:&BTreeMap<MemoryTarget,MemoryAccesses>,locals:&BTreeMap<usize,Ty>) {
-    fn source(source:&mut IndexedSource,memory:&BTreeMap<MemoryTarget,MemoryAccesses>,locals:&BTreeMap<usize,Ty>) {
-        if let IndexedSource::Pointer {address,aliases,..}=source {
-            *aliases=memory.get(&MemoryTarget::Value(address[0])).into_iter().flat_map(|effect|effect.local_effects(locals)).map(|effect|effect.alias).collect::<BTreeSet<_>>().into_iter().collect();
-        }
+#[repr(u32)]
+enum MemoryIrOwner { Instruction, Argument }
+
+#[repr(C)]
+struct MemoryIrHost {
+    ir: dataflow::Host,
+    call: unsafe extern "C" fn(*const std::ffi::c_void, *mut std::ffi::c_void) -> dataflow::Span,
+    pointer: unsafe extern "C" fn(*const std::ffi::c_void, *mut std::ffi::c_void, MemoryIrOwner, Reg),
+    child: unsafe extern "C" fn(*mut std::ffi::c_void, u32) -> dataflow::Span,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::publish_ir_memory"]
+    fn b_publish_ir_memory(code: dataflow::Span, context: *const std::ffi::c_void, host: MemoryIrHost);
+}
+
+struct MemoryPublication<'a> {
+    memory: &'a BTreeMap<MemoryTarget, MemoryAccesses>,
+    locals: &'a BTreeMap<usize, Ty>,
+}
+
+impl MemoryPublication<'_> {
+    unsafe extern "C" fn call(context: *const std::ffi::c_void, owner: *mut std::ffi::c_void) -> dataflow::Span {
+        let input = unsafe { &*context.cast::<Self>() };
+        let instruction = unsafe { &mut *owner.cast::<Inst>() };
+        let InstKind::Call(call) = &mut instruction.kind else { unreachable!() };
+        call.memory = call.memory_use.and_then(|usage| input.memory.get(&MemoryTarget::Call(usage)))
+            .map(|effect| effect.local_effects(input.locals)).unwrap_or_default();
+        dataflow::Span::mutable(&mut call.arguments)
     }
-    for instruction in code {
-        match &mut (instruction).kind {
-            InstKind::Call(call)=>{
-                call.memory=call.memory_use.and_then(|usage|memory.get(&MemoryTarget::Call(usage))).map(|effect|effect.local_effects(locals)).unwrap_or_default();
-                for argument in &mut call.arguments {
-                    match argument {
-                        CallArgument::Value{..}=>{}
-                        CallArgument::Reference{address:CallReference{storage:CallStorage::Indexed(value),..},..}=>source(value,memory,locals),
-                        _=>{}
-                    }
+
+    unsafe extern "C" fn pointer(
+        context: *const std::ffi::c_void, owner: *mut std::ffi::c_void, kind: MemoryIrOwner, register: Reg,
+    ) {
+        fn reference(value: &mut CallReference) -> &mut IndexedSource {
+            let CallStorage::Indexed(source) = &mut value.storage else { unreachable!() };
+            source
+        }
+
+        let input = unsafe { &*context.cast::<Self>() };
+        let source = match kind {
+            MemoryIrOwner::Instruction => {
+                let instruction = unsafe { &mut *owner.cast::<Inst>() };
+                match &mut instruction.kind {
+                    InstKind::LoadIndexed { source, .. } | InstKind::StoreIndexed { source, .. } => source,
+                    InstKind::Atomic(value) => &mut value.target,
+                    InstKind::PositionAddress { address, .. } => reference(address),
+                    _ => unreachable!(),
                 }
             }
-            InstKind::LoadIndexed{source:value,..}|InstKind::StoreIndexed{source:value,..}=>source(value,memory,locals),
-            InstKind::PositionAddress{address:CallReference{storage:CallStorage::Indexed(value),..},..}=>source(value,memory,locals),
-            InstKind::Atomic(value)=>source(&mut value.target,memory,locals),
-            InstKind::Scope(body)|InstKind::Cleanup{body,..}=>apply_memory(body,memory,locals),
-            InstKind::If{yes,no,..}=>{apply_memory(yes,memory,locals);apply_memory(no,memory,locals);}
-            InstKind::Loop{condition,body,..}=>{apply_memory(condition,memory,locals);apply_memory(body,memory,locals);}
-            _=>{}
-        }
+            MemoryIrOwner::Argument => {
+                let argument = unsafe { &mut *owner.cast::<CallArgument>() };
+                let CallArgument::Reference { address, .. } = argument else { unreachable!() };
+                reference(address)
+            }
+        };
+        let IndexedSource::Pointer { aliases, .. } = source else { unreachable!() };
+        *aliases = input.memory.get(&MemoryTarget::Value(register)).into_iter()
+            .flat_map(|effect| effect.local_effects(input.locals)).map(|effect| effect.alias)
+            .collect::<BTreeSet<_>>().into_iter().collect();
     }
+
+    unsafe extern "C" fn child(owner: *mut std::ffi::c_void, index: u32) -> dataflow::Span {
+        let instruction = unsafe { &mut *owner.cast::<Inst>() };
+        let body = match &mut instruction.kind {
+            InstKind::Scope(body) | InstKind::Cleanup { body, .. } => body,
+            InstKind::If { yes, no, .. } | InstKind::Loop { condition: yes, body: no, .. } =>
+                if index == 0 { yes } else { no },
+            _ => unreachable!(),
+        };
+        dataflow::Span::mutable(body)
+    }
+}
+
+pub(super) fn apply_memory(code: &mut [Inst], memory: &BTreeMap<MemoryTarget, MemoryAccesses>, locals: &BTreeMap<usize, Ty>) {
+    let input = MemoryPublication { memory, locals };
+    let host = MemoryIrHost { ir: dataflow::HOST, call: MemoryPublication::call, pointer: MemoryPublication::pointer,
+        child: MemoryPublication::child };
+    // Mutable destinations come from the original spans. The IR inspector only lends read-only views.
+    unsafe { b_publish_ir_memory(dataflow::Span::mutable(code), std::ptr::from_ref(&input).cast(), host) }
 }
 
 /// A write loan maps its local positions to the original caller input at contract closure.

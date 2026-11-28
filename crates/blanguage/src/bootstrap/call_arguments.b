@@ -1,5 +1,6 @@
 module bootstrap.call_arguments;
 import bootstrap.proof_facts;
+import bootstrap.ir_dataflow;
 
 extern "C" void RtlMoveMemory(address output, address input, u64 bytes) on cpu from "KERNEL32.dll";
 bool reads(CallAccess access) on cpu {return access==CallAccess::Read||access==CallAccess::InOut||access==CallAccess::Atomic;}
@@ -248,7 +249,7 @@ extern "C" Optional<Text> read_input_root(SignatureNode source) on cpu {
    ExprKind::Number(unused){break;} ExprKind::StaticU32(unused){break;} ExprKind::Bool(unused){break;} ExprKind::Call(unused){break;} ExprKind::Invoke(unused){break;} ExprKind::Construct(unused){break;} ExprKind::Specialize(unused){break;} ExprKind::FunctionRef(unused){break;} ExprKind::Cooperate(unused){break;} ExprKind::Target(unused){break;} ExprKind::Unary(unused){break;} ExprKind::Binary(unused){break;} ExprKind::Select(unused){break;}
   }
  }
- return Optional<Text>(0,Text(0,Span(0u64,0u64)));
+ return Optional<Text>(0,Text(0,bootstrap.ast_storage::Span(0u64,0u64)));
 }
 extern "C" ReadInputStep read_input_step(Phase cursor,ReadInputFacts facts) on cpu {
  Phase c=cursor;
@@ -510,6 +511,58 @@ extern "C" u32 collect_memory_effect_sources(CallAccess request, EffectSourceHos
             let access = source.writable != 0 ? request : CallAccess::Read;
             host.record(host.context, access, writes(access) ? 1 : 0);
         }
+    }
+}
+
+address memory_ir_item(bootstrap.ir_dataflow::Span span, usize index) on cpu {
+    return unsafe_address(address_bits(span.data) + index * span.stride);
+}
+
+void publish_pointer_memory(bootstrap.ir_dataflow::Node source, address owner, MemoryIrOwner kind,
+    address context, MemoryIrHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.pointer) {
+    let value = host.ir.inspect(source);
+    if (value.tag == INDEXED_POINTER) {
+        let register = unsafe_position<usize>(value.first.data);
+        host.pointer(context, owner, kind, register);
+    }
+}
+
+void publish_reference_memory(bootstrap.ir_dataflow::Node reference, address owner, MemoryIrOwner kind,
+    address context, MemoryIrHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.pointer) {
+    let value = host.ir.inspect(reference);
+    let storage = host.ir.inspect(value.left);
+    if (storage.tag == STORAGE_INDEXED) { publish_pointer_memory(storage.left, owner, kind, context, host); }
+}
+
+extern "C" void publish_ir_memory(bootstrap.ir_dataflow::Span code, address context, MemoryIrHost host) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.call) requires nonzero(host.pointer) requires nonzero(host.child) {
+    usize at = 0u64;
+    while (at < code.count) {
+        let owner = memory_ir_item(code, at);
+        let instruction = host.ir.inspect(bootstrap.ir_dataflow::Node(owner, N_INSTRUCTION));
+        let op = instruction.tag;
+        if (op == OP_INVOKE) {
+            let args = host.call(context, owner);
+            usize index = 0u64;
+            while (index < args.count) {
+                let argument = memory_ir_item(args, index);
+                let view = host.ir.inspect(bootstrap.ir_dataflow::Node(argument, N_ARGUMENT));
+                if (view.tag == ARGUMENT_REFERENCE) {
+                    publish_reference_memory(view.left, argument, MemoryIrOwner::Argument, context, host);
+                }
+                index += 1u64;
+            }
+        } else if (op == OP_LOAD_INDEXED || op == OP_STORE_INDEXED || op == OP_ATOMIC) {
+            publish_pointer_memory(instruction.left, owner, MemoryIrOwner::Instruction, context, host);
+        } else if (op == OP_POSITION_ADDRESS) {
+            publish_reference_memory(instruction.left, owner, MemoryIrOwner::Instruction, context, host);
+        } else if (op == OP_SCOPE || op == OP_CLEANUP) {
+            publish_ir_memory(host.child(owner, 0), context, host);
+        } else if (op == OP_BRANCH || op == OP_LOOP_VALUE) {
+            publish_ir_memory(host.child(owner, 0), context, host);
+            publish_ir_memory(host.child(owner, 1), context, host);
+        }
+        at += 1u64;
     }
 }
 
