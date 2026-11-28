@@ -150,6 +150,11 @@ impl Place {
             self
         }
     }
+
+    pub(super) fn indexed_parts(&self) -> (&Place, Reg, &[u32]) {
+        let Self::Indexed { base, offset, words, .. } = self else { unreachable!() };
+        (base, *offset, words)
+    }
 }
 #[repr(u32)]
 enum FixedProjectionKind {
@@ -600,124 +605,25 @@ impl Builder<'_> {
         };
         Ok((source, offset, word))
     }
-    pub(super) async fn read_array_place(&mut self, place: &Place, span: Span) -> Result<Value> {
-        if self.atomic_storage(place) {
-            return self.fail(span, "B214", "atomic 数组元素只能通过显式原子操作读取");
-        }
-        let Place::Indexed {
-            ty,
-            base,
-            offset,
-            words,
-            ..
-        } = place
-        else {
-            unreachable!()
+    pub(super) fn indexed_base(&self, base: &Place) -> (u32, u32) {
+        let (kind, access) = match base {
+            Place::Reference { access, .. } => (0, *access),
+            Place::ApplicationElement { access, .. } => (1, *access),
+            Place::ViewElement { .. } => (3, Access::Read),
+            Place::TileElement { tile, .. } => (4, self.tiles[*tile].access),
+            Place::Local(..) => (5, Access::Value),
+            Place::ReadOnlyLocal(..) => (6, Access::Read),
+            Place::Element { binding, .. } => (7, self.view_access[binding]),
+            Place::AtomicParameter(_) => (8, Access::Atomic),
+            Place::Indexed { .. } => unreachable!(),
         };
-        match &**base {
-            Place::Local(..) | Place::Reference { .. } | Place::ApplicationElement { .. } => {
-                unsafe { self.world.call(self.require_initialized(place, span)).await }?
-            }
-            Place::Element { binding, index, .. } => {
-                self.reads.insert(*binding);
-                if *index != self.global_index {
-                    self.cross_access.insert(*binding);
-                }
-                if self.view_access[binding].writes() {
-                    unsafe { self.world.call(self.require_initialized(place, span)).await }?;
-                }
-            }
-            Place::TileElement { tile, .. } => {
-                if let TileOrigin::Input { binding, .. } =
-                    &self.tiles[*tile].source
-                {
-                    self.reads.insert(*binding);
-                    self.cross_access.insert(*binding);
-                }
-            }
-            _ => {}
-        }
-        self.data_access(place, Access::Read, None);
-        let reads=self.dataset_effect(place,Access::Read,false,span)?;
-        let mut regs = Vec::new();
-        for ((scalar, _), word) in ty.components.iter().zip(words) {
-            let dst = self.reg(*scalar);
-            let instruction = match &**base {
-                Place::Local(_, slots, storage) | Place::ReadOnlyLocal(_, slots, storage, _) => {
-                    Inst::new(InstKind::LoadLocalIndexed {
-                        dst,
-                        base: storage.start,
-                        len: storage.len(),
-                        index: *offset,
-                        word: self.locals[&storage.end].components[slots[0] - storage.start].1 + word,
-                    })
-                }
-                _ => {
-                    let (source, offset, word) = self.array_memory(base, *offset, *word, *scalar, false, span)?;
-                    Inst::new(InstKind::LoadIndexed { dst, source, offset, word })
-                },
-            };
-            self.emit(instruction.kind);
-            regs.push(dst);
-        }
-        let (proof, uniform, _) = unsafe { self.world.call(self.read_owned_proof(place, &regs, &reads)).await }?;
-        Ok(Value {
-            proof,
-            literal: false,
-            ty: ty.clone(),
-            regs,
-            uniform,
-            constant: None,
-        })
+        (kind, access as u32)
     }
-    pub(super) async fn write_array_place(
-        &mut self,
-        place: &Place,
-        value: Value,
-        span: Span,
-    ) -> Result<()> {
-        let Place::Indexed {
-            base,
-            offset,
-            words,
-            ..
-        } = place
-        else {
-            unreachable!()
-        };
-        if self.atomic_storage(place) {
-            return self.fail(span, "B214", "atomic 数组元素只能通过显式原子操作修改");
-        }
-        unsafe { self.world.call(self.writable_storage(place, span, Some(bounds::Proof::default()))).await }?;
-        if words.iter().copied().collect::<BTreeSet<_>>().len() != words.len() {
-            return self.fail(span, "B143", "赋值位置包含重复分量");
-        }
-        self.data_access(place, Access::Write, None);
-        self.dataset_effect(place,Access::Write,false,span)?;
-        unsafe { self.world.call(self.assign_owned_proof(place, bounds::Proof::capture(&value), false)).await }?;
-        self.initialize(place);
-        for ((word, &(scalar, _)), value) in words.iter().zip(&value.ty.components).zip(value.regs) {
-            let instruction = match &**base {
-                Place::Local(_, slots, storage) => Inst::new(InstKind::StoreLocalIndexed {
-                    base: storage.start,
-                    len: storage.len(),
-                    index: *offset,
-                    word: self.locals[&storage.end].components[slots[0] - storage.start].1 + word,
-                    value,
-                }),
-                Place::Reference { .. }
-                | Place::Element { .. }
-                | Place::ApplicationElement { .. } => {
-                    if let Place::Element { binding, .. } = &**base {
-                        self.writes.insert(*binding);
-                    }
-                    let (source, offset, word) = self.array_memory(base, *offset, *word, scalar, true, span)?;
-                    Inst::new(InstKind::StoreIndexed { source, offset, word, value })
-                }
-                _ => unreachable!(),
-            };
-            self.emit(instruction.kind);
-        }
-        Ok(())
+
+    pub(super) fn indexed_local_word(&self, base: &Place, word: u32) -> (std::ops::Range<usize>, u32) {
+        let (Place::Local(_, slots, storage) | Place::ReadOnlyLocal(_, slots, storage, _)) = base
+        else { unreachable!() };
+        let first = self.locals[&storage.end].components[slots[0] - storage.start].1;
+        (storage.clone(), first + word)
     }
 }

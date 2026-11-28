@@ -308,8 +308,8 @@ struct SourceStatementStep {LocalCursor cursor;SourceStatementNeed need;Text nam
 extern "C" SourceStatementStep source_statement_step(LocalCursor cursor,SignatureNode source,SourceStatementFacts facts) on cpu;
 
 
-struct ReadPlaceFacts {u32 owns;u32 kind;u32 access;u32 reference;u32 memory;u32 known;u32 input;u32 current;u32 field_address;u64 components;u64 words;u64 fields;};
-enum ReadPlaceNeed:u32 {Access=0;Owns=1;Kind=2;OwnedError=3;AtomicError=4;AtomicTileError=5;AtomicDataError=6;Array=7;ReferenceMemory=8;Address=9;RememberRead=10;Memory=11;Initialize=12;Zero=13;LoadReference=14;LoadView=15;LoadTile=16;LoadLocal=17;LoadData=18;Proof=19;Snapshot=20;BorrowFields=21;BorrowField=22;SetBorrow=23;ExternalProof=24;DatasetEffect=25;ApplicationRead=26;ApplicationProof=27;TileInput=28;DataAccess=29;DataCross=30;FinishApplication=31;Finish=32;ShareBorrow=33;};
+struct ReadPlaceFacts {u32 owns;u32 kind;u32 access;u32 reference;u32 memory;u32 known;u32 input;u32 current;u32 field_address;u32 indexed_base;u64 components;u64 words;u64 fields;};
+enum ReadPlaceNeed:u32 {Access=0;Owns=1;Kind=2;OwnedError=3;AtomicError=4;AtomicTileError=5;AtomicDataError=6;IndexedAtomicError=7;ReferenceMemory=8;Address=9;RememberRead=10;Memory=11;Initialize=12;Zero=13;LoadReference=14;LoadView=15;LoadTile=16;LoadLocal=17;LoadData=18;Proof=19;Snapshot=20;BorrowFields=21;BorrowField=22;SetBorrow=23;ExternalProof=24;DatasetEffect=25;ApplicationRead=26;ApplicationProof=27;TileInput=28;DataAccess=29;DataCross=30;FinishApplication=31;Finish=32;ShareBorrow=33;IndexedRead=34;IndexedAccess=35;LoadIndexedLocal=36;LoadIndexed=37;};
 struct ReadPlaceStep {Cursor cursor;ReadPlaceNeed need;u32 flags;};
 extern "C" ReadPlaceStep read_place_step(Cursor cursor,ReadPlaceFacts facts) on cpu;
 struct NameValueFacts {u32 present;u32 kind;u32 constant;};
@@ -319,8 +319,8 @@ extern "C" NameValueStep name_value_step(LocalCursor cursor,NameValueFacts facts
 struct SourcePlaceQueryHost {address context;cfn<u32,address,Text> ensures memory(read) binding;};
 extern "C" u32 source_is_place(SignatureNode source,SourcePlaceQueryHost host) on cpu requires nonzero(host.binding);
 
-struct WritePlaceFacts {u32 views;u32 persistent;u32 kind;u32 access;u32 writable;u32 memory;u32 pending;u32 resolved;u32 field_address;u32 unique;u32 iterator;u32 loops_empty;u64 words;u64 values;u64 fields;};
-enum WritePlaceNeed:u32 {Access=0;ViewType=1;ViewPayloadError=2;Owned=3;ViewAvailable=4;Same=5;Kind=6;NumericProof=7;ReferenceMemory=8;Pending=9;Resolved=10;Snapshot=11;AddressWrite=12;BorrowFields=13;BorrowField=14;AddField=15;Memory=16;AtomicError=17;AtomicTileError=18;AtomicDataError=19;Array=20;ReadOnlyError=21;ViewError=22;TileError=23;WriteError=24;Unique=25;DuplicateError=26;Writable=27;AssignProof=28;Initialize=29;Zero=30;DatasetEffect=31;CaptureProof=32;Alias=33;ApplicationWrite=34;AssignApplicationProof=35;CompleteWrites=36;DataAccess=37;StoreReference=38;StoreLocal=39;StoreData=40;Complete=41;};
+struct WritePlaceFacts {u32 views;u32 persistent;u32 kind;u32 access;u32 writable;u32 memory;u32 pending;u32 resolved;u32 field_address;u32 unique;u32 iterator;u32 loops_empty;u32 indexed_base;u64 words;u64 values;u64 fields;};
+enum WritePlaceNeed:u32 {Access=0;ViewType=1;ViewPayloadError=2;Owned=3;ViewAvailable=4;Same=5;Kind=6;NumericProof=7;ReferenceMemory=8;Pending=9;Resolved=10;Snapshot=11;AddressWrite=12;BorrowFields=13;BorrowField=14;AddField=15;Memory=16;AtomicError=17;AtomicTileError=18;AtomicDataError=19;IndexedAtomicError=20;ReadOnlyError=21;ViewError=22;TileError=23;WriteError=24;Unique=25;DuplicateError=26;Writable=27;AssignProof=28;Initialize=29;Zero=30;DatasetEffect=31;CaptureProof=32;Alias=33;ApplicationWrite=34;AssignApplicationProof=35;CompleteWrites=36;DataAccess=37;StoreReference=38;StoreLocal=39;StoreData=40;Complete=41;IndexedWritable=42;IndexedAccess=43;IndexedWrite=44;StoreIndexedLocal=45;StoreIndexed=46;};
 struct WritePlaceStep {Cursor cursor;WritePlaceNeed need;};
 extern "C" WritePlaceStep write_place_step(Cursor cursor,WritePlaceFacts facts) on cpu;
 

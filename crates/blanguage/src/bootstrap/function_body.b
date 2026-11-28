@@ -1361,14 +1361,22 @@ extern "C" ReadPlaceStep read_place_step(Cursor cursor,ReadPlaceFacts facts) on 
  if(c.phase==2){if(facts.owns!=0){return ReadPlaceStep(c,ReadPlaceNeed::OwnedError,0);}c.phase=3;return ReadPlaceStep(c,ReadPlaceNeed::Kind,0);}
  if(c.phase==3){
   if(facts.kind==8||((facts.kind==0||facts.kind==1)&&facts.access==4)){return ReadPlaceStep(c,ReadPlaceNeed::AtomicError,0);}
-  if(facts.kind==2){return ReadPlaceStep(c,ReadPlaceNeed::Array,0);}
-  if(facts.kind==0){c.phase=4;return ReadPlaceStep(c,ReadPlaceNeed::ReferenceMemory,0);}
-  if(facts.kind==1){c.phase=21;return ReadPlaceStep(c,ReadPlaceNeed::Initialize,0);}
-  c.index=0u64;
-  if(facts.kind==4){if(facts.access==4){return ReadPlaceStep(c,ReadPlaceNeed::AtomicTileError,0);}c.phase=30;if(facts.input!=0){return ReadPlaceStep(c,ReadPlaceNeed::TileInput,0);}}
-  else if(facts.kind==5){c.phase=30;return ReadPlaceStep(c,ReadPlaceNeed::Initialize,0);}
-  else if(facts.kind==7){if(facts.access==4){return ReadPlaceStep(c,ReadPlaceNeed::AtomicDataError,0);}if(facts.access==2||facts.access==3){c.phase=41;return ReadPlaceStep(c,ReadPlaceNeed::Initialize,0);}c.phase=42;return ReadPlaceStep(c,ReadPlaceNeed::DataAccess,0);}
-  else{c.phase=30;}
+  if(facts.kind==2){
+   if(facts.access==4){return ReadPlaceStep(c,ReadPlaceNeed::IndexedAtomicError,0);}
+   c.index=0u64;
+   c.phase=44;
+   if(facts.indexed_base==7){c.phase=43;return ReadPlaceStep(c,ReadPlaceNeed::IndexedRead,0);}
+   if(facts.indexed_base==4&&facts.input!=0){return ReadPlaceStep(c,ReadPlaceNeed::TileInput,0);}
+   if(facts.indexed_base==0||facts.indexed_base==1||facts.indexed_base==5){return ReadPlaceStep(c,ReadPlaceNeed::Initialize,0);}
+  }else{
+   if(facts.kind==0){c.phase=4;return ReadPlaceStep(c,ReadPlaceNeed::ReferenceMemory,0);}
+   if(facts.kind==1){c.phase=21;return ReadPlaceStep(c,ReadPlaceNeed::Initialize,0);}
+   c.index=0u64;
+   c.phase=30;
+   if(facts.kind==4){if(facts.access==4){return ReadPlaceStep(c,ReadPlaceNeed::AtomicTileError,0);}if(facts.input!=0){return ReadPlaceStep(c,ReadPlaceNeed::TileInput,0);}}
+   if(facts.kind==5){return ReadPlaceStep(c,ReadPlaceNeed::Initialize,0);}
+   if(facts.kind==7){if(facts.access==4){return ReadPlaceStep(c,ReadPlaceNeed::AtomicDataError,0);}if(facts.access==2||facts.access==3){c.phase=41;return ReadPlaceStep(c,ReadPlaceNeed::Initialize,0);}c.phase=42;return ReadPlaceStep(c,ReadPlaceNeed::DataAccess,0);}
+  }
  }
  if(c.phase==4){if(facts.memory!=0){c.phase=5;return ReadPlaceStep(c,ReadPlaceNeed::Address,0);}c.phase=8;return ReadPlaceStep(c,ReadPlaceNeed::Initialize,0);}
  if(c.phase==5){if(facts.reference==1){c.phase=6;return ReadPlaceStep(c,ReadPlaceNeed::RememberRead,0);}c.phase=7;return ReadPlaceStep(c,ReadPlaceNeed::Memory,0);}
@@ -1381,9 +1389,18 @@ extern "C" ReadPlaceStep read_place_step(Cursor cursor,ReadPlaceFacts facts) on 
  if(c.phase==24){return ReadPlaceStep(c,ReadPlaceNeed::FinishApplication,0);}
  if(c.phase==41){c.phase=42;return ReadPlaceStep(c,ReadPlaceNeed::DataAccess,0);}
  if(c.phase==42){c.phase=30;if(facts.current==0){return ReadPlaceStep(c,ReadPlaceNeed::DataCross,0);}}
+ if(c.phase==43){c.phase=46;if(facts.current==0){return ReadPlaceStep(c,ReadPlaceNeed::DataCross,0);}}
+ if(c.phase==46){c.phase=44;if(facts.access==2||facts.access==3){return ReadPlaceStep(c,ReadPlaceNeed::Initialize,0);}}
+ if(c.phase==44){c.phase=45;return ReadPlaceStep(c,ReadPlaceNeed::IndexedAccess,0);}
+ if(c.phase==45){c.phase=30;return ReadPlaceStep(c,ReadPlaceNeed::DatasetEffect,0);}
  if(c.phase==31){c.index+=1u64;c.phase=30;}
  if(c.phase==30){
-  if(c.index<facts.components&&c.index<facts.words){c.phase=31;ReadPlaceNeed load=facts.kind==0 ? ReadPlaceNeed::LoadReference : facts.kind==3 ? ReadPlaceNeed::LoadView : facts.kind==4 ? ReadPlaceNeed::LoadTile : facts.kind==7 ? ReadPlaceNeed::LoadData : ReadPlaceNeed::LoadLocal;return ReadPlaceStep(c,load,0);}
+  if(c.index<facts.components&&c.index<facts.words){
+   c.phase=31;
+   if(facts.kind==2){return ReadPlaceStep(c,facts.indexed_base==5||facts.indexed_base==6 ? ReadPlaceNeed::LoadIndexedLocal : ReadPlaceNeed::LoadIndexed,0);}
+   ReadPlaceNeed load=facts.kind==0 ? ReadPlaceNeed::LoadReference : facts.kind==3 ? ReadPlaceNeed::LoadView : facts.kind==4 ? ReadPlaceNeed::LoadTile : facts.kind==7 ? ReadPlaceNeed::LoadData : ReadPlaceNeed::LoadLocal;
+   return ReadPlaceStep(c,load,0);
+  }
   c.phase=32;return ReadPlaceStep(c,ReadPlaceNeed::Proof,0);
  }
  if(c.phase==32&&facts.kind==0&&facts.reference==1&&facts.memory!=0&&facts.known==0){c.phase=33;return ReadPlaceStep(c,ReadPlaceNeed::Snapshot,0);}
@@ -1446,7 +1463,11 @@ extern "C" WritePlaceStep write_place_step(Cursor cursor,WritePlaceFacts facts) 
   if(facts.kind==8||((facts.kind==0||facts.kind==1)&&facts.access==4)){return WritePlaceStep(c,WritePlaceNeed::AtomicError);}
   if(facts.kind==0){c.phase=21;return WritePlaceStep(c,WritePlaceNeed::Writable);}
   if(facts.kind==1){c.phase=40;return WritePlaceStep(c,WritePlaceNeed::Writable);}
-  if(facts.kind==2){return WritePlaceStep(c,WritePlaceNeed::Array);}
+  if(facts.kind==2){
+   if(facts.access==4){return WritePlaceStep(c,WritePlaceNeed::IndexedAtomicError);}
+   c.phase=62;
+   return WritePlaceStep(c,WritePlaceNeed::IndexedWritable);
+  }
   if(facts.kind==6){return WritePlaceStep(c,WritePlaceNeed::ReadOnlyError);}
   if(facts.kind==3){return WritePlaceStep(c,WritePlaceNeed::ViewError);}
   if(facts.kind==4){return WritePlaceStep(c,facts.access==4 ? WritePlaceNeed::AtomicTileError : WritePlaceNeed::TileError);}
@@ -1465,14 +1486,28 @@ extern "C" WritePlaceStep write_place_step(Cursor cursor,WritePlaceFacts facts) 
  if(c.phase==45){c.phase=46;return WritePlaceStep(c,WritePlaceNeed::AssignApplicationProof);}
  if(c.phase==46){c.phase=47;if(facts.loops_empty!=0){return WritePlaceStep(c,WritePlaceNeed::CompleteWrites);}}
  if(c.phase==47){return WritePlaceStep(c,WritePlaceNeed::Complete);}
+ if(c.phase==62){c.part=0u64;c.phase=60;}
  if(c.phase==61){if(facts.unique==0){return WritePlaceStep(c,WritePlaceNeed::DuplicateError);}c.part+=1u64;c.phase=60;}
- if(c.phase==60){if(c.part<facts.words){c.phase=61;return WritePlaceStep(c,WritePlaceNeed::Unique);}c.phase=63;if(facts.kind==7){return WritePlaceStep(c,WritePlaceNeed::DataAccess);}}
+ if(c.phase==60){
+  if(c.part<facts.words){c.phase=61;return WritePlaceStep(c,WritePlaceNeed::Unique);}
+  c.phase=63;
+  if(facts.kind==2){c.phase=66;return WritePlaceStep(c,WritePlaceNeed::IndexedAccess);}
+  if(facts.kind==7){return WritePlaceStep(c,WritePlaceNeed::DataAccess);}
+ }
+ if(c.phase==66){c.phase=63;return WritePlaceStep(c,WritePlaceNeed::DatasetEffect);}
  if(c.phase==63){c.phase=64;return WritePlaceStep(c,WritePlaceNeed::AssignProof);}
- if(c.phase==64){c.phase=65;if(facts.kind==5){return WritePlaceStep(c,WritePlaceNeed::Initialize);}}
- if(c.phase==65){c.index=0u64;c.phase=70;}
+ if(c.phase==64){c.phase=65;if(facts.kind==5||facts.kind==2){return WritePlaceStep(c,WritePlaceNeed::Initialize);}}
+ if(c.phase==65){
+  c.index=0u64;c.phase=70;
+  if(facts.kind==2&&facts.indexed_base==7&&facts.words!=0u64&&facts.values!=0u64){return WritePlaceStep(c,WritePlaceNeed::IndexedWrite);}
+ }
  if(c.phase==71){c.index+=1u64;c.phase=70;}
  if(c.phase==70){
-  if(c.index<facts.words&&c.index<facts.values){c.phase=71;return WritePlaceStep(c,facts.kind==0 ? WritePlaceNeed::StoreReference : facts.kind==5 ? WritePlaceNeed::StoreLocal : WritePlaceNeed::StoreData);}
+  if(c.index<facts.words&&c.index<facts.values){
+   c.phase=71;
+   if(facts.kind==2){return WritePlaceStep(c,facts.indexed_base==5 ? WritePlaceNeed::StoreIndexedLocal : WritePlaceNeed::StoreIndexed);}
+   return WritePlaceStep(c,facts.kind==0 ? WritePlaceNeed::StoreReference : facts.kind==5 ? WritePlaceNeed::StoreLocal : WritePlaceNeed::StoreData);
+  }
   c.phase=72;if(facts.kind==7){return WritePlaceStep(c,WritePlaceNeed::Initialize);}
  }
  return WritePlaceStep(c,WritePlaceNeed::Complete);

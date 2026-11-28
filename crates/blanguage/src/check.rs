@@ -2136,7 +2136,7 @@ impl<'a> Builder<'a> {
         }}
     }
     async fn read_place(&mut self,p:&Place,span:Span,mut element_read_origin:Option<Arc<GeneratedOrigin>>)->Result<Value> {
-        let mut cursor=unsafe {lexical_start()};let mut facts=ReadPlaceFacts {owns:0,kind:0,access:0,reference:0,memory:0,known:0,input:0,current:0,field_address:0,components:0,words:0,fields:0};
+        let mut cursor=unsafe {lexical_start()};let mut facts=ReadPlaceFacts {owns:0,kind:0,access:0,reference:0,memory:0,known:0,input:0,current:0,field_address:0,indexed_base:0,components:0,words:0,fields:0};
         let mut memory=None;let mut content_read=None;let mut snapshots=None;let mut shared=None;let mut fields=Vec::new();let mut zero=None;let mut regs=Vec::new();let mut reads=Vec::new();let mut proof=None;let mut uniform=false;let mut value=None;
         loop {let step=unsafe {read_place_step(cursor,ReadPlaceFacts {..facts})};cursor=step.cursor;match step.need {
             ReadPlaceNeed::Access=>{unsafe {self.world.call(self.require_place_access(p,Access::Read,span)).await}?;},
@@ -2144,7 +2144,17 @@ impl<'a> Builder<'a> {
             ReadPlaceNeed::Kind=>{facts.components=p.ty().components.len()as u64;match p {
                 Place::Reference {address,words,access,..}=>{facts.kind=0;facts.access=*access as u32;facts.reference=match address{ReferenceAddress::Borrowed {..}=>1,ReferenceAddress::External {..}=>2,_=>0};facts.words=words.len()as u64;},
                 Place::ApplicationElement {words,access,..}=>{facts.kind=1;facts.access=*access as u32;facts.words=words.len()as u64;},
-                Place::Indexed {..}=>facts.kind=2,
+                Place::Indexed {base,words,..}=>{
+                    facts.kind=2;
+                    (facts.indexed_base,facts.access)=self.indexed_base(base);
+                    facts.words=words.len() as u64;
+                    if let Place::Element {index,..}=&**base {
+                        facts.current=u32::from(*index==self.global_index);
+                    }
+                    if let Place::TileElement {tile,..}=&**base {
+                        facts.input=u32::from(matches!(self.tiles[*tile].source,TileOrigin::Input {..}));
+                    }
+                },
                 Place::ViewElement {words,..}=>{facts.kind=3;facts.words=words.len()as u64;},
                 Place::TileElement {tile,words,..}=>{facts.kind=4;facts.access=self.tiles[*tile].access as u32;facts.input=u32::from(matches!(self.tiles[*tile].source,TileOrigin::Input {..}));facts.words=words.len()as u64;},
                 Place::Local(_,slots,_)=>{facts.kind=5;facts.words=slots.len()as u64;},
@@ -2156,7 +2166,7 @@ impl<'a> Builder<'a> {
             ReadPlaceNeed::AtomicError=>return self.fail(span,"B214","原子借用只能通过显式原子操作读取"),
             ReadPlaceNeed::AtomicTileError=>return self.fail(span,"B214","atomic tile 元素只能通过显式原子操作读取"),
             ReadPlaceNeed::AtomicDataError=>return self.fail(span,"B214","atomic 数据集元素只能通过显式原子操作读取"),
-            ReadPlaceNeed::Array=>return unsafe {self.world.call(self.read_array_place(p,span)).await},
+            ReadPlaceNeed::IndexedAtomicError=>return self.fail(span,"B214","atomic 数组元素只能通过显式原子操作读取"),
             ReadPlaceNeed::ReferenceMemory=>{memory=unsafe {self.world.call(self.reference_memory(p,span)).await}?;facts.memory=u32::from(memory.is_some());},
             ReadPlaceNeed::Address=>{let(_,borrow)=memory.as_ref().unwrap();self.check_view_requirement(view::Requirement::Address {borrow:borrow.clone(),layout:address::Layout::of(p.ty()),written:None,writable:false,initialized:true,external_atomic:false,span})?;},
             ReadPlaceNeed::RememberRead=>content_read=Some((self.view_model.uses.len(),memory.as_ref().unwrap().1.clone())),
@@ -2168,7 +2178,24 @@ impl<'a> Builder<'a> {
             ReadPlaceNeed::LoadTile=>{let Place::TileElement {ty,tile,index,words}=p else{unsafe {std::hint::unreachable_unchecked()}};let i=cursor.index as usize;let dst=self.reg(ty.components[i].0);self.emit(InstKind::TileLoad {dst,tile:*tile,index:*index,word:words[i]});regs.push(dst);},
             ReadPlaceNeed::LoadLocal=>{let(Place::Local(ty,slots,_)|Place::ReadOnlyLocal(ty,slots,..))=p else{unsafe {std::hint::unreachable_unchecked()}};let i=cursor.index as usize;let dst=self.reg(ty.components[i].0);self.emit(InstKind::LoadLocal(dst,slots[i]));regs.push(dst);},
             ReadPlaceNeed::LoadData=>{let Place::Element {ty,binding,index,words,..}=p else{unsafe {std::hint::unreachable_unchecked()}};let i=cursor.index as usize;let dst=self.reg(ty.components[i].0);self.emit(InstKind::Load {dst,binding:*binding,index:*index,word:words[i]});regs.push(dst);},
-            ReadPlaceNeed::Proof=>{let(actual,is_uniform,known)=unsafe {self.world.call(self.read_owned_proof(p,&regs,&[])).await}?;proof=Some(actual);uniform=is_uniform;facts.known=u32::from(known);},
+            ReadPlaceNeed::LoadIndexedLocal=>{
+                let (base,index,words)=p.indexed_parts();
+                let i=cursor.index as usize;
+                let dst=self.reg(p.ty().components[i].0);
+                let (storage,word)=self.indexed_local_word(base,words[i]);
+                self.emit(InstKind::LoadLocalIndexed {dst,base:storage.start,len:storage.len(),index,word});
+                regs.push(dst);
+            },
+            ReadPlaceNeed::LoadIndexed=>{
+                let (base,index,words)=p.indexed_parts();
+                let i=cursor.index as usize;
+                let scalar=p.ty().components[i].0;
+                let dst=self.reg(scalar);
+                let (source,offset,word)=self.array_memory(base,index,words[i],scalar,false,span)?;
+                self.emit(InstKind::LoadIndexed {dst,source,offset,word});
+                regs.push(dst);
+            },
+            ReadPlaceNeed::Proof=>{let(actual,is_uniform,known)=unsafe {self.world.call(self.read_owned_proof(p,&regs,&reads)).await}?;proof=Some(actual);uniform=is_uniform;facts.known=u32::from(known);},
             ReadPlaceNeed::Snapshot=>{let(memory,borrow)=content_read.take().unwrap();let captured:Arc<[view_contracts::ValueSnapshot]>=self.capture_address_values(memory,address::Capture::Read).into();if let view::Requirement::Memory {snapshots,..}=&mut self.view_model.uses[memory].requirement{*snapshots=Some(captured.clone());}snapshots=Some((memory,borrow,captured));},
             ReadPlaceNeed::ShareBorrow=>{let(memory,borrow,captured)=snapshots.take().unwrap();shared=Some((memory,Arc::new(borrow),captured));},
             ReadPlaceNeed::BorrowFields=>{fields=p.ty().borrow_fields();facts.fields=fields.len()as u64;},
@@ -2178,15 +2205,17 @@ impl<'a> Builder<'a> {
             ReadPlaceNeed::DatasetEffect=>reads=self.dataset_effect(p,Access::Read,false,span)?,
             ReadPlaceNeed::ApplicationRead=>{let Place::ApplicationElement {ty,handle,identity,index,stride,words,..}=p else{unsafe {std::hint::unreachable_unchecked()}};value=Some(self.read_application_place(ty,*handle,*identity,*index,*stride,words,span,element_read_origin.take())?);},
             ReadPlaceNeed::ApplicationProof=>{let(actual,is_uniform,_)=unsafe {self.world.call(self.read_owned_proof(p,&value.as_ref().unwrap().regs,&reads)).await}?;proof=Some(actual);uniform=is_uniform;},
-            ReadPlaceNeed::TileInput=>{let Place::TileElement {tile,..}=p else{unsafe {std::hint::unreachable_unchecked()}};let TileOrigin::Input {binding,..}=&self.tiles[*tile].source else{unsafe {std::hint::unreachable_unchecked()}};self.reads.insert(*binding);self.cross_access.insert(*binding);},
+            ReadPlaceNeed::TileInput=>{let Place::TileElement {tile,..}=p.storage() else{unsafe {std::hint::unreachable_unchecked()}};let TileOrigin::Input {binding,..}=&self.tiles[*tile].source else{unsafe {std::hint::unreachable_unchecked()}};self.reads.insert(*binding);self.cross_access.insert(*binding);},
             ReadPlaceNeed::DataAccess=>{let Place::Element {binding,..}=p else{unsafe {std::hint::unreachable_unchecked()}};self.data_access(p,Access::Read,None);self.reads.insert(*binding);},
-            ReadPlaceNeed::DataCross=>{let Place::Element {binding,..}=p else{unsafe {std::hint::unreachable_unchecked()}};self.cross_access.insert(*binding);},
+            ReadPlaceNeed::DataCross=>{let Place::Element {binding,..}=p.storage() else{unsafe {std::hint::unreachable_unchecked()}};self.cross_access.insert(*binding);},
+            ReadPlaceNeed::IndexedRead=>{let Place::Element {binding,..}=p.storage() else{unsafe {std::hint::unreachable_unchecked()}};self.reads.insert(*binding);},
+            ReadPlaceNeed::IndexedAccess=>self.data_access(p,Access::Read,None),
             ReadPlaceNeed::FinishApplication=>{let mut value=value.take().unwrap();let proof=proof.take().unwrap();value.constant=proof.known_value(p.ty());value.proof=proof;value.uniform=uniform;return Ok(value);},
             ReadPlaceNeed::Finish=>{let proof=proof.take().unwrap();let constant=if step.flags&1!=0{proof.known_value(p.ty())}else{None};return Ok(Value {proof,literal:false,ty:p.ty().clone(),regs,uniform:step.flags&2!=0&&uniform,constant});},
         }}
     }
     async fn write_place(&mut self,p:&Place,value:Value,span:Span,local_origin:Option<Arc<GeneratedOrigin>>)->Result<()> {
-        let mut cursor=unsafe {lexical_start()};let mut facts=WritePlaceFacts {views:0,persistent:0,kind:0,access:0,writable:0,memory:0,pending:0,resolved:0,field_address:0,unique:0,iterator:0,loops_empty:0,words:0,values:0,fields:0};
+        let mut cursor=unsafe {lexical_start()};let mut facts=WritePlaceFacts {views:0,persistent:0,kind:0,access:0,writable:0,memory:0,pending:0,resolved:0,field_address:0,unique:0,iterator:0,loops_empty:0,indexed_base:0,words:0,values:0,fields:0};
         let mut value=Some(value);let mut written=None;let mut memory=None;let mut snapshots=None;let mut fields=Vec::new();let mut address_fields=Vec::new();let mut unique=BTreeSet::new();let mut proof=None;let mut zero=None;
         loop {let step=unsafe {write_place_step(cursor,WritePlaceFacts {..facts})};cursor=step.cursor;match step.need {
             WritePlaceNeed::Access=>{unsafe {self.world.call(self.require_place_access(p,Access::Write,span)).await}?;},
@@ -2198,7 +2227,12 @@ impl<'a> Builder<'a> {
             WritePlaceNeed::Kind=>{facts.values=value.as_ref().unwrap().regs.len()as u64;match p {
                 Place::Reference {words,access,..}=>{facts.kind=0;facts.access=*access as u32;facts.words=words.len()as u64;},
                 Place::ApplicationElement {words,access,..}=>{facts.kind=1;facts.access=*access as u32;facts.words=words.len()as u64;},
-                Place::Indexed {..}=>facts.kind=2,
+                Place::Indexed {base,words,..}=>{
+                    facts.kind=2;
+                    (facts.indexed_base,facts.access)=self.indexed_base(base);
+                    facts.words=words.len() as u64;
+                    facts.values=facts.values.min(value.as_ref().unwrap().ty.components.len() as u64);
+                },
                 Place::ViewElement {..}=>facts.kind=3,
                 Place::TileElement {tile,..}=>{facts.kind=4;facts.access=self.tiles[*tile].access as u32;},
                 Place::Local(_,slots,_)=>{facts.kind=5;facts.words=slots.len()as u64;},
@@ -2219,14 +2253,15 @@ impl<'a> Builder<'a> {
             WritePlaceNeed::AtomicError=>return self.fail(span,"B214","原子借用只能通过显式原子操作修改"),
             WritePlaceNeed::AtomicTileError=>return self.fail(span,"B214","atomic tile 元素只能通过显式原子操作修改"),
             WritePlaceNeed::AtomicDataError=>return self.fail(span,"B214","atomic 数据集元素只能通过显式原子操作修改"),
-            WritePlaceNeed::Array=>return unsafe {self.world.call(self.write_array_place(p,value.take().unwrap(),span)).await},
+            WritePlaceNeed::IndexedAtomicError=>return self.fail(span,"B214","atomic 数组元素只能通过显式原子操作修改"),
             WritePlaceNeed::ReadOnlyError=>return self.fail(span,"B144","按值参数或不可变局部值不可写"),
             WritePlaceNeed::ViewError=>return self.fail(span,"B185","view 的元素不可写"),
             WritePlaceNeed::TileError=>return self.fail(span,"B202","tile 值不可写；只修改当前独占的全局元素"),
             WritePlaceNeed::WriteError=>{let Place::Element {binding,..}=p else{unsafe {std::hint::unreachable_unchecked()}};return self.fail(span,"B144",format!("没有 {} 当前元素的独占修改权",self.program.buffers[*binding].name));},
-            WritePlaceNeed::Unique=>{let i=cursor.part as usize;let position=match p {Place::Local(_,slots,_)=>slots[i],Place::Element {words,..}=>words[i]as usize,_=>unsafe {std::hint::unreachable_unchecked()}};facts.unique=u32::from(unique.insert(position));},
+            WritePlaceNeed::Unique=>{let i=cursor.part as usize;let position=match p {Place::Local(_,slots,_)=>slots[i],Place::Element {words,..}|Place::Indexed {words,..}=>words[i]as usize,_=>unsafe {std::hint::unreachable_unchecked()}};facts.unique=u32::from(unique.insert(position));},
             WritePlaceNeed::DuplicateError=>return self.fail(span,"B143","赋值位置包含重复分量"),
             WritePlaceNeed::Writable=>{unsafe {self.world.call(self.writable_storage(p,span,written.take())).await}?;},
+            WritePlaceNeed::IndexedWritable=>{unsafe {self.world.call(self.writable_storage(p,span,Some(bounds::Proof::default()))).await}?;},
             WritePlaceNeed::AssignProof=>{unsafe {self.world.call(self.assign_owned_proof(p,bounds::Proof::capture(value.as_ref().unwrap()),false)).await}?;},
             WritePlaceNeed::Initialize=>self.initialize(p),
             WritePlaceNeed::Zero=>zero=Some(self.constant(Scalar::U32,0).regs[0]),
@@ -2237,9 +2272,24 @@ impl<'a> Builder<'a> {
             WritePlaceNeed::AssignApplicationProof=>{unsafe {self.world.call(self.assign_owned_proof(p,proof.take().unwrap(),false)).await}?;facts.loops_empty=u32::from(self.loop_contexts.is_empty());},
             WritePlaceNeed::CompleteWrites=>{let Place::ApplicationElement {sources,..}=p else{unsafe {std::hint::unreachable_unchecked()}};unsafe {self.world.call(self.complete_application_writes(|_,data|sources.contains(&data.root.identity()),span)).await}?;},
             WritePlaceNeed::DataAccess=>{let Place::Element {binding,..}=p else{unsafe {std::hint::unreachable_unchecked()}};self.data_access(p,Access::Write,None);self.writes.insert(*binding);},
+            WritePlaceNeed::IndexedAccess=>self.data_access(p,Access::Write,None),
+            WritePlaceNeed::IndexedWrite=>{let Place::Element {binding,..}=p.storage() else{unsafe {std::hint::unreachable_unchecked()}};self.writes.insert(*binding);},
             WritePlaceNeed::StoreReference=>{let Place::Reference {address,words,..}=p else{unsafe {std::hint::unreachable_unchecked()}};let i=cursor.index as usize;let(source,word)=address.source_at(words[i],zero.unwrap());self.emit(InstKind::StoreIndexed {source,offset:zero.unwrap(),word,value:value.as_ref().unwrap().regs[i]});},
             WritePlaceNeed::StoreLocal=>{let Place::Local(_,slots,_)=p else{unsafe {std::hint::unreachable_unchecked()}};let i=cursor.index as usize;let kind=InstKind::StoreLocal(slots[i],value.as_ref().unwrap().regs[i]);if let Some(origin)=&local_origin{self.code.push(Inst::generated(kind,origin.clone()));}else{self.emit(kind);}},
             WritePlaceNeed::StoreData=>{let Place::Element {binding,index,words,..}=p else{unsafe {std::hint::unreachable_unchecked()}};let i=cursor.index as usize;self.emit(InstKind::Store {binding:*binding,index:*index,word:words[i],value:value.as_ref().unwrap().regs[i]});},
+            WritePlaceNeed::StoreIndexedLocal=>{
+                let (base,index,words)=p.indexed_parts();
+                let i=cursor.index as usize;
+                let (storage,word)=self.indexed_local_word(base,words[i]);
+                self.emit(InstKind::StoreLocalIndexed {base:storage.start,len:storage.len(),index,word,value:value.as_ref().unwrap().regs[i]});
+            },
+            WritePlaceNeed::StoreIndexed=>{
+                let (base,index,words)=p.indexed_parts();
+                let i=cursor.index as usize;
+                let value=value.as_ref().unwrap();
+                let (source,offset,word)=self.array_memory(base,index,words[i],value.ty.components[i].0,true,span)?;
+                self.emit(InstKind::StoreIndexed {source,offset,word,value:value.regs[i]});
+            },
             WritePlaceNeed::Complete=>return Ok(()),
         }}
     }
@@ -3029,8 +3079,8 @@ unsafe extern "C" {
 fn named_binding_kind(binding:Option<&Binding>)->u32 {
     match binding {None=>0,Some(Binding::AtomicBorrow(_))=>1,Some(Binding::Owned(_))=>2,Some(Binding::OwnedValue(_))=>3,Some(Binding::Value(_))=>4,Some(Binding::ViewElement {..})=>5,Some(_)=>6}
 }
-#[repr(C)]struct ReadPlaceFacts {owns:u32,kind:u32,access:u32,reference:u32,memory:u32,known:u32,input:u32,current:u32,field_address:u32,components:u64,words:u64,fields:u64}
-#[repr(u32)]enum ReadPlaceNeed {Access,Owns,Kind,OwnedError,AtomicError,AtomicTileError,AtomicDataError,Array,ReferenceMemory,Address,RememberRead,Memory,Initialize,Zero,LoadReference,LoadView,LoadTile,LoadLocal,LoadData,Proof,Snapshot,BorrowFields,BorrowField,SetBorrow,ExternalProof,DatasetEffect,ApplicationRead,ApplicationProof,TileInput,DataAccess,DataCross,FinishApplication,Finish,ShareBorrow}
+#[repr(C)]struct ReadPlaceFacts {owns:u32,kind:u32,access:u32,reference:u32,memory:u32,known:u32,input:u32,current:u32,field_address:u32,indexed_base:u32,components:u64,words:u64,fields:u64}
+#[repr(u32)]enum ReadPlaceNeed {Access,Owns,Kind,OwnedError,AtomicError,AtomicTileError,AtomicDataError,IndexedAtomicError,ReferenceMemory,Address,RememberRead,Memory,Initialize,Zero,LoadReference,LoadView,LoadTile,LoadLocal,LoadData,Proof,Snapshot,BorrowFields,BorrowField,SetBorrow,ExternalProof,DatasetEffect,ApplicationRead,ApplicationProof,TileInput,DataAccess,DataCross,FinishApplication,Finish,ShareBorrow,IndexedRead,IndexedAccess,LoadIndexedLocal,LoadIndexed}
 #[repr(C)]struct ReadPlaceStep {cursor:LexicalCursor,need:ReadPlaceNeed,flags:u32}
 #[repr(C)]struct NameValueFacts {present:u32,kind:u32,constant:u32}
 #[repr(u32)]enum NameValueNeed {Scope,ScopeValue,Binding,Value,OwnedPlace,NamedPlace,Read,Resolve,FunctionKind,ModuleConstant,Unknown}
@@ -3046,8 +3096,8 @@ unsafe extern "C" {
  #[link_name="bootstrap.function_body::source_is_place"]fn source_is_place(source:crate::syntax::wire::SignatureNode,host:SourcePlaceQueryHost<'_,'_,'_>)->u32;
 }
 
-#[repr(C)]struct WritePlaceFacts {views:u32,persistent:u32,kind:u32,access:u32,writable:u32,memory:u32,pending:u32,resolved:u32,field_address:u32,unique:u32,iterator:u32,loops_empty:u32,words:u64,values:u64,fields:u64}
-#[repr(u32)]enum WritePlaceNeed {Access,ViewType,ViewPayloadError,Owned,ViewAvailable,Same,Kind,NumericProof,ReferenceMemory,Pending,Resolved,Snapshot,AddressWrite,BorrowFields,BorrowField,AddField,Memory,AtomicError,AtomicTileError,AtomicDataError,Array,ReadOnlyError,ViewError,TileError,WriteError,Unique,DuplicateError,Writable,AssignProof,Initialize,Zero,DatasetEffect,CaptureProof,Alias,ApplicationWrite,AssignApplicationProof,CompleteWrites,DataAccess,StoreReference,StoreLocal,StoreData,Complete}
+#[repr(C)]struct WritePlaceFacts {views:u32,persistent:u32,kind:u32,access:u32,writable:u32,memory:u32,pending:u32,resolved:u32,field_address:u32,unique:u32,iterator:u32,loops_empty:u32,indexed_base:u32,words:u64,values:u64,fields:u64}
+#[repr(u32)]enum WritePlaceNeed {Access,ViewType,ViewPayloadError,Owned,ViewAvailable,Same,Kind,NumericProof,ReferenceMemory,Pending,Resolved,Snapshot,AddressWrite,BorrowFields,BorrowField,AddField,Memory,AtomicError,AtomicTileError,AtomicDataError,IndexedAtomicError,ReadOnlyError,ViewError,TileError,WriteError,Unique,DuplicateError,Writable,AssignProof,Initialize,Zero,DatasetEffect,CaptureProof,Alias,ApplicationWrite,AssignApplicationProof,CompleteWrites,DataAccess,StoreReference,StoreLocal,StoreData,Complete,IndexedWritable,IndexedAccess,IndexedWrite,StoreIndexedLocal,StoreIndexed}
 #[repr(C)]struct WritePlaceStep {cursor:LexicalCursor,need:WritePlaceNeed}
 unsafe extern "C" {#[link_name="bootstrap.function_body::write_place_step"]fn write_place_step(cursor:LexicalCursor,facts:WritePlaceFacts)->WritePlaceStep;}
 
