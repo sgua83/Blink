@@ -1131,7 +1131,7 @@ extern "C" void optimize_stage(PipelineStageHost host,u32 has_tiles) on cpu
  host.compact(host.context);
 }
 extern "C" PipelineRootEdit optimize_root(address instruction,u32 preserve_scope,PipelineRead host,RewriteHost rewrite) on cpu
- requires nonzero(host.contains) requires nonzero(host.scalar_bytes) requires nonzero(rewrite.inspect) {
+ requires nonzero(host.scalar_bytes) requires nonzero(rewrite.inspect) {
  RewriteView root=rewrite.inspect(RewriteNode(instruction,N_INSTRUCTION));
  if(root.tag!=OP_TILE_PUBLISH&&root.tag!=OP_TILE_COLLECTIVE){return PipelineRootEdit(PipelineRootAction::Keep,0u64);}
  usize count=root.first.count;
@@ -1141,9 +1141,9 @@ extern "C" PipelineRootEdit optimize_root(address instruction,u32 preserve_scope
   while(read<root.first.count){
    u32 word=unsafe_position<u32>(rewrite_word_at(root.second,read));
    usize reg=unsafe_position<usize>(rewrite_word_at(root.first,read));
-   u32 bytes=host.scalar_bytes(host.context,reg);u32 part=0;bool keep=false;
+   u32 bytes=host.scalar_bytes(host.registers,reg);u32 part=0;bool keep=false;
    while(part<(bytes+3)/4){
-    if(host.contains(host.context,0,tile,word+part*4)!=0){keep=true;break;}
+    if(tile_word_read(host.words,TileKey(1u64,tile,word+part*4))){keep=true;break;}
     part+=1;
    }
    if(keep){
@@ -1219,8 +1219,8 @@ void pipeline_code_access(Span code,address flags,Host host) on cpu requires non
   index+=1u64;
  }
 }
-void pipeline_tile_access(Span tiles,address flags,Host ir,PipelineRead host) on cpu
- requires nonzero(ir.inspect) requires nonzero(host.contains) {
+void pipeline_tile_access(Span tiles,address flags,Host ir,Span words) on cpu
+ requires nonzero(ir.inspect) {
  usize index=0u64;
  while(index<tiles.count){
   View tile=ir.inspect(node_at(tiles,index,N_TILE));
@@ -1229,7 +1229,7 @@ void pipeline_tile_access(Span tiles,address flags,Host ir,PipelineRead host) on
    while(component<tile.first.count&&!needed){
     View field=ir.inspect(node_at(tile.first,component,N_COMPONENT));usize part=0u64;
     while(part<(field.b+3u64)/4u64){
-     if(host.contains(host.context,1,tile.a,u32(tile.b+field.a+part*4u64))!=0){needed=true;break;}
+     if(tile_word_read(words,TileKey(0u64,tile.a,u32(tile.b+field.a+part*4u64)))){needed=true;break;}
      part+=1u64;
     }
     component+=1u64;
@@ -1239,9 +1239,9 @@ void pipeline_tile_access(Span tiles,address flags,Host ir,PipelineRead host) on
   index+=1u64;
  }
 }
-extern "C" usize optimize_bindings(PipelineMap input,Host ir,PipelineRead host) on cpu
- requires nonzero(ir.inspect) requires nonzero(host.contains) requires nonzero(input.append) {
- pipeline_code_access(input.code,input.flags,ir);pipeline_tile_access(input.tiles,input.flags,ir,host);
+extern "C" usize optimize_bindings(PipelineMap input,Host ir,Span words) on cpu
+ requires nonzero(ir.inspect) requires nonzero(input.append) {
+ pipeline_code_access(input.code,input.flags,ir);pipeline_tile_access(input.tiles,input.flags,ir,words);
  if(input.prefix.present!=0){pipeline_mark(input.flags,input.prefix.binding,u8(1));}
  if(input.selection.present!=0){pipeline_mark(input.flags,input.selection.binding,u8(1));}
  usize word=0u64;

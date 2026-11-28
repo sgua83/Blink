@@ -644,32 +644,42 @@ unsafe extern "C" fn register_bytes(stage: *const c_void, register: usize) -> u3
     unsafe { &*stage.cast::<Stage>() }.registers[register].size()
 }
 
-fn storage_facts(stage: &Stage, phase: i64, output: StorageOutput) -> StorageFacts {
-    unsafe {
+fn collect_storage_reads(
+    stage: &Stage, phase: i64, publication_phases: Span, group_storage: *mut c_void,
+) -> (Vec<TileUse>, StorageFacts) {
+    let mut output = ReadOutput { stage, reads: BTreeMap::new() };
+    let facts = unsafe {
         b_storage_facts(
             Span::slice(&stage.code), Span::slice(&stage.tiles),
             StorageHost { ir: HOST, stage: ptr::from_ref(stage).cast(), scalar_bytes: register_bytes },
-            phase, output,
+            phase,
+            StorageOutput {
+                context: ptr::from_mut(&mut output).cast(), read: emit_storage_read,
+                publication_phases, group_storage, reserve_groups: reserve_tile_groups,
+            },
         )
-    }
-}
-
-struct WordOutput<'a> { stage: &'a Stage, words: BTreeSet<SharedWord> }
-
-pub(crate) fn storage_usage(stage: &Stage) -> (BTreeSet<SharedWord>, u32) {
-    let mut output = WordOutput { stage, words: BTreeSet::new() };
-    let preserve = if stage.tiles.is_empty() { 0 } else {
-        storage_facts(stage, -1, StorageOutput {
-            context: ptr::from_mut(&mut output).cast(), read: emit_word, publication_phases: Span::EMPTY,
-            group_storage: ptr::null_mut(), reserve_groups: reserve_tile_groups,
-        }).preserve
     };
-    (output.words, preserve)
+    let reads = output.reads.into_iter().map(|(word, (end, read_mask))| {
+        TileUse { key: word.into(), end, read_mask }
+    }).collect();
+    (reads, facts)
 }
 
-unsafe extern "C" fn emit_word(context: *mut c_void, tile: usize, byte: u32, _: i64) {
-    let output = unsafe { &mut *context.cast::<WordOutput<'_>>() };
-    output.words.insert(output.stage.shared_word(tile, byte));
+pub(crate) fn storage_usage(stage: &Stage) -> (Vec<TileUse>, u32) {
+    if stage.tiles.is_empty() { return (Vec::new(), 0); }
+    let (reads, facts) = collect_storage_reads(stage, -1, Span::EMPTY, ptr::null_mut());
+    (reads, facts.preserve)
+}
+
+pub(super) fn storage_words(stage: &Stage) -> BTreeSet<SharedWord> {
+    storage_usage(stage).0.into_iter().flat_map(|row| {
+        (0..4).filter_map(move |part| {
+            if row.read_mask & (1 << part) == 0 { return None; }
+            let mut key = row.key;
+            key.byte += part;
+            Some(key.word())
+        })
+    }).collect()
 }
 
 #[repr(C)]
@@ -702,31 +712,28 @@ unsafe extern "C" fn reserve_tile_groups(storage: *mut c_void, count: usize) -> 
 }
 
 pub(super) struct LayoutFacts {
-    pub(super) reads: BTreeMap<SharedWord, (i64, u32)>,
+    pub(super) reads: Vec<TileUse>,
     pub(super) publication_phases: Vec<i64>,
     pub(super) groups: Vec<MaybeUninit<TileGroup>>,
 }
 
-struct LayoutOutput<'a> {
+struct ReadOutput<'a> {
     stage: &'a Stage,
     reads: BTreeMap<SharedWord, (i64, u32)>,
 }
 
 pub(super) fn tile_layout_facts(stage: &Stage) -> LayoutFacts {
-    let mut output = LayoutOutput { stage, reads: BTreeMap::new() };
     let mut publication_phases = vec![-1i64; stage.tiles.len()];
     let mut groups = Vec::new();
-    let facts = storage_facts(stage, 0, StorageOutput {
-        context: ptr::from_mut(&mut output).cast(), read: emit_layout,
-        publication_phases: Span::mutable(&mut publication_phases),
-        group_storage: ptr::from_mut(&mut groups).cast(), reserve_groups: reserve_tile_groups,
-    });
+    let (reads, facts) = collect_storage_reads(
+        stage, 0, Span::mutable(&mut publication_phases), ptr::from_mut(&mut groups).cast(),
+    );
     groups.truncate(facts.group_count);
-    LayoutFacts { reads: output.reads, publication_phases, groups }
+    LayoutFacts { reads, publication_phases, groups }
 }
 
-unsafe extern "C" fn emit_layout(context: *mut c_void, tile: usize, offset: u32, phase: i64) {
-    let output = unsafe { &mut *context.cast::<LayoutOutput<'_>>() };
+unsafe extern "C" fn emit_storage_read(context: *mut c_void, tile: usize, offset: u32, phase: i64) {
+    let output = unsafe { &mut *context.cast::<ReadOutput<'_>>() };
     let word = output.stage.shared_word(tile, offset);
     let byte = match word {
         SharedWord::Input { word, .. } | SharedWord::Published { word, .. } => word,

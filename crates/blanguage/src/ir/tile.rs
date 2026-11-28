@@ -24,7 +24,7 @@ impl SharedWord {
 #[cfg(feature = "compiler")]
 #[derive(Clone, Copy)]
 #[repr(C)]
-pub(crate) struct TileKey { storage: u64, owner: usize, byte: u32 }
+pub(crate) struct TileKey { storage: u64, owner: usize, pub(super) byte: u32 }
 
 #[cfg(feature = "compiler")]
 impl From<SharedWord> for TileKey {
@@ -195,10 +195,7 @@ impl Stage {
         if self.tiles.is_empty() {
             return (PlacedTiles::default(), Vec::new(), Vec::new());
         }
-        let dataflow::LayoutFacts { reads, publication_phases, groups } = dataflow::tile_layout_facts(self);
-        let mut uses: Vec<_> = reads.into_iter().map(|(word, (end, read_mask))| {
-            dataflow::TileUse { key: word.into(), end, read_mask }
-        }).collect();
+        let dataflow::LayoutFacts { reads: mut uses, publication_phases, groups } = dataflow::tile_layout_facts(self);
         // Vulkan normalizes the layout input to cells after the exact reads are consumed.
         let inputs = if publish { dataflow::input_fragments(self, &uses) } else { Vec::new() };
         let mut storage = TileStorage {

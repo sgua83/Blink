@@ -303,8 +303,8 @@ struct PipelineStageHost {
  cfn<void,address> compact;
 };
 struct PipelineRead {
- address context;
- cfn<u32,address,u32,usize,u32> ensures memory(read) contains;
+ Span words;
+ address registers;
  cfn<u32,address,usize> ensures memory(read) scalar_bytes;
 };
 enum PipelineRootAction:u32 { Keep=0; Drop=1; Trim=2; };
@@ -330,12 +330,12 @@ extern "C" void optimize_stage(PipelineStageHost host,u32 has_tiles) on cpu
  requires nonzero(host.release_words) requires nonzero(host.compact);
 extern "C" void optimize_value(address value,PipelineValue host) on cpu
  requires nonzero(host.flow) requires nonzero(host.eliminate) requires nonzero(host.compact);
-extern "C" usize optimize_bindings(PipelineMap input,Host ir,PipelineRead host) on cpu
- requires nonzero(ir.inspect) requires nonzero(host.contains) requires nonzero(input.append);
+extern "C" usize optimize_bindings(PipelineMap input,Host ir,Span words) on cpu
+ requires nonzero(ir.inspect) requires nonzero(input.append);
 
 
 extern "C" PipelineRootEdit optimize_root(address instruction,u32 preserve_scope,PipelineRead host,RewriteHost rewrite) on cpu
- requires nonzero(host.contains) requires nonzero(host.scalar_bytes) requires nonzero(rewrite.inspect);
+ requires nonzero(host.scalar_bytes) requires nonzero(rewrite.inspect);
 struct RewriteInputMap { address context; cfn<usize,address,usize> reg; };
 extern "C" void bind_reduction_arguments(RewriteSpan code,RewriteSpan result,Span right,Span projected,
  address registers,RewriteHost host) on cpu requires nonzero(host.inspect);

@@ -89,8 +89,8 @@ struct StageHost {
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct ReadHost {
-    context: *const c_void,
-    contains: unsafe extern "C" fn(*const c_void, u32, usize, u32) -> u32,
+    words: Span,
+    registers: *const c_void,
     scalar_bytes: unsafe extern "C" fn(*const c_void, usize) -> u32,
 }
 #[derive(PartialEq, Eq)]
@@ -112,7 +112,7 @@ unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::optimize_root"]
     fn b_root(instruction: *mut c_void, preserve: u32, host: ReadHost, rewrite: crate::ir::rewrite::Host) -> RootEdit;
     #[link_name = "bootstrap.ir_dataflow::optimize_bindings"]
-    fn b_bindings(input: MapInput, ir: crate::ir::dataflow::Host, host: ReadHost) -> usize;
+    fn b_bindings(input: MapInput, ir: crate::ir::dataflow::Host, words: Span) -> usize;
 }
 
 struct ProgramState<'a> {
@@ -253,10 +253,10 @@ unsafe extern "C" fn origin(context: *mut c_void) {
         trigger: Some(GenerationAnchor::EmptyMapRemoval { retained, stages: std::mem::take(&mut state.removed) }),
     }));
 }
-struct StageState<'a> { stage: &'a mut Stage, bindings: usize, words: BTreeSet<SharedWord> }
+struct StageState<'a> { stage: &'a mut Stage, bindings: usize, words: Vec<crate::ir::dataflow::TileUse> }
 fn run_stage(stage: &mut Stage, bindings: usize) {
     let has_tiles = u32::from(!stage.tiles.is_empty());
-    let mut state = StageState { stage, bindings, words: BTreeSet::new() };
+    let mut state = StageState { stage, bindings, words: Vec::new() };
     unsafe { b_stage(StageHost {
         ir: crate::ir::dataflow::HOST, context: ptr::from_mut(&mut state).cast(), values: VALUE_HOST,
         stage: stage_owner, custom, flow: stage_flow, eliminate: stage_eliminate, words: stage_words,
@@ -297,27 +297,17 @@ unsafe extern "C" fn stage_words(context: *mut c_void) -> u32 {
 }
 unsafe extern "C" fn release_words(context: *mut c_void) {
     let state = unsafe { &mut *context.cast::<StageState<'_>>() };
-    state.words = BTreeSet::new();
+    state.words = Vec::new();
 }
-struct ReadState<'a> { words: &'a BTreeSet<SharedWord>, registers: &'a [Scalar] }
-impl ReadState<'_> {
-    fn host(&self) -> ReadHost { ReadHost { context: ptr::from_ref(self).cast(), contains, scalar_bytes } }
-}
-unsafe extern "C" fn contains(context: *const c_void, kind: u32, index: usize, word: u32) -> u32 {
-    let state = unsafe { &*context.cast::<ReadState<'_>>() };
-    let value = match kind {
-        0 => SharedWord::Published { tile: index, word },
-        _ => SharedWord::Input { binding: index, word },
-    };
-    u32::from(state.words.contains(&value))
-}
-unsafe extern "C" fn scalar_bytes(context: *const c_void, reg: usize) -> u32 {
-    unsafe { &*context.cast::<ReadState<'_>>() }.registers[reg].size()
+unsafe extern "C" fn scalar_bytes(registers: *const c_void, reg: usize) -> u32 {
+    let scalars = unsafe { &*registers.cast::<Vec<Scalar>>() };
+    scalars[reg].size()
 }
 unsafe extern "C" fn prune(context: *mut c_void, preserve: u32) -> u32 {
     let state = unsafe { &mut *context.cast::<StageState<'_>>() };
-    let read = ReadState { words: &state.words, registers: &state.stage.registers };
-    let host = read.host();
+    let host = ReadHost {
+        words: Span::of(&state.words), registers: ptr::from_ref(&state.stage.registers).cast(), scalar_bytes,
+    };
     let mut changed = false;
     state.stage.code.retain_mut(|inst| {
         let edit = unsafe { b_root(ptr::from_mut(inst).cast(), preserve, host, crate::ir::rewrite::HOST) };
@@ -364,8 +354,7 @@ unsafe extern "C" fn bindings_map(context: *mut c_void) {
         output: ptr::from_mut(&mut output).cast(), append: append_binding,
         cross: stage.cross_access.as_mut_ptr(), cross_count: stage.cross_access.len(),
     };
-    let read = ReadState { words: &state.words, registers: &stage.registers };
-    let cross = unsafe { b_bindings(input, crate::ir::dataflow::HOST, read.host()) };
+    let cross = unsafe { b_bindings(input, crate::ir::dataflow::HOST, Span::of(&state.words)) };
     stage.cross_access.truncate(cross);
     stage.write_regions.retain(|binding, _| stage.writes.binary_search(binding).is_ok());
 }
