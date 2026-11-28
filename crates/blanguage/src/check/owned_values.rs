@@ -422,7 +422,7 @@ impl Builder<'_> {
         let mut facts=ReturnExprFacts::default();let mut name=None;let mut ty:Option<Ty>=None;let mut place=None;
         loop {let step=unsafe {return_expr_step(cursor,source,facts)};cursor=step.cursor;match step.need {
             ReturnExprNeed::Target=>{let ExprKind::Target(target,call)=&syntax else{unsafe{std::hint::unreachable_unchecked()}};return unsafe{self.world.call(self.target_call(*target,call,expr.span())).await};},
-            ReturnExprNeed::Member=>{let ExprKind::Member(base,field)=&syntax else{unsafe{std::hint::unreachable_unchecked()}};return unsafe{self.world.call(self.member_returned(expr,base,field)).await};},
+            ReturnExprNeed::Member=>{let ExprKind::Member(base,field)=&syntax else{unsafe{std::hint::unreachable_unchecked()}};return unsafe{self.world.call(self.member_returned(expr,base,field,None)).await};},
             ReturnExprNeed::IndexType=>{let ExprKind::Index(base,_)=&syntax else{unsafe{std::hint::unreachable_unchecked()}};facts.owns=u32::from(self.owned_element_type(base).is_some_and(|ty|ty.array.is_some()&&ty.owns_resources()));},
             ReturnExprNeed::Temporary=>{let ExprKind::Index(base,_)=&syntax else{unsafe{std::hint::unreachable_unchecked()}};facts.temporary=u32::from(self.temporary_projection(base));},
             ReturnExprNeed::ExpressionType=>facts.owns=u32::from(unsafe{self.world.call(self.read_expression_type(expr)).await}?.is_some_and(|ty|ty.owns_resources())),

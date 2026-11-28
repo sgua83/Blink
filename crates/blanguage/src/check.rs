@@ -2262,7 +2262,7 @@ impl<'a> Builder<'a> {
             SourceValueNeed::Number=>return self.number_expression(source.text(step.spelling),e.span()),
             SourceValueNeed::Name=>return unsafe {world.call(self.name_expr(source.text(step.spelling),e.span())).await}.map(Some),
             SourceValueNeed::Specialized=>return unsafe {world.call(source_call::specialized(self,e)).await},
-            SourceValueNeed::Member=>{let base=e.child(step.first);returned=unsafe {world.call(self.member_returned(e,&base,source.text(step.spelling))).await}?;},
+            SourceValueNeed::Member=>{let base=e.child(step.first);returned=unsafe {world.call(self.member_returned(e,&base,source.text(step.spelling),None)).await}?;},
             SourceValueNeed::Index=>{let base=e.child(step.first);let index=e.child(step.second);return unsafe {world.call(self.index_expr(&base,&index,e)).await};},
             SourceValueNeed::Select=>{let condition=e.child(step.first);let yes=e.child(step.second);let no=e.child(step.third);return unsafe {world.call(self.selection(&condition,&yes,&no,e.span())).await};},
             SourceValueNeed::Target=>{let call=e.child(step.first);returned=unsafe {world.call(self.target_call(step.target,&call,e.span())).await}?;},

@@ -135,10 +135,12 @@ impl Builder<'_> {
         Ok(Some(application::DataReference::direct(data)))
     }
     #[inline(never)]
-    pub(super) async fn member_returned(&mut self,expr:&Expr,base:&Expr,name:&str)->Result<Option<Returned>> {
+    pub(super) async fn member_returned(
+        &mut self, expr: &Expr, base: &Expr, name: &str, projected_owner: Option<&mut Option<String>>,
+    ) -> Result<Option<Returned>> {
         let mut cursor=super::flow::LocalCursor {phase:0};
         let mut facts=MemberFacts {name:MemberName::of(name),owns:0,present:0,variants:0,temporary:0,place:0,resource:0,binding:0,continuing:0,kind:0,found:0,field_owns:0,item_kind:0,empty:0,array:0,view:0};
-        let mut place=None;let mut projection=None;let mut reference=None;let mut parent=None;let mut item=None;let mut field=0usize;let mut retained=None;let mut dataset=None;let mut ordinary=None;let mut count=None;
+        let mut place=None;let mut projection=None;let mut reference=None;let mut parent=None;let mut item=None;let mut field=0usize;let mut borrowed_owner=None;let mut dataset=None;let mut ordinary=None;let mut count=None;
         loop {let step=unsafe {member_step(cursor,facts)};cursor=step.cursor;match step.need {
             MemberNeed::Type=>facts.owns=u32::from(self.owned_element_type(expr).is_some_and(|ty|ty.owns_resources())),
             MemberNeed::Place=>{place=unsafe{self.world.call(self.place(expr)).await}?;facts.present=u32::from(place.is_some());},
@@ -170,19 +172,59 @@ impl Builder<'_> {
             MemberNeed::ReadField=>{let p=place.take().unwrap();let(sub,components)=member_type(p.ty(),name,self.scope.source(),expr.span())?;return unsafe{self.world.call(self.read_place(&p.project(sub,&components),expr.span(),None)).await}.map(|value|Some(Returned::value(value)));},
             MemberNeed::OrdinaryValue=>{ordinary=unsafe{self.world.call(self.expr(base)).await}?;facts.present=u32::from(ordinary.is_some());},
             MemberNeed::OrdinaryMemberValue=>return self.member_value(ordinary.take().unwrap(),name,expr.span()).map(|value|Some(Returned::value(value))),
-            MemberNeed::Evaluate=>{parent=unsafe{self.world.call(self.evaluate_returned(base,None)).await}?;facts.continuing=u32::from(self.flow.continues());facts.kind=parent.as_ref().map_or(0,Returned::kind);},
+            MemberNeed::Evaluate => {
+                let world = self.world;
+                parent = if facts.temporary != 0 && let ExprKind::Member(root, field) = base.kind() {
+                    let mut value = unsafe { world.call(self.at_source(base.span(), SourceSyntax::Expression, async |builder| {
+                        builder.view_uses.before(base.span());
+                        unsafe { world.call(builder.member_returned(base, &root, field, Some(&mut borrowed_owner))).await }
+                    })).await }?;
+                    if let Some(value) = value.as_mut().and_then(Returned::view_value_mut) {
+                        self.bound_value(value);
+                    }
+                    value
+                } else {
+                    unsafe { world.call(self.evaluate_returned(base, None)).await }?
+                };
+                facts.continuing = u32::from(self.flow.continues());
+                facts.kind = parent.as_ref().map_or(0, Returned::kind);
+            },
             MemberNeed::Find=>{let Returned::OwnedValue(owner)=parent.as_ref().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};field=unsafe{member_field(MemberName::of(name),owner.value.ty.fields.len(),&owner.value.ty,member_field_name)};facts.found=u32::from(field<owner.value.ty.fields.len());},
             MemberNeed::MissingField=>return self.fail(expr.span(),"B141","拥有值字段不存在"),
             MemberNeed::Unpack=>{let Returned::OwnedValue(owner)=parent.as_ref().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};item=Some(self.unpack_record(owner,field));},
-            MemberNeed::FieldType=>{let Returned::OwnedValue(owner)=parent.as_ref().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};facts.field_owns=u32::from(owner.value.ty.aggregate_part(field).1.owns_resources());},
+            MemberNeed::FieldType => {
+                let Some(Returned::OwnedValue(owner)) = parent.take() else { unsafe { std::hint::unreachable_unchecked() } };
+                facts.field_owns = u32::from(owner.value.ty.aggregate_part(field).1.owns_resources());
+                if facts.field_owns != 0 && (borrowed_owner.is_some() || owner.value.ty.cleanup.is_some()) {
+                    let Some(projected_owner) = projected_owner else {
+                        return self.fail(expr.span(), "B224", "拥有包装的资源载荷须用into_inner移出，不能部分移动其字段");
+                    };
+                    *projected_owner = borrowed_owner.or_else(|| Some(self.hold_binding(Binding::OwnedValue(owner))));
+                    return Ok(item);
+                }
+                parent = Some(Returned::OwnedValue(owner));
+            },
             MemberNeed::ItemKind=>{let Returned::OwnedValue(owner)=parent.as_ref().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};facts.item_kind=owner.payloads[field].as_deref().unwrap().kind();},
             MemberNeed::MoveData=>{let Returned::OwnedValue(owner)=parent.as_mut().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};let Returned::Dataset(data)=owner.payloads[field].as_deref_mut().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};data.ownership=Ownership::Moved;},
             MemberNeed::MoveOwner=>{let Returned::OwnedValue(owner)=parent.as_mut().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};let Returned::OwnedValue(value)=owner.payloads[field].as_deref_mut().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};value.mark_moved();},
-            MemberNeed::Retained=>{let borrow=item.as_ref().unwrap().view_value().map(|value|value.proof.typed_view_borrow(&value.ty)).unwrap_or_default();facts.empty=u32::from(borrow.empty());retained=Some(borrow);},
-            MemberNeed::DropOwner=>unsafe{self.world.call(self.drop_returned(parent.take().unwrap(),retained.as_ref().unwrap(),expr.span())).await}?,
-            MemberNeed::HoldOwner=>{let Returned::OwnedValue(owner)=parent.take().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};self.hold_binding(Binding::OwnedValue(owner));},
+            MemberNeed::Retained => {
+                facts.empty = u32::from(item.as_ref().unwrap().view_value()
+                    .is_none_or(|value| value.proof.typed_view_borrow(&value.ty).empty()));
+            }
+            MemberNeed::DropOwner | MemberNeed::DropData => {
+                if let Some(owner) = borrowed_owner.take() {
+                    unsafe { self.world.call(self.finish_scoped_argument(&owner, expr.span())).await }?;
+                } else {
+                    unsafe { self.world.call(self.drop_returned(parent.take().unwrap(), &view::Borrow::default(), expr.span())).await }?;
+                }
+            }
+            MemberNeed::HoldOwner => {
+                if borrowed_owner.is_none() {
+                    let Returned::OwnedValue(owner) = parent.take().unwrap() else { unsafe { std::hint::unreachable_unchecked() } };
+                    self.hold_binding(Binding::OwnedValue(owner));
+                }
+            }
             MemberNeed::Length=>{let Returned::Dataset(data)=parent.as_ref().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};item=Some(Returned::value(data.length.clone()));},
-            MemberNeed::DropData=>unsafe{self.world.call(self.drop_returned(parent.take().unwrap(),&view::Borrow::default(),expr.span())).await}?,
             MemberNeed::Value=>{let Returned::Value(value)=parent.take().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};return self.member_value(*value,name,expr.span()).map(|value|Some(Returned::value(value)));},
             MemberNeed::Missing=>return self.fail(expr.span(),"B228","字段访问需要值"),
             MemberNeed::Return=>return Ok(item),
