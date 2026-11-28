@@ -674,33 +674,6 @@ extern "C" u32 expand_initial_definition(address context, usize count, InitialDe
     return 1;
 }
 
-extern "C" address fold_read_write(address remaining, ReadWritePaths paths, address context,
-    cfn<u32,address> conflict, cfn<void,address,address> accept) on cpu
-    requires nonzero(conflict) requires nonzero(accept)
-{
-    address visible = paths.written;
-    if (remaining != address()) {
-        visible = paths.written == address() ? remaining
-            : combine_clause_both(remaining,paths.written,conflict);
-    }
-    if (visible == address()) {
-        accept(context,address());
-    } else {
-        accept(context,address_of(visible));
-    }
-    if (remaining != address() && paths.written != address()) {
-        clause_release(visible);
-    }
-    if (paths.unwritten == address()) { return remaining; }
-    if (remaining == address()) {
-        clause_retain(paths.unwritten);
-        return paths.unwritten;
-    }
-    address earlier = combine_clause_both(remaining,paths.unwritten,conflict);
-    clause_release(remaining);
-    return earlier;
-}
-
 extern "C" address select_read_path(address left, address right, u32 left_proven, cfn<u32,address> conflict,
     cfn<u32,address,u32> required) on cpu
     requires nonzero(conflict) requires nonzero(required)

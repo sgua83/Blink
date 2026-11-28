@@ -894,6 +894,46 @@ extern "C" void union_borrow_edges(BorrowEdgeGroup group,BorrowEdgeGroup source,
     }
 }
 
+extern "C" address merge_borrow_output(address remaining, ReadWritePaths paths,
+    BorrowOutputShape output, BorrowOutputShape input, BorrowOutputMerge host,
+    cfn<u32,address> conflict) on cpu
+    requires nonzero(output.sources.stride) requires nonzero(output.inputs.stride)
+    requires nonzero(output.calls.stride) requires nonzero(output.reads.stride)
+    requires nonzero(host.sources.compare) requires nonzero(host.sources.copy)
+    requires nonzero(host.inputs.compare) requires nonzero(host.inputs.copy)
+    requires nonzero(host.calls.compare) requires nonzero(host.calls.copy)
+    requires nonzero(host.reads.compare) requires nonzero(host.reads.copy)
+    requires nonzero(host.clauses.both) requires nonzero(host.clauses.either)
+    requires nonzero(host.clauses.canonical) requires nonzero(host.clauses.normalized)
+    requires nonzero(conflict)
+{
+    address visible = paths.written;
+    if (remaining != address()) {
+        visible = paths.written == address() ? remaining
+            : combine_clause_both(remaining,paths.written,conflict);
+    }
+    address path = visible == address() ? address() : address_of(visible);
+    union_borrow_edges(output.sources,input.sources,path,
+        BorrowEdgeMerge(host.clauses,host.sources.compare,host.sources.copy,address()));
+    union_borrow_edges(output.inputs,input.inputs,path,
+        BorrowEdgeMerge(host.clauses,host.inputs.compare,host.inputs.copy,address()));
+    union_borrow_edges(output.calls,input.calls,path,
+        BorrowEdgeMerge(host.clauses,host.calls.compare,host.calls.copy,address()));
+    union_borrow_edges(output.reads,input.reads,path,
+        BorrowEdgeMerge(host.clauses,host.reads.compare,host.reads.copy,address()));
+    if (remaining != address() && paths.written != address()) {
+        clause_release(visible);
+    }
+    if (paths.unwritten == address()) { return remaining; }
+    if (remaining == address()) {
+        clause_retain(paths.unwritten);
+        return paths.unwritten;
+    }
+    address earlier = combine_clause_both(remaining,paths.unwritten,conflict);
+    clause_release(remaining);
+    return earlier;
+}
+
 extern "C" void restrict_borrow_edges(BorrowEdgeGroup group,address path,cfn<address,address,address> both) on cpu
     requires nonzero(both) {
     address condition = unsafe_position<address>(path);

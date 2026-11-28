@@ -536,6 +536,13 @@ struct BorrowEdgeClauses {
     normalized: unsafe extern "C" fn(*mut bounds::Normalizer, EdgeArgument) -> bounds::Clause,
 }
 
+impl BorrowEdgeClauses {
+    const OPERATIONS: Self = Self {
+        both: intersect_edge_clauses, either: join_edge_clauses,
+        canonical: canonical_edge_clause, normalized: normalize_edge_clause,
+    };
+}
+
 #[repr(C)]
 struct BorrowEdgeMerge {
     clauses: BorrowEdgeClauses,
@@ -547,10 +554,7 @@ struct BorrowEdgeMerge {
 impl BorrowEdgeMerge {
     fn new<K: Ord>(key: EdgeKey, normal: *mut bounds::Normalizer) -> Self {
         Self {
-            clauses: BorrowEdgeClauses {
-                both: intersect_edge_clauses, either: join_edge_clauses,
-                canonical: canonical_edge_clause, normalized: normalize_edge_clause,
-            },
+            clauses: BorrowEdgeClauses::OPERATIONS,
             compare: EdgeTree::<K>::compare, key, normal,
         }
     }
@@ -601,6 +605,63 @@ impl From<&Borrow> for BorrowOutputShape {
         Self { inputs: (&borrow.inputs).into(), calls: (&borrow.calls).into(),
             reads: (&borrow.reads).into(), sources: (&borrow.sources).into() }
     }
+}
+
+impl BorrowOutputShape {
+    fn writable(borrow: &mut Borrow) -> Self {
+        Self {
+            inputs: BorrowEdgeGroup::writable(&mut borrow.inputs),
+            calls: BorrowEdgeGroup::writable(&mut borrow.calls),
+            reads: BorrowEdgeGroup::writable(&mut borrow.reads),
+            sources: BorrowEdgeGroup::writable(&mut borrow.sources),
+        }
+    }
+}
+
+#[repr(C)]
+struct ReadWritePaths {
+    written: *mut std::ffi::c_void,
+    unwritten: *mut std::ffi::c_void,
+}
+
+#[repr(C)]
+struct BorrowOutputKey {
+    compare: unsafe extern "C" fn(*const std::ffi::c_void, *const std::ffi::c_void) -> i32,
+    copy: EdgeKey,
+}
+
+impl BorrowOutputKey {
+    const fn for_key<K: Ord + Clone>() -> Self {
+        Self { compare: EdgeTree::<K>::compare, copy: clone_edge_key::<K> }
+    }
+}
+
+#[repr(C)]
+struct BorrowOutputMerge {
+    clauses: BorrowEdgeClauses,
+    sources: BorrowOutputKey,
+    inputs: BorrowOutputKey,
+    calls: BorrowOutputKey,
+    reads: BorrowOutputKey,
+}
+
+impl BorrowOutputMerge {
+    const OPERATIONS: Self = Self {
+        clauses: BorrowEdgeClauses::OPERATIONS,
+        sources: BorrowOutputKey::for_key::<Source>(),
+        inputs: BorrowOutputKey::for_key::<LoopInput>(),
+        calls: BorrowOutputKey::for_key::<view_contracts::CallResult>(),
+        reads: BorrowOutputKey::for_key::<view_contracts::ContentRead>(),
+    };
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_arguments::merge_borrow_output"]
+    fn merge_borrow_output(
+        remaining: *mut std::ffi::c_void, paths: ReadWritePaths,
+        output: BorrowOutputShape, input: BorrowOutputShape, host: BorrowOutputMerge,
+        conflict: unsafe extern "C" fn(*const std::ffi::c_void) -> u32,
+    ) -> *mut std::ffi::c_void;
 }
 
 #[repr(u32)]
@@ -1359,12 +1420,27 @@ impl Borrow{
         BorrowReachability { initial: &|| None }.borrow(self, BorrowInquiry::Content)
     }
     pub fn empty(&self)->bool{self.sources.is_empty()&&self.inputs.is_empty()&&self.calls.is_empty()&&self.reads.is_empty()}
-    pub fn union(&mut self,other:&Self){self.sources.union(&other.sources);self.inputs.union(&other.inputs);self.calls.union(&other.calls);self.reads.union(&other.reads);}
+    pub fn union(&mut self, other: &Self) {
+        self.merge_paths(other, None, None, None);
+    }
+
     pub(super) fn union_restricted(&mut self, other: &Self, path: &bounds::Clause) {
-        self.sources.union_restricted(&other.sources, path);
-        self.inputs.union_restricted(&other.inputs, path);
-        self.calls.union_restricted(&other.calls, path);
-        self.reads.union_restricted(&other.reads, path);
+        self.merge_paths(other, Some(path), None, None);
+    }
+
+    pub(super) fn merge_paths(
+        &mut self, incoming: &Self, written: Option<&bounds::Clause>,
+        unwritten: Option<&bounds::Clause>, remaining: Option<bounds::Clause>,
+    ) -> *mut std::ffi::c_void {
+        let paths = ReadWritePaths {
+            written: written.map_or(std::ptr::null_mut(), bounds::Clause::raw),
+            unwritten: unwritten.map_or(std::ptr::null_mut(), bounds::Clause::raw),
+        };
+        let remaining = remaining.map_or(std::ptr::null_mut(), bounds::Clause::into_raw);
+        unsafe {
+            merge_borrow_output(remaining, paths, BorrowOutputShape::writable(self), incoming.into(),
+                BorrowOutputMerge::OPERATIONS, bounds::clause_conflict)
+        }
     }
 
     pub fn joined(mut self,other:Self)->Self{self.union(&other);self}

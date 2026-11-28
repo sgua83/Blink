@@ -358,6 +358,29 @@ extern "C" void restrict_borrow_edges(BorrowEdgeGroup group,address path,cfn<add
 
 struct BorrowOutputShape { BorrowEdgeGroup inputs; BorrowEdgeGroup calls; BorrowEdgeGroup reads; BorrowEdgeGroup sources; };
 
+struct ReadWritePaths { address written; address unwritten; };
+struct BorrowOutputKey { cfn<i32,address,address> compare; cfn<void,address,address> copy; };
+struct BorrowOutputMerge {
+    BorrowEdgeClauses clauses;
+    BorrowOutputKey sources;
+    BorrowOutputKey inputs;
+    BorrowOutputKey calls;
+    BorrowOutputKey reads;
+};
+
+extern "C" address merge_borrow_output(address remaining, ReadWritePaths paths,
+    BorrowOutputShape output, BorrowOutputShape input, BorrowOutputMerge host,
+    cfn<u32,address> conflict) on cpu
+    requires nonzero(output.sources.stride) requires nonzero(output.inputs.stride)
+    requires nonzero(output.calls.stride) requires nonzero(output.reads.stride)
+    requires nonzero(host.sources.compare) requires nonzero(host.sources.copy)
+    requires nonzero(host.inputs.compare) requires nonzero(host.inputs.copy)
+    requires nonzero(host.calls.compare) requires nonzero(host.calls.copy)
+    requires nonzero(host.reads.compare) requires nonzero(host.reads.copy)
+    requires nonzero(host.clauses.both) requires nonzero(host.clauses.either)
+    requires nonzero(host.clauses.canonical) requires nonzero(host.clauses.normalized)
+    requires nonzero(conflict);
+
 enum BorrowInquiry:u32 { Active=0; Pending=1; PendingInPath=2; Content=3; Unresolved=4; Local=5; };
 enum BorrowReachSourceKind:u32 { Other=0; Unresolved=1; Position=2; Contents=3; Relation=4; Child=5; Task=6; TaskOutput=7; };
 enum BorrowReachRoot:u32 { Other=0; Resource=1; Dataset=2; Derived=3; };

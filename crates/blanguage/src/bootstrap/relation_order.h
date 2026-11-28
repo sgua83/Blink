@@ -323,12 +323,6 @@ extern "C" void expand_component_ports(address context, cfn<usize,address> count
 extern "C" void visit_relation_calls(address context, usize count, cfn<void,address,usize> visit) on cpu
     requires nonzero(visit);
 
-struct ReadWritePaths { address written; address unwritten; };
-
-extern "C" address fold_read_write(address remaining, ReadWritePaths paths, address context,
-    cfn<u32,address> conflict, cfn<void,address,address> accept) on cpu
-    requires nonzero(conflict) requires nonzero(accept);
-
 extern "C" address select_read_path(address left, address right, u32 left_proven, cfn<u32,address> conflict,
     cfn<u32,address,u32> required) on cpu
     requires nonzero(conflict) requires nonzero(required);
