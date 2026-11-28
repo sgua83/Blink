@@ -1254,23 +1254,6 @@ extern "C" void canonical_fold(address context,CanonicalFoldHost host) on cpu
 }
 
 bool contract_end_equal(ContractEnd a,ContractEnd b) on cpu {return a.high==b.high&&a.low==b.low;}
-extern "C" usize contract_not(address context,usize root,ContractNotHost host) on cpu
- requires nonzero(host.pop) requires nonzero(host.push) requires nonzero(host.lookup) requires nonzero(host.remember) requires nonzero(host.load) requires nonzero(host.count) requires nonzero(host.cell) requires nonzero(host.emit) requires nonzero(host.make) requires nonzero(host.release) {
- host.push(context,root,0);
- while(true){
-  ContractPending work=host.pop(context);if(work.present==0){break;}
-  if(host.lookup(context,work.index).present!=0){continue;}
-  host.load(context,work.index);usize count=host.count(context);
-  if(work.ready==0){
-   host.push(context,work.index,1);
-   while(count!=0u64){count-=1u64;host.push(context,host.cell(context,count).value,0);}
-  }else{
-   usize at=0u64;while(at<count){ContractCell cell=host.cell(context,at);at+=1u64;host.emit(context,cell.end,host.lookup(context,cell.value).value);}
-   usize inverse=host.make(context);host.remember(context,work.index,inverse);host.remember(context,inverse,work.index);
-  }host.release(context);
- }return host.lookup(context,root).value;
-}
-
 // Semantic helpers share the original typed normalizer and actual scalar fields.
 usize contract_cut(address context,address identity,address scalar,u64 upper,ContractSemanticHost host) on cpu requires nonzero(host.atom) requires nonzero(host.range) requires nonzero(host.operation) requires nonzero(host.invert) requires nonzero(host.integer) requires nonzero(host.boolean) requires nonzero(host.length) requires nonzero(host.compare) requires nonzero(host.same_scalar) requires nonzero(host.scalar) requires nonzero(host.predicate) requires nonzero(host.domain) {
  if(upper>=host.scalar(scalar).mask){return 1u64;}return host.range(context,identity,scalar,upper);

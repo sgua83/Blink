@@ -329,18 +329,6 @@ struct ContractPending { u32 present; u32 ready; usize index; };
 struct ContractDomain { u32 kind; address identity; u32 count; u32 distance; };
 struct ContractVariable { u32 kind; FactView fact; ContractEnd end; };
 struct ContractImport { u32 present; u32 fold; address clause; u32 either; usize next; usize result; usize count; };
-struct ContractNotHost {
- cfn<ContractPending,address> pop;
- cfn<void,address,usize,u32> push;
- cfn<ContractIndex,address,usize> ensures memory(read) lookup;
- cfn<void,address,usize,usize> remember;
- cfn<void,address,usize> load;
- cfn<usize,address> ensures memory(read) count;
- cfn<ContractCell,address,usize> ensures memory(read) cell;
- cfn<void,address,ContractEnd,usize> emit;
- cfn<usize,address> make;
- cfn<void,address> release;
-};
 struct ContractSemanticHost {
  cfn<usize,address,FactView> atom;
  cfn<usize,address,address,address,u64> range;
@@ -405,9 +393,6 @@ struct ContractUnionHost {
  cfn<usize,address,usize,usize,u32> operation;
  cfn<void,address,u32,usize> emit;
 };
-
-extern "C" usize contract_not(address context,usize root,ContractNotHost host) on cpu
- requires nonzero(host.pop) requires nonzero(host.push) requires nonzero(host.lookup) requires nonzero(host.remember) requires nonzero(host.load) requires nonzero(host.count) requires nonzero(host.cell) requires nonzero(host.emit) requires nonzero(host.make) requires nonzero(host.release);
 
 extern "C" usize contract_fact(address context,FactView input,ContractSemanticHost host) on cpu
  requires nonzero(host.atom) requires nonzero(host.range) requires nonzero(host.operation) requires nonzero(host.invert) requires nonzero(host.integer) requires nonzero(host.boolean) requires nonzero(host.length) requires nonzero(host.compare) requires nonzero(host.same_scalar) requires nonzero(host.scalar) requires nonzero(host.predicate) requires nonzero(host.domain);

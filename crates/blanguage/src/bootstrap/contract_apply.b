@@ -247,3 +247,52 @@ extern "C" void drop_contract_operations(address memo) on cpu {
     if(entries!=address()){HeapFree(GetProcessHeap(),0,entries);}
     unsafe_position<ContractOperationMemo>(memo)=ContractOperationMemo(address(),0u64,0u64);
 }
+
+struct NegateWork { usize node; u32 ready; };
+
+void push_negate_work(inout ApplyBuffer pending,usize node,u32 ready) on cpu {
+    let slot=append_apply_record(pending,size_of<NegateWork>());
+    unsafe_position<NegateWork>(slot)=NegateWork(node,ready);
+}
+
+extern "C" usize negate_contract_decision(
+    address decisions,address memo,usize variable_bytes,usize root,cfn<i32,address,address> compare
+) on cpu requires nonzero(compare) {
+    let cached=contract_memo_negative(memo,root);
+    if(cached!=18446744073709551615u64){return cached;}
+
+    ApplyBuffer pending=ApplyBuffer(address(),0u64,0u64);
+    ApplyBuffer cells=ApplyBuffer(address(),0u64,0u64);
+    push_negate_work(pending,root,0);
+    while(pending.count!=0u64){
+        pending.count-=1u64;
+        let work=unsafe_position<NegateWork>(apply_record(pending.data,pending.count,size_of<NegateWork>()));
+        if(contract_memo_negative(memo,work.node)!=18446744073709551615u64){continue;}
+        let decision=contract_decision_at(decisions,work.node);
+        if(work.ready==0){
+            push_negate_work(pending,work.node,1);
+            usize index=decision.count;
+            while(index!=0u64){
+                index-=1u64;
+                push_negate_work(pending,read_decision_cell(decision,index).child,0);
+            }
+        }else{
+            cells.count=0u64;
+            usize index=0u64;
+            while(index<decision.count){
+                let cell=read_decision_cell(decision,index);
+                let child=contract_memo_negative(memo,cell.child);
+                let slot=append_apply_record(cells,size_of<ContractDecisionCell>());
+                unsafe_position<ContractDecisionCell>(slot)=ContractDecisionCell(cell.low,cell.high,child);
+                index+=1u64;
+            }
+            let inverse=normalize_contract_decision(decisions,
+                ContractDecision(decision.variable,cells.data,cells.count),variable_bytes,compare);
+            remember_contract_negative(memo,work.node,inverse);
+            remember_contract_negative(memo,inverse,work.node);
+        }
+    }
+    free_apply_buffer(cells);
+    free_apply_buffer(pending);
+    return contract_memo_negative(memo,root);
+}

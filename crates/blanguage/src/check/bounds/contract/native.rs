@@ -42,10 +42,6 @@ unsafe extern "C" {
     fn memo_emitted(memo: &ClauseMemo, node: usize, retain: u32) -> *mut c_void;
     #[link_name = "bootstrap.condition_index::remember_contract_emission"]
     fn remember_emission(memo: &mut ClauseMemo, node: usize, owned: *mut c_void);
-    #[link_name = "bootstrap.condition_index::contract_memo_negative"]
-    fn memo_negative(memo: &ClauseMemo, node: usize) -> usize;
-    #[link_name = "bootstrap.condition_index::remember_contract_negative"]
-    fn remember_negative(memo: &mut ClauseMemo, node: usize, negative: usize);
 }
 
 // The memo has unique storage. A stored Clause is an immutable, retained handle.
@@ -79,15 +75,6 @@ impl ClauseMemo {
 
     fn remember_emitted(&mut self, node: usize, clause: Clause) {
         unsafe { remember_emission(self, node, clause.into_raw()) };
-    }
-
-    fn negative(&self, node: usize) -> Option<usize> {
-        let value = unsafe { memo_negative(self, node) };
-        (value != usize::MAX).then_some(value)
-    }
-
-    fn remember_negative(&mut self, node: usize, negative: usize) {
-        unsafe { remember_negative(self, node, negative) };
     }
 }
 
@@ -297,94 +284,16 @@ pub(super) fn operation(normal: &mut Normalizer, a: usize, b: usize, or: bool) -
     }
 }
 
-struct Negate {
-    normal: *mut Normalizer,
-    pending: Vec<(usize, bool)>,
-    snapshot: Option<Decision>,
-    cells: Vec<DecisionCell>,
-}
-unsafe extern "C" fn not_pop(s: Slot) -> Pending {
-    pending(unsafe { frame::<Negate>(s) }.pending.pop())
-}
-unsafe extern "C" fn not_push(s: Slot, index: usize, ready: u32) {
-    unsafe { frame::<Negate>(s) }
-        .pending
-        .push((index, ready != 0));
-}
-unsafe extern "C" fn not_lookup(s: Slot, index_: usize) -> Index {
-    index(
-        unsafe { &*frame::<Negate>(s).normal }.memo.negative(index_),
-    )
-}
-unsafe extern "C" fn not_remember(s: Slot, index: usize, value: usize) {
-    unsafe { &mut *frame::<Negate>(s).normal }
-        .memo.remember_negative(index, value);
-}
-unsafe extern "C" fn not_load(s: Slot, index: usize) {
-    let c = unsafe { frame::<Negate>(s) };
-    c.snapshot = Some(unsafe { &*c.normal }.decisions.get(index));
-}
-unsafe extern "C" fn not_count(s: Slot) -> usize {
-    unsafe { frame::<Negate>(s) }.snapshot.unwrap().count
-}
-unsafe extern "C" fn not_cell(s: Slot, i: usize) -> Cell {
-    unsafe { frame::<Negate>(s) }.snapshot.unwrap().cell(i)
-}
-unsafe extern "C" fn not_emit(s: Slot, end: End, value: usize) {
-    unsafe { frame::<Negate>(s) }
-        .cells
-        .push(DecisionCell { end, value });
-}
-unsafe extern "C" fn not_make(s: Slot) -> usize {
-    let c = unsafe { frame::<Negate>(s) };
-    let v = *c.snapshot.unwrap().variable();
-    let cells = std::mem::take(&mut c.cells);
-    unsafe { &mut *c.normal }.node(v, cells)
-}
-unsafe extern "C" fn not_release(s: Slot) {
-    unsafe { frame::<Negate>(s) }.snapshot = None;
-}
-#[repr(C)]
-struct NotHost {
-    pop: unsafe extern "C" fn(Slot) -> Pending,
-    push: unsafe extern "C" fn(Slot, usize, u32),
-    lookup: unsafe extern "C" fn(Slot, usize) -> Index,
-    remember: unsafe extern "C" fn(Slot, usize, usize),
-    load: unsafe extern "C" fn(Slot, usize),
-    count: unsafe extern "C" fn(Slot) -> usize,
-    cell: unsafe extern "C" fn(Slot, usize) -> Cell,
-    emit: unsafe extern "C" fn(Slot, End, usize),
-    make: unsafe extern "C" fn(Slot) -> usize,
-    release: unsafe extern "C" fn(Slot),
-}
 unsafe extern "C" {
-    #[link_name = "bootstrap.condition_graph::contract_not"]
-    fn b_not(context: Slot, root: usize, host: NotHost) -> usize;
+    #[link_name = "bootstrap.contract_apply::negate_contract_decision"]
+    fn negate_decision(decisions: &mut DecisionTree, memo: &mut ClauseMemo, variable_bytes: usize,
+        root: usize, compare: unsafe extern "C" fn(Borrowed, Borrowed) -> i32) -> usize;
 }
+
 pub(super) fn not(normal: &mut Normalizer, root: usize) -> usize {
-    let mut c = Negate {
-        normal,
-        pending: Vec::new(),
-        snapshot: None,
-        cells: Vec::new(),
-    };
     unsafe {
-        b_not(
-            (&mut c as *mut Negate).cast(),
-            root,
-            NotHost {
-                pop: not_pop,
-                push: not_push,
-                lookup: not_lookup,
-                remember: not_remember,
-                load: not_load,
-                count: not_count,
-                cell: not_cell,
-                emit: not_emit,
-                make: not_make,
-                release: not_release,
-            },
-        )
+        negate_decision(&mut normal.decisions, &mut normal.memo, std::mem::size_of::<Variable>(),
+            root, compare_decision_variable)
     }
 }
 
