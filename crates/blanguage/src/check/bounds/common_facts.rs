@@ -1,7 +1,7 @@
 //! The native fold borrows the original environment, facts and equality roots.
 use super::{
-    EqualityRoots, Facts, QueryFacts, ValueIdentity,
-    additional_equality_roots, equality_members, equivalent_facts,
+    EqualityRoots, Facts, QueryFacts, additional_equality_roots,
+    equality::{self, Members},
 };
 use std::{borrow::Cow, cell::OnceCell, sync::Arc};
 
@@ -25,8 +25,7 @@ fn fold<'a>(environment: &'a Facts, sides: [&'a Facts; 2], roots: [&'a EqualityR
 
 pub(super) fn either<'a>(
     environment: &Facts,
-    environment_roots: &EqualityRoots,
-    environment_members: &[(&ValueIdentity, &ValueIdentity)],
+    environment_members: &Members<'_>,
     shared_equalities: Option<&OnceCell<Arc<Facts>>>,
     a: Option<QueryFacts<'a>>,
     b: Option<QueryFacts<'a>>,
@@ -37,19 +36,16 @@ pub(super) fn either<'a>(
         (Some(a), Some(_)) if environment.is_empty() && a.is_empty() => Some(a),
         (Some(_), Some(b)) if environment.is_empty() && b.is_empty() => Some(b),
         (Some(a), Some(b)) => {
+            let environment_roots = environment_members.roots();
             let left = additional_equality_roots(environment, environment_roots, &a);
             let right = additional_equality_roots(environment, environment_roots, &b);
             let expand =
                 |facts, roots: &Cow<'_, EqualityRoots>| match roots {
                     Cow::Borrowed(_) => {
-                        equivalent_facts(environment, facts, roots, environment_members, None)
+                        equality::equivalent(environment, facts, environment_members, None)
                     }
-                    Cow::Owned(_) => equivalent_facts(
-                        environment,
-                        facts,
-                        roots,
-                        &equality_members(roots),
-                        Some(environment_roots),
+                    Cow::Owned(_) => equality::equivalent(
+                        environment, facts, &Members::new(roots), Some(environment_roots),
                     ),
                 };
             let a = expand(a, &left);

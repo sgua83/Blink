@@ -1,5 +1,6 @@
 //! B owns shared-Clause overlap and equivalence, including equivalence planning. The original query owns
 //! its physical containers and borrows immutable Clause/Fact fields until return.
+use super::equality::{self, Members};
 use super::facts;
 use super::{
     CallBindings, Clause, ClausePostorder, Condition, ConditionSlots, SharedCondition, EncodedClause, Fact, Facts, IndexDomain, OutputBindings, Proof, Value, ValueIdentity,
@@ -1201,15 +1202,15 @@ pub(super) fn required_closure(
 unsafe extern "C" fn required_round(context: Slot, environment: Borrowed, output: Slot) -> RequiredRound {
     let state = unsafe { &mut *context.cast::<RequiredClosure<'_, '_>>() };
     let roots = &state.roots;
-    let members = super::equality_members(roots);
+    let members = Members::new(roots);
     let environment = {
         let empty = Facts::new();
         let facts = unsafe { &*environment.cast::<Facts>() };
-        let inherited = super::equivalent_facts(facts, super::QueryFacts::Borrowed(&empty), roots,
+        let inherited = equality::equivalent(facts, super::QueryFacts::Borrowed(&empty),
             &members, Some(&state.unexpanded));
         unsafe { extend_environment(environment, output, &inherited) }
     };
-    state.required = state.query.evaluate(unsafe { &*environment.cast::<Facts>() }, roots, &members);
+    state.required = state.query.evaluate(unsafe { &*environment.cast::<Facts>() }, &members);
     let additions = state.required.as_deref().map_or(ptr::null(), |facts| ptr::from_ref(facts).cast());
     RequiredRound { environment, additions }
 }
@@ -1255,8 +1256,7 @@ struct RequiredEvaluation<'a, 'b> {
     common_equalities: Option<std::cell::OnceCell<Arc<Facts>>>,
     nodes: *mut RequiredResult<'a>,
     environment: &'b Facts,
-    roots: &'b super::EqualityRoots,
-    members: &'b [(&'b super::ValueIdentity, &'b super::ValueIdentity)],
+    members: &'b Members<'b>,
 }
 impl<'a> RequiredEvaluation<'a, '_> {
     fn put(&mut self, id: usize, value: Option<super::QueryFacts<'a>>) -> u32 {
@@ -1307,7 +1307,6 @@ unsafe extern "C" fn required_common(slot: Slot, id: usize, left: usize, right: 
     let b = take_required(evaluation.value(right), right_last);
     let value = super::common_facts::either(
         evaluation.environment,
-        evaluation.roots,
         evaluation.members,
         evaluation.common_equalities.as_ref(),
         a,
@@ -1381,15 +1380,13 @@ impl<'a> RequiredQuery<'a> {
     pub(super) fn evaluate(
         &mut self,
         environment: &Facts,
-        roots: &super::EqualityRoots,
-        members: &[(&super::ValueIdentity, &super::ValueIdentity)],
+        members: &Members<'_>,
     ) -> Option<super::QueryFacts<'a>> {
         let graph = self.graph();
         let mut evaluation = RequiredEvaluation {
-            common_equalities: (!roots.is_empty()).then(std::cell::OnceCell::new),
+            common_equalities: (!members.roots().is_empty()).then(std::cell::OnceCell::new),
             nodes: graph.slots.cast(),
             environment,
-            roots,
             members,
         };
         unsafe {

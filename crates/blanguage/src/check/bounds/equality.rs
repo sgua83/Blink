@@ -168,111 +168,45 @@ pub(super) fn additional<'a>(
         Cow::Owned(value) => Cow::Owned(value),
     }
 }
-struct Projection<'a> {
-    environment: &'a Facts,
-    facts: &'a Facts,
-    roots: &'a Roots,
-    members: &'a [(&'a ValueIdentity, &'a ValueIdentity)],
-    previous: Option<&'a Roots>,
-    cursors: [facts::Iter<'a>; 2],
-    group: std::slice::Iter<'a, (&'a ValueIdentity, &'a ValueIdentity)>,
-    inferred: Facts,
-}
-unsafe fn projection<'a, 'b>(slot: Slot) -> &'a mut Projection<'b> {
-    unsafe { &mut *slot.cast() }
-}
-unsafe extern "C" fn alias_next(slot: Slot, side: u32) -> fact_fields::Fields {
-    unsafe { projection(slot) }.cursors[side as usize]
-        .next()
-        .map(fact_fields::Fields::from)
-        .unwrap_or_default()
-}
-unsafe extern "C" fn alias_root(slot: Slot, identity: Borrowed) -> Borrowed {
-    unsafe { projection(slot) }
-        .roots
-        .get(unsafe { &*identity.cast::<ValueIdentity>() })
-        .map_or(ptr::null(), borrowed)
-}
-unsafe extern "C" fn previous(slot: Slot, identity: Borrowed) -> Borrowed {
-    unsafe { projection(slot) }
-        .previous
-        .and_then(|roots| roots.get(unsafe { &*identity.cast::<ValueIdentity>() }))
-        .map_or(ptr::null(), borrowed)
-}
-unsafe extern "C" fn group(slot: Slot, root: Borrowed) {
-    let root = unsafe { *root.cast::<ValueIdentity>() };
-    let context = unsafe { projection(slot) };
-    let begin = context.members.partition_point(|(group, _)| **group < root);
-    let end = context
-        .members
-        .partition_point(|(group, _)| **group <= root);
-    context.group = context.members[begin..end].iter();
-}
-unsafe extern "C" fn member(slot: Slot) -> Borrowed {
-    unsafe { projection(slot) }
-        .group
-        .next()
-        .map_or(ptr::null(), |(_, id)| borrowed(*id))
-}
-unsafe extern "C" fn emit(slot: Slot, fields: fact_fields::Fields, identity: Borrowed) {
-    let fact = unsafe { fact_fields::key(fields) }.at(unsafe { *identity.cast::<ValueIdentity>() });
-    let context = unsafe { projection(slot) };
-    if !context.environment.contains(&fact) && !context.facts.contains(&fact) {
-        context.inferred.insert(fact);
-    }
-}
+#[derive(Clone, Copy)]
 #[repr(C)]
-struct AliasHost {
-    next: unsafe extern "C" fn(Slot, u32) -> fact_fields::Fields,
-    root: unsafe extern "C" fn(Slot, Borrowed) -> Borrowed,
-    previous: unsafe extern "C" fn(Slot, Borrowed) -> Borrowed,
-    group: unsafe extern "C" fn(Slot, Borrowed),
-    member: unsafe extern "C" fn(Slot) -> Borrowed,
-    emit: unsafe extern "C" fn(Slot, fact_fields::Fields, Borrowed),
-    compare: unsafe extern "C" fn(Borrowed, Borrowed) -> i32,
+struct MemberStorage {
+    records: Slot,
+    count: usize,
 }
+
+pub(super) struct Members<'a> {
+    roots: &'a Roots,
+    storage: MemberStorage,
+}
+
 unsafe extern "C" {
-    #[link_name = "bootstrap.condition_graph::alias_facts"]
-    fn b_alias(context: Slot, inherited: u32, host: AliasHost);
+    #[link_name = "bootstrap.output_bindings::build_equality_members"]
+    fn build_members(roots: &Roots) -> MemberStorage;
+    #[link_name = "bootstrap.output_bindings::release_equality_members"]
+    fn release_members(records: Slot);
+    #[link_name = "bootstrap.output_bindings::project_alias_facts"]
+    fn project_aliases(environment: &Facts, facts: &Facts, roots: &Roots, members: MemberStorage,
+        previous: *const Roots, output: &mut Facts);
 }
-pub(super) fn equivalent<'a>(
-    environment: &Facts,
-    mut facts: QueryFacts<'a>,
-    roots: &Roots,
-    members: &[(&ValueIdentity, &ValueIdentity)],
-    inherited: Option<&Roots>,
-) -> QueryFacts<'a> {
-    if members.is_empty() {
-        return facts;
+
+impl<'a> Members<'a> {
+    pub(super) fn new(roots: &'a Roots) -> Self {
+        Self { roots, storage: unsafe { build_members(roots) } }
     }
-    let inferred = {
-        let mut context = Projection {
-            environment,
-            facts: &facts,
-            roots,
-            members,
-            previous: inherited,
-            cursors: [facts.iter(), environment.iter()],
-            group: members[0..0].iter(),
-            inferred: Facts::new(),
-        };
-        unsafe {
-            b_alias(
-                (&mut context as *mut Projection<'_>).cast(),
-                u32::from(inherited.is_some()),
-                AliasHost {
-                    next: alias_next,
-                    root: alias_root,
-                    previous,
-                    group,
-                    member,
-                    emit,
-                    compare: fact_fields::compare,
-                },
-            )
-        };
-        context.inferred
-    };
+
+    pub(super) fn roots(&self) -> &'a Roots { self.roots }
+}
+
+impl Drop for Members<'_> {
+    fn drop(&mut self) { unsafe { release_members(self.storage.records) } }
+}
+
+pub(super) fn equivalent<'a>(environment: &Facts, mut facts: QueryFacts<'a>, members: &Members<'_>,
+    inherited: Option<&Roots>) -> QueryFacts<'a> {
+    let mut inferred = Facts::new();
+    let previous = inherited.map_or(ptr::null(), ptr::from_ref);
+    unsafe { project_aliases(environment, &facts, members.roots, members.storage, previous, &mut inferred) };
     if !inferred.is_empty() {
         facts.extend(inferred);
     }

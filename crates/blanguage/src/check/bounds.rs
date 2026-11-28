@@ -1445,21 +1445,6 @@ impl Fact {
             Self::Equal(_, _) | Self::NotEqual(_, _) | Self::Below(..) | Self::Predicate(..) => None,
         }
     }
-    fn at(self, id: ValueIdentity) -> Self {
-        match self {
-            Self::Index(_, domain) => Self::Index(id, domain),
-            Self::Outside(_,domain)=>Self::Outside(id,domain),
-            Self::Zero(_)=>Self::Zero(id),
-            Self::Minimum(_, scalar, bound) => Self::Minimum(id, scalar, bound),
-            Self::Maximum(_, scalar, bound) => Self::Maximum(id, scalar, bound),
-            Self::NonZero(_) => Self::NonZero(id),
-            Self::Boolean(_, truth) => Self::Boolean(id, truth),
-            equal @ Self::Equal(_, _) => equal,
-            unequal @ Self::NotEqual(_, _) => unequal,
-            below @ Self::Below(..) => below,
-            predicate @ Self::Predicate(..) => predicate,
-        }
-    }
 }
 fn equality_roots(facts: &Facts) -> EqualityRoots { equality::roots(facts) }
 fn extend_equality_roots<'a>(roots: &mut EqualityRoots, facts: impl IntoIterator<Item = &'a Fact>) -> bool {
@@ -1468,18 +1453,6 @@ fn extend_equality_roots<'a>(roots: &mut EqualityRoots, facts: impl IntoIterator
 fn additional_equality_roots<'a>(environment: &Facts, environment_roots: &'a EqualityRoots, additions: &Facts) -> Cow<'a, EqualityRoots> {
     equality::additional(environment, environment_roots, additions)
 }
-type EqualityMembers<'a> = Vec<(&'a ValueIdentity, &'a ValueIdentity)>;
-
-fn equality_members(roots: &EqualityRoots) -> EqualityMembers<'_> {
-    let mut members: Vec<_> = roots.iter().map(|(id, group)| (group, id)).collect();
-    members.sort_unstable_by_key(|(group, _)| *group);
-    members
-}
-
-fn equivalent_facts<'a>(environment: &Facts, facts: QueryFacts<'a>, roots: &EqualityRoots, members: &[(&ValueIdentity, &ValueIdentity)], inherited_roots: Option<&EqualityRoots>) -> QueryFacts<'a> {
-    equality::equivalent(environment, facts, roots, members, inherited_roots)
-}
-
 impl Proof {
     fn extend_equalities(&mut self, roots: &EqualityRoots) {
         for origins in &mut self.origins {

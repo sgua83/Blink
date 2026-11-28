@@ -1057,34 +1057,6 @@ extern "C" void additional_equalities(address context,AdditionalEqualityHost hos
  host.own(context);host.extend(context);host.computed(context);
  if(host.unchanged(context)!=0){host.borrow(context);}
 }
-extern "C" void alias_facts(address context,u32 inherited,AliasFactHost host) on cpu
- requires nonzero(host.next) requires nonzero(host.root) requires nonzero(host.previous)
- requires nonzero(host.group) requires nonzero(host.member) requires nonzero(host.emit)
- requires nonzero(host.compare) {
- u32 side=0;
- while(side<1+inherited){
-  while(true){
-   FactView fact=host.next(context,side);if(fact.present==0){break;}
-   if(fact.kind==FactKind::Equal||fact.kind==FactKind::NotEqual
-      ||fact.kind==FactKind::Below||fact.kind==FactKind::Predicate){continue;}
-   address identity=fact.first;address root=host.root(context,identity);if(root==address()){continue;}
-   address previous=address();if(side!=0){previous=host.previous(context,identity);}
-   if(previous!=address()&&host.compare(previous,identity)!=0){continue;}
-   host.group(context,root);
-   while(true){
-    address member=host.member(context);if(member==address()){break;}
-    if(host.compare(member,identity)==0){continue;}
-    if(previous!=address()){
-     address old=host.previous(context,member);
-     if(old!=address()&&host.compare(old,previous)==0){continue;}
-    }
-    host.emit(context,fact,member);
-   }
-  }
-  side+=1;
- }
-}
-
 extern "C" u32 canonical_term_overlap(address context,CanonicalTermHost host) on cpu
  requires nonzero(host.same) requires nonzero(host.conflict) requires nonzero(host.next)
  requires nonzero(host.insert) requires nonzero(host.remove) requires nonzero(host.remaining)

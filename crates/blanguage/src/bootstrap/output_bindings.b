@@ -268,3 +268,144 @@ extern "C" void resolve_computed_roots(address roots,address sources,usize count
     fact_tree_clear(address_of(equalities));
     fact_tree_clear(address_of(produced));
 }
+
+
+extern "C" handle GetProcessHeap() on cpu from "KERNEL32.dll";
+extern "C" address HeapAlloc(handle heap,u32 flags,u64 bytes) on cpu from "KERNEL32.dll";
+extern "C" i32 HeapFree(handle heap,u32 flags,address records) on cpu from "KERNEL32.dll";
+extern "C" void abort() on cpu from "ucrtbase.dll";
+
+address member_slot(EqualityMembers members,usize index) on cpu {
+    return unsafe_address(address_bits(members.records) + index * size_of<OutputBindingEntry>());
+}
+
+OutputBindingEntry read_member(EqualityMembers members,usize index) on cpu {
+    return unsafe_position<OutputBindingEntry>(member_slot(members, index));
+}
+
+void write_member(EqualityMembers members,usize index,OutputBindingEntry entry) on cpu {
+    unsafe_position<OutputBindingEntry>(member_slot(members, index)) = entry;
+}
+
+void sift_members(EqualityMembers members,usize start,usize end) on cpu {
+    usize root = start;
+    let entry = read_member(members, root);
+    while (root < end / 2u64) {
+        usize child = root * 2u64 + 1u64;
+        let left = read_member(members, child);
+        if (child + 1u64 < end && order_identity(left.target, read_member(members, child + 1u64).target) < 0) {
+            child += 1u64;
+        }
+        let next = read_member(members, child);
+        if (order_identity(entry.target, next.target) >= 0) { break; }
+        write_member(members, root, next);
+        root = child;
+    }
+    write_member(members, root, entry);
+}
+
+void order_members(EqualityMembers members) on cpu {
+    usize root = members.count / 2u64;
+    while (root > 0u64) {
+        root -= 1u64;
+        sift_members(members, root, members.count);
+    }
+    usize end = members.count;
+    while (end > 1u64) {
+        end -= 1u64;
+        let first = read_member(members, 0u64);
+        write_member(members, 0u64, read_member(members, end));
+        write_member(members, end, first);
+        sift_members(members, 0u64, end);
+    }
+}
+
+extern "C" EqualityMembers build_equality_members(address roots) on cpu {
+    let count = unsafe_position<OrderedTree>(roots).count;
+    if (count == 0u64) { return EqualityMembers(address(), 0u64); }
+    let records = HeapAlloc(GetProcessHeap(), 0, count * size_of<OutputBindingEntry>());
+    if (records == address()) { abort(); }
+    let members = EqualityMembers(records, count);
+    u64 cursor = 0u64;
+    usize index = 0u64;
+    while (index < count) {
+        write_member(members, index, next_output_binding(roots, address_of(cursor)));
+        index += 1u64;
+    }
+    order_members(members);
+    return members;
+}
+
+extern "C" void release_equality_members(address records) on cpu {
+    if (records != address()) { HeapFree(GetProcessHeap(), 0, records); }
+}
+
+usize first_equality_member(EqualityMembers members,address root) on cpu {
+    usize begin = 0u64;
+    usize end = members.count;
+    while (begin < end) {
+        let middle = begin + (end - begin) / 2u64;
+        if (order_identity(read_member(members, middle).target, root) < 0) { begin = middle + 1u64; }
+        else { end = middle; }
+    }
+    return begin;
+}
+
+struct AliasProjection {
+    address environment;
+    address facts;
+    address roots;
+    EqualityMembers members;
+    address previous;
+    address output;
+};
+
+void append_alias_fact(AliasProjection query,FactView original,address member) on cpu {
+    FactView fact = original;
+    fact.first = member;
+    FactKey key = FactKey(array<u64,18>(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64));
+    let slot = unsafe_address(address_bits(address_of(key)));
+    materialize_fact(fact, slot);
+    if (fact_tree_contains(query.environment, slot) == 0 && fact_tree_contains(query.facts, slot) == 0) {
+        fact_tree_insert(query.output, slot);
+    }
+}
+
+void project_alias_members(AliasProjection query,FactView fact,address root,address previous) on cpu {
+    usize index = first_equality_member(query.members, root);
+    while (index < query.members.count) {
+        let entry = read_member(query.members, index);
+        if (order_identity(entry.target, root) != 0) { break; }
+        index += 1u64;
+        if (order_identity(entry.source, fact.first) == 0) { continue; }
+        if (previous != address()) {
+            let old = find_output_binding(query.previous, entry.source);
+            if (old != address() && order_identity(old, previous) == 0) { continue; }
+        }
+        append_alias_fact(query, fact, entry.source);
+    }
+}
+
+void project_alias_source(AliasProjection query,address source,bool inherited) on cpu {
+    FactCursor cursor = fact_tree_cursor(source);
+    while (true) {
+        let key = fact_tree_next(source, address_of(cursor), 0);
+        if (key == address()) { break; }
+        let fact = read_fact_fields(key);
+        if (fact.kind == FactKind::Equal || fact.kind == FactKind::NotEqual ||
+            fact.kind == FactKind::Below || fact.kind == FactKind::Predicate) { continue; }
+        let root = find_output_binding(query.roots, fact.first);
+        if (root == address()) { continue; }
+        let previous = inherited ? find_output_binding(query.previous, fact.first) : address();
+        if (previous != address() && order_identity(previous, fact.first) != 0) { continue; }
+        project_alias_members(query, fact, root, previous);
+    }
+}
+
+extern "C" void project_alias_facts(address environment,address facts,address roots,EqualityMembers members,
+    address previous,address output) on cpu {
+    if (members.count == 0u64) { return; }
+    let query = AliasProjection(environment, facts, roots, members, previous, output);
+    project_alias_source(query, facts, false);
+    if (previous != address()) { project_alias_source(query, environment, true); }
+}

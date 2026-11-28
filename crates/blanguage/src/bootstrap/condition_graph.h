@@ -201,20 +201,6 @@ extern "C" void additional_equalities(address context,AdditionalEqualityHost hos
  requires nonzero(host.next) requires nonzero(host.lookup) requires nonzero(host.expression)
  requires nonzero(host.compare) requires nonzero(host.own) requires nonzero(host.extend)
  requires nonzero(host.computed) requires nonzero(host.unchanged) requires nonzero(host.borrow);
-struct AliasFactHost {
- cfn<FactView,address,u32> next;
- cfn<address,address,address> ensures memory(read) root;
- cfn<address,address,address> ensures memory(read) previous;
- cfn<void,address,address> group;
- cfn<address,address> member;
- cfn<void,address,FactView,address> emit;
- cfn<i32,address,address> ensures memory(read) compare;
-};
-extern "C" void alias_facts(address context,u32 inherited,AliasFactHost host) on cpu
- requires nonzero(host.next) requires nonzero(host.root) requires nonzero(host.previous)
- requires nonzero(host.group) requires nonzero(host.member) requires nonzero(host.emit)
- requires nonzero(host.compare);
-
 // Original typed source-path terms remain owned by the synchronous native caller.
 struct CanonicalTerm { u32 present; address value; };
 enum CanonicalInsertion : u32 { Reject=0; Insert=1; RetainInsert=2; };
