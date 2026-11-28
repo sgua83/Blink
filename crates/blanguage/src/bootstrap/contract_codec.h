@@ -536,9 +536,11 @@ extern "C" ReadStatus numeric_read_ranges(Bytes input,inout u64 position,address
 extern "C" void write_proof_conditions(address context,u64 length,address graph,address output,ConditionWriter host) on cpu
  requires nonzero(host.append) requires nonzero(host.condition);
 
-extern "C" i32 compare_proof_condition(address left,address right,address left_graph,address right_graph,
- cfn<RootFields,address,u64> root) on cpu
- requires nonzero(root);
+struct ConditionOrderRoots { address when_false; address when_true; };
+extern "C" i32 compare_proof_condition(ConditionOrderRoots left,ConditionOrderRoots right) on cpu;
+extern "C" i32 compare_clause_order(address left,address right) on cpu;
+extern "C" i32 compare_relation_path_order(ConditionOrderRoots left,ConditionOrderRoots right,cfn<i32,address,address> compare_exclusion) on cpu
+ requires nonzero(compare_exclusion);
 
 extern "C" ReadStatus read_condition_nodes(Bytes input,inout u64 position,inout u32 present,address output,ConditionReader host) on cpu requires nonzero(host.impossible) requires nonzero(host.facts) requires nonzero(host.both) requires nonzero(host.either);
 

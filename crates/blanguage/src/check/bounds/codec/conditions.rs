@@ -139,6 +139,29 @@ unsafe extern "C" fn condition_at(context: *const c_void, index: usize) -> RootF
             second: condition.cases[1].key(),
         })
 }
+#[repr(C)]
+struct ConditionOrderRoots<'a> {
+    when_false: Option<&'a Clause>,
+    when_true: &'a Clause,
+}
+
+impl<'a> ConditionOrderRoots<'a> {
+    fn cases(value: &'a Condition) -> Self {
+        Self { when_false: Some(&value.cases[0]), when_true: &value.cases[1] }
+    }
+
+    fn relation(value: &'a RelationPath) -> Self {
+        match value {
+            RelationPath::Guard(path) => Self { when_false: None, when_true: path },
+            RelationPath::Cases(value) => Self::cases(value),
+        }
+    }
+}
+
+extern "C" fn compare_exclusion(path: &Clause, other: &Clause) -> i32 {
+    unsafe { compare_clause(&path.negate(), other) }
+}
+
 unsafe extern "C" {
     #[link_name = "bootstrap.contract_codec::write_proof_conditions"]
     fn write_conditions(
@@ -149,25 +172,28 @@ unsafe extern "C" {
         host: WriteHost,
     );
     #[link_name = "bootstrap.contract_codec::compare_proof_condition"]
-    fn compare(
-        left: *const c_void,
-        right: *const c_void,
-        left_graph: *const c_void,
-        right_graph: *const c_void,
-        root: unsafe extern "C" fn(*const c_void, usize) -> RootFields,
+    fn compare(left: ConditionOrderRoots<'_>, right: ConditionOrderRoots<'_>) -> i32;
+    #[link_name = "bootstrap.contract_codec::compare_clause_order"]
+    fn compare_clause(left: &Clause, right: &Clause) -> i32;
+    #[link_name = "bootstrap.contract_codec::compare_relation_path_order"]
+    fn compare_relation(
+        left: ConditionOrderRoots<'_>, right: ConditionOrderRoots<'_>,
+        exclusion: extern "C" fn(&Clause, &Clause) -> i32,
     ) -> i32;
 }
 
 pub(in crate::check::bounds) fn order(left: &Condition, right: &Condition) -> std::cmp::Ordering {
-    let left = Conditions::One(left);
-    let right = Conditions::One(right);
-    let left_graph = left.graph();
-    let right_graph = right.graph();
-    unsafe {
-        compare(ptr::from_ref(&left).cast(), ptr::from_ref(&right).cast(),
-            ptr::from_ref(&left_graph).cast(), ptr::from_ref(&right_graph).cast(), condition_at)
-    }.cmp(&0)
+    unsafe { compare(ConditionOrderRoots::cases(left), ConditionOrderRoots::cases(right)) }.cmp(&0)
 }
+
+pub(in crate::check::bounds) fn order_clause(left: &Clause, right: &Clause) -> std::cmp::Ordering {
+    unsafe { compare_clause(left, right) }.cmp(&0)
+}
+
+pub(in crate::check::bounds) fn order_relation(left: &RelationPath, right: &RelationPath) -> std::cmp::Ordering {
+    unsafe { compare_relation(ConditionOrderRoots::relation(left), ConditionOrderRoots::relation(right), compare_exclusion) }.cmp(&0)
+}
+
 pub(in crate::check::bounds) fn write_borrowed(conditions:Conditions<'_>,writer:&mut Writer){
     let graph = conditions.graph();
     unsafe {

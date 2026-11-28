@@ -1863,11 +1863,7 @@ impl PartialOrd for RelationPath {
 }
 impl Ord for RelationPath {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        let paths = self.path().cmp(other.path());
-        if matches!((self, other), (Self::Guard(_), Self::Guard(_))) {
-            return paths;
-        }
-        paths.then_with(|| self.exclusion().cmp(&other.exclusion()))
+        codec::conditions::order_relation(self, other)
     }
 }
 
@@ -2507,11 +2503,7 @@ impl PartialOrd for Clause {
 }
 impl Ord for Clause {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        if self.same_node(other) {
-            return std::cmp::Ordering::Equal;
-        }
-        Condition::paths(self.clone(), Self::impossible())
-            .cmp(&Condition::paths(other.clone(), Self::impossible()))
+        codec::conditions::order_clause(self, other)
     }
 }
 
@@ -2526,9 +2518,6 @@ impl PartialOrd for Condition {
 }
 impl Ord for Condition {
     fn cmp(&self,other:&Self)->std::cmp::Ordering {
-        if self.cases.iter().zip(&other.cases).all(|(a,b)| a.same_node(b)) {
-            return std::cmp::Ordering::Equal;
-        }
         codec::conditions::order(self, other)
     }
 }

@@ -1,5 +1,7 @@
 module bootstrap.contract_codec;
 import codec.builtin_type;
+import bootstrap.condition_graph;
+import bootstrap.clause_storage;
 
 void numeric_write_scalar(BuiltinScalar value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
     word(u32(value),output,append);
@@ -807,9 +809,7 @@ i32 compare_fact_sequence(address left,address right) on cpu {
     return i32(0);
 }
 
-extern "C" i32 compare_proof_condition(address left,address right,address left_graph,address right_graph,
- cfn<RootFields,address,u64> root) on cpu
- requires nonzero(root) {
+i32 compare_canonical_conditions(ConditionOrderRoots left,ConditionOrderRoots right,address left_graph,address right_graph) on cpu {
  u64 left_count=unsafe_position<CanonicalGraph>(left_graph).nodes.count;
  u64 right_count=unsafe_position<CanonicalGraph>(right_graph).nodes.count;
  // One condition on each side. The presence, format, and root-count bytes match.
@@ -831,10 +831,60 @@ extern "C" i32 compare_proof_condition(address left,address right,address left_g
   }
   i+=1u64;
  }
- RootFields a=root(left,0u64);RootFields b=root(right,0u64);
- order=compare_condition_index(condition_node_index(left_graph,a.first),condition_node_index(right_graph,b.first));
+ order=compare_condition_index(
+     condition_node_index(left_graph,address_bits(unsafe_position<address>(left.when_false))),
+     condition_node_index(right_graph,address_bits(unsafe_position<address>(right.when_false))));
  if(order!=i32(0)){return order;}
- return compare_condition_index(condition_node_index(left_graph,a.second),condition_node_index(right_graph,b.second));
+ return compare_condition_index(
+     condition_node_index(left_graph,address_bits(unsafe_position<address>(left.when_true))),
+     condition_node_index(right_graph,address_bits(unsafe_position<address>(right.when_true))));
+}
+
+extern "C" address next_condition_order_root(address context) on cpu {
+    let roots = unsafe_position<ConditionOrderRoots>(context);
+    unsafe_position<ConditionOrderRoots>(context) = ConditionOrderRoots(roots.when_true,address());
+    return roots.when_false;
+}
+
+void number_condition_order(address graph,ConditionOrderRoots roots) on cpu {
+    ConditionOrderRoots remaining = roots;
+    TraversalStack pending = TraversalStack(address(),0u64,0u64);
+    clause_postorder_start(pending,address_of(remaining),c_function(next_condition_order_root));
+    condition_node_ids(pending,graph,0);
+    traversal_stack_drop(pending);
+}
+
+extern "C" i32 compare_proof_condition(ConditionOrderRoots left,ConditionOrderRoots right) on cpu {
+    if (unsafe_position<address>(left.when_false) == unsafe_position<address>(right.when_false) &&
+        unsafe_position<address>(left.when_true) == unsafe_position<address>(right.when_true)) { return i32(0); }
+
+    let empty = CanonicalGraph(OrderedTree(address(),0u64,0u64,0u64),IdentityTable(address(),0u64,0u64));
+    CanonicalGraph first = empty;
+    CanonicalGraph second = empty;
+    number_condition_order(address_of(first),left);
+    number_condition_order(address_of(second),right);
+    let order = compare_canonical_conditions(left,right,address_of(first),address_of(second));
+    condition_graph_drop(address_of(first));
+    condition_graph_drop(address_of(second));
+    return order;
+}
+
+extern "C" i32 compare_clause_order(address left,address right) on cpu {
+    // The original single-Clause wire order starts with an impossible result.
+    StoredClause impossible = StoredClause(StoredClauseKind::Impossible,0);
+    address empty = address_of(impossible);
+    return compare_proof_condition(
+        ConditionOrderRoots(address_of(empty),left),ConditionOrderRoots(address_of(empty),right));
+}
+
+extern "C" i32 compare_relation_path_order(ConditionOrderRoots left,ConditionOrderRoots right,
+    cfn<i32,address,address> compare_exclusion) on cpu requires nonzero(compare_exclusion) {
+    let order = compare_clause_order(left.when_true,right.when_true);
+    if (order != 0 || (left.when_false == address() && right.when_false == address())) { return order; }
+
+    if (left.when_false == address()) { return compare_exclusion(left.when_true,right.when_false); }
+    if (right.when_false == address()) { return -compare_exclusion(right.when_true,left.when_false); }
+    return compare_clause_order(left.when_false,right.when_false);
 }
 
 void write_fact_sequence(address facts,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
