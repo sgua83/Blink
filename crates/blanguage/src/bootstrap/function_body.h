@@ -439,6 +439,22 @@ struct ParallelBuildFacts {u32 prefix;u32 selection;u32 tiles;u32 frame;u32 used
 enum ParallelBuildNeed:u32 {Prefix=0;SetPrefix=1;TileInputs=2;Body=3;Access=4;Appends=5;Initialize=6;Tiles=7;BadSparseTile=8;Selection=9;Frame=10;FrameUse=11;BindFrame=12;Scope=13;Seal=14;BindScope=15;CommitFrame=16;Facts=17;Publish=18;Complete=19;};
 struct ParallelBuildStep {LocalCursor cursor;ParallelBuildNeed need;u32 offset;};
 extern "C" ParallelBuildStep parallel_build_step(LocalCursor state,ParallelBuildFacts facts) on cpu;
+
+enum ParallelAccessIssue:u32 {Clear=0;AppendRead=1;CrossWrite=2;};
+struct ParallelAccessResult {ParallelAccessIssue issue;usize binding;};
+struct ParallelAccessBinding {usize binding;u32 present;};
+struct ParallelAccessAppend {usize output;usize counter;u32 present;};
+struct ParallelAccessRange {u32 start;u32 end;u32 cross;u32 present;};
+struct ParallelAccessHost {
+ cfn<ParallelAccessAppend,address> next_append;
+ cfn<u32,address,usize> has_reads;
+ cfn<ParallelAccessBinding,address> next_binding;
+ cfn<ParallelAccessRange,address> next_region_read;
+ cfn<ParallelAccessRange,address> next_region_write;
+};
+extern "C" ParallelAccessResult parallel_access(address context,ParallelAccessHost host) on cpu
+ requires nonzero(host.next_append) requires nonzero(host.has_reads) requires nonzero(host.next_binding)
+ requires nonzero(host.next_region_read) requires nonzero(host.next_region_write);
 enum ParallelRelationsNeed:u32 {Relation=0;Prove=1;Complete=2;};
 struct ParallelRelationsStep {EnvironmentCursor cursor;ParallelRelationsNeed need;};
 extern "C" ParallelRelationsStep parallel_relations_step(EnvironmentCursor state,u64 relations) on cpu;

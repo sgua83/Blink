@@ -956,7 +956,89 @@ fn collective_initialized_outputs(program:&Program,stages:&[Stage],outputs:&mut 
     }}
 }
 
-type StageMemoryRegions=BTreeMap<usize,(BTreeSet<(bool,u32,u32)>,BTreeMap<(u32,u32),Option<Box<bounds::Proof>>>)>;
+type StageReads = BTreeSet<(bool, u32, u32)>;
+type StageWrites = BTreeMap<(u32, u32), Option<Box<bounds::Proof>>>;
+type StageMemoryRegions = BTreeMap<usize, (StageReads, StageWrites)>;
+
+struct StageAccessCursor<'a> {
+    regions: &'a StageMemoryRegions,
+    bindings: std::collections::btree_map::Iter<'a, usize, (StageReads, StageWrites)>,
+    appends: std::collections::btree_map::Iter<'a, usize, PrefixCount>,
+    reads: Option<std::collections::btree_set::Iter<'a, (bool, u32, u32)>>,
+    writes: Option<std::collections::btree_map::Keys<'a, (u32, u32), Option<Box<bounds::Proof>>>>,
+}
+
+#[allow(dead_code)] // Results produced by bootstrap.function_body.
+#[repr(u32)]
+enum ParallelAccessIssue { Clear, AppendRead, CrossWrite }
+
+#[repr(C)]
+struct ParallelAccessResult { issue: ParallelAccessIssue, binding: usize }
+
+#[repr(C)]
+#[derive(Default)]
+struct ParallelAccessBinding { binding: usize, present: u32 }
+
+#[repr(C)]
+#[derive(Default)]
+struct ParallelAccessAppend { output: usize, counter: usize, present: u32 }
+
+#[repr(C)]
+#[derive(Default)]
+struct ParallelAccessRange { start: u32, end: u32, cross: u32, present: u32 }
+
+#[repr(C)]
+struct ParallelAccessHost {
+    next_append: unsafe extern "C" fn(*mut std::ffi::c_void) -> ParallelAccessAppend,
+    has_reads: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> u32,
+    next_binding: unsafe extern "C" fn(*mut std::ffi::c_void) -> ParallelAccessBinding,
+    next_region_read: unsafe extern "C" fn(*mut std::ffi::c_void) -> ParallelAccessRange,
+    next_region_write: unsafe extern "C" fn(*mut std::ffi::c_void) -> ParallelAccessRange,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.function_body::parallel_access"]
+    fn parallel_access(context: *mut std::ffi::c_void, host: ParallelAccessHost) -> ParallelAccessResult;
+}
+
+unsafe extern "C" fn next_access_append(context: *mut std::ffi::c_void) -> ParallelAccessAppend {
+    let cursor = unsafe { &mut *context.cast::<StageAccessCursor<'_>>() };
+    match cursor.appends.next() {
+        Some((&output, count)) => ParallelAccessAppend { output, counter: count.binding, present: 1 },
+        None => ParallelAccessAppend::default(),
+    }
+}
+
+unsafe extern "C" fn access_has_reads(context: *const std::ffi::c_void, binding: usize) -> u32 {
+    let cursor = unsafe { &*context.cast::<StageAccessCursor<'_>>() };
+    u32::from(cursor.regions.get(&binding).is_some_and(|(reads, _)| !reads.is_empty()))
+}
+
+unsafe extern "C" fn next_access_binding(context: *mut std::ffi::c_void) -> ParallelAccessBinding {
+    let cursor = unsafe { &mut *context.cast::<StageAccessCursor<'_>>() };
+    let Some((&binding, (reads, writes))) = cursor.bindings.next() else {
+        return ParallelAccessBinding::default();
+    };
+    cursor.reads = Some(reads.iter());
+    cursor.writes = Some(writes.keys());
+    ParallelAccessBinding { binding, present: 1 }
+}
+
+unsafe extern "C" fn next_access_read(context: *mut std::ffi::c_void) -> ParallelAccessRange {
+    let cursor = unsafe { &mut *context.cast::<StageAccessCursor<'_>>() };
+    match cursor.reads.as_mut().and_then(Iterator::next) {
+        Some(&(cross, start, end)) => ParallelAccessRange { start, end, cross: u32::from(cross), present: 1 },
+        None => ParallelAccessRange::default(),
+    }
+}
+
+unsafe extern "C" fn next_access_write(context: *mut std::ffi::c_void) -> ParallelAccessRange {
+    let cursor = unsafe { &mut *context.cast::<StageAccessCursor<'_>>() };
+    match cursor.writes.as_mut().and_then(Iterator::next) {
+        Some(&(start, end)) => ParallelAccessRange { start, end, cross: 0, present: 1 },
+        None => ParallelAccessRange::default(),
+    }
+}
 
 fn parallel_relations(appends:&BTreeMap<usize,PrefixCount>,facts:&prefix::Facts,program:&Program,d:&Definition,span:Span)->Result<Vec<PrefixRelation>> {
     let mut cursor=EnvironmentCursor{index:0,part:0,phase:0};let mut entries=appends.iter();let mut relations=Vec::new();
@@ -1909,22 +1991,25 @@ impl<'a> Builder<'a> {
         }
     }
     fn parallel_access(&self, span: Span) -> Result<()> {
-        for (binding, (reads, writes)) in &self.memory_regions {
-            if !reads.is_empty() && self.appends.iter().any(|(output, count)| output == binding || count.binding == *binding) {
-                return self.fail(span, "B221", "append 的共享输出／计数不能在同一阶段作为普通共享输入读取");
-            }
-            let mut writes = writes.keys().filter(|(start, end)| start < end).peekable();
-            for read in reads.iter().filter(|(cross, start, end)| *cross && start < end) {
-                while writes.peek().is_some_and(|write| write.1 <= read.1) { writes.next(); }
-                if writes.peek().is_some_and(|write| write.0 < read.2) {
-                    return self.fail(span, "B166", format!(
-                        "同一 parallel 阶段不能共享读取并写入 {} 的其他元素中的重叠位置",
-                        self.program.buffers[*binding].name,
-                    ));
-                }
-            }
+        let mut cursor = StageAccessCursor {
+            regions: &self.memory_regions, bindings: self.memory_regions.iter(),
+            appends: self.appends.iter(), reads: None, writes: None,
+        };
+        let host = ParallelAccessHost {
+            next_append: next_access_append, has_reads: access_has_reads, next_binding: next_access_binding,
+            next_region_read: next_access_read, next_region_write: next_access_write,
+        };
+        let result = unsafe { parallel_access(std::ptr::from_mut(&mut cursor).cast(), host) };
+        match result.issue {
+            ParallelAccessIssue::Clear => Ok(()),
+            ParallelAccessIssue::AppendRead => self.fail(
+                span, "B221", "append 的共享输出／计数不能在同一阶段作为普通共享输入读取",
+            ),
+            ParallelAccessIssue::CrossWrite => self.fail(span, "B166", format!(
+                "同一 parallel 阶段不能共享读取并写入 {} 的其他元素中的重叠位置",
+                self.program.buffers[result.binding].name,
+            )),
         }
-        Ok(())
     }
     fn roots(&mut self, env: &BTreeMap<String, Root>) {
         let mut entries=env.iter();let mut current=None;let mut regs=Vec::new();

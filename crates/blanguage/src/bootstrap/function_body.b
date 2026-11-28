@@ -1995,6 +1995,46 @@ extern "C" CollectiveInitStep collective_init_step(EnvironmentCursor state,Colle
   if(cursor.phase==8){cursor.index+=1u64;cursor.phase=0;}
  }
 }
+ParallelAccessResult earliest_append_read(address context,cfn<u32,address,usize> has_reads,
+ ParallelAccessResult earliest,usize binding) on cpu requires nonzero(has_reads) {
+ if((earliest.issue==ParallelAccessIssue::Clear||binding<earliest.binding)&&has_reads(context,binding)!=0){
+  return ParallelAccessResult(ParallelAccessIssue::AppendRead,binding);
+ }
+ return earliest;
+}
+
+extern "C" ParallelAccessResult parallel_access(address context,ParallelAccessHost host) on cpu
+ requires nonzero(host.next_append) requires nonzero(host.has_reads) requires nonzero(host.next_binding)
+ requires nonzero(host.next_region_read) requires nonzero(host.next_region_write) {
+ ParallelAccessResult append_read=ParallelAccessResult(ParallelAccessIssue::Clear,0u64);
+ ParallelAccessAppend append=host.next_append(context);
+ while(append.present!=0){
+  append_read=earliest_append_read(context,host.has_reads,append_read,append.output);
+  append_read=earliest_append_read(context,host.has_reads,append_read,append.counter);
+  append=host.next_append(context);
+ }
+ ParallelAccessBinding binding=host.next_binding(context);
+ while(binding.present!=0){
+  // Only a real binding with reads was selected for the append conflict.
+  if(append_read.issue==ParallelAccessIssue::AppendRead&&binding.binding==append_read.binding){return append_read;}
+  ParallelAccessRange input=host.next_region_read(context);
+  ParallelAccessRange output=host.next_region_write(context);
+  while(input.present!=0&&output.present!=0){
+   if(input.cross==0||input.start>=input.end){
+    input=host.next_region_read(context);
+   }else if(output.start>=output.end||output.end<=input.start){
+    output=host.next_region_write(context);
+   }else if(output.start<input.end){
+    return ParallelAccessResult(ParallelAccessIssue::CrossWrite,binding.binding);
+   }else{
+    input=host.next_region_read(context);
+   }
+  }
+  binding=host.next_binding(context);
+ }
+ return ParallelAccessResult(ParallelAccessIssue::Clear,0u64);
+}
+
 extern "C" ParallelBuildStep parallel_build_step(LocalCursor state,ParallelBuildFacts facts) on cpu {
  LocalCursor cursor=state;
  while(true){
