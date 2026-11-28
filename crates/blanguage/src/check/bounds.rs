@@ -13,6 +13,7 @@ mod internal_conflicts;
 mod common_facts;
 mod task_sources;
 mod combination;
+pub(super) use combination::conflict as condition_conflict;
 pub(super) use combination::conflict as clause_conflict;
 mod canonical;
 mod equality;

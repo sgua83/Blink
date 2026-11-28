@@ -147,21 +147,9 @@ unsafe extern "C" fn truth_scope(value: u32, context: Address, host: Host, apply
     let mut value = if value == 0 { Presence::None } else { Presence::All };
     unsafe { apply(pointer(&mut value), context, host) }
 }
-type ConditionSlot = Option<bounds::Condition>;
-unsafe extern "C" fn condition_scope(context: Address, host: Host, apply: Scoped) -> u32 {
-    let mut value: ConditionSlot = None;
-    unsafe { apply(pointer(&mut value), context, host) }
-}
-unsafe extern "C" fn condition_clone_scope(value: Address, context: Address, host: Host, apply: Scoped) -> u32 {
-    let mut value = unsafe { &*value.cast::<ConditionSlot>() }.clone();
-    unsafe { apply(pointer(&mut value), context, host) }
-}
-unsafe extern "C" fn condition_truth(output: Address, value: u32) {
-    unsafe { *output.cast::<ConditionSlot>() = Some(bounds::Condition::constant(value != 0)); }
-}
 unsafe extern "C" fn condition_input(output: Address, value: Address) {
     let value = unsafe { &*value.cast::<PresenceInput>() }.condition();
-    unsafe { *output.cast::<ConditionSlot>() = Some(value); }
+    unsafe { output.cast::<bounds::Condition>().write(value); }
 }
 unsafe extern "C" fn condition_index(output: Address, kind: u32, a: PositionIndex, b: PositionIndex) {
     let operand = |value| match unsafe { required_index(value) } {
@@ -171,26 +159,17 @@ unsafe extern "C" fn condition_index(output: Address, kind: u32, a: PositionInde
     let a = operand(a); let b = operand(b); let proof = bounds::Proof::default();
     let value = if kind == 0 { bounds::Condition::index_equal(a, b) }
         else { bounds::Condition::index_below((a, &proof), (b, &proof), kind == 1) };
-    unsafe { *output.cast::<ConditionSlot>() = Some(value); }
+    unsafe { output.cast::<bounds::Condition>().write(value); }
 }
-unsafe extern "C" fn condition_negate(value: Address) {
-    let value = unsafe { &mut *value.cast::<ConditionSlot>() };
-    *value = Some(value.take().unwrap().negate());
-}
-unsafe extern "C" fn condition_logical(left: Address, right: Address, any: u32) {
-    let a = unsafe { &mut *left.cast::<ConditionSlot>() }.take().unwrap();
-    let b = unsafe { &mut *right.cast::<ConditionSlot>() }.take().unwrap();
-    unsafe { *left.cast::<ConditionSlot>() = Some(a.logical(b, any != 0)); }
-}
-unsafe extern "C" fn condition_substitute(value: Address, inputs: Address, a: PositionIndex, b: PositionIndex) {
+unsafe extern "C" fn condition_substitute(output: Address, value: Address, inputs: Address, a: PositionIndex, b: PositionIndex) {
     let inputs = unsafe { &*inputs.cast::<BTreeMap<ValueIdentity, bounds::Proof>>() };
     let omitted = |index: PositionIndex| if index.kind == 2 { Some(unsafe { *index.identity.cast::<ValueIdentity>() }) } else { None };
     let a = omitted(a); let b = omitted(b);
-    let slot = unsafe { &mut *value.cast::<ConditionSlot>() };
-    let condition = slot.as_ref().unwrap();
-    *slot = Some(condition.substitute_values_with(|id| {
+    let condition = unsafe { &*value.cast::<bounds::Condition>() };
+    let substituted = condition.substitute_values_with(|id| {
         if Some(id) == a || Some(id) == b { None } else { inputs.get(&id) }
-    }));
+    });
+    unsafe { output.cast::<bounds::Condition>().write(substituted); }
 }
 unsafe extern "C" fn input_offset(inputs: Address, index: PositionIndex) -> u32 {
     let inputs = unsafe { &*inputs.cast::<BTreeMap<ValueIdentity, bounds::Proof>>() };
@@ -201,7 +180,7 @@ unsafe extern "C" fn input_offset(inputs: Address, index: PositionIndex) -> u32 
     u32::from(found)
 }
 unsafe extern "C" fn condition_truth_in(value: Address, path: Address) -> u32 {
-    match unsafe { &*value.cast::<ConditionSlot>() }.as_ref().unwrap().truth_in(unsafe { &*path.cast::<bounds::Clause>() }) {
+    match unsafe { &*value.cast::<bounds::Condition>() }.truth_in(unsafe { &*path.cast::<bounds::Clause>() }) {
         None => 0, Some(false) => 1, Some(true) => 2,
     }
 }
@@ -216,14 +195,10 @@ struct Host {
     clone_scope: unsafe extern "C" fn(Address, Address, Host, Scoped) -> u32,
     truth_scope: unsafe extern "C" fn(u32, Address, Host, Scoped) -> u32,
     position_equal: unsafe extern "C" fn(Address, Address) -> u32,
-    condition_scope: unsafe extern "C" fn(Address, Host, Scoped) -> u32,
-    condition_clone_scope: unsafe extern "C" fn(Address, Address, Host, Scoped) -> u32,
-    condition_truth: unsafe extern "C" fn(Address, u32),
+    condition_conflict: unsafe extern "C" fn(*const c_void) -> u32,
     condition_input: unsafe extern "C" fn(Address, Address),
     condition_index: unsafe extern "C" fn(Address, u32, PositionIndex, PositionIndex),
-    condition_negate: unsafe extern "C" fn(Address),
-    condition_logical: unsafe extern "C" fn(Address, Address, u32),
-    condition_substitute: unsafe extern "C" fn(Address, Address, PositionIndex, PositionIndex),
+    condition_substitute: unsafe extern "C" fn(Address, Address, Address, PositionIndex, PositionIndex),
     input_offset: unsafe extern "C" fn(Address, PositionIndex) -> u32,
     condition_truth_in: unsafe extern "C" fn(Address, Address) -> u32,
 }
@@ -231,8 +206,8 @@ const HOST: Host = Host {
     layout: &PRESENCE_VIEW, input_mentions, clone_input, drop_payload,
     children_scope, clone_scope, truth_scope,
     position_equal,
-    condition_scope, condition_clone_scope, condition_truth, condition_input,
-    condition_index, condition_negate, condition_logical, condition_substitute,
+    condition_conflict: bounds::condition_conflict,
+    condition_input, condition_index, condition_substitute,
     input_offset, condition_truth_in,
 };
 unsafe extern "C" {
@@ -303,10 +278,13 @@ pub(super) fn selected_presence(position: &Position, wanted: &Position) -> Prese
     let mut output = Presence::None; unsafe { source_selected(pointer(&mut output), pointer(position), pointer(wanted), HOST); } output
 }
 pub(super) fn condition(value: &Presence) -> bounds::Condition {
-    let mut output: ConditionSlot = None; unsafe { source_condition(pointer(&mut output), pointer(value), HOST); } output.unwrap()
+    let mut output = std::mem::MaybeUninit::<bounds::Condition>::uninit();
+    // The B projection writes both owned clauses before returning.
+    unsafe { source_condition(output.as_mut_ptr().cast(), pointer(value), HOST); output.assume_init() }
 }
 pub(super) fn loop_condition(value: &Presence, inputs: &BTreeMap<ValueIdentity, bounds::Proof>) -> bounds::Condition {
-    let mut output: ConditionSlot = None; unsafe { source_loop_condition(pointer(&mut output), pointer(value), pointer(inputs), HOST); } output.unwrap()
+    let mut output = std::mem::MaybeUninit::<bounds::Condition>::uninit();
+    unsafe { source_loop_condition(output.as_mut_ptr().cast(), pointer(value), pointer(inputs), HOST); output.assume_init() }
 }
 pub(super) fn may_own(value: &Ownership) -> bool { unsafe { source_may_own(pointer(value), HOST) != 0 } }
 pub(super) fn available(value: &Ownership) -> bool { unsafe { source_available(pointer(value), HOST) != 0 } }
